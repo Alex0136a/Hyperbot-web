@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>HyperBot AI — Hyperliquid Trading Bot</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0e1a; font-family: 'IBM Plex Mono', 'Courier New', monospace; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #0a0e1a; }
+  ::-webkit-scrollbar-thumb { background: #1e2d4a; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ── HYPERLIQUID API ──────────────────────────────────────────
+const HL_BASE = "https://api.hyperliquid.xyz";
+
+async function hlPost(endpoint, payload) {
+  try {
+    const r = await fetch(`${HL_BASE}${endpoint}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return await r.json();
+  } catch { return null; }
+}
+
+async function fetchAllMetas() {
+  const data = await hlPost("/info", { type: "metaAndAssetCtxs" });
+  if (!data) return [];
+  const [meta, ctxs] = data;
+  return meta.universe.map((asset, i) => ({ name: asset.name, ctx: ctxs[i] }));
+}
+
+async function fetchCandles(coin, interval = "15m", count = 200) {
+  const now = Date.now();
+  const ms = { "1m":60000,"5m":300000,"15m":900000,"1h":3600000 }[interval] || 900000;
+  const data = await hlPost("/info", { type: "candleSnapshot", req: { coin, interval, startTime: now - ms * count, endTime: now } });
+  return data || [];
+}
+
+async function fetchOrderbook(coin) {
+  return await hlPost("/info", { type: "l2Book", coin });
+}
+
+async function fetchPositions(address) {
+  if (!address || address === "demo-mode") return [];
+  const data = await hlPost("/info", { type: "clearinghouseState", user: address });
+  return data?.assetPositions || [];
+}
+
+// ── ANALYSE TECHNIQUE ────────────────────────────────────────
+function calcEMA(prices, period) {
+  if (prices.length < period) return [];
+  const k = 2 / (period + 1);
+  const emas = [prices.slice(0, period).reduce((a,b) => a+b, 0) / period];
+  for (let i = period; i < prices.length; i++)
+    emas.push(prices[i] * k + emas[emas.length-1] * (1-k));
+  return emas;
+}
+
+function calcRSI(prices, period = 14) {
+  if (prices.length < period + 1) return null;
+  let g = 0, l = 0;
+  for (let i = 1; i <= period; i++) { const d = prices[i]-prices[i-1]; d>0 ? g+=d : l-=d; }
+  let ag = g/period, al = l/period;
+  for (let i = period+1; i < prices.length; i++) {
+    const d = prices[i]-prices[i-1];
+    ag = (ag*(period-1)+Math.max(d,0))/period;
+    al = (al*(period-1)+Math.max(-d,0))/period;
+  }
+  if (al === 0) return 100;
+  return 100 - 100/(1 + ag/al);
+}
+
+function calcMACD(prices) {
+  const e12 = calcEMA(prices, 12), e26 = calcEMA(prices, 26);
+  const off = e12.length - e26.length;
+  const macdLine = e26.map((v,i) => e12[i+off]-v);
+  const sig = calcEMA(macdLine, 9);
+  const offM = macdLine.length - sig.length;
+  return {
+    macd: macdLine[macdLine.length-1],
+    signal: sig[sig.length-1],
+    histogram: macdLine[macdLine.length-1] - sig[sig.length-1],
+    crossBull: macdLine[macdLine.length-1] > sig[sig.length-1] && macdLine[macdLine.length-2+offM] <= sig[sig.length-2],
+    crossBear: macdLine[macdLine.length-1] < sig[sig.length-1] && macdLine[macdLine.length-2+offM] >= sig[sig.length-2],
+  };
+}
+
+function calcBB(prices, period=20, mult=2) {
+  if (prices.length < period) return null;
+  const sl = prices.slice(-period);
+  const mean = sl.reduce((a,b)=>a+b,0)/period;
+  const std = Math.sqrt(sl.reduce((a,b)=>a+(b-mean)**2,0)/period);
+  return { upper: mean+mult*std, middle: mean, lower: mean-mult*std };
+}
+
+function calcATR(candles, period=14) {
+  if (candles.length < period+1) return null;
+  const trs = candles.slice(1).map((c,i) => Math.max(c.h-c.l, Math.abs(c.h-candles[i].c), Math.abs(c.l-candles[i].c)));
+  return trs.slice(-period).reduce((a,b)=>a+b,0)/period;
+}
+
+function calcVWAP(candles) {
+  let tv=0, v=0;
+  candles.forEach(c => { const tp=(c.h+c.l+c.c)/3; tv+=tp*c.v; v+=c.v; });
+  return v===0 ? null : tv/v;
+}
+
+function calcStochRSI(prices, rp=14, sp=14) {
+  const rsiVals = [];
+  for (let i=rp; i<=prices.length-1; i++) rsiVals.push(calcRSI(prices.slice(0,i+1),rp));
+  if (rsiVals.length < sp) return null;
+  const sl = rsiVals.slice(-sp);
+  const mn=Math.min(...sl), mx=Math.max(...sl);
+  return mx===mn ? 50 : ((sl[sl.length-1]-mn)/(mx-mn))*100;
+}
+
+// ── IA CLAUDE ────────────────────────────────────────────────
+async function analyzeWithAI(coin, tech, ob, price, apiKey) {
+  const prompt = `You are an elite quantitative trading analyst for crypto perpetual futures on Hyperliquid.
+Analyze ${coin}/USDC and provide a precise trading decision.
+PRICE: $${price}
+RSI: ${tech.rsi?.toFixed(2)??"N/A"} | StochRSI: ${tech.stochRsi?.toFixed(2)??"N/A"}
+MACD: ${tech.macd?.macd?.toFixed(4)??"N/A"} | Signal: ${tech.macd?.signal?.toFixed(4)??"N/A"} | Histo: ${tech.macd?.histogram?.toFixed(4)??"N/A"}
+BullCross: ${tech.macd?.crossBull} | BearCross: ${tech.macd?.crossBear}
+EMA20: ${tech.ema20?.toFixed(4)??"N/A"} | EMA50: ${tech.ema50?.toFixed(4)??"N/A"} | EMA200: ${tech.ema200?.toFixed(4)??"N/A"}
+BB Upper: ${tech.bb?.upper?.toFixed(4)??"N/A"} | Mid: ${tech.bb?.middle?.toFixed(4)??"N/A"} | Lower: ${tech.bb?.lower?.toFixed(4)??"N/A"}
+ATR: ${tech.atr?.toFixed(4)??"N/A"} | VWAP: ${tech.vwap?.toFixed(4)??"N/A"}
+Volume: ${tech.volumeTrend??"N/A"} | vs VWAP: ${tech.vwap?(price>tech.vwap?"ABOVE":"BELOW"):"N/A"}
+Bid depth: ${ob?.levels?.[1]?.slice(0,5).reduce((a,b)=>a+parseFloat(b.sz),0).toFixed(2)??"N/A"}
+Ask depth: ${ob?.levels?.[0]?.slice(0,5).reduce((a,b)=>a+parseFloat(b.sz),0).toFixed(2)??"N/A"}
+CONSTRAINTS: Leverage x2-x5, position 5-15% portfolio, min R/R 2:1
+Respond ONLY with JSON (no markdown):
+{"action":"LONG"|"SHORT"|"WAIT","confidence":0-100,"entry":number,"stopLoss":number,"takeProfit1":number,"takeProfit2":number,"leverage":2-5,"positionSize":5-15,"reasoning":"2 sentences","keySignals":["s1","s2","s3"],"riskReward":number,"timeframe":"short-term"|"medium-term"}`;
+
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (apiKey) headers["x-api-key"] = apiKey;
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST", headers,
+      body: JSON.stringify({ model:"claude-sonnet-4-6", max_tokens:1000, messages:[{role:"user",content:prompt}] }),
+    });
+    const data = await r.json();
+    const text = data.content?.map(b=>b.text||"").join("")||"";
+    return JSON.parse(text.replace(/```json|```/g,"").trim());
+  } catch { return null; }
+}
+
+// ── RAPPORT TXT ──────────────────────────────────────────────
+function generateReport(signals, logs, stats, sessionStart, prices) {
+  const now = new Date();
+  const duration = Math.round((now-sessionStart)/60000);
+  const active = signals.filter(s=>s.action!=="WAIT");
+  const sep = "=".repeat(60), thin = "-".repeat(60);
+  let t = "";
+  t += `${sep}\n  HYPERBOT AI -- RAPPORT DE SESSION\n${sep}\n`;
+  t += `  Date     : ${now.toLocaleDateString("fr-FR")} a ${now.toLocaleTimeString("fr-FR")}\n`;
+  t += `  Duree    : ${duration} min | Mode: Fully Auto | Levier x2-x5\n${sep}\n\n`;
+  t += `[ RESUME EXECUTIF ]\n${thin}\n`;
+  t += `  Signaux  : ${active.length} (LONG:${stats.longSignals} / SHORT:${stats.shortSignals})\n`;
+  t += `  Confiance moy. : ${stats.avgConfidence}%\n`;
+  t += `  Haute confiance (>=75%) : ${active.filter(s=>s.confidence>=75).length}\n`;
+  const avgRR = active.length?(active.reduce((a,b)=>a+(b.riskReward||0),0)/active.length).toFixed(2):"--";
+  t += `  Risk/Reward moy. : ${avgRR}\n\n`;
+  t += `[ PRIX MARCHE ]\n${thin}\n`;
+  Object.entries(prices).forEach(([c,p])=>{ t+=`  ${c.padEnd(8)}: $${p?.toLocaleString("en-US",{maximumFractionDigits:4})}\n`; });
+  t += `\n[ SIGNAUX DETAILLES (${active.length}) ]\n${thin}\n`;
+  active.forEach((sig,i)=>{
+    t += `\n  [${i+1}] ${sig.action} ${sig.coin}/USDC -- ${sig.timestamp?.toLocaleTimeString("fr-FR")}\n`;
+    t += `  Confiance:${sig.confidence}% | Levier:x${sig.leverage} | Taille:${sig.positionSize}% | R/R:${sig.riskReward?.toFixed(2)}\n`;
+    t += `  Entree:$${sig.entry?.toLocaleString("en-US",{maximumFractionDigits:6})} | SL:$${sig.stopLoss?.toLocaleString("en-US",{maximumFractionDigits:6})}\n`;
+    t += `  TP1:$${sig.takeProfit1?.toLocaleString("en-US",{maximumFractionDigits:6})} | TP2:$${sig.takeProfit2?.toLocaleString("en-US",{maximumFractionDigits:6})}\n`;
+    t += `  IA: ${sig.reasoning||"--"}\n`;
+    if(sig.keySignals?.length) t += `  Signaux: ${sig.keySignals.join(" | ")}\n`;
+    t += `  RSI:${sig.technicals?.rsi?.toFixed(1)??"--"} ATR:${sig.technicals?.atr?.toFixed(4)??"--"} VWAP:${sig.technicals?.vwap?.toFixed(2)??"--"}\n`;
+    const cur = prices[sig.coin];
+    if(cur){
+      const dir=sig.action==="LONG"?1:-1;
+      const pnl=((cur-sig.entry)/sig.entry*100*dir).toFixed(2);
+      const tp1=sig.action==="LONG"?cur>=sig.takeProfit1:cur<=sig.takeProfit1;
+      const tp2=sig.action==="LONG"?cur>=sig.takeProfit2:cur<=sig.takeProfit2;
+      const sl=sig.action==="LONG"?cur<=sig.stopLoss:cur>=sig.stopLoss;
+      t += `  Prix actuel:$${cur.toLocaleString()} | PnL:${pnl>0?"+":""}${pnl}%\n`;
+      t += `  TP1:${tp1?"ATTEINT":"en attente"} TP2:${tp2?"ATTEINT":"en attente"} SL:${sl?"TOUCHE":"intact"}\n`;
+    }
+  });
+  t += `\n[ LOGS SESSION (50 derniers) ]\n${thin}\n`;
+  logs.slice(-50).forEach(l=>{ t+=`  [${l.time}] ${l.msg}\n`; });
+  t += `\n${sep}\n  Rapport HyperBot AI - Powered by Claude\n  Collez ce rapport dans Claude pour analyse\n${sep}\n`;
+  return t;
+}
+
+// ── CONSTANTES ───────────────────────────────────────────────
+const ALL_COINS = ["BTC","ETH","SOL","ARB","AVAX","MATIC","LINK","OP","INJ","TIA","BNB","HYPE","PAXG"];
+const SCAN_MS = 60000;
+const LOGCOL = { system:"#60a5fa",info:"#94a3b8",error:"#f87171",warn:"#fbbf24",ai:"#c084fc",long:"#34d399",short:"#f87171",dim:"#475569" };
+const confColor = (c, tp) => { const p=TEXT_PRESETS.find(x=>x.id===tp)||TEXT_PRESETS[0]; return c>=75?p.long:c>=60?"#fbbf24":p.short; };
+
+const BG_PRESETS = [
+  {id:"space",    label:"Space",    bg:"#0a0e1a", panel:"#0f1629", border:"#1e2d4a", header:"linear-gradient(135deg,#0f1629,#1a1f35)"},
+  {id:"midnight", label:"Midnight", bg:"#08080f", panel:"#0d0d1a", border:"#1a1a2e", header:"linear-gradient(135deg,#0d0d1a,#16213e)"},
+  {id:"forest",   label:"Forest",   bg:"#071410", panel:"#0a1f18", border:"#0f3024", header:"linear-gradient(135deg,#0a1f18,#0d2b20)"},
+  {id:"volcano",  label:"Volcano",  bg:"#110a08", panel:"#1a0f0a", border:"#2d1a12", header:"linear-gradient(135deg,#1a0f0a,#2a1208)"},
+  {id:"cosmos",   label:"Cosmos",   bg:"#0d0815", panel:"#130d1f", border:"#1e1030", header:"linear-gradient(135deg,#130d1f,#1a0d2e)"},
+  {id:"steel",    label:"Steel",    bg:"#0c0d0f", panel:"#141618", border:"#22262a", header:"linear-gradient(135deg,#141618,#1c2024)"},
+];
+const TEXT_PRESETS = [
+  {id:"cyan",   label:"Cyan",   accent:"#60a5fa", long:"#34d399", short:"#f87171", ai:"#c084fc"},
+  {id:"gold",   label:"Or",     accent:"#fbbf24", long:"#4ade80", short:"#f87171", ai:"#e879f9"},
+  {id:"neon",   label:"Neon",   accent:"#00ff88", long:"#00ffcc", short:"#ff4466", ai:"#bb88ff"},
+  {id:"white",  label:"Blanc",  accent:"#f1f5f9", long:"#86efac", short:"#fca5a5", ai:"#d8b4fe"},
+  {id:"orange", label:"Orange", accent:"#fb923c", long:"#4ade80", short:"#f87171", ai:"#c084fc"},
+  {id:"pink",   label:"Rose",   accent:"#f472b6", long:"#34d399", short:"#fb923c", ai:"#a78bfa"},
+];
+
+// ── APP ──────────────────────────────────────────────────────
+function App() {
+  const [apiKey, setApiKey] = useState(()=>localStorage.getItem("hb_apikey")||"");
+  const [wallet, setWallet] = useState(()=>localStorage.getItem("hb_wallet")||"");
+  const [inputW, setInputW] = useState(()=>localStorage.getItem("hb_wallet")||"");
+  const [inputK, setInputK] = useState(()=>localStorage.getItem("hb_apikey")||"");
+  const [running, setRunning] = useState(false);
+  const [signals, setSignals] = useState([]);
+  const [positions, setPositions] = useState([]);
+  const [scanning, setScanning] = useState(false);
+  const [curScan, setCurScan] = useState("");
+  const [logs, setLogs] = useState([]);
+  const [tab, setTab] = useState("dashboard");
+  const [prices, setPrices] = useState({});
+  const [stats, setStats] = useState({totalSignals:0,longSignals:0,shortSignals:0,avgConfidence:0});
+  const [sessionStart] = useState(new Date());
+  const [copied, setCopied] = useState(false);
+  const [liveW, setLiveW] = useState(()=>localStorage.getItem("hb_wallet")||"");
+  const [liveK, setLiveK] = useState(()=>localStorage.getItem("hb_apikey")||"");
+  const [saved, setSaved] = useState(false);
+  const [bgId, setBgId] = useState(()=>localStorage.getItem("hb_bg")||"space");
+  const [textId, setTextId] = useState(()=>localStorage.getItem("hb_text")||"cyan");
+  const [brightness, setBrightness] = useState(()=>Number(localStorage.getItem("hb_brightness")||100));
+  const [showTheme, setShowTheme] = useState(false);
+  const [customBg, setCustomBg] = useState("#0a0e1a");
+  const [customPanel, setCustomPanel] = useState("#0f1629");
+  const [activeCoins, setActiveCoins] = useState(()=>Object.fromEntries(ALL_COINS.map(c=>[c,true])));
+  const COINS = ALL_COINS.filter(c=>activeCoins[c]);
+  const toggleCoin = (coin) => setActiveCoins(p=>({...p,[coin]:!p[coin]}));
+  const bgT = bgId==="custom"?{bg:customBg,panel:customPanel,border:"#1e2d4a",header:`linear-gradient(135deg,${customPanel},${customBg})`}:(BG_PRESETS.find(x=>x.id===bgId)||BG_PRESETS[0]);
+  const tp = TEXT_PRESETS.find(x=>x.id===textId)||TEXT_PRESETS[0];
+  const br = (hex) => { if(brightness===100) return hex; try { const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16),f=brightness/100; return "rgb("+Math.min(255,Math.round(r*f))+","+Math.min(255,Math.round(g*f))+","+Math.min(255,Math.round(b*f))+")"; } catch{return hex;} };
+  const scanRef = useRef(false);
+  const intRef = useRef(null);
+  const logEnd = useRef(null);
+
+  useEffect(()=>{ localStorage.setItem("hb_bg", bgId); }, [bgId]);
+  useEffect(()=>{ localStorage.setItem("hb_text", textId); }, [textId]);
+  useEffect(()=>{ localStorage.setItem("hb_brightness", brightness); }, [brightness]);
+
+  const addLog = useCallback((msg, type="info") => {
+    setLogs(p => [...p.slice(-199), {msg,type,time:new Date().toLocaleTimeString("fr-FR")}]);
+  }, []);
+
+  useEffect(() => { logEnd.current?.scrollIntoView({behavior:"smooth"}); }, [logs]);
+
+  const scan = useCallback(async () => {
+    if (!scanRef.current) return;
+    setScanning(true);
+    addLog("Demarrage scan multi-marches...", "system");
+    try {
+      const metas = await fetchAllMetas();
+      if (!metas.length) { addLog("Impossible de recuperer les marches","error"); return; }
+      const pm = {};
+      metas.forEach(m => { if(m.ctx?.markPx) pm[m.name]=parseFloat(m.ctx.markPx); });
+      setPrices(pm);
+      const toScan = COINS.filter(coin=>pm[coin]);
+      addLog(`Analyse de ${toScan.length} marches...`, "system");
+      const newSigs = [];
+
+      for (const coin of toScan) {
+        if (!scanRef.current) break;
+        setCurScan(coin);
+        addLog(`${coin}/USDC @ $${pm[coin]?.toLocaleString()}`, "info");
+        try {
+          const [candles, ob] = await Promise.all([fetchCandles(coin), fetchOrderbook(coin)]);
+          if (!candles||candles.length<50) { addLog(`Donnees insuffisantes ${coin}`,"warn"); continue; }
+          const closes = candles.map(c=>parseFloat(c.c));
+          const vols = candles.map(c=>parseFloat(c.v));
+          const price = closes[closes.length-1];
+          const e20=calcEMA(closes,20), e50=calcEMA(closes,50), e200=calcEMA(closes,200);
+          const volAvg = vols.slice(-20).reduce((a,b)=>a+b,0)/20;
+          const volCur = vols[vols.length-1];
+          const tech = {
+            rsi: calcRSI(closes), stochRsi: calcStochRSI(closes),
+            macd: calcMACD(closes),
+            ema20: e20[e20.length-1], ema50: e50[e50.length-1], ema200: e200[e200.length-1],
+            bb: calcBB(closes),
+            atr: calcATR(candles.map(c=>({h:parseFloat(c.h),l:parseFloat(c.l),c:parseFloat(c.c)}))),
+            vwap: calcVWAP(candles.map(c=>({h:parseFloat(c.h),l:parseFloat(c.l),c:parseFloat(c.c),v:parseFloat(c.v)}))),
+            volumeTrend: volCur>volAvg*1.5?"SPIKE":volCur>volAvg?"ABOVE_AVG":"BELOW_AVG",
+          };
+          const rsi=tech.rsi;
+          const hasSignal=(rsi&&(rsi<40||rsi>60))||tech.macd?.crossBull||tech.macd?.crossBear||tech.volumeTrend==="SPIKE";
+          if(!hasSignal){addLog(`${coin}: Marche neutre`,"dim");continue;}
+          addLog(`IA analyse ${coin}...`,"ai");
+          const ai = await analyzeWithAI(coin, tech, ob, price, apiKey);
+          if(!ai){addLog(`Erreur IA ${coin}`,"error");continue;}
+          const sig = {id:`${coin}-${Date.now()}`,coin,price,...ai,technicals:tech,timestamp:new Date(),status:"ACTIVE"};
+          if(ai.action!=="WAIT"&&ai.confidence>=55){
+            newSigs.unshift(sig);
+            addLog(`SIGNAL ${ai.action} ${coin} | ${ai.confidence}% | R/R:${ai.riskReward?.toFixed(1)}`, ai.action==="LONG"?"long":"short");
+          } else {
+            addLog(`${coin}: ${ai.action==="WAIT"?"Attente":"Confiance faible"} (${ai.confidence}%)`,"dim");
+          }
+          await new Promise(r=>setTimeout(r,800));
+        } catch(e){addLog(`Erreur ${coin}: ${e.message}`,"error");}
+      }
+
+      setSignals(prev => {
+        const merged=[...newSigs,...prev.filter(s=>s.status!=="ACTIVE")].slice(0,50);
+        const act=merged.filter(s=>s.action!=="WAIT");
+        setStats({
+          totalSignals:act.length,
+          longSignals:act.filter(s=>s.action==="LONG").length,
+          shortSignals:act.filter(s=>s.action==="SHORT").length,
+          avgConfidence:act.length?Math.round(act.reduce((a,b)=>a+b.confidence,0)/act.length):0
+        });
+        return merged;
+      });
+
+      if(wallet&&wallet!=="demo-mode"){
+        const pos=await fetchPositions(wallet);
+        setPositions(pos);
+      }
+      addLog("Scan termine. Prochain dans 60s.", "system");
+    } catch(e){addLog(`Erreur scan: ${e.message}`,"error");}
+    finally{setScanning(false);setCurScan("");}
+  }, [wallet, apiKey, addLog]);
+
+  const start = (demo=false) => {
+    const w = demo ? "demo-mode" : (inputW.trim()||"demo-mode");
+    const k = inputK.trim();
+    setLiveW(w); setLiveK(k);
+    setWallet(w); setApiKey(k);
+    localStorage.setItem("hb_wallet", w);
+    localStorage.setItem("hb_apikey", k);
+    setRunning(true);
+    scanRef.current=true;
+    addLog(`Bot demarre | ${w==="demo-mode"?"Mode Demo":w.slice(0,8)+"..."} | ${COINS.length} marches`, "system");
+    setTimeout(()=>scan(), 100);
+    intRef.current=setInterval(()=>scan(), SCAN_MS);
+  };
+
+  const stop = () => { scanRef.current=false; setRunning(false); clearInterval(intRef.current); addLog("Bot arrete.","system"); };
+
+  useEffect(()=>()=>{scanRef.current=false;clearInterval(intRef.current);},[]);
+
+  const dlTxt = () => {
+    const txt=generateReport(signals,logs,stats,sessionStart,prices);
+    const b=new Blob([txt],{type:"text/plain;charset=utf-8"});
+    const u=URL.createObjectURL(b);
+    const a=document.createElement("a");
+    a.href=u; a.download=`hyperbot-${new Date().toISOString().slice(0,10)}.txt`; a.click();
+    URL.revokeObjectURL(u);
+  };
+
+  const copyReport = () => {
+    navigator.clipboard.writeText(generateReport(signals,logs,stats,sessionStart,prices))
+      .then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2500);});
+  };
+
+  const TABS = [
+    {id:"dashboard",label:"Tableau de bord"},
+    {id:"signaux",label:`Signaux (${stats.totalSignals})`},
+    {id:"positions",label:`Positions (${positions.length})`},
+    {id:"logs",label:"Logs"},
+    {id:"rapport",label:"Rapport TXT"},
+    {id:"marches",label:`Marches (${COINS.length}/${ALL_COINS.length})`},
+    {id:"parametres",label:"Parametres"}
+  ];
+
+  return (
+    <div style={{background:bgT.bg,minHeight:"100vh",color:br("#e2e8f0"),fontFamily:"'IBM Plex Mono','Courier New',monospace",fontSize:13}}>
+
+      {/* HEADER */}
+      <div style={{background:bgT.header,borderBottom:`1px solid ${bgT.border}`,padding:"14px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{width:34,height:34,borderRadius:8,background:"linear-gradient(135deg,#3b82f6,#8b5cf6)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>⚡</div>
+          <div>
+            <div style={{fontSize:15,fontWeight:700,color:"#f1f5f9"}}>HyperBot AI</div>
+            <div style={{fontSize:10,color:"#64748b"}}>Powered by Claude · Hyperliquid Perps</div>
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <div style={{width:8,height:8,borderRadius:"50%",background:running?"#34d399":"#475569",boxShadow:running?"0 0 8px #34d399":"none"}}/>
+          <span style={{fontSize:11,color:running?"#34d399":"#64748b"}}>
+            {running?(scanning?`SCAN: ${curScan}...`:"ACTIF"):"INACTIF"}
+          </span>
+          <button onClick={()=>setShowTheme(p=>!p)} style={{marginLeft:8,background:showTheme?bgT.border:"transparent",border:`1px solid ${bgT.border}`,borderRadius:6,padding:"4px 10px",color:br(tp.accent),fontFamily:"inherit",fontSize:11,cursor:"pointer"}}>
+            Themes
+          </button>
+        </div>
+      </div>
+
+      {showTheme && (
+        <div style={{background:bgT.panel,borderBottom:`1px solid ${bgT.border}`,padding:"16px 20px"}}>
+          <div style={{maxWidth:860,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:20}}>
+            <div>
+              <div style={{fontSize:10,color:"#475569",marginBottom:8,letterSpacing:1}}>FOND D'ECRAN</div>
+              {BG_PRESETS.map(p=>(
+                <button key={p.id} onClick={()=>setBgId(p.id)} style={{width:"100%",marginBottom:5,background:bgId===p.id?bgT.border:"transparent",border:`1px solid ${bgId===p.id?br(tp.accent):bgT.border}`,borderRadius:6,padding:"6px 10px",color:bgId===p.id?br(tp.accent):"#64748b",fontFamily:"inherit",fontSize:11,cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{width:12,height:12,borderRadius:3,background:p.bg,border:"1px solid #334155",display:"inline-block",flexShrink:0}}/>
+                  {p.label}
+                </button>
+              ))}
+              <button onClick={()=>setBgId("custom")} style={{width:"100%",marginBottom:5,background:bgId==="custom"?bgT.border:"transparent",border:`1px solid ${bgId==="custom"?br(tp.accent):bgT.border}`,borderRadius:6,padding:"6px 10px",color:bgId==="custom"?br(tp.accent):"#64748b",fontFamily:"inherit",fontSize:11,cursor:"pointer",textAlign:"left"}}>
+                Personnalise
+              </button>
+              {bgId==="custom"&&(
+                <div style={{display:"flex",gap:10,marginTop:4}}>
+                  <div><div style={{fontSize:9,color:"#475569",marginBottom:3}}>Fond</div><input type="color" value={customBg} onChange={e=>setCustomBg(e.target.value)} style={{width:44,height:30,border:"none",cursor:"pointer",borderRadius:4}}/></div>
+                  <div><div style={{fontSize:9,color:"#475569",marginBottom:3}}>Panneaux</div><input type="color" value={customPanel} onChange={e=>setCustomPanel(e.target.value)} style={{width:44,height:30,border:"none",cursor:"pointer",borderRadius:4}}/></div>
+                </div>
+              )}
+            </div>
+            <div>
+              <div style={{fontSize:10,color:"#475569",marginBottom:8,letterSpacing:1}}>COULEUR DES TEXTES</div>
+              {TEXT_PRESETS.map(p=>(
+                <button key={p.id} onClick={()=>setTextId(p.id)} style={{width:"100%",marginBottom:5,background:textId===p.id?bgT.border:"transparent",border:`1px solid ${textId===p.id?br(tp.accent):bgT.border}`,borderRadius:6,padding:"6px 10px",color:textId===p.id?p.accent:"#64748b",fontFamily:"inherit",fontSize:11,cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{width:12,height:12,borderRadius:"50%",background:p.accent,display:"inline-block",flexShrink:0}}/>
+                  {p.label}
+                  <span style={{marginLeft:"auto",display:"flex",gap:3}}>
+                    <span style={{width:8,height:8,borderRadius:"50%",background:p.long}}/>
+                    <span style={{width:8,height:8,borderRadius:"50%",background:p.short}}/>
+                    <span style={{width:8,height:8,borderRadius:"50%",background:p.ai}}/>
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div>
+              <div style={{fontSize:10,color:"#475569",marginBottom:8,letterSpacing:1}}>BRILLANCE ({brightness}%)</div>
+              <input type="range" min="40" max="150" value={brightness} onChange={e=>setBrightness(Number(e.target.value))} style={{width:"100%",accentColor:br(tp.accent),marginBottom:14}}/>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12}}>
+                {[{l:"ACCENT",c:br(tp.accent),d:"Titres / UI"},{l:"IA",c:br(tp.ai),d:"Analyse Claude"},{l:"LONG",c:br(tp.long),d:"Signaux haussiers"},{l:"SHORT",c:br(tp.short),d:"Signaux baissiers"}].map((x,i)=>(
+                  <div key={i} style={{background:bgT.bg,border:`1px solid ${bgT.border}`,borderRadius:5,padding:"7px 8px",textAlign:"center"}}>
+                    <div style={{color:x.c,fontWeight:700,fontSize:12}}>{x.l}</div>
+                    <div style={{color:"#334155",fontSize:9}}>{x.d}</div>
+                  </div>
+                ))}
+              </div>
+              <button onClick={()=>{setBgId("space");setTextId("cyan");setBrightness(100);localStorage.removeItem("hb_bg");localStorage.removeItem("hb_text");localStorage.removeItem("hb_brightness");}} style={{width:"100%",background:"transparent",border:`1px solid ${bgT.border}`,borderRadius:6,padding:"7px",color:"#475569",fontFamily:"inherit",fontSize:10,cursor:"pointer"}}>
+                Reinitialiser
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SETUP */}
+      {!running && (
+        <div style={{maxWidth:560,margin:"30px auto",padding:"0 20px"}}>
+          <div style={{background:bgT.panel,border:`1px solid ${bgT.border}`,borderRadius:12,padding:24}}>
+            <div style={{fontSize:14,fontWeight:700,color:"#94a3b8",marginBottom:16}}>Configuration</div>
+
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>WALLET HYPERLIQUID (optionnel — lecture positions)</div>
+              <input value={inputW} onChange={e=>setInputW(e.target.value)}
+                placeholder="0x..."
+                style={{width:"100%",background:bgT.bg,border:`1px solid ${bgT.border}`,borderRadius:7,padding:"9px 12px",color:br("#e2e8f0"),fontFamily:"inherit",fontSize:12,outline:"none"}}/>
+            </div>
+
+            <div style={{marginBottom:20}}>
+              <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>CLE API ANTHROPIC (optionnel)</div>
+              <input value={inputK} onChange={e=>setInputK(e.target.value)} type="password"
+                placeholder="sk-ant-..."
+                style={{width:"100%",background:bgT.bg,border:`1px solid ${bgT.border}`,borderRadius:7,padding:"9px 12px",color:br("#e2e8f0"),fontFamily:"inherit",fontSize:12,outline:"none"}}/>
+              <div style={{fontSize:10,color:"#334155",marginTop:4}}>console.anthropic.com · Stockee en memoire locale uniquement</div>
+            </div>
+
+            <button onClick={()=>start(false)}
+              style={{width:"100%",background:"linear-gradient(135deg,#3b82f6,#8b5cf6)",border:"none",borderRadius:8,padding:"12px",color:"#fff",fontFamily:"inherit",fontWeight:700,fontSize:13,cursor:"pointer",marginBottom:8}}>
+              DEMARRER HYPERBOT AI
+            </button>
+            <button onClick={()=>start(true)}
+              style={{width:"100%",background:"transparent",border:"1px solid #1e2d4a",borderRadius:8,padding:"10px",color:"#64748b",fontFamily:"inherit",fontSize:11,cursor:"pointer"}}>
+              Mode demo (donnees live, sans wallet ni cle API)
+            </button>
+          </div>
+          <div style={{textAlign:"center",marginTop:12,fontSize:10,color:"#1e2d4a"}}>
+            Outil d'analyse uniquement. Tradez responsablement.
+          </div>
+        </div>
+      )}
+
+      {/* BOT ACTIF */}
+      {running && (
+        <>
+          {/* STATS */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:1,background:bgT.border}}>
+            {[{l:"SIGNAUX",v:stats.totalSignals,c:"#60a5fa"},{l:"LONG",v:stats.longSignals,c:"#34d399"},{l:"SHORT",v:stats.shortSignals,c:"#f87171"},{l:"CONFIANCE",v:stats.avgConfidence?`${stats.avgConfidence}%`:"--",c:confColor(stats.avgConfidence)}].map((s,i)=>(
+              <div key={i} style={{background:"#0a0e1a",padding:"10px",textAlign:"center"}}>
+                <div style={{fontSize:20,fontWeight:700,color:s.c}}>{s.v}</div>
+                <div style={{fontSize:9,color:"#475569",marginTop:2}}>{s.l}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* TABS */}
+          <div style={{display:"flex",borderBottom:`1px solid ${bgT.border}`,background:bgT.panel,overflowX:"auto"}}>
+            {TABS.map(t=>(
+              <button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"10px 14px",background:"transparent",border:"none",borderBottom:tab===t.id?"2px solid #3b82f6":"2px solid transparent",color:tab===t.id?"#60a5fa":"#64748b",fontFamily:"inherit",fontSize:11,fontWeight:tab===t.id?700:400,cursor:"pointer",whiteSpace:"nowrap"}}>
+                {t.label}
+              </button>
+            ))}
+            <div style={{flex:1}}/>
+            <button onClick={stop} style={{margin:"6px 10px",background:"#1e293b",border:"1px solid #374151",borderRadius:6,padding:"5px 12px",color:"#f87171",fontFamily:"inherit",fontSize:11,cursor:"pointer",fontWeight:700}}>
+              STOP
+            </button>
+          </div>
+
+          {/* DASHBOARD */}
+          {tab==="dashboard" && (
+            <div style={{padding:16}}>
+              <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:14}}>
+                <div style={{fontSize:10,color:"#475569",marginBottom:10,letterSpacing:1}}>PRIX EN TEMPS REEL</div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:7}}>
+                  {COINS.filter(c=>prices[c]).map(coin=>(
+                    <div key={coin} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:5,padding:"5px 10px",display:"flex",gap:7,alignItems:"center"}}>
+                      <span style={{color:"#64748b",fontSize:10}}>{coin}</span>
+                      <span style={{color:"#e2e8f0",fontWeight:700,fontSize:12}}>${prices[coin]?.toLocaleString("en-US",{maximumFractionDigits:2})}</span>
+                    </div>
+                  ))}
+                  {Object.keys(prices).length===0&&<span style={{color:"#334155",fontSize:11}}>Chargement des prix...</span>}
+                </div>
+              </div>
+
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+                <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14}}>
+                  <div style={{fontSize:10,color:"#475569",marginBottom:10,letterSpacing:1}}>TOP SIGNAUX</div>
+                  {signals.filter(s=>s.action!=="WAIT").slice(0,5).length===0?(
+                    <div style={{color:"#334155",fontSize:11,padding:"16px 0",textAlign:"center"}}>{scanning?"Analyse en cours...":"Aucun signal"}</div>
+                  ):signals.filter(s=>s.action!=="WAIT").slice(0,5).map(sig=>(
+                    <div key={sig.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #0a0e1a"}}>
+                      <div style={{display:"flex",gap:7,alignItems:"center"}}>
+                        <span style={{background:sig.action==="LONG"?"#052e16":"#2d0a0a",color:sig.action==="LONG"?"#34d399":"#f87171",padding:"2px 7px",borderRadius:4,fontSize:10,fontWeight:700}}>{sig.action}</span>
+                        <span style={{color:"#e2e8f0",fontSize:12}}>{sig.coin}</span>
+                      </div>
+                      <div style={{display:"flex",gap:8}}>
+                        <span style={{color:"#64748b",fontSize:10}}>x{sig.leverage}</span>
+                        <span style={{color:confColor(sig.confidence),fontWeight:700,fontSize:12}}>{sig.confidence}%</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14}}>
+                  <div style={{fontSize:10,color:"#475569",marginBottom:10,letterSpacing:1}}>STATUT</div>
+                  {[{l:"Mode",v:"Fully Automatique"},{l:"Levier",v:"x2 - x5"},{l:"Marches",v:`${COINS.length} paires`},{l:"Timeframe",v:"15 min"},{l:"Scan",v:"60 sec"},{l:"Wallet",v:wallet==="demo-mode"?"Mode Demo":`${wallet.slice(0,8)}...`},{l:"IA",v:apiKey?"Cle custom":"Claude defaut"}].map((x,i)=>(
+                    <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}>
+                      <span style={{color:"#475569",fontSize:10}}>{x.l}</span>
+                      <span style={{color:"#94a3b8",fontSize:10}}>{x.v}</span>
+                    </div>
+                  ))}
+                  {scanning&&<div style={{marginTop:8,padding:7,background:"#0a0e1a",borderRadius:5,color:"#c084fc",fontSize:10}}>IA analyse {curScan}/USDC...</div>}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* SIGNAUX */}
+          {tab==="signaux" && (
+            <div style={{padding:16}}>
+              {signals.filter(s=>s.action!=="WAIT").length===0?(
+                <div style={{textAlign:"center",padding:50,color:"#475569"}}>
+                  {scanning?<div style={{color:"#c084fc"}}>IA analyse en cours... ({curScan})</div>:"Aucun signal. Scan en attente."}
+                </div>
+              ):signals.filter(s=>s.action!=="WAIT").map(sig=>(
+                <div key={sig.id} style={{background:"#0f1629",border:`1px solid ${sig.action==="LONG"?"#14532d":"#450a0a"}`,borderRadius:10,padding:14,marginBottom:12}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+                    <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                      <span style={{background:sig.action==="LONG"?"#052e16":"#2d0a0a",color:sig.action==="LONG"?"#34d399":"#f87171",padding:"3px 9px",borderRadius:5,fontSize:12,fontWeight:700}}>{sig.action}</span>
+                      <span style={{fontSize:15,fontWeight:700,color:"#f1f5f9"}}>{sig.coin}/USDC</span>
+                      <span style={{background:"#1e2d4a",color:"#60a5fa",padding:"1px 7px",borderRadius:4,fontSize:10}}>x{sig.leverage}</span>
+                    </div>
+                    <div style={{textAlign:"right"}}>
+                      <div style={{fontSize:18,fontWeight:700,color:confColor(sig.confidence)}}>{sig.confidence}%</div>
+                      <div style={{fontSize:9,color:"#475569"}}>CONFIANCE</div>
+                    </div>
+                  </div>
+
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7,marginBottom:10}}>
+                    {[{l:"ENTREE",v:`$${sig.entry?.toLocaleString("en-US",{maximumFractionDigits:4})}`,c:"#60a5fa"},{l:"STOP LOSS",v:`$${sig.stopLoss?.toLocaleString("en-US",{maximumFractionDigits:4})}`,c:"#f87171"},{l:"TP1",v:`$${sig.takeProfit1?.toLocaleString("en-US",{maximumFractionDigits:4})}`,c:"#34d399"},{l:"TP2",v:`$${sig.takeProfit2?.toLocaleString("en-US",{maximumFractionDigits:4})}`,c:"#34d399"}].map((x,i)=>(
+                      <div key={i} style={{background:"#0a0e1a",borderRadius:5,padding:"7px 8px"}}>
+                        <div style={{fontSize:9,color:"#475569",marginBottom:2}}>{x.l}</div>
+                        <div style={{fontSize:11,fontWeight:700,color:x.c}}>{x.v}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:7,marginBottom:10}}>
+                    <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#475569"}}>TAILLE POS.</div><div style={{color:"#e2e8f0",fontWeight:700}}>{sig.positionSize}%</div></div>
+                    <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#475569"}}>RISK/REWARD</div><div style={{color:sig.riskReward>=2?"#34d399":"#fbbf24",fontWeight:700}}>{sig.riskReward?.toFixed(2)}</div></div>
+                    <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#475569"}}>TIMEFRAME</div><div style={{color:"#94a3b8",fontSize:11}}>{sig.timeframe}</div></div>
+                  </div>
+
+                  {sig.reasoning&&(
+                    <div style={{background:"#0a0e1a",borderRadius:5,padding:9,marginBottom:9,borderLeft:"3px solid #8b5cf6"}}>
+                      <div style={{fontSize:9,color:"#c084fc",marginBottom:3}}>ANALYSE IA</div>
+                      <div style={{color:"#94a3b8",fontSize:11,lineHeight:1.6}}>{sig.reasoning}</div>
+                    </div>
+                  )}
+
+                  {sig.keySignals?.length>0&&(
+                    <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:8}}>
+                      {sig.keySignals.map((s,i)=><span key={i} style={{background:"#1e2d4a",color:"#60a5fa",padding:"2px 7px",borderRadius:3,fontSize:10}}>{s}</span>)}
+                    </div>
+                  )}
+
+                  <div style={{fontSize:10,color:"#334155"}}>
+                    {sig.timestamp?.toLocaleTimeString("fr-FR")} · RSI:{sig.technicals?.rsi?.toFixed(1)} · ATR:{sig.technicals?.atr?.toFixed(4)}
+                    {prices[sig.coin]&&(
+                      <span style={{marginLeft:8,color:((prices[sig.coin]-sig.entry)/sig.entry*100*(sig.action==="LONG"?1:-1))>=0?"#34d399":"#f87171"}}>
+                        · PnL: {((prices[sig.coin]-sig.entry)/sig.entry*100*(sig.action==="LONG"?1:-1)).toFixed(2)}%
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* POSITIONS */}
+          {tab==="positions" && (
+            <div style={{padding:16}}>
+              {wallet==="demo-mode"?(
+                <div style={{textAlign:"center",padding:40,color:"#475569"}}>Mode demo -- entrez votre adresse wallet pour voir vos positions</div>
+              ):positions.length===0?(
+                <div style={{textAlign:"center",padding:40,color:"#475569"}}>Aucune position ouverte sur ce wallet</div>
+              ):positions.map((pos,i)=>{
+                const p=pos.position; const pnl=parseFloat(p.unrealizedPnl||0);
+                return (
+                  <div key={i} style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:12}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                      <div style={{display:"flex",gap:7,alignItems:"center"}}>
+                        <span style={{background:parseFloat(p.szi)>0?"#052e16":"#2d0a0a",color:parseFloat(p.szi)>0?"#34d399":"#f87171",padding:"2px 7px",borderRadius:4,fontSize:10,fontWeight:700}}>{parseFloat(p.szi)>0?"LONG":"SHORT"}</span>
+                        <span style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>{p.coin}/USDC</span>
+                      </div>
+                      <span style={{fontSize:15,fontWeight:700,color:pnl>=0?"#34d399":"#f87171"}}>{pnl>=0?"+":""}{pnl.toFixed(2)} USDC</span>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:7}}>
+                      {[{l:"TAILLE",v:Math.abs(parseFloat(p.szi)).toFixed(4)},{l:"ENTREE",v:`$${parseFloat(p.entryPx||0).toLocaleString()}`},{l:"LEVIER",v:`x${p.leverage?.value||"--"}`}].map((x,j)=>(
+                        <div key={j} style={{background:"#0a0e1a",borderRadius:5,padding:"7px 8px"}}><div style={{fontSize:9,color:"#475569"}}>{x.l}</div><div style={{color:"#e2e8f0",fontWeight:700,fontSize:11}}>{x.v}</div></div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* LOGS */}
+          {tab==="logs" && (
+            <div style={{padding:14}}>
+              <div style={{background:"#050810",borderRadius:8,padding:12,height:450,overflowY:"auto",border:"1px solid #0f1629"}}>
+                {logs.length===0?<div style={{color:"#334155",fontSize:11}}>Aucun log...</div>
+                :logs.map((l,i)=>(
+                  <div key={i} style={{display:"flex",gap:8,marginBottom:3}}>
+                    <span style={{color:"#334155",fontSize:10,whiteSpace:"nowrap"}}>{l.time}</span>
+                    <span style={{color:LOGCOL[l.type]||"#94a3b8",fontSize:11,lineHeight:1.5}}>{l.msg}</span>
+                  </div>
+                ))}
+                <div ref={logEnd}/>
+              </div>
+            </div>
+          )}
+
+          {/* RAPPORT */}
+          {tab==="rapport" && (
+            <div style={{padding:16,maxWidth:800}}>
+              <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:18,marginBottom:14}}>
+                <div style={{fontSize:13,fontWeight:700,color:"#94a3b8",marginBottom:4}}>Rapport de session TXT</div>
+                <div style={{fontSize:11,color:"#475569",marginBottom:16,lineHeight:1.7}}>
+                  Exportez un rapport complet avec signaux, suivi TP/SL et logs. Collez-le dans Claude pour analyse.
+                </div>
+
+                <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:14}}>
+                  {[{l:"Signaux",v:stats.totalSignals,c:"#60a5fa"},{l:"Confiance moy.",v:`${stats.avgConfidence}%`,c:confColor(stats.avgConfidence)},{l:"Marches",v:COINS.length,c:"#c084fc"}].map((s,i)=>(
+                    <div key={i} style={{background:"#0a0e1a",borderRadius:6,padding:"9px",textAlign:"center"}}>
+                      <div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div>
+                      <div style={{fontSize:9,color:"#475569",marginTop:2}}>{s.l}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{background:"#0a0e1a",borderRadius:7,padding:12,marginBottom:14}}>
+                  <div style={{fontSize:10,color:"#475569",marginBottom:8,letterSpacing:1}}>SUIVI TP/SL EN TEMPS REEL</div>
+                  {signals.filter(s=>s.action!=="WAIT").length===0
+                    ?<div style={{color:"#334155",fontSize:11}}>Aucun signal a suivre.</div>
+                    :signals.filter(s=>s.action!=="WAIT").map(sig=>{
+                      const cur=prices[sig.coin]; if(!cur) return null;
+                      const dir=sig.action==="LONG"?1:-1;
+                      const pnl=((cur-sig.entry)/sig.entry*100*dir).toFixed(2);
+                      const tp1=sig.action==="LONG"?cur>=sig.takeProfit1:cur<=sig.takeProfit1;
+                      const tp2=sig.action==="LONG"?cur>=sig.takeProfit2:cur<=sig.takeProfit2;
+                      const sl=sig.action==="LONG"?cur<=sig.stopLoss:cur>=sig.stopLoss;
+                      return (
+                        <div key={sig.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid #0f1629"}}>
+                          <div style={{display:"flex",gap:7,alignItems:"center"}}>
+                            <span style={{color:sig.action==="LONG"?"#34d399":"#f87171",fontSize:10,fontWeight:700}}>{sig.action}</span>
+                            <span style={{color:"#e2e8f0",fontSize:11}}>{sig.coin}</span>
+                            <span style={{color:"#475569",fontSize:10}}>{sig.timestamp?.toLocaleTimeString("fr-FR")}</span>
+                          </div>
+                          <div style={{display:"flex",gap:8,fontSize:10}}>
+                            <span style={{color:parseFloat(pnl)>=0?"#34d399":"#f87171",fontWeight:700}}>{pnl>0?"+":""}{pnl}%</span>
+                            <span style={{color:tp1?"#34d399":"#334155"}}>TP1{tp1?"✓":"○"}</span>
+                            <span style={{color:tp2?"#34d399":"#334155"}}>TP2{tp2?"✓":"○"}</span>
+                            <span style={{color:sl?"#f87171":"#334155"}}>SL{sl?"✗":"○"}</span>
+                          </div>
+                        </div>
+                      );
+                    })
+                  }
+                </div>
+
+                <div style={{display:"flex",gap:10}}>
+                  <button onClick={dlTxt} style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#7c3aed)",border:"none",borderRadius:8,padding:"11px",color:"#fff",fontFamily:"inherit",fontWeight:700,fontSize:12,cursor:"pointer"}}>
+                    Telecharger .txt
+                  </button>
+                  <button onClick={copyReport} style={{flex:1,background:copied?"#052e16":"#0f1629",border:`1px solid ${copied?"#34d399":"#1e2d4a"}`,borderRadius:8,padding:"11px",color:copied?"#34d399":"#94a3b8",fontFamily:"inherit",fontWeight:700,fontSize:12,cursor:"pointer"}}>
+                    {copied?"Copie !":"Copier pour Claude"}
+                  </button>
+                </div>
+              </div>
+
+              <div style={{background:"#050810",border:"1px solid #0f1629",borderRadius:8,padding:12}}>
+                <div style={{fontSize:10,color:"#334155",marginBottom:6}}>APERCU DU RAPPORT</div>
+                <pre style={{color:"#475569",fontSize:10,lineHeight:1.6,whiteSpace:"pre-wrap",wordBreak:"break-word",margin:0,maxHeight:300,overflowY:"auto"}}>
+                  {generateReport(signals,logs,stats,sessionStart,prices)}
+                </pre>
+              </div>
+            </div>
+          )}
+          {/* PARAMETRES */}
+          {tab==="parametres" && (
+            <div style={{padding:16,maxWidth:600}}>
+              <div style={{background:bgT.panel,border:`1px solid ${bgT.border}`,borderRadius:10,padding:20,marginBottom:14}}>
+                <div style={{fontSize:13,fontWeight:700,color:br(tp.accent),marginBottom:4}}>Parametres de connexion</div>
+                <div style={{fontSize:11,color:"#475569",marginBottom:20,lineHeight:1.7}}>
+                  Modifiez vos informations a tout moment. Les changements s'appliquent au prochain scan.
+                </div>
+
+                <div style={{marginBottom:14}}>
+                  <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>WALLET HYPERLIQUID</div>
+                  <input value={liveW==="demo-mode"?"":liveW} onChange={e=>setLiveW(e.target.value)}
+                    placeholder="0x... (laisser vide = mode demo)"
+                    style={{width:"100%",background:bgT.bg,border:`1px solid ${bgT.border}`,borderRadius:7,padding:"9px 12px",color:br("#e2e8f0"),fontFamily:"inherit",fontSize:12,outline:"none"}}/>
+                  <div style={{fontSize:10,color:"#334155",marginTop:3}}>Lecture seule — visualisation de vos positions ouvertes</div>
+                </div>
+
+                <div style={{marginBottom:14}}>
+                  <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>CLE API ANTHROPIC (sk-ant-...)</div>
+                  <input value={liveK} onChange={e=>setLiveK(e.target.value)} type="password"
+                    placeholder="sk-ant-api03-..."
+                    style={{width:"100%",background:bgT.bg,border:`1px solid ${bgT.border}`,borderRadius:7,padding:"9px 12px",color:br("#e2e8f0"),fontFamily:"inherit",fontSize:12,outline:"none"}}/>
+                  <div style={{fontSize:10,color:"#334155",marginTop:3}}>Obtenir sur console.anthropic.com · Stockee en memoire uniquement</div>
+                </div>
+
+                <button onClick={()=>{
+                  const w=liveW.trim()||"demo-mode";
+                  const k=liveK.trim();
+                  setWallet(w); setApiKey(k);
+                  localStorage.setItem("hb_wallet", w==="demo-mode"?"":w);
+                  localStorage.setItem("hb_apikey", k);
+                  setSaved(true); setTimeout(()=>setSaved(false),2500);
+                  addLog(`Parametres mis a jour | Wallet: ${w==="demo-mode"?"Mode Demo":w.slice(0,8)+"..."} | API: ${k?"Cle definie":"Aucune"}`, "system");
+                }} style={{width:"100%",background:saved?"#052e16":`linear-gradient(135deg,#1d4ed8,#7c3aed)`,border:saved?`1px solid ${br(tp.long)}`:"none",borderRadius:8,padding:"11px",color:saved?br(tp.long):"#fff",fontFamily:"inherit",fontWeight:700,fontSize:12,cursor:"pointer",marginBottom:8}}>
+                  {saved ? "Sauvegarde !" : "Appliquer les changements"}
+                </button>
+                <button onClick={()=>{
+                  setLiveW(""); setLiveK(""); setWallet(""); setApiKey("");
+                  localStorage.removeItem("hb_wallet"); localStorage.removeItem("hb_apikey");
+                  addLog("Donnees effacees.", "system");
+                }} style={{width:"100%",background:"transparent",border:`1px solid ${bgT.border}`,borderRadius:7,padding:"9px",color:"#f87171",fontFamily:"inherit",fontSize:11,cursor:"pointer",marginBottom:8}}>
+                  Effacer les donnees sauvegardees
+                </button>
+
+                <div style={{background:bgT.bg,border:`1px solid ${bgT.border}`,borderRadius:8,padding:12}}>
+                  <div style={{fontSize:10,color:"#475569",marginBottom:8,letterSpacing:1}}>ETAT ACTUEL</div>
+                  {[
+                    {l:"Mode",        v: wallet==="demo-mode"?"Demo":"Wallet connecte"},
+                    {l:"Wallet",      v: wallet==="demo-mode"?"---":wallet.slice(0,10)+"..."+wallet.slice(-4)},
+                    {l:"Cle API",     v: apiKey?"Definie ("+apiKey.slice(0,12)+"...)":"Non definie"},
+                    {l:"Bot",         v: running?"Actif":"Inactif"},
+                    {l:"Marches",     v: COINS.length+"/"+ALL_COINS.length+" actifs"},
+                    {l:"Dernier scan",v: scanning?"En cours...":"Voir logs"},
+                  ].map((x,i)=>(
+                    <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:i<5?`1px solid ${bgT.border}`:"none"}}>
+                      <span style={{color:"#475569",fontSize:11}}>{x.l}</span>
+                      <span style={{color:br(tp.accent),fontSize:11,fontWeight:500}}>{x.v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{background:bgT.panel,border:`1px solid ${bgT.border}`,borderRadius:10,padding:16}}>
+                <div style={{fontSize:11,fontWeight:700,color:"#94a3b8",marginBottom:10}}>Guide rapide</div>
+                {[
+                  {step:"1",title:"Cle API Anthropic",desc:"console.anthropic.com → API Keys → Creer une cle. Rechargez 5$ pour commencer."},
+                  {step:"2",title:"Wallet (optionnel)",desc:"Votre adresse publique Hyperliquid (0x...) pour voir vos positions. Non obligatoire en demo."},
+                  {step:"3",title:"Cout estimé",desc:"~0.001$ par analyse · 13 marches = ~0.013$ par scan · ~0.78$/heure en continu."},
+                ].map((x,i)=>(
+                  <div key={i} style={{display:"flex",gap:12,padding:"10px 0",borderBottom:i<2?`1px solid ${bgT.border}`:"none"}}>
+                    <div style={{width:22,height:22,borderRadius:"50%",background:`linear-gradient(135deg,#1d4ed8,#7c3aed)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",flexShrink:0}}>{x.step}</div>
+                    <div>
+                      <div style={{fontSize:11,fontWeight:700,color:br(tp.accent),marginBottom:2}}>{x.title}</div>
+                      <div style={{fontSize:10,color:"#475569",lineHeight:1.6}}>{x.desc}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* MARCHES */}
+          {tab==="marches" && (
+            <div style={{padding:16,maxWidth:700}}>
+              <div style={{background:bgT.panel,border:`1px solid ${bgT.border}`,borderRadius:10,padding:16,marginBottom:14}}>
+                <div style={{fontSize:13,fontWeight:700,color:br(tp.accent),marginBottom:4}}>Gestion des actifs</div>
+                <div style={{fontSize:11,color:"#475569",marginBottom:16}}>
+                  Activez ou desactivez chaque marche. Seuls les marches actifs seront analyses au prochain scan.
+                </div>
+                <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+                  <button onClick={()=>setActiveCoins(Object.fromEntries(ALL_COINS.map(c=>[c,true])))}
+                    style={{background:"transparent",border:`1px solid ${bgT.border}`,borderRadius:6,padding:"5px 12px",color:br(tp.accent),fontFamily:"inherit",fontSize:11,cursor:"pointer"}}>
+                    Tout activer
+                  </button>
+                  <button onClick={()=>setActiveCoins(Object.fromEntries(ALL_COINS.map(c=>[c,false])))}
+                    style={{background:"transparent",border:`1px solid ${bgT.border}`,borderRadius:6,padding:"5px 12px",color:"#64748b",fontFamily:"inherit",fontSize:11,cursor:"pointer"}}>
+                    Tout desactiver
+                  </button>
+                  <button onClick={()=>setActiveCoins(Object.fromEntries(["BTC","ETH"].map(c=>[c,true]).concat(ALL_COINS.filter(x=>!["BTC","ETH"].includes(x)).map(c=>[c,false]))))}
+                    style={{background:"transparent",border:`1px solid ${bgT.border}`,borderRadius:6,padding:"5px 12px",color:"#64748b",fontFamily:"inherit",fontSize:11,cursor:"pointer"}}>
+                    BTC + ETH seulement
+                  </button>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+                  {ALL_COINS.map(coin=>{
+                    const on = activeCoins[coin];
+                    const price = prices[coin];
+                    return (
+                      <div key={coin} onClick={()=>toggleCoin(coin)}
+                        style={{background:on?bgT.bg:"transparent",border:`2px solid ${on?br(tp.accent):bgT.border}`,borderRadius:8,padding:"10px 12px",cursor:"pointer",transition:"all 0.2s",opacity:on?1:0.45}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                          <span style={{fontWeight:700,color:on?br(tp.accent):"#64748b",fontSize:13}}>{coin}</span>
+                          <span style={{fontSize:10,fontWeight:700,color:on?br(tp.long):"#334155",background:on?"rgba(52,211,153,0.1)":"transparent",padding:"1px 6px",borderRadius:4}}>
+                            {on?"ON":"OFF"}
+                          </span>
+                        </div>
+                        <div style={{fontSize:11,color:on?"#94a3b8":"#334155"}}>
+                          {price ? "$"+price.toLocaleString("en-US",{maximumFractionDigits:2}) : "---"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{marginTop:14,fontSize:11,color:"#475569",textAlign:"center"}}>
+                  {COINS.length} marche{COINS.length>1?"s":""} actif{COINS.length>1?"s":""} · Scan toutes les 60s
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      <div style={{textAlign:"center",padding:"14px",color:"#1e2d4a",fontSize:10,borderTop:"1px solid #0f1629",marginTop:16}}>
+        HyperBot AI - Outil d'analyse uniquement. Les performances passees ne garantissent pas les resultats futurs.
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
