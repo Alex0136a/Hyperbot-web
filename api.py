@@ -852,10 +852,19 @@ def cleanup(email: str = Depends(require_user)):
     # cible specifiquement les doublons/orphelins "ouverts" (voir db.py) —
     # les trades reellement fermes (historique du Bilan) ne sont jamais
     # touches par ce nettoyage.
-    duplicates, stale = db.cleanup_signals(
-        stale_hours=24,
-        protected_coins=[be.ticker_from_slot_key(k) for k, s in bot.states.items() if s.position],
-    )
+    # Retrouve l ID exact (pas juste le coin) de chaque position reellement
+    # ouverte en memoire, pour proteger UNIQUEMENT cette ligne precise —
+    # les eventuels AUTRES doublons du meme coin restent nettoyables.
+    protected_ids = []
+    for slot_key, s in bot.states.items():
+        if not s.position:
+            continue
+        ticker = be.ticker_from_slot_key(slot_key)
+        action = "LONG" if s.position["type"] == "long" else "SHORT"
+        tid = db.get_open_trade_id_by_coin_action(ticker, action)
+        if tid:
+            protected_ids.append(tid)
+    duplicates, stale = db.cleanup_signals(stale_hours=24, protected_ids=protected_ids)
     old_closed = db.delete_trades_older_than(30)
     total = duplicates + stale + old_closed
     if total == 0:
