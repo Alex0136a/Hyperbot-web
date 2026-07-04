@@ -104,9 +104,27 @@ event_queue = queue.Queue()
 bot = be.BotEngine(cfg, event_queue)
 
 log_buffer = deque(maxlen=500)
-for _w in _startup_warnings:
-    log_buffer.append({"time": datetime.now(timezone.utc).isoformat(), "level": "warn", "msg": _w})
 _state_lock = threading.Lock()
+
+# v3.2 — FIX : l interface (index.html) attend un champ "message" (pas "msg")
+# et des niveaux "success"/"warning"/"error" (tout le reste s affiche en
+# gris) — alors que le bot (bot_engine.py) emet des niveaux "ok"/"warn"/
+# "error"/"win"/"loss"/"info"/"signal"/"dim". Sans cette traduction, TOUS
+# les logs s affichaient sans aucun texte visible (mauvais nom de champ) et
+# sans les bonnes couleurs.
+_LEVEL_MAP = {"ok": "success", "win": "success", "warn": "warning", "loss": "error", "error": "error"}
+
+
+def _push_log(level_raw: str, msg: str):
+    log_buffer.append({
+        "time": datetime.now(timezone.utc).isoformat(),
+        "level": _LEVEL_MAP.get(level_raw, "info"),
+        "message": msg,
+    })
+
+
+for _w in _startup_warnings:
+    _push_log("warn", _w)
 
 
 def _consume_events():
@@ -120,11 +138,7 @@ def _consume_events():
         etype, data = ev.get("type"), ev.get("data") or {}
         try:
             if etype == "log":
-                log_buffer.append({
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "level": data.get("level", "info"),
-                    "msg": data.get("msg", ""),
-                })
+                _push_log(data.get("level", "info"), data.get("msg", ""))
             elif etype == "trade_opened":
                 db.insert_open_trade(
                     coin=data["coin"], action=data["action"], confidence=data["confidence"],
@@ -220,23 +234,14 @@ def _get_running_seconds() -> float:
 def _auto_start_if_desired():
     desired = db.get_meta("bot_desired_state", "running")
     if desired != "running":
-        log_buffer.append({
-            "time": datetime.now(timezone.utc).isoformat(), "level": "info",
-            "msg": "Demarrage automatique desactive (dernier etat : ARRETE manuellement)."
-        })
+        _push_log("info", "Demarrage automatique desactive (dernier etat : ARRETE manuellement).")
         return
     if not cfg.get("PRIVATE_KEY") or not cfg.get("WALLET_ADDRESS"):
-        log_buffer.append({
-            "time": datetime.now(timezone.utc).isoformat(), "level": "warn",
-            "msg": "Demarrage automatique impossible : cle API / wallet Hyperliquid non configures. Configurez-les puis demarrez manuellement."
-        })
+        _push_log("warn", "Demarrage automatique impossible : cle API / wallet Hyperliquid non configures. Configurez-les puis demarrez manuellement.")
         return
     bot.start()
     _mark_running_start()
-    log_buffer.append({
-        "time": datetime.now(timezone.utc).isoformat(), "level": "ok",
-        "msg": "Demarrage automatique du bot (etat persistant : en cours d execution)."
-    })
+    _push_log("ok", "Demarrage automatique du bot (etat persistant : en cours d execution).")
 
 
 _auto_start_if_desired()
@@ -428,10 +433,7 @@ def put_config(body: ConfigBody, email: str = Depends(require_user)):
         ignored = [c for c in body.active_coins if c not in SUPPORTED_TICKERS]
         _apply_and_persist("ACTIVE_COINS", valid)
         if ignored:
-            log_buffer.append({
-                "time": datetime.now(timezone.utc).isoformat(), "level": "warn",
-                "msg": f"Actifs ignores (non supportes par ce bot) : {', '.join(ignored)}"
-            })
+            _push_log("warn", f"Actifs ignores (non supportes par ce bot) : {', '.join(ignored)}")
 
     return _public_config()
 
@@ -540,10 +542,29 @@ def bot_logs(persistent: bool = Query(False), limit: int = Query(200), email: st
     if persistent:
         # Lit la fin du fichier de log sur disque (persiste entre redemarrages
         # si HYPERBOT_DATA_DIR pointe vers un Volume Railway).
+        # v3.2 — FIX : le fichier contient des lignes texte brutes
+        # ("YYYY-MM-DD HH:MM:SS [LEVEL   ] message"), mais l interface attend
+        # des objets {time, level, message} comme pour les logs en direct —
+        # sans ce parsing, les logs persistants s affichaient vides.
+        import re
+        pattern = re.compile(r"^(\S+ \S+) \[(\w+)\s*\] (.*)$")
         try:
             with open(be.LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()[-limit:]
-            return {"logs": [l.rstrip("\n") for l in lines]}
+            parsed = []
+            for line in lines:
+                line = line.rstrip("\n")
+                m = pattern.match(line)
+                if m:
+                    time_str, level_str, msg = m.groups()
+                    parsed.append({
+                        "time": time_str,
+                        "level": _LEVEL_MAP.get(level_str.lower(), "info"),
+                        "message": msg,
+                    })
+                else:
+                    parsed.append({"time": "", "level": "info", "message": line})
+            return {"logs": parsed}
         except FileNotFoundError:
             return {"logs": []}
     return {"logs": list(log_buffer)[-limit:]}
@@ -638,10 +659,7 @@ def paper_close(body: PaperCloseBody, email: str = Depends(require_user)):
         trade_id = db.get_open_trade_id_by_coin_action(ticker, action)
         if trade_id:
             db.close_trade(trade_id, trade["exit"], trade["pnl"], trade["reason"])
-    log_buffer.append({
-        "time": datetime.now(timezone.utc).isoformat(), "level": "warn",
-        "msg": f"[{ticker}] Fermeture manuelle @ ${price:.2f} | PnL: {pnl:+.2f}$"
-    })
+    _push_log("warn", f"[{ticker}] Fermeture manuelle @ ${price:.2f} | PnL: {pnl:+.2f}$")
     return {"ok": True, "pnl": pnl}
 
 
