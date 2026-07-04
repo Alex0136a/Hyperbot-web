@@ -3,885 +3,1354 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>HyperBot AI — Hyperliquid Trading Bot</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<title>HyperBot AI</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0a0e1a; font-family: 'IBM Plex Mono', 'Courier New', monospace; }
-  ::-webkit-scrollbar { width: 6px; }
-  ::-webkit-scrollbar-track { background: #0a0e1a; }
-  ::-webkit-scrollbar-thumb { background: #1e2d4a; border-radius: 3px; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0a0e1a; color: #e2e8f0; font-family: 'IBM Plex Mono','Courier New',monospace; font-size: 13px; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-thumb { background: #1e2d4a; border-radius: 3px; }
+input { outline: none; }
+button { cursor: pointer; font-family: inherit; }
 </style>
 </head>
 <body>
 <div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
 <script type="text/babel">
 const { useState, useEffect, useRef, useCallback } = React;
 
-// ── HYPERLIQUID API ──────────────────────────────────────────
-const HL_BASE = "https://api.hyperliquid.xyz";
+// ── API CLIENT ───────────────────────────────────────────────
+const API = window.location.origin;
 
-async function hlPost(endpoint, payload) {
-  try {
-    const r = await fetch(`${HL_BASE}${endpoint}`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    return await r.json();
-  } catch { return null; }
+async function apiCall(path, method="GET", body=null, token=null) {
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const r = await fetch(`${API}${path}`, {
+    method, headers, body: body ? JSON.stringify(body) : null
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail || "Erreur serveur");
+  return data;
 }
 
-async function fetchAllMetas() {
-  const data = await hlPost("/info", { type: "metaAndAssetCtxs" });
-  if (!data) return [];
-  const [meta, ctxs] = data;
-  return meta.universe.map((asset, i) => ({ name: asset.name, ctx: ctxs[i] }));
-}
-
-async function fetchCandles(coin, interval = "15m", count = 200) {
-  const now = Date.now();
-  const ms = { "1m":60000,"5m":300000,"15m":900000,"1h":3600000 }[interval] || 900000;
-  const data = await hlPost("/info", { type: "candleSnapshot", req: { coin, interval, startTime: now - ms * count, endTime: now } });
-  return data || [];
-}
-
-async function fetchOrderbook(coin) {
-  return await hlPost("/info", { type: "l2Book", coin });
-}
-
-async function fetchPositions(address) {
-  if (!address || address === "demo-mode") return [];
-  const data = await hlPost("/info", { type: "clearinghouseState", user: address });
-  return data?.assetPositions || [];
-}
-
-// ── ANALYSE TECHNIQUE ────────────────────────────────────────
-function calcEMA(prices, period) {
-  if (prices.length < period) return [];
-  const k = 2 / (period + 1);
-  const emas = [prices.slice(0, period).reduce((a,b) => a+b, 0) / period];
-  for (let i = period; i < prices.length; i++)
-    emas.push(prices[i] * k + emas[emas.length-1] * (1-k));
-  return emas;
-}
-
-function calcRSI(prices, period = 14) {
-  if (prices.length < period + 1) return null;
-  let g = 0, l = 0;
-  for (let i = 1; i <= period; i++) { const d = prices[i]-prices[i-1]; d>0 ? g+=d : l-=d; }
-  let ag = g/period, al = l/period;
-  for (let i = period+1; i < prices.length; i++) {
-    const d = prices[i]-prices[i-1];
-    ag = (ag*(period-1)+Math.max(d,0))/period;
-    al = (al*(period-1)+Math.max(-d,0))/period;
-  }
-  if (al === 0) return 100;
-  return 100 - 100/(1 + ag/al);
-}
-
-function calcMACD(prices) {
-  const e12 = calcEMA(prices, 12), e26 = calcEMA(prices, 26);
-  const off = e12.length - e26.length;
-  const macdLine = e26.map((v,i) => e12[i+off]-v);
-  const sig = calcEMA(macdLine, 9);
-  const offM = macdLine.length - sig.length;
-  return {
-    macd: macdLine[macdLine.length-1],
-    signal: sig[sig.length-1],
-    histogram: macdLine[macdLine.length-1] - sig[sig.length-1],
-    crossBull: macdLine[macdLine.length-1] > sig[sig.length-1] && macdLine[macdLine.length-2+offM] <= sig[sig.length-2],
-    crossBear: macdLine[macdLine.length-1] < sig[sig.length-1] && macdLine[macdLine.length-2+offM] >= sig[sig.length-2],
-  };
-}
-
-function calcBB(prices, period=20, mult=2) {
-  if (prices.length < period) return null;
-  const sl = prices.slice(-period);
-  const mean = sl.reduce((a,b)=>a+b,0)/period;
-  const std = Math.sqrt(sl.reduce((a,b)=>a+(b-mean)**2,0)/period);
-  return { upper: mean+mult*std, middle: mean, lower: mean-mult*std };
-}
-
-function calcATR(candles, period=14) {
-  if (candles.length < period+1) return null;
-  const trs = candles.slice(1).map((c,i) => Math.max(c.h-c.l, Math.abs(c.h-candles[i].c), Math.abs(c.l-candles[i].c)));
-  return trs.slice(-period).reduce((a,b)=>a+b,0)/period;
-}
-
-function calcVWAP(candles) {
-  let tv=0, v=0;
-  candles.forEach(c => { const tp=(c.h+c.l+c.c)/3; tv+=tp*c.v; v+=c.v; });
-  return v===0 ? null : tv/v;
-}
-
-function calcStochRSI(prices, rp=14, sp=14) {
-  const rsiVals = [];
-  for (let i=rp; i<=prices.length-1; i++) rsiVals.push(calcRSI(prices.slice(0,i+1),rp));
-  if (rsiVals.length < sp) return null;
-  const sl = rsiVals.slice(-sp);
-  const mn=Math.min(...sl), mx=Math.max(...sl);
-  return mx===mn ? 50 : ((sl[sl.length-1]-mn)/(mx-mn))*100;
-}
-
-// ── IA CLAUDE ────────────────────────────────────────────────
-async function analyzeWithAI(coin, tech, ob, price, apiKey) {
-  const prompt = `You are an elite quantitative trading analyst for crypto perpetual futures on Hyperliquid.
-Analyze ${coin}/USDC and provide a precise trading decision.
-PRICE: $${price}
-RSI: ${tech.rsi?.toFixed(2)??"N/A"} | StochRSI: ${tech.stochRsi?.toFixed(2)??"N/A"}
-MACD: ${tech.macd?.macd?.toFixed(4)??"N/A"} | Signal: ${tech.macd?.signal?.toFixed(4)??"N/A"} | Histo: ${tech.macd?.histogram?.toFixed(4)??"N/A"}
-BullCross: ${tech.macd?.crossBull} | BearCross: ${tech.macd?.crossBear}
-EMA20: ${tech.ema20?.toFixed(4)??"N/A"} | EMA50: ${tech.ema50?.toFixed(4)??"N/A"} | EMA200: ${tech.ema200?.toFixed(4)??"N/A"}
-BB Upper: ${tech.bb?.upper?.toFixed(4)??"N/A"} | Mid: ${tech.bb?.middle?.toFixed(4)??"N/A"} | Lower: ${tech.bb?.lower?.toFixed(4)??"N/A"}
-ATR: ${tech.atr?.toFixed(4)??"N/A"} | VWAP: ${tech.vwap?.toFixed(4)??"N/A"}
-Volume: ${tech.volumeTrend??"N/A"} | vs VWAP: ${tech.vwap?(price>tech.vwap?"ABOVE":"BELOW"):"N/A"}
-Bid depth: ${ob?.levels?.[1]?.slice(0,5).reduce((a,b)=>a+parseFloat(b.sz),0).toFixed(2)??"N/A"}
-Ask depth: ${ob?.levels?.[0]?.slice(0,5).reduce((a,b)=>a+parseFloat(b.sz),0).toFixed(2)??"N/A"}
-CONSTRAINTS: Leverage x2-x5, position 5-15% portfolio, min R/R 2:1
-Respond ONLY with JSON (no markdown):
-{"action":"LONG"|"SHORT"|"WAIT","confidence":0-100,"entry":number,"stopLoss":number,"takeProfit1":number,"takeProfit2":number,"leverage":2-5,"positionSize":5-15,"reasoning":"2 sentences","keySignals":["s1","s2","s3"],"riskReward":number,"timeframe":"short-term"|"medium-term"}`;
-
-  try {
-    const headers = {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey || "",
-    };
-    const r = await fetch("https://hyperbot-ai.alex0136a.workers.dev", {
-      method: "POST", headers,
-      body: JSON.stringify({ model:"claude-sonnet-4-6", max_tokens:1000, messages:[{role:"user",content:prompt}] }),
-    });
-    const data = await r.json();
-    const text = data.content?.map(b=>b.text||"").join("")||"";
-    return JSON.parse(text.replace(/```json|```/g,"").trim());
-  } catch { return null; }
-}
+// ── CONSTANTES ───────────────────────────────────────────────
+const ALL_COINS = ["BTC","ETH","SOL","ARB","AVAX","LINK","OP","INJ","TIA","BNB","HYPE","PAXG","TAO","WIF","JUP","PENDLE","EIGEN","RENDER","SUI","APT","SEI","DOGE","XRP","NEAR","FTM","AAVE","UNI","CRV","SUSHI","GMX"];
+const confColor = c => c>=75?"#34d399":c>=60?"#fbbf24":"#f87171";
+const LOGCOL = { system:"#60a5fa", info:"#94a3b8", error:"#f87171", warn:"#fbbf24", ai:"#c084fc", long:"#34d399", short:"#f87171", dim:"#475569" };
 
 // ── RAPPORT TXT ──────────────────────────────────────────────
-function generateReport(signals, logs, stats, sessionStart, prices) {
-  const now = new Date();
-  const duration = Math.round((now-sessionStart)/60000);
-  const active = signals.filter(s=>s.action!=="WAIT");
+function generateBilan(bilan, paper) {
+  if(!bilan) return "Bilan non disponible";
   const sep = "=".repeat(60), thin = "-".repeat(60);
+  const now = new Date();
   let t = "";
-  t += `${sep}\n  HYPERBOT AI -- RAPPORT DE SESSION\n${sep}\n`;
-  t += `  Date     : ${now.toLocaleDateString("fr-FR")} a ${now.toLocaleTimeString("fr-FR")}\n`;
-  t += `  Duree    : ${duration} min | Mode: Fully Auto | Levier x2-x5\n${sep}\n\n`;
-  t += `[ RESUME EXECUTIF ]\n${thin}\n`;
-  t += `  Signaux  : ${active.length} (LONG:${stats.longSignals} / SHORT:${stats.shortSignals})\n`;
-  t += `  Confiance moy. : ${stats.avgConfidence}%\n`;
-  t += `  Haute confiance (>=75%) : ${active.filter(s=>s.confidence>=75).length}\n`;
-  const avgRR = active.length?(active.reduce((a,b)=>a+(b.riskReward||0),0)/active.length).toFixed(2):"--";
-  t += `  Risk/Reward moy. : ${avgRR}\n\n`;
-  t += `[ PRIX MARCHE ]\n${thin}\n`;
-  Object.entries(prices).forEach(([c,p])=>{ t+=`  ${c.padEnd(8)}: $${p?.toLocaleString("en-US",{maximumFractionDigits:4})}\n`; });
-  t += `\n[ SIGNAUX DETAILLES (${active.length}) ]\n${thin}\n`;
+  t += `${sep}\n  HYPERBOT AI -- BILAN FINANCIER\n${sep}\n`;
+  t += `  Date     : ${now.toLocaleDateString("fr-FR")} à ${now.toLocaleTimeString("fr-FR")}\n`;
+  t += `${sep}\n\n`;
+  
+  t += `[ CAPITAL ]\n${thin}\n`;
+  t += `  Balance disponible : ${bilan.balance} USDC\n`;
+  t += `  Capital total      : ${bilan.total_capital} USDC\n`;
+  t += `  Capital initial    : ${bilan.initial_balance} USDC\n`;
+  t += `  Performance        : ${bilan.performance_pct>=0?"+":""}${bilan.performance_pct}%\n`;
+  t += `  PnL ouvert         : ${bilan.open_pnl>=0?"+":""}${bilan.open_pnl} USDC (${bilan.open_count} trades)\n`;
+  if(bilan.reset_at) {
+    const start = new Date(bilan.reset_at+"Z");
+    const diff = Math.floor((new Date() - start) / 1000);
+    const h = Math.floor(diff/3600);
+    const m = Math.floor((diff%3600)/60);
+    const ratePerH = h > 0 ? (bilan.total?.net / (h + m/60)).toFixed(2) : "N/A";
+    t += `  Durée trading      : ${h}h${String(m).padStart(2,"0")} | Rendement: ${ratePerH} USDC/h\n`;
+  }
+  t += `\n`;
+  
+  t += `[ AUJOURD'HUI ]\n${thin}\n`;
+  t += `  Trades total : ${bilan.today.total}\n`;
+  t += `  Gains        : ${bilan.today.wins} trades | +${bilan.today.gains} USDC\n`;
+  t += `  Pertes       : ${bilan.today.losses} trades | ${bilan.today.pertes} USDC\n`;
+  t += `  Win rate     : ${bilan.today.win_rate}%\n`;
+  t += `  NET DU JOUR  : ${bilan.today.net>=0?"+":""}${bilan.today.net} USDC\n\n`;
+  
+  t += `[ TOTAL DEPUIS LE DÉBUT ]\n${thin}\n`;
+  t += `  Trades total : ${bilan.total.total}\n`;
+  t += `  Gains        : ${bilan.total.wins} trades | +${bilan.total.gains} USDC\n`;
+  t += `  Pertes       : ${bilan.total.losses} trades | ${bilan.total.pertes} USDC\n`;
+  t += `  Win rate     : ${bilan.total.win_rate}%\n`;
+  t += `  NET TOTAL    : ${bilan.total.net>=0?"+":""}${bilan.total.net} USDC\n\n`;
+  
+  t += `[ 7 DERNIERS JOURS ]\n${thin}\n`;
+  (bilan.daily||[]).forEach(d=>{
+    t += `  ${d.day} | ✅${d.wins} ❌${d.losses} | ${d.net>=0?"+":""}${Math.round(d.net*100)/100} USDC\n`;
+  });
+  
+  if(paper) {
+    t += `\n[ TRADES OUVERTS ]\n${thin}\n`;
+    (paper.open_trades||[]).forEach(tr=>{
+      t += `  ${tr.action} ${tr.coin} | Entrée: ${tr.entry_price} | PnL: ${tr.pnl>=0?"+":""}${tr.pnl} USDC\n`;
+    });
+  }
+  
+  t += `\n${sep}\n  HyperBot AI · Analyse Claude\n${sep}\n`;
+  return t;
+}
+
+function generateReport(signals, stats, prices, email, paper) {
+  const now = new Date();
+  const sep = "=".repeat(60), thin = "-".repeat(60);
+  const active = signals.filter(s=>s.action!=="WAIT");
+  let t = "";
+  t += `${sep}
+  HYPERBOT AI -- RAPPORT DE SESSION
+${sep}
+`;
+  t += `  Date     : ${now.toLocaleDateString("fr-FR")} a ${now.toLocaleTimeString("fr-FR")}
+`;
+  t += `  Compte   : ${email}
+`;
+  t += `  Serveur  : Autonome 24h/24 · Railway
+${sep}
+
+`;
+  t += `[ RESUME EXECUTIF ]
+${thin}
+`;
+  t += `  Signaux  : ${stats.total||0} (LONG:${stats.longs||0} / SHORT:${stats.shorts||0})
+`;
+  t += `  Confiance moy. : ${stats.avg_confidence||0}%
+`;
+  t += `  Risk/Reward moy. : ${stats.avg_rr||"--"}
+
+`;
+  t += `[ PRIX MARCHE ]
+${thin}
+`;
+  Object.entries(prices).forEach(([coin,price])=>{ t+=`  ${coin.padEnd(8)}: $${price?.toLocaleString("en-US",{maximumFractionDigits:4})}
+`; });
+  t += `
+[ SIGNAUX DETAILLES (${active.length}) ]
+${thin}
+`;
   active.forEach((sig,i)=>{
-    t += `\n  [${i+1}] ${sig.action} ${sig.coin}/USDC -- ${sig.timestamp?.toLocaleTimeString("fr-FR")}\n`;
-    t += `  Confiance:${sig.confidence}% | Levier:x${sig.leverage} | Taille:${sig.positionSize}% | R/R:${sig.riskReward?.toFixed(2)}\n`;
-    t += `  Entree:$${sig.entry?.toLocaleString("en-US",{maximumFractionDigits:6})} | SL:$${sig.stopLoss?.toLocaleString("en-US",{maximumFractionDigits:6})}\n`;
-    t += `  TP1:$${sig.takeProfit1?.toLocaleString("en-US",{maximumFractionDigits:6})} | TP2:$${sig.takeProfit2?.toLocaleString("en-US",{maximumFractionDigits:6})}\n`;
-    t += `  IA: ${sig.reasoning||"--"}\n`;
-    if(sig.keySignals?.length) t += `  Signaux: ${sig.keySignals.join(" | ")}\n`;
-    t += `  RSI:${sig.technicals?.rsi?.toFixed(1)??"--"} ATR:${sig.technicals?.atr?.toFixed(4)??"--"} VWAP:${sig.technicals?.vwap?.toFixed(2)??"--"}\n`;
+    t += `
+  [${i+1}] ${sig.action} ${sig.coin}/USDC
+`;
+    t += `  ${"─".repeat(40)}
+`;
+    t += `  Date        : ${new Date(sig.created_at).toLocaleString("fr-FR")}
+`;
+    t += `  Confiance   : ${sig.confidence}%
+`;
+    t += `  Levier      : x${sig.leverage}
+`;
+    t += `  Taille pos. : ${sig.position_size}% du capital
+`;
+    t += `  Risk/Reward : ${sig.risk_reward?.toFixed(2)}
+`;
+    t += `  Timeframe   : ${sig.timeframe}
+`;
+    t += `  Entree      : $${sig.entry?.toLocaleString("en-US",{maximumFractionDigits:6})}
+`;
+    t += `  Stop Loss   : $${sig.stop_loss?.toLocaleString("en-US",{maximumFractionDigits:6})}
+`;
+    t += `  Take Profit1: $${sig.take_profit1?.toLocaleString("en-US",{maximumFractionDigits:6})}
+`;
+    t += `  Take Profit2: $${sig.take_profit2?.toLocaleString("en-US",{maximumFractionDigits:6})}
+`;
+    t += `  Analyse IA  : ${sig.reasoning||"--"}
+`;
+    const ks = JSON.parse(sig.key_signals||"[]");
+    if(ks.length) t += `  Signaux cles: ${ks.join(" | ")}
+`;
+    t += `  RSI         : ${sig.rsi?.toFixed(1)||"--"}
+`;
+    t += `  ATR         : ${sig.atr?.toFixed(4)||"--"}
+`;
+    t += `  VWAP        : ${sig.vwap?.toFixed(2)||"--"}
+`;
     const cur = prices[sig.coin];
     if(cur){
       const dir=sig.action==="LONG"?1:-1;
       const pnl=((cur-sig.entry)/sig.entry*100*dir).toFixed(2);
-      const tp1=sig.action==="LONG"?cur>=sig.takeProfit1:cur<=sig.takeProfit1;
-      const tp2=sig.action==="LONG"?cur>=sig.takeProfit2:cur<=sig.takeProfit2;
-      const sl=sig.action==="LONG"?cur<=sig.stopLoss:cur>=sig.stopLoss;
-      t += `  Prix actuel:$${cur.toLocaleString()} | PnL:${pnl>0?"+":""}${pnl}%\n`;
-      t += `  TP1:${tp1?"ATTEINT":"en attente"} TP2:${tp2?"ATTEINT":"en attente"} SL:${sl?"TOUCHE":"intact"}\n`;
+      const tp1=sig.action==="LONG"?cur>=sig.take_profit1:cur<=sig.take_profit1;
+      const tp2=sig.action==="LONG"?cur>=sig.take_profit2:cur<=sig.take_profit2;
+      const sl=sig.action==="LONG"?cur<=sig.stop_loss:cur>=sig.stop_loss;
+      t += `  Prix actuel : $${cur.toLocaleString()}
+`;
+      t += `  PnL estime  : ${pnl>0?"+":""}${pnl}%
+`;
+      t += `  TP1         : ${tp1?"ATTEINT":"En attente"}
+`;
+      t += `  TP2         : ${tp2?"ATTEINT":"En attente"}
+`;
+      t += `  Stop Loss   : ${sl?"TOUCHE":"Intact"}
+`;
     }
   });
-  t += `\n[ LOGS SESSION (50 derniers) ]\n${thin}\n`;
-  logs.slice(-50).forEach(l=>{ t+=`  [${l.time}] ${l.msg}\n`; });
-  t += `\n${sep}\n  Rapport HyperBot AI - Powered by Claude\n  Collez ce rapport dans Claude pour analyse\n${sep}\n`;
+  t += `
+${sep}
+  Rapport HyperBot AI · Powered by Claude
+  Collez ce rapport dans Claude pour analyse
+${sep}
+`;
   return t;
 }
 
-// ── CONSTANTES ───────────────────────────────────────────────
-const ALL_COINS = ["BTC","ETH","SOL","ARB","AVAX","LINK","OP","INJ","TIA","BNB","HYPE","PAXG"];
-const SCAN_MS = 60000;
-const LOGCOL = { system:"#60a5fa",info:"#94a3b8",error:"#f87171",warn:"#fbbf24",ai:"#c084fc",long:"#34d399",short:"#f87171",dim:"#475569" };
-const confColor = (c, tp) => { const p=TEXT_PRESETS.find(x=>x.id===tp)||TEXT_PRESETS[0]; return c>=75?p.long:c>=60?"#fbbf24":p.short; };
+function downloadTxt(content, filename) {
+  const b = new Blob([content],{type:"text/plain;charset=utf-8"});
+  const u = URL.createObjectURL(b);
+  const a = document.createElement("a");
+  a.href=u; a.download=filename; a.click();
+  URL.revokeObjectURL(u);
+}
 
-const BG_PRESETS = [
-  {id:"space",    label:"Space",    bg:"#0a0e1a", panel:"#0f1629", border:"#1e2d4a", header:"linear-gradient(135deg,#0f1629,#1a1f35)"},
-  {id:"midnight", label:"Midnight", bg:"#08080f", panel:"#0d0d1a", border:"#1a1a2e", header:"linear-gradient(135deg,#0d0d1a,#16213e)"},
-  {id:"forest",   label:"Forest",   bg:"#071410", panel:"#0a1f18", border:"#0f3024", header:"linear-gradient(135deg,#0a1f18,#0d2b20)"},
-  {id:"volcano",  label:"Volcano",  bg:"#110a08", panel:"#1a0f0a", border:"#2d1a12", header:"linear-gradient(135deg,#1a0f0a,#2a1208)"},
-  {id:"cosmos",   label:"Cosmos",   bg:"#0d0815", panel:"#130d1f", border:"#1e1030", header:"linear-gradient(135deg,#130d1f,#1a0d2e)"},
-  {id:"steel",    label:"Steel",    bg:"#0c0d0f", panel:"#141618", border:"#22262a", header:"linear-gradient(135deg,#141618,#1c2024)"},
-];
-const TEXT_PRESETS = [
-  {id:"cyan",   label:"Cyan",   accent:"#60a5fa", long:"#34d399", short:"#f87171", ai:"#c084fc"},
-  {id:"gold",   label:"Or",     accent:"#fbbf24", long:"#4ade80", short:"#f87171", ai:"#e879f9"},
-  {id:"neon",   label:"Neon",   accent:"#00ff88", long:"#00ffcc", short:"#ff4466", ai:"#bb88ff"},
-  {id:"white",  label:"Blanc",  accent:"#f1f5f9", long:"#86efac", short:"#fca5a5", ai:"#d8b4fe"},
-  {id:"orange", label:"Orange", accent:"#fb923c", long:"#4ade80", short:"#f87171", ai:"#c084fc"},
-  {id:"pink",   label:"Rose",   accent:"#f472b6", long:"#34d399", short:"#fb923c", ai:"#a78bfa"},
-];
+// ── LOGIN PAGE ───────────────────────────────────────────────
+function LoginPage({ onLogin }) {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-// ── APP ──────────────────────────────────────────────────────
+  const submit = async () => {
+    if (!email || !password) { setError("Remplissez tous les champs"); return; }
+    setLoading(true); setError("");
+    try {
+      const path = mode === "login" ? "/api/login" : "/api/register";
+      const data = await apiCall(path, "POST", { email, password });
+      if (mode === "register") { setMode("login"); setError("Compte créé ! Connectez-vous."); setLoading(false); return; }
+      localStorage.setItem("hb_token", data.token);
+      localStorage.setItem("hb_email", data.email);
+      onLogin(data.token, data.email);
+    } catch(e) { setError(e.message); }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#0a0e1a"}}>
+      <div style={{width:380,background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:12,padding:32}}>
+        <div style={{textAlign:"center",marginBottom:28}}>
+          <div style={{width:48,height:48,borderRadius:12,background:"linear-gradient(135deg,#3b82f6,#8b5cf6)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,margin:"0 auto 12px"}}>⚡</div>
+          <div style={{fontSize:20,fontWeight:700,color:"#f1f5f9"}}>HyperBot AI</div>
+          <div style={{fontSize:11,color:"#64748b",marginTop:4}}>Trading autonome · Hyperliquid</div>
+        </div>
+
+        <div style={{display:"flex",gap:4,marginBottom:20,background:"#0a0e1a",borderRadius:8,padding:4}}>
+          {["login","register"].map(m=>(
+            <button key={m} onClick={()=>{setMode(m);setError("");}}
+              style={{flex:1,padding:"8px",borderRadius:6,border:"none",background:mode===m?"#1e2d4a":"transparent",color:mode===m?"#60a5fa":"#64748b",fontSize:11,fontWeight:mode===m?700:400}}>
+              {m==="login"?"Connexion":"Créer un compte"}
+            </button>
+          ))}
+        </div>
+
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>EMAIL</div>
+          <input value={email} onChange={e=>setEmail(e.target.value)} type="email" placeholder="votre@email.com"
+            style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:7,padding:"10px 12px",color:"#e2e8f0",fontSize:12}}/>
+        </div>
+
+        <div style={{marginBottom:20}}>
+          <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>MOT DE PASSE</div>
+          <input value={password} onChange={e=>setPassword(e.target.value)} type="password" placeholder="••••••••"
+            onKeyDown={e=>e.key==="Enter"&&submit()}
+            style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:7,padding:"10px 12px",color:"#e2e8f0",fontSize:12}}/>
+        </div>
+
+        {error && <div style={{background:error.includes("créé")?"#052e16":"#2d0a0a",border:`1px solid ${error.includes("créé")?"#34d399":"#f87171"}`,borderRadius:6,padding:"8px 12px",marginBottom:12,fontSize:11,color:error.includes("créé")?"#34d399":"#f87171"}}>{error}</div>}
+
+        <button onClick={submit} disabled={loading}
+          style={{width:"100%",background:"linear-gradient(135deg,#3b82f6,#8b5cf6)",border:"none",borderRadius:8,padding:"12px",color:"#fff",fontWeight:700,fontSize:13}}>
+          {loading?"Chargement...":(mode==="login"?"Se connecter":"Créer le compte")}
+        </button>
+
+        <div style={{textAlign:"center",marginTop:16,fontSize:10,color:"#334155"}}>
+          Vos données sont chiffrées et stockées en sécurité
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── MAIN APP ─────────────────────────────────────────────────
 function App() {
-  const [apiKey, setApiKey] = useState(()=>localStorage.getItem("hb_apikey")||"");
-  const [wallet, setWallet] = useState(()=>localStorage.getItem("hb_wallet")||"");
-  const [inputW, setInputW] = useState(()=>localStorage.getItem("hb_wallet")||"");
-  const [inputK, setInputK] = useState(()=>localStorage.getItem("hb_apikey")||"");
-  const [running, setRunning] = useState(false);
+  const [token, setToken] = useState(()=>localStorage.getItem("hb_token")||"");
+  const [email, setEmail] = useState(()=>localStorage.getItem("hb_email")||"");
+  const [config, setConfig] = useState(null);
   const [signals, setSignals] = useState([]);
-  const [positions, setPositions] = useState([]);
-  const [scanning, setScanning] = useState(false);
-  const [curScan, setCurScan] = useState("");
-  const [logs, setLogs] = useState([]);
-  const [tab, setTab] = useState("dashboard");
   const [prices, setPrices] = useState({});
-  const [stats, setStats] = useState({totalSignals:0,longSignals:0,shortSignals:0,avgConfidence:0});
-  const [sessionStart] = useState(new Date());
-  const [copied, setCopied] = useState(false);
-  const [liveW, setLiveW] = useState(()=>localStorage.getItem("hb_wallet")||"");
-  const [liveK, setLiveK] = useState(()=>localStorage.getItem("hb_apikey")||"");
+  const [stats, setStats] = useState({});
+  const [positions, setPositions] = useState([]);
+  const [tab, setTab] = useState("dashboard");
+  const [logs, setLogs] = useState([]);
+  const [paper, setPaper] = useState(null);
+  const [aiContinuous, setAiContinuous] = useState(false);
+  const [filterHours, setFilterHours] = useState(true);
+  const [finnhubKey, setFinnhubKey] = useState("");
+  const [hlApiKey, setHlApiKey] = useState("");
+  const [hlWallet, setHlWallet] = useState("");
+  const [filterWeekend, setFilterWeekend] = useState(true);
+  const [filterMacro, setFilterMacro] = useState(false);
+  const [dailyStats, setDailyStats] = useState(null);
+  const [bilan, setBilan] = useState(null);
+  const [clock, setClock] = useState({utc:"", local:"", market:""});
+  const [botLogs, setBotLogs] = useState([]);
+  const [persistentLogs, setPersistentLogs] = useState(false);
+  const [paperSize, setPaperSize] = useState(50);
+  const [liveW, setLiveW] = useState("");
+  const [liveK, setLiveK] = useState("");
+  const [activeCoins, setActiveCoins] = useState(ALL_COINS);
   const [saved, setSaved] = useState(false);
-  const [bgId, setBgId] = useState(()=>localStorage.getItem("hb_bg")||"space");
-  const [textId, setTextId] = useState(()=>localStorage.getItem("hb_text")||"cyan");
-  const [brightness, setBrightness] = useState(()=>Number(localStorage.getItem("hb_brightness")||100));
-  const [showTheme, setShowTheme] = useState(false);
-  const [customBg, setCustomBg] = useState("#0a0e1a");
-  const [customPanel, setCustomPanel] = useState("#0f1629");
-  const [activeCoins, setActiveCoins] = useState(()=>Object.fromEntries(ALL_COINS.map(c=>[c,true])));
-  const COINS = ALL_COINS.filter(c=>activeCoins[c]);
-  const toggleCoin = (coin) => setActiveCoins(p=>({...p,[coin]:!p[coin]}));
-  const bgT = bgId==="custom"?{bg:customBg,panel:customPanel,border:"#1e2d4a",header:`linear-gradient(135deg,${customPanel},${customBg})`}:(BG_PRESETS.find(x=>x.id===bgId)||BG_PRESETS[0]);
-  const tp = TEXT_PRESETS.find(x=>x.id===textId)||TEXT_PRESETS[0];
-  const br = (hex) => { if(brightness===100) return hex; try { const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16),f=brightness/100; return "rgb("+Math.min(255,Math.round(r*f))+","+Math.min(255,Math.round(g*f))+","+Math.min(255,Math.round(b*f))+")"; } catch{return hex;} };
-  const scanRef = useRef(false);
-  const intRef = useRef(null);
+  const [savedField, setSavedField] = useState("");
+  const [loading, setLoading] = useState(false);
   const logEnd = useRef(null);
+  const pollRef = useRef(null);
 
-  useEffect(()=>{ localStorage.setItem("hb_bg", bgId); }, [bgId]);
-  useEffect(()=>{ localStorage.setItem("hb_text", textId); }, [textId]);
-  useEffect(()=>{ localStorage.setItem("hb_brightness", brightness); }, [brightness]);
+  const flashSave = (field) => {
+    setSavedField(field);
+    setTimeout(()=>setSavedField(""), 1500);
+  };
 
   const addLog = useCallback((msg, type="info") => {
-    setLogs(p => [...p.slice(-199), {msg,type,time:new Date().toLocaleTimeString("fr-FR")}]);
-  }, []);
+    setLogs(p=>[...p.slice(-199),{msg,type,time:new Date().toLocaleTimeString("fr-FR")}]);
+  },[]);
+
+  const logout = () => {
+    apiCall("/api/logout","POST",null,token).catch(()=>{});
+    localStorage.removeItem("hb_token");
+    localStorage.removeItem("hb_email");
+    setToken(""); setEmail("");
+  };
+
+  const loadData = useCallback(async () => {
+    if (!token) return;
+    try {
+      // 1. PRIORITÉ ABSOLUE — trades ouverts et PnL
+      const pap = await apiCall("/api/paper/portfolio","GET",null,token);
+      setPaper(pap);
+      // 2. Données secondaires en parallèle
+      const [cfg, sigs, prc, st, pos, botLogsRes] = await Promise.all([
+        apiCall("/api/config","GET",null,token),
+        apiCall("/api/signals?limit=50","GET",null,token),
+        apiCall("/api/prices","GET",null,token),
+        apiCall("/api/stats","GET",null,token),
+        apiCall("/api/positions","GET",null,token),
+        apiCall("/api/bot/logs","GET",null,token),
+      ]);
+      setConfig(cfg);
+      setAiContinuous(cfg?.ai_continuous === 1);
+      setFilterHours(cfg?.filter_hours !== 0);
+      if(cfg?.finnhub_key_preview) setFinnhubKey(cfg?.finnhub_key_preview);
+      setFilterWeekend(cfg?.filter_weekend === 1); // OFF par défaut pour crypto
+      setFilterMacro(cfg?.filter_macro === 1);
+      setBotLogs(botLogsRes?.logs||[]);
+      setSignals(sigs?.signals||[]);
+      setPrices(prc?.prices||{});
+      setStats(st);
+      setPositions(pos?.positions||[]);
+      setActiveCoins(cfg?.active_coins||ALL_COINS);
+      setIsRunning(!!cfg?.is_running);
+    } catch(e) { console.error(e); }
+  }, [token]);
+
+  useEffect(() => {
+    if(token) {
+      loadData();
+      const id = setInterval(loadData, 5000);
+      return () => clearInterval(id);
+    }
+  }, [token, loadData]);
 
   useEffect(() => { logEnd.current?.scrollIntoView({behavior:"smooth"}); }, [logs]);
 
-  const scan = useCallback(async () => {
-    if (!scanRef.current) return;
-    setScanning(true);
-    addLog("Demarrage scan multi-marches...", "system");
+  useEffect(() => {
+    const updateClock = () => {
+      const now = new Date();
+      const utcH = now.getUTCHours();
+      const utcM = String(now.getUTCMinutes()).padStart(2,"0");
+      const utcS = String(now.getUTCSeconds()).padStart(2,"0");
+      const utcStr = `${String(utcH).padStart(2,"0")}:${utcM}:${utcS}`;
+      // GMT-4 toute l'année (AST fixe)
+      const localH = (utcH - 4 + 24) % 24;
+      const localStr = `${String(localH).padStart(2,"0")}:${utcM}:${utcS}`;
+      // Statut marché
+      const day = now.getUTCDay(); // 0=dim, 6=sam
+      const isWeekend = day === 0 || day === 6;
+      const isQuiet = utcH >= 21 && utcH < 23;
+      let market = "🟢 MARCHÉ OUVERT";
+      let marketColor = "#34d399";
+      if(filterMacro) { market = "🔴 PAUSE MACRO"; marketColor = "#f87171"; }
+      else if(isWeekend) { market = "🟢 WEEK-END CRYPTO"; marketColor = "#34d399"; }
+      else if(isQuiet) { market = "🌙 SESSION CREUSE"; marketColor = "#94a3b8"; }
+      setClock({utc: utcStr, local: localStr, market, marketColor});
+    };
+    updateClock();
+    const id = setInterval(updateClock, 1000);
+    return () => clearInterval(id);
+  }, [filterMacro]);
+
+  const startBot = async () => {
+    setLoading(true);
     try {
-      const metas = await fetchAllMetas();
-      if (!metas.length) { addLog("Impossible de recuperer les marches","error"); return; }
-      const pm = {};
-      metas.forEach(m => { if(m.ctx?.markPx) pm[m.name]=parseFloat(m.ctx.markPx); });
-      setPrices(pm);
-      const toScan = COINS.filter(coin=>pm[coin]);
-      addLog(`Analyse de ${toScan.length} marches...`, "system");
-      const newSigs = [];
-
-      for (const coin of toScan) {
-        if (!scanRef.current) break;
-        setCurScan(coin);
-        addLog(`${coin}/USDC @ $${pm[coin]?.toLocaleString()}`, "info");
-        try {
-          const [candles, ob] = await Promise.all([fetchCandles(coin), fetchOrderbook(coin)]);
-          if (!candles||candles.length<50) { addLog(`Donnees insuffisantes ${coin}`,"warn"); continue; }
-          const closes = candles.map(c=>parseFloat(c.c));
-          const vols = candles.map(c=>parseFloat(c.v));
-          const price = closes[closes.length-1];
-          const e20=calcEMA(closes,20), e50=calcEMA(closes,50), e200=calcEMA(closes,200);
-          const volAvg = vols.slice(-20).reduce((a,b)=>a+b,0)/20;
-          const volCur = vols[vols.length-1];
-          const tech = {
-            rsi: calcRSI(closes), stochRsi: calcStochRSI(closes),
-            macd: calcMACD(closes),
-            ema20: e20[e20.length-1], ema50: e50[e50.length-1], ema200: e200[e200.length-1],
-            bb: calcBB(closes),
-            atr: calcATR(candles.map(c=>({h:parseFloat(c.h),l:parseFloat(c.l),c:parseFloat(c.c)}))),
-            vwap: calcVWAP(candles.map(c=>({h:parseFloat(c.h),l:parseFloat(c.l),c:parseFloat(c.c),v:parseFloat(c.v)}))),
-            volumeTrend: volCur>volAvg*1.5?"SPIKE":volCur>volAvg?"ABOVE_AVG":"BELOW_AVG",
-          };
-          const rsi=tech.rsi;
-          const hasSignal=(rsi&&(rsi<35||rsi>65))||tech.macd?.crossBull||tech.macd?.crossBear||tech.volumeTrend==="SPIKE"||tech.bb||true;
-          if(!hasSignal){addLog(`${coin}: Marche neutre`,"dim");continue;}
-          addLog(`IA analyse ${coin}...`,"ai");
-          const ai = await analyzeWithAI(coin, tech, ob, price, apiKey);
-          if(!ai){addLog(`Erreur IA ${coin}`,"error");continue;}
-          const sig = {id:`${coin}-${Date.now()}`,coin,price,...ai,technicals:tech,timestamp:new Date(),status:"ACTIVE"};
-          if(ai.action!=="WAIT"&&ai.confidence>=45){
-            newSigs.unshift(sig);
-            addLog(`SIGNAL ${ai.action} ${coin} | ${ai.confidence}% | R/R:${ai.riskReward?.toFixed(1)}`, ai.action==="LONG"?"long":"short");
-          } else {
-            addLog(`${coin}: ${ai.action==="WAIT"?"Attente":"Confiance faible"} (${ai.confidence}%)`,"dim");
-          }
-          await new Promise(r=>setTimeout(r,800));
-        } catch(e){addLog(`Erreur ${coin}: ${e.message}`,"error");}
-      }
-
-      setSignals(prev => {
-        const merged=[...newSigs,...prev.filter(s=>s.status!=="ACTIVE")].slice(0,50);
-        const act=merged.filter(s=>s.action!=="WAIT");
-        setStats({
-          totalSignals:act.length,
-          longSignals:act.filter(s=>s.action==="LONG").length,
-          shortSignals:act.filter(s=>s.action==="SHORT").length,
-          avgConfidence:act.length?Math.round(act.reduce((a,b)=>a+b.confidence,0)/act.length):0
-        });
-        return merged;
-      });
-
-      if(wallet&&wallet!=="demo-mode"){
-        const pos=await fetchPositions(wallet);
-        setPositions(pos);
-      }
-      addLog("Scan termine. Prochain dans 60s.", "system");
-    } catch(e){addLog(`Erreur scan: ${e.message}`,"error");}
-    finally{setScanning(false);setCurScan("");}
-  }, [wallet, apiKey, addLog]);
-
-  const start = (demo=false) => {
-    const w = demo ? "demo-mode" : (inputW.trim()||"demo-mode");
-    const k = inputK.trim();
-    setLiveW(w); setLiveK(k);
-    setWallet(w); setApiKey(k);
-    localStorage.setItem("hb_wallet", w);
-    localStorage.setItem("hb_apikey", k);
-    setRunning(true);
-    scanRef.current=true;
-    addLog(`Bot demarre | ${w==="demo-mode"?"Mode Demo":w.slice(0,8)+"..."} | ${COINS.length} marches`, "system");
-    setTimeout(()=>scan(), 100);
-    intRef.current=setInterval(()=>scan(), SCAN_MS);
+      await apiCall("/api/bot/start","POST",null,token);
+      addLog("🚀 Bot démarré — Scan toutes les 60s", "system");
+      loadData();
+    } catch(e) { addLog(`❌ ${e.message}`, "error"); }
+    setLoading(false);
   };
 
-  const stop = () => { scanRef.current=false; setRunning(false); clearInterval(intRef.current); addLog("Bot arrete.","system"); };
-
-  useEffect(()=>()=>{scanRef.current=false;clearInterval(intRef.current);},[]);
-
-  const dlTxt = () => {
-    const txt=generateReport(signals,logs,stats,sessionStart,prices);
-    const b=new Blob([txt],{type:"text/plain;charset=utf-8"});
-    const u=URL.createObjectURL(b);
-    const a=document.createElement("a");
-    a.href=u; a.download=`hyperbot-${new Date().toISOString().slice(0,10)}.txt`; a.click();
-    URL.revokeObjectURL(u);
+  const stopBot = async () => {
+    try {
+      await apiCall("/api/bot/stop","POST",null,token);
+      addLog("⏹ Bot arrêté", "system");
+      loadData();
+    } catch(e) { addLog(`❌ ${e.message}`, "error"); }
   };
 
-  const copyReport = () => {
-    navigator.clipboard.writeText(generateReport(signals,logs,stats,sessionStart,prices))
-      .then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2500);});
+  const updateTradingMode = async (mode) => {
+    if (mode === config?.trading_mode) return;
+    const modeLabel = mode === "paper" ? "Paper Trading" : "LIVE (trades reels)";
+    const confirm1 = window.confirm(
+      `Basculer en mode ${modeLabel} ?
+
+Cela va reinitialiser :
+- Tous les signaux
+- Tous les trades paper
+- L'historique complet
+- Le portefeuille (1000 USDC)
+
+Confirmer ?`
+    );
+    if (!confirm1) return;
+    try {
+      await apiCall("/api/config","PUT",{trading_mode:mode},token);
+      await apiCall("/api/reset-all","POST",null,token);
+      loadData();
+      addLog(`Mode ${modeLabel} active - reinitialisation complete`, "system");
+    } catch(e){ addLog("Erreur: "+e.message,"error"); }
   };
 
+  const saveConfig = async () => {
+    try {
+      await apiCall("/api/config","PUT",{ wallet:liveW, api_key:(liveK && liveK.indexOf("****")!==0)?liveK:undefined, active_coins:activeCoins },token);
+      setSaved(true); setTimeout(()=>setSaved(false),2500);
+      addLog("✅ Paramètres sauvegardés", "system");
+      loadData();
+    } catch(e) { addLog(`❌ ${e.message}`, "error"); }
+  };
+
+  if (!token) return <LoginPage onLogin={(t,e)=>{setToken(t);setEmail(e);}}/>;
+  if(!config) return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#0a0e1a",color:"#60a5fa",fontSize:14}}>Chargement...</div>;
+
+  const isRunning = config.is_running;
   const TABS = [
-    {id:"dashboard",label:"Tableau de bord"},
-    {id:"signaux",label:`Signaux (${stats.totalSignals})`},
-    {id:"positions",label:`Positions (${positions.length})`},
-    {id:"logs",label:"Logs"},
-    {id:"rapport",label:"Rapport TXT"},
-    {id:"marches",label:`Marches (${COINS.length}/${ALL_COINS.length})`},
-    {id:"parametres",label:"Parametres"}
+    {id:"dashboard",label:"📊 Tableau de bord"},
+    {id:"signaux",label:`⚡ Signaux (${stats.total||0})`},
+    {id:"positions",label:`📈 Positions (${positions.length})`},
+    {id:"marches",label:`🎯 Marchés (${activeCoins.length}/${ALL_COINS.length})`},
+    {id:"parametres",label:"⚙️ Paramètres"},
+    {id:"logs",label:"📋 Logs"},
+    {id:"paper",label:`🎮 Paper Trading`},
+    {id:"rapport",label:"📄 Rapport"},
+    {id:"stats",label:"📊 Performance"},
+    {id:"bilan",label:"💰 Bilan"},
   ];
 
   return (
-    <div style={{background:bgT.bg,minHeight:"100vh",color:br("#e2e8f0"),fontFamily:"'IBM Plex Mono','Courier New',monospace",fontSize:13}}>
-
+    <div style={{background:"#0a0e1a",minHeight:"100vh"}}>
       {/* HEADER */}
-      <div style={{background:bgT.header,borderBottom:`1px solid ${bgT.border}`,padding:"14px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+      <div style={{background:"linear-gradient(135deg,#0f1629,#1a1f35)",borderBottom:"1px solid #1e2d4a",padding:"12px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <div style={{width:34,height:34,borderRadius:8,background:"linear-gradient(135deg,#3b82f6,#8b5cf6)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>⚡</div>
+          <div style={{width:32,height:32,borderRadius:8,background:"linear-gradient(135deg,#3b82f6,#8b5cf6)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>⚡</div>
           <div>
-            <div style={{fontSize:15,fontWeight:700,color:"#f1f5f9"}}>HyperBot AI</div>
-            <div style={{fontSize:10,color:"#64748b"}}>Powered by Claude · Hyperliquid Perps</div>
+            <div style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>HyperBot AI</div>
+            <div style={{fontSize:10,color:"#64748b"}}>{email}</div>
           </div>
         </div>
-        <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <div style={{width:8,height:8,borderRadius:"50%",background:running?"#34d399":"#475569",boxShadow:running?"0 0 8px #34d399":"none"}}/>
-          <span style={{fontSize:11,color:running?"#34d399":"#64748b"}}>
-            {running?(scanning?`SCAN: ${curScan}...`:"ACTIF"):"INACTIF"}
-          </span>
-          <button onClick={()=>setShowTheme(p=>!p)} style={{marginLeft:8,background:showTheme?bgT.border:"transparent",border:`1px solid ${bgT.border}`,borderRadius:6,padding:"4px 10px",color:br(tp.accent),fontFamily:"inherit",fontSize:11,cursor:"pointer"}}>
-            Themes
-          </button>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            <div style={{width:8,height:8,borderRadius:"50%",background:isRunning?"#34d399":"#475569",boxShadow:isRunning?"0 0 8px #34d399":"none"}}/>
+            <span style={{fontSize:11,color:isRunning?"#34d399":"#64748b"}}>{isRunning?"ACTIF":"INACTIF"}</span>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:2,background:"#050810",borderRadius:6,padding:3,border:"1px solid #1e2d4a"}}>
+            <button onClick={()=>updateTradingMode("paper")} style={{padding:"4px 8px",borderRadius:4,border:"none",background:config?.trading_mode==="paper"?"#1e2d4a":"transparent",color:config?.trading_mode==="paper"?"#fbbf24":"#475569",fontSize:10,fontWeight:700,cursor:"pointer"}}>PAPER</button>
+            <button onClick={()=>updateTradingMode("live")} style={{padding:"4px 8px",borderRadius:4,border:"none",background:config?.trading_mode==="live"?"#052e16":"transparent",color:config?.trading_mode==="live"?"#34d399":"#475569",fontSize:10,fontWeight:700,cursor:"pointer"}}>LIVE</button>
+          </div>
+          {isRunning
+            ? <button onClick={stopBot} style={{background:"#2d0a0a",border:"1px solid #f87171",borderRadius:6,padding:"5px 12px",color:"#f87171",fontSize:11,fontWeight:700}}>ARRETER</button>
+            : <button onClick={startBot} disabled={loading} style={{background:"linear-gradient(135deg,#3b82f6,#8b5cf6)",border:"none",borderRadius:6,padding:"5px 14px",color:"#fff",fontSize:11,fontWeight:700}}>{loading?"...":"DEMARRER"}</button>
+          }
+          <button onClick={logout} style={{background:"transparent",border:"1px solid #1e2d4a",borderRadius:6,padding:"5px 10px",color:"#64748b",fontSize:10}}>Déconnexion</button>
         </div>
       </div>
 
-      {showTheme && (
-        <div style={{background:bgT.panel,borderBottom:`1px solid ${bgT.border}`,padding:"16px 20px"}}>
-          <div style={{maxWidth:860,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:20}}>
-            <div>
-              <div style={{fontSize:10,color:"#475569",marginBottom:8,letterSpacing:1}}>FOND D'ECRAN</div>
-              {BG_PRESETS.map(p=>(
-                <button key={p.id} onClick={()=>setBgId(p.id)} style={{width:"100%",marginBottom:5,background:bgId===p.id?bgT.border:"transparent",border:`1px solid ${bgId===p.id?br(tp.accent):bgT.border}`,borderRadius:6,padding:"6px 10px",color:bgId===p.id?br(tp.accent):"#64748b",fontFamily:"inherit",fontSize:11,cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:8}}>
-                  <span style={{width:12,height:12,borderRadius:3,background:p.bg,border:"1px solid #334155",display:"inline-block",flexShrink:0}}/>
-                  {p.label}
-                </button>
-              ))}
-              <button onClick={()=>setBgId("custom")} style={{width:"100%",marginBottom:5,background:bgId==="custom"?bgT.border:"transparent",border:`1px solid ${bgId==="custom"?br(tp.accent):bgT.border}`,borderRadius:6,padding:"6px 10px",color:bgId==="custom"?br(tp.accent):"#64748b",fontFamily:"inherit",fontSize:11,cursor:"pointer",textAlign:"left"}}>
-                Personnalise
-              </button>
-              {bgId==="custom"&&(
-                <div style={{display:"flex",gap:10,marginTop:4}}>
-                  <div><div style={{fontSize:9,color:"#475569",marginBottom:3}}>Fond</div><input type="color" value={customBg} onChange={e=>setCustomBg(e.target.value)} style={{width:44,height:30,border:"none",cursor:"pointer",borderRadius:4}}/></div>
-                  <div><div style={{fontSize:9,color:"#475569",marginBottom:3}}>Panneaux</div><input type="color" value={customPanel} onChange={e=>setCustomPanel(e.target.value)} style={{width:44,height:30,border:"none",cursor:"pointer",borderRadius:4}}/></div>
+      {/* STATS */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:1,background:"#1e2d4a"}}>
+        {[{l:"SIGNAUX",v:stats.total||0,c:"#60a5fa"},{l:"LONG",v:stats.longs||0,c:"#34d399"},{l:"SHORT",v:stats.shorts||0,c:"#f87171"},{l:"CONFIANCE",v:stats.avg_confidence?`${stats.avg_confidence}%`:"--",c:confColor(stats.avg_confidence||0)}].map((s,i)=>(
+          <div key={i} style={{background:"#0a0e1a",padding:"10px",textAlign:"center"}}>
+            <div style={{fontSize:20,fontWeight:700,color:s.c}}>{s.v}</div>
+            <div style={{fontSize:9,color:"#475569",marginTop:2}}>{s.l}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* CADRAN HORLOGE */}
+      <div style={{background:"#0a0e1a",borderTop:"1px solid #0f1629",padding:"8px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{display:"flex",gap:20,alignItems:"center"}}>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontSize:9,color:"#334155",letterSpacing:1}}>UTC</div>
+            <div style={{fontSize:13,fontWeight:800,color:"#60a5fa",fontFamily:"monospace"}}>{clock.utc}</div>
+          </div>
+          <div style={{width:1,height:28,background:"#1e2d4a"}}/>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontSize:9,color:"#334155",letterSpacing:1}}>GMT-4</div>
+            <div style={{fontSize:13,fontWeight:800,color:"#e2e8f0",fontFamily:"monospace"}}>{clock.local}</div>
+          </div>
+        </div>
+        <div style={{background:clock.marketColor+"22",border:`1px solid ${clock.marketColor}`,borderRadius:20,padding:"4px 12px"}}>
+          <span style={{fontSize:11,fontWeight:700,color:clock.marketColor}}>{clock.market}</span>
+        </div>
+      </div>
+
+      {/* TABS */}
+      <div style={{display:"flex",borderBottom:"1px solid #1e2d4a",background:"#0f1629",overflowX:"auto"}}>
+        {TABS.map(t=>(
+          <button key={t.id} onClick={()=>{setTab(t.id); if(t.id==="stats") apiCall("/api/stats/daily","GET",null,token).then(r=>setDailyStats(r)); if(t.id==="rapport") loadData(); if(t.id==="bilan") apiCall("/api/bilan","GET",null,token).then(r=>setBilan(r));}} style={{padding:"10px 14px",background:"transparent",border:"none",borderBottom:tab===t.id?"2px solid #3b82f6":"2px solid transparent",color:tab===t.id?"#60a5fa":"#64748b",fontSize:11,fontWeight:tab===t.id?700:400,whiteSpace:"nowrap"}}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* DASHBOARD */}
+      {tab==="dashboard" && (
+        <div style={{padding:16}}>
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:14}}>
+            <div style={{fontSize:10,color:"#475569",marginBottom:10,letterSpacing:1}}>PRIX EN TEMPS RÉEL</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:7}}>
+              {ALL_COINS.filter(c=>prices[c]).map(coin=>(
+                <div key={coin} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:5,padding:"5px 10px",display:"flex",gap:7,alignItems:"center"}}>
+                  <span style={{color:"#64748b",fontSize:10}}>{coin}</span>
+                  <span style={{color:"#e2e8f0",fontWeight:700,fontSize:12}}>${prices[coin]?.toLocaleString("en-US",{maximumFractionDigits:2})}</span>
                 </div>
-              )}
-            </div>
-            <div>
-              <div style={{fontSize:10,color:"#475569",marginBottom:8,letterSpacing:1}}>COULEUR DES TEXTES</div>
-              {TEXT_PRESETS.map(p=>(
-                <button key={p.id} onClick={()=>setTextId(p.id)} style={{width:"100%",marginBottom:5,background:textId===p.id?bgT.border:"transparent",border:`1px solid ${textId===p.id?br(tp.accent):bgT.border}`,borderRadius:6,padding:"6px 10px",color:textId===p.id?p.accent:"#64748b",fontFamily:"inherit",fontSize:11,cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:8}}>
-                  <span style={{width:12,height:12,borderRadius:"50%",background:p.accent,display:"inline-block",flexShrink:0}}/>
-                  {p.label}
-                  <span style={{marginLeft:"auto",display:"flex",gap:3}}>
-                    <span style={{width:8,height:8,borderRadius:"50%",background:p.long}}/>
-                    <span style={{width:8,height:8,borderRadius:"50%",background:p.short}}/>
-                    <span style={{width:8,height:8,borderRadius:"50%",background:p.ai}}/>
-                  </span>
-                </button>
               ))}
             </div>
-            <div>
-              <div style={{fontSize:10,color:"#475569",marginBottom:8,letterSpacing:1}}>BRILLANCE ({brightness}%)</div>
-              <input type="range" min="40" max="150" value={brightness} onChange={e=>setBrightness(Number(e.target.value))} style={{width:"100%",accentColor:br(tp.accent),marginBottom:14}}/>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12}}>
-                {[{l:"ACCENT",c:br(tp.accent),d:"Titres / UI"},{l:"IA",c:br(tp.ai),d:"Analyse Claude"},{l:"LONG",c:br(tp.long),d:"Signaux haussiers"},{l:"SHORT",c:br(tp.short),d:"Signaux baissiers"}].map((x,i)=>(
-                  <div key={i} style={{background:bgT.bg,border:`1px solid ${bgT.border}`,borderRadius:5,padding:"7px 8px",textAlign:"center"}}>
-                    <div style={{color:x.c,fontWeight:700,fontSize:12}}>{x.l}</div>
-                    <div style={{color:"#334155",fontSize:9}}>{x.d}</div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+            <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14}}>
+              <div style={{fontSize:10,color:"#475569",marginBottom:8,letterSpacing:1}}>ACTIVITE DU BOT</div>
+            <div style={{maxHeight:100,overflowY:"auto",marginBottom:12}}>
+              {botLogs.length===0
+                ? <div style={{fontSize:9,color:"#334155",fontFamily:"monospace"}}>{isRunning?"⚡ En attente...":"● Bot arrêté"}</div>
+                : botLogs.slice(0,6).map((log,i)=>(
+                  <div key={i} style={{display:"flex",gap:6,marginBottom:2}}>
+                    <span style={{fontSize:9,color:"#334155",whiteSpace:"nowrap",fontFamily:"monospace"}}>{log.time}</span>
+                    <span style={{fontSize:9,fontFamily:"monospace",color:log.level==="success"?"#34d399":log.level==="error"?"#f87171":log.level==="warning"?"#fbbf24":"#475569"}}>{log.message}</span>
                   </div>
-                ))}
-              </div>
-              <button onClick={()=>{setBgId("space");setTextId("cyan");setBrightness(100);localStorage.removeItem("hb_bg");localStorage.removeItem("hb_text");localStorage.removeItem("hb_brightness");}} style={{width:"100%",background:"transparent",border:`1px solid ${bgT.border}`,borderRadius:6,padding:"7px",color:"#475569",fontFamily:"inherit",fontSize:10,cursor:"pointer"}}>
-                Reinitialiser
-              </button>
+                ))
+              }
+            </div>
+            <div style={{fontSize:9,color:"#475569",marginBottom:10,letterSpacing:1}}>DERNIERS SIGNAUX</div>
+              {signals.filter(s=>s.action!=="WAIT").slice(0,5).length===0
+                ? <div style={{color:"#334155",fontSize:11,padding:"16px 0",textAlign:"center"}}>{isRunning?"Analyse en cours...":"Démarrez le bot"}</div>
+                : signals.filter(s=>s.action!=="WAIT").slice(0,5).map(sig=>(
+                  <div key={sig.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #0a0e1a"}}>
+                    <div style={{display:"flex",gap:7,alignItems:"center"}}>
+                      <span style={{background:sig.action==="LONG"?"#052e16":"#2d0a0a",color:sig.action==="LONG"?"#34d399":"#f87171",padding:"2px 7px",borderRadius:4,fontSize:10,fontWeight:700}}>{sig.action}</span>
+                      <span style={{color:"#e2e8f0",fontSize:12}}>{sig.coin}</span>
+                    </div>
+                    <span style={{color:confColor(sig.confidence),fontWeight:700}}>{sig.confidence}%</span>
+                  </div>
+                ))
+              }
+            </div>
+            <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14}}>
+              <div style={{fontSize:10,color:"#475569",marginBottom:10,letterSpacing:1}}>STATUT SERVEUR</div>
+              {[
+                {l:"Mode",v:"Serveur 24h/24"},
+                {l:"Bot",v:isRunning?"✅ Actif":"⏹ Arrêté"},
+                {l:"Mode trading",v:config.trading_mode==="paper"?"Paper (simulation)":"Live (reel)"},
+                {l:"Dernier scan",v:config.last_scan?new Date(config.last_scan).toLocaleTimeString("fr-FR"):"Jamais"},
+                {l:"Marchés actifs",v:`${activeCoins.length}/${ALL_COINS.length}`},
+                {l:"Clé API",v:config.has_api_key?"✅ Définie":"❌ Manquante"},
+                {l:"Wallet",v:config.wallet?`${config.wallet.slice(0,8)}...`:"Non défini"},
+              ].map((x,i)=>(
+                <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:i<5?"1px solid #0a0e1a":"none"}}>
+                  <span style={{color:"#475569",fontSize:10}}>{x.l}</span>
+                  <span style={{color:"#94a3b8",fontSize:10}}>{x.v}</span>
+                </div>
+              ))}
             </div>
           </div>
         </div>
       )}
 
-      {/* SETUP */}
-      {!running && (
-        <div style={{maxWidth:560,margin:"30px auto",padding:"0 20px"}}>
-          <div style={{background:bgT.panel,border:`1px solid ${bgT.border}`,borderRadius:12,padding:24}}>
-            <div style={{fontSize:14,fontWeight:700,color:"#94a3b8",marginBottom:16}}>Configuration</div>
-
-            <div style={{marginBottom:12}}>
-              <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>WALLET HYPERLIQUID (optionnel — lecture positions)</div>
-              <input value={inputW} onChange={e=>setInputW(e.target.value)}
-                placeholder="0x..."
-                style={{width:"100%",background:bgT.bg,border:`1px solid ${bgT.border}`,borderRadius:7,padding:"9px 12px",color:br("#e2e8f0"),fontFamily:"inherit",fontSize:12,outline:"none"}}/>
-            </div>
-
-            <div style={{marginBottom:20}}>
-              <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>CLE API ANTHROPIC (optionnel)</div>
-              <input value={inputK} onChange={e=>setInputK(e.target.value)} type="password"
-                placeholder="sk-ant-..."
-                style={{width:"100%",background:bgT.bg,border:`1px solid ${bgT.border}`,borderRadius:7,padding:"9px 12px",color:br("#e2e8f0"),fontFamily:"inherit",fontSize:12,outline:"none"}}/>
-              <div style={{fontSize:10,color:"#334155",marginTop:4}}>console.anthropic.com · Stockee en memoire locale uniquement</div>
-            </div>
-
-            <button onClick={()=>start(false)}
-              style={{width:"100%",background:"linear-gradient(135deg,#3b82f6,#8b5cf6)",border:"none",borderRadius:8,padding:"12px",color:"#fff",fontFamily:"inherit",fontWeight:700,fontSize:13,cursor:"pointer",marginBottom:8}}>
-              DEMARRER HYPERBOT AI
-            </button>
-            <button onClick={()=>start(true)}
-              style={{width:"100%",background:"transparent",border:"1px solid #1e2d4a",borderRadius:8,padding:"10px",color:"#64748b",fontFamily:"inherit",fontSize:11,cursor:"pointer"}}>
-              Mode demo (donnees live, sans wallet ni cle API)
-            </button>
-          </div>
-          <div style={{textAlign:"center",marginTop:12,fontSize:10,color:"#1e2d4a"}}>
-            Outil d'analyse uniquement. Tradez responsablement.
-          </div>
+      {/* SIGNAUX */}
+      {tab==="signaux" && (
+        <div style={{padding:16}}>
+          {signals.filter(s=>s.action!=="WAIT").length===0
+            ? <div style={{textAlign:"center",padding:50,color:"#475569"}}>{isRunning?"Analyse IA en cours...":"Aucun signal — démarrez le bot"}</div>
+            : signals.filter(s=>s.action!=="WAIT").map(sig=>(
+              <div key={sig.id} style={{background:"#0f1629",border:`1px solid ${sig.action==="LONG"?"#14532d":"#450a0a"}`,borderRadius:10,padding:14,marginBottom:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                    <span style={{background:sig.action==="LONG"?"#052e16":"#2d0a0a",color:sig.action==="LONG"?"#34d399":"#f87171",padding:"3px 9px",borderRadius:5,fontSize:12,fontWeight:700}}>{sig.action}</span>
+                    <span style={{fontSize:15,fontWeight:700,color:"#f1f5f9"}}>{sig.coin}/USDC</span>
+                    <span style={{background:"#1e2d4a",color:"#60a5fa",padding:"1px 7px",borderRadius:4,fontSize:10}}>x{sig.leverage}</span>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:18,fontWeight:700,color:confColor(sig.confidence)}}>{sig.confidence}%</div>
+                    <div style={{fontSize:9,color:"#475569"}}>CONFIANCE</div>
+                  </div>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7,marginBottom:10}}>
+                  {[{l:"ENTRÉE",v:`$${sig.entry?.toFixed(4)}`,c:"#60a5fa"},{l:"STOP LOSS",v:`$${sig.stop_loss?.toFixed(4)}`,c:"#f87171"},{l:"TP1",v:`$${sig.take_profit1?.toFixed(4)}`,c:"#34d399"},{l:"TP2",v:`$${sig.take_profit2?.toFixed(4)}`,c:"#34d399"}].map((x,i)=>(
+                    <div key={i} style={{background:"#0a0e1a",borderRadius:5,padding:"7px 8px"}}>
+                      <div style={{fontSize:9,color:"#475569",marginBottom:2}}>{x.l}</div>
+                      <div style={{fontSize:11,fontWeight:700,color:x.c}}>{x.v}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:7,marginBottom:10}}>
+                  <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#475569"}}>TAILLE</div><div style={{color:"#e2e8f0",fontWeight:700}}>{sig.position_size}%</div></div>
+                  <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#475569"}}>RISK/REWARD</div><div style={{color:sig.risk_reward>=2?"#34d399":"#fbbf24",fontWeight:700}}>{sig.risk_reward?.toFixed(2)}</div></div>
+                  <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#475569"}}>TIMEFRAME</div><div style={{color:"#94a3b8",fontSize:11}}>{sig.timeframe}</div></div>
+                </div>
+                {sig.reasoning&&<div style={{background:"#0a0e1a",borderRadius:5,padding:9,marginBottom:8,borderLeft:"3px solid #8b5cf6"}}><div style={{fontSize:9,color:"#c084fc",marginBottom:3}}>🤖 ANALYSE IA</div><div style={{color:"#94a3b8",fontSize:11,lineHeight:1.6}}>{sig.reasoning}</div></div>}
+                {sig.key_signals&&<div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:8}}>{JSON.parse(sig.key_signals||"[]").map((s,i)=><span key={i} style={{background:"#1e2d4a",color:"#60a5fa",padding:"2px 7px",borderRadius:3,fontSize:10}}>{s}</span>)}</div>}
+                <div style={{fontSize:10,color:"#334155"}}>
+                  {new Date(sig.created_at).toLocaleString("fr-FR")} · RSI:{sig.rsi?.toFixed(1)} · Prix:{`$${sig.price?.toLocaleString()}`}
+                  {prices[sig.coin]&&<span style={{marginLeft:8,color:((prices[sig.coin]-sig.entry)/sig.entry*100*(sig.action==="LONG"?1:-1))>=0?"#34d399":"#f87171"}}>
+                    · PnL: {((prices[sig.coin]-sig.entry)/sig.entry*100*(sig.action==="LONG"?1:-1)).toFixed(2)}%
+                  </span>}
+                </div>
+              </div>
+            ))
+          }
         </div>
       )}
 
-      {/* BOT ACTIF */}
-      {running && (
-        <>
-          {/* STATS */}
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:1,background:bgT.border}}>
-            {[{l:"SIGNAUX",v:stats.totalSignals,c:"#60a5fa"},{l:"LONG",v:stats.longSignals,c:"#34d399"},{l:"SHORT",v:stats.shortSignals,c:"#f87171"},{l:"CONFIANCE",v:stats.avgConfidence?`${stats.avgConfidence}%`:"--",c:confColor(stats.avgConfidence)}].map((s,i)=>(
-              <div key={i} style={{background:"#0a0e1a",padding:"10px",textAlign:"center"}}>
-                <div style={{fontSize:20,fontWeight:700,color:s.c}}>{s.v}</div>
-                <div style={{fontSize:9,color:"#475569",marginTop:2}}>{s.l}</div>
-              </div>
-            ))}
-          </div>
-
-          {/* TABS */}
-          <div style={{display:"flex",borderBottom:`1px solid ${bgT.border}`,background:bgT.panel,overflowX:"auto"}}>
-            {TABS.map(t=>(
-              <button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"10px 14px",background:"transparent",border:"none",borderBottom:tab===t.id?"2px solid #3b82f6":"2px solid transparent",color:tab===t.id?"#60a5fa":"#64748b",fontFamily:"inherit",fontSize:11,fontWeight:tab===t.id?700:400,cursor:"pointer",whiteSpace:"nowrap"}}>
-                {t.label}
-              </button>
-            ))}
-            <div style={{flex:1}}/>
-            <button onClick={stop} style={{margin:"6px 10px",background:"#1e293b",border:"1px solid #374151",borderRadius:6,padding:"5px 12px",color:"#f87171",fontFamily:"inherit",fontSize:11,cursor:"pointer",fontWeight:700}}>
-              STOP
-            </button>
-          </div>
-
-          {/* DASHBOARD */}
-          {tab==="dashboard" && (
-            <div style={{padding:16}}>
-              <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:14}}>
-                <div style={{fontSize:10,color:"#475569",marginBottom:10,letterSpacing:1}}>PRIX EN TEMPS REEL</div>
-                <div style={{display:"flex",flexWrap:"wrap",gap:7}}>
-                  {COINS.filter(c=>prices[c]).map(coin=>(
-                    <div key={coin} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:5,padding:"5px 10px",display:"flex",gap:7,alignItems:"center"}}>
-                      <span style={{color:"#64748b",fontSize:10}}>{coin}</span>
-                      <span style={{color:"#e2e8f0",fontWeight:700,fontSize:12}}>${prices[coin]?.toLocaleString("en-US",{maximumFractionDigits:2})}</span>
-                    </div>
-                  ))}
-                  {Object.keys(prices).length===0&&<span style={{color:"#334155",fontSize:11}}>Chargement des prix...</span>}
+      {/* POSITIONS */}
+      {tab==="positions" && (
+        <div style={{padding:16}}>
+          {!config.wallet?<div style={{textAlign:"center",padding:40,color:"#475569"}}>Définissez votre wallet dans Paramètres</div>
+          :positions.length===0?<div style={{textAlign:"center",padding:40,color:"#475569"}}>Aucune position ouverte</div>
+          :positions.map((pos,i)=>{
+            const p=pos.position; const pnl=parseFloat(p.unrealizedPnl||0);
+            return (
+              <div key={i} style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                  <div style={{display:"flex",gap:7,alignItems:"center"}}>
+                    <span style={{background:parseFloat(p.szi)>0?"#052e16":"#2d0a0a",color:parseFloat(p.szi)>0?"#34d399":"#f87171",padding:"2px 7px",borderRadius:4,fontSize:10,fontWeight:700}}>{parseFloat(p.szi)>0?"LONG":"SHORT"}</span>
+                    <span style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>{p.coin}/USDC</span>
+                  </div>
+                  <span style={{fontSize:15,fontWeight:700,color:pnl>=0?"#34d399":"#f87171"}}>{pnl>=0?"+":""}{pnl.toFixed(2)} USDC</span>
                 </div>
-              </div>
-
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
-                <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14}}>
-                  <div style={{fontSize:10,color:"#475569",marginBottom:10,letterSpacing:1}}>TOP SIGNAUX</div>
-                  {signals.filter(s=>s.action!=="WAIT").slice(0,5).length===0?(
-                    <div style={{color:"#334155",fontSize:11,padding:"16px 0",textAlign:"center"}}>{scanning?"Analyse en cours...":"Aucun signal"}</div>
-                  ):signals.filter(s=>s.action!=="WAIT").slice(0,5).map(sig=>(
-                    <div key={sig.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #0a0e1a"}}>
-                      <div style={{display:"flex",gap:7,alignItems:"center"}}>
-                        <span style={{background:sig.action==="LONG"?"#052e16":"#2d0a0a",color:sig.action==="LONG"?"#34d399":"#f87171",padding:"2px 7px",borderRadius:4,fontSize:10,fontWeight:700}}>{sig.action}</span>
-                        <span style={{color:"#e2e8f0",fontSize:12}}>{sig.coin}</span>
-                      </div>
-                      <div style={{display:"flex",gap:8}}>
-                        <span style={{color:"#64748b",fontSize:10}}>x{sig.leverage}</span>
-                        <span style={{color:confColor(sig.confidence),fontWeight:700,fontSize:12}}>{sig.confidence}%</span>
-                      </div>
-                    </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:7}}>
+                  {[{l:"TAILLE",v:Math.abs(parseFloat(p.szi)).toFixed(4)},{l:"ENTRÉE",v:`$${parseFloat(p.entryPx||0).toLocaleString()}`},{l:"LEVIER",v:`x${p.leverage?.value||"--"}`}].map((x,j)=>(
+                    <div key={j} style={{background:"#0a0e1a",borderRadius:5,padding:"7px 8px"}}><div style={{fontSize:9,color:"#475569"}}>{x.l}</div><div style={{color:"#e2e8f0",fontWeight:700,fontSize:11}}>{x.v}</div></div>
                   ))}
                 </div>
-
-                <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14}}>
-                  <div style={{fontSize:10,color:"#475569",marginBottom:10,letterSpacing:1}}>STATUT</div>
-                  {[{l:"Mode",v:"Fully Automatique"},{l:"Levier",v:"x2 - x5"},{l:"Marches",v:`${COINS.length} paires`},{l:"Timeframe",v:"15 min"},{l:"Scan",v:"60 sec"},{l:"Wallet",v:wallet==="demo-mode"?"Mode Demo":`${wallet.slice(0,8)}...`},{l:"IA",v:apiKey?"Cle custom":"Claude defaut"}].map((x,i)=>(
-                    <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}>
-                      <span style={{color:"#475569",fontSize:10}}>{x.l}</span>
-                      <span style={{color:"#94a3b8",fontSize:10}}>{x.v}</span>
-                    </div>
-                  ))}
-                  {scanning&&<div style={{marginTop:8,padding:7,background:"#0a0e1a",borderRadius:5,color:"#c084fc",fontSize:10}}>IA analyse {curScan}/USDC...</div>}
-                </div>
               </div>
-            </div>
-          )}
+            );
+          })}
+        </div>
+      )}
 
-          {/* SIGNAUX */}
-          {tab==="signaux" && (
-            <div style={{padding:16}}>
-              {signals.filter(s=>s.action!=="WAIT").length===0?(
-                <div style={{textAlign:"center",padding:50,color:"#475569"}}>
-                  {scanning?<div style={{color:"#c084fc"}}>IA analyse en cours... ({curScan})</div>:"Aucun signal. Scan en attente."}
-                </div>
-              ):signals.filter(s=>s.action!=="WAIT").map(sig=>(
-                <div key={sig.id} style={{background:"#0f1629",border:`1px solid ${sig.action==="LONG"?"#14532d":"#450a0a"}`,borderRadius:10,padding:14,marginBottom:12}}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
-                    <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                      <span style={{background:sig.action==="LONG"?"#052e16":"#2d0a0a",color:sig.action==="LONG"?"#34d399":"#f87171",padding:"3px 9px",borderRadius:5,fontSize:12,fontWeight:700}}>{sig.action}</span>
-                      <span style={{fontSize:15,fontWeight:700,color:"#f1f5f9"}}>{sig.coin}/USDC</span>
-                      <span style={{background:"#1e2d4a",color:"#60a5fa",padding:"1px 7px",borderRadius:4,fontSize:10}}>x{sig.leverage}</span>
-                    </div>
-                    <div style={{textAlign:"right"}}>
-                      <div style={{fontSize:18,fontWeight:700,color:confColor(sig.confidence)}}>{sig.confidence}%</div>
-                      <div style={{fontSize:9,color:"#475569"}}>CONFIANCE</div>
-                    </div>
-                  </div>
-
-                  <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7,marginBottom:10}}>
-                    {[{l:"ENTREE",v:`$${sig.entry?.toLocaleString("en-US",{maximumFractionDigits:4})}`,c:"#60a5fa"},{l:"STOP LOSS",v:`$${sig.stopLoss?.toLocaleString("en-US",{maximumFractionDigits:4})}`,c:"#f87171"},{l:"TP1",v:`$${sig.takeProfit1?.toLocaleString("en-US",{maximumFractionDigits:4})}`,c:"#34d399"},{l:"TP2",v:`$${sig.takeProfit2?.toLocaleString("en-US",{maximumFractionDigits:4})}`,c:"#34d399"}].map((x,i)=>(
-                      <div key={i} style={{background:"#0a0e1a",borderRadius:5,padding:"7px 8px"}}>
-                        <div style={{fontSize:9,color:"#475569",marginBottom:2}}>{x.l}</div>
-                        <div style={{fontSize:11,fontWeight:700,color:x.c}}>{x.v}</div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:7,marginBottom:10}}>
-                    <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#475569"}}>TAILLE POS.</div><div style={{color:"#e2e8f0",fontWeight:700}}>{sig.positionSize}%</div></div>
-                    <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#475569"}}>RISK/REWARD</div><div style={{color:sig.riskReward>=2?"#34d399":"#fbbf24",fontWeight:700}}>{sig.riskReward?.toFixed(2)}</div></div>
-                    <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#475569"}}>TIMEFRAME</div><div style={{color:"#94a3b8",fontSize:11}}>{sig.timeframe}</div></div>
-                  </div>
-
-                  {sig.reasoning&&(
-                    <div style={{background:"#0a0e1a",borderRadius:5,padding:9,marginBottom:9,borderLeft:"3px solid #8b5cf6"}}>
-                      <div style={{fontSize:9,color:"#c084fc",marginBottom:3}}>ANALYSE IA</div>
-                      <div style={{color:"#94a3b8",fontSize:11,lineHeight:1.6}}>{sig.reasoning}</div>
-                    </div>
-                  )}
-
-                  {sig.keySignals?.length>0&&(
-                    <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:8}}>
-                      {sig.keySignals.map((s,i)=><span key={i} style={{background:"#1e2d4a",color:"#60a5fa",padding:"2px 7px",borderRadius:3,fontSize:10}}>{s}</span>)}
-                    </div>
-                  )}
-
-                  <div style={{fontSize:10,color:"#334155"}}>
-                    {sig.timestamp?.toLocaleTimeString("fr-FR")} · RSI:{sig.technicals?.rsi?.toFixed(1)} · ATR:{sig.technicals?.atr?.toFixed(4)}
-                    {prices[sig.coin]&&(
-                      <span style={{marginLeft:8,color:((prices[sig.coin]-sig.entry)/sig.entry*100*(sig.action==="LONG"?1:-1))>=0?"#34d399":"#f87171"}}>
-                        · PnL: {((prices[sig.coin]-sig.entry)/sig.entry*100*(sig.action==="LONG"?1:-1)).toFixed(2)}%
-                      </span>
-                    )}
-                  </div>
-                </div>
+      {/* MARCHÉS */}
+      {tab==="marches" && (
+        <div style={{padding:16,maxWidth:700}}>
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#60a5fa",marginBottom:12}}>Gestion des marchés</div>
+            <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+              {[{l:"Tout activer",v:ALL_COINS},{l:"BTC + ETH",v:["BTC","ETH"]},{l:"Top 5",v:["BTC","ETH","SOL","BNB","HYPE"]}].map((x,i)=>(
+                <button key={i} onClick={()=>setActiveCoins(x.v)}
+                  style={{background:"transparent",border:"1px solid #1e2d4a",borderRadius:6,padding:"5px 12px",color:"#60a5fa",fontSize:11}}>
+                  {x.l}
+                </button>
               ))}
+              <button onClick={()=>setActiveCoins([])} style={{background:"transparent",border:"1px solid #1e2d4a",borderRadius:6,padding:"5px 12px",color:"#64748b",fontSize:11}}>Tout désactiver</button>
             </div>
-          )}
-
-          {/* POSITIONS */}
-          {tab==="positions" && (
-            <div style={{padding:16}}>
-              {wallet==="demo-mode"?(
-                <div style={{textAlign:"center",padding:40,color:"#475569"}}>Mode demo -- entrez votre adresse wallet pour voir vos positions</div>
-              ):positions.length===0?(
-                <div style={{textAlign:"center",padding:40,color:"#475569"}}>Aucune position ouverte sur ce wallet</div>
-              ):positions.map((pos,i)=>{
-                const p=pos.position; const pnl=parseFloat(p.unrealizedPnl||0);
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:16}}>
+              {ALL_COINS.map(coin=>{
+                const on=activeCoins.includes(coin);
                 return (
-                  <div key={i} style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:12}}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                      <div style={{display:"flex",gap:7,alignItems:"center"}}>
-                        <span style={{background:parseFloat(p.szi)>0?"#052e16":"#2d0a0a",color:parseFloat(p.szi)>0?"#34d399":"#f87171",padding:"2px 7px",borderRadius:4,fontSize:10,fontWeight:700}}>{parseFloat(p.szi)>0?"LONG":"SHORT"}</span>
-                        <span style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>{p.coin}/USDC</span>
-                      </div>
-                      <span style={{fontSize:15,fontWeight:700,color:pnl>=0?"#34d399":"#f87171"}}>{pnl>=0?"+":""}{pnl.toFixed(2)} USDC</span>
+                  <div key={coin} onClick={()=>setActiveCoins(p=>on?p.filter(c=>c!==coin):[...p,coin])}
+                    style={{background:on?"#0a0e1a":"transparent",border:`2px solid ${on?"#3b82f6":"#1e2d4a"}`,borderRadius:8,padding:"10px 12px",cursor:"pointer",opacity:on?1:0.4}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <span style={{fontWeight:700,color:on?"#60a5fa":"#64748b"}}>{coin}</span>
+                      <span style={{fontSize:10,fontWeight:700,color:on?"#34d399":"#334155"}}>{on?"ON":"OFF"}</span>
                     </div>
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:7}}>
-                      {[{l:"TAILLE",v:Math.abs(parseFloat(p.szi)).toFixed(4)},{l:"ENTREE",v:`$${parseFloat(p.entryPx||0).toLocaleString()}`},{l:"LEVIER",v:`x${p.leverage?.value||"--"}`}].map((x,j)=>(
-                        <div key={j} style={{background:"#0a0e1a",borderRadius:5,padding:"7px 8px"}}><div style={{fontSize:9,color:"#475569"}}>{x.l}</div><div style={{color:"#e2e8f0",fontWeight:700,fontSize:11}}>{x.v}</div></div>
-                      ))}
+                    <div style={{fontSize:10,color:on?"#94a3b8":"#334155",marginTop:2}}>
+                      {prices[coin]?`$${prices[coin].toLocaleString("en-US",{maximumFractionDigits:2})}`:"---"}
                     </div>
                   </div>
                 );
               })}
             </div>
-          )}
+            <button onClick={saveConfig} style={{width:"100%",background:"linear-gradient(135deg,#1d4ed8,#7c3aed)",border:"none",borderRadius:8,padding:"10px",color:"#fff",fontWeight:700,fontSize:12}}>
+              💾 Sauvegarder la sélection
+            </button>
+          </div>
+        </div>
+      )}
 
-          {/* LOGS */}
-          {tab==="logs" && (
-            <div style={{padding:14}}>
-              <div style={{background:"#050810",borderRadius:8,padding:12,height:450,overflowY:"auto",border:"1px solid #0f1629"}}>
-                {logs.length===0?<div style={{color:"#334155",fontSize:11}}>Aucun log...</div>
-                :logs.map((l,i)=>(
-                  <div key={i} style={{display:"flex",gap:8,marginBottom:3}}>
-                    <span style={{color:"#334155",fontSize:10,whiteSpace:"nowrap"}}>{l.time}</span>
-                    <span style={{color:LOGCOL[l.type]||"#94a3b8",fontSize:11,lineHeight:1.5}}>{l.msg}</span>
+      {/* PARAMÈTRES */}
+      {tab==="parametres" && (
+        <div style={{padding:16,maxWidth:600}}>
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:20,marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#60a5fa",marginBottom:16}}>Paramètres de connexion</div>
+            <div style={{marginBottom:14}}>
+              <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>WALLET HYPERLIQUID</div>
+              <input value={liveW} onChange={e=>setLiveW(e.target.value)} placeholder="0x..."
+                style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:7,padding:"9px 12px",color:"#e2e8f0",fontSize:12}}/>
+              <div style={{fontSize:10,color:"#334155",marginTop:3}}>Lecture seule — visualisation de vos positions</div>
+            </div>
+            <div style={{marginBottom:20}}>
+              <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>CLÉ API ANTHROPIC</div>
+              <input value={liveK} onChange={e=>setLiveK(e.target.value)} type="password"
+                placeholder={config?.has_api_key ? "✅ Clé active — saisir pour changer" : "sk-ant-... (clé Anthropic)"}
+                style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:7,padding:"9px 12px",color:"#e2e8f0",fontSize:12}}/>
+              <div style={{fontSize:10,color:"#334155",marginTop:3}}>Clé stockée de façon sécurisée sur le serveur · {config.has_api_key?"✅ Clé définie":"❌ Non définie"}</div>
+            </div>
+            <button onClick={saveConfig}
+              style={{width:"100%",background:saved?"#052e16":"linear-gradient(135deg,#1d4ed8,#7c3aed)",border:saved?"1px solid #34d399":"none",borderRadius:8,padding:"11px",color:saved?"#34d399":"#fff",fontWeight:700,fontSize:12}}>
+              {saved?"✅ Sauvegardé !":"💾 Sauvegarder"}
+            </button>
+          </div>
+
+          {/* HYPERLIQUID CONFIG */}
+          <div style={{background:"#0f1629",border:"1px solid #7c3aed",borderRadius:10,padding:16,marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#a78bfa",marginBottom:4}}>⚡ Configuration Hyperliquid</div>
+            <div style={{fontSize:10,color:"#334155",marginBottom:12}}>Wallet et clé API pour le mode LIVE (optionnel en Paper Trading)</div>
+            
+            <div style={{marginBottom:10}}>
+              <div style={{fontSize:11,color:"#94a3b8",marginBottom:6,fontWeight:700}}>🔗 Wallet Address</div>
+              <input type="text" placeholder="0x..." value={hlWallet}
+                onChange={e=>setHlWallet(e.target.value)}
+                style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"9px 12px",color:"#e2e8f0",fontSize:11,boxSizing:"border-box"}}/>
+            </div>
+
+            <div style={{marginBottom:10}}>
+              <div style={{fontSize:11,color:"#94a3b8",marginBottom:6,fontWeight:700}}>🔑 Clé API Privée (Mode LIVE uniquement)</div>
+              <input type="password"
+                placeholder={config?.has_hl_api_key ? "✅ Clé active — saisir pour changer" : "Clé privée Hyperliquid..."}
+                value={hlApiKey} onChange={e=>setHlApiKey(e.target.value)}
+                style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"9px 12px",color:"#e2e8f0",fontSize:11,boxSizing:"border-box",marginBottom:8}}/>
+              <div style={{fontSize:9,color:"#334155"}}>⚠️ Ne partagez jamais votre clé privée — stockée de façon sécurisée sur votre serveur</div>
+            </div>
+
+            <button onClick={()=>{
+              const payload = {};
+              if(hlWallet) payload.hl_wallet = hlWallet;
+              if(hlApiKey && hlApiKey !== "****") payload.hl_api_key = hlApiKey;
+              if(Object.keys(payload).length > 0)
+                apiCall("/api/config/hyperliquid","PUT",payload,token).then(loadData);
+            }} style={{width:"100%",background:"linear-gradient(135deg,#6d28d9,#7c3aed)",border:"none",borderRadius:6,padding:"9px",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer"}}>
+              ⚡ Sauvegarder config Hyperliquid
+            </button>
+          </div>
+
+          {/* FINNHUB KEY */}
+          <div style={{background:"#0f1629",border:"1px solid #b45309",borderRadius:10,padding:16,marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#f59e0b",marginBottom:4}}>🗓️ Calendrier Macro (Finnhub)</div>
+            <div style={{fontSize:10,color:"#334155",marginBottom:12}}>Clé gratuite sur finnhub.io — alertes FOMC/CPI/NFP automatiques</div>
+            <input
+              type="password"
+              placeholder="Clé Finnhub (ex: d1abc123...)"
+              value={finnhubKey}
+              onChange={e=>setFinnhubKey(e.target.value)}
+              style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"9px 12px",color:"#e2e8f0",fontSize:11,boxSizing:"border-box",marginBottom:8}}
+            />
+            <button onClick={()=>apiCall("/api/config/finnhub","PUT",{finnhub_key:finnhubKey},token).then(()=>loadData())}
+              style={{width:"100%",background:"linear-gradient(135deg,#b45309,#d97706)",border:"none",borderRadius:6,padding:"9px",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer"}}>
+              🗓️ Sauvegarder clé Finnhub
+            </button>
+          </div>
+
+          {/* FILTRES TEMPORELS */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#f59e0b",marginBottom:4}}>⏰ Filtres de trading</div>
+            <div style={{fontSize:10,color:"#334155",marginBottom:12}}>Contrôlez quand le bot peut ouvrir de nouveaux trades</div>
+            
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #0f1629"}}>
+              <div>
+                <div style={{fontSize:11,color:"#94a3b8",fontWeight:700}}>🌙 Session creuse (21h-23h UTC)</div>
+                <div style={{fontSize:10,color:"#334155"}}>Fin session USA — liquidité faible. Session Asie (00h-08h) reste active pour HYPE/SOL/INJ</div>
+              </div>
+              <button onClick={()=>{
+                const v=!filterHours; setFilterHours(v);
+                apiCall("/api/config/filters","PUT",{"filter_hours":v},token);
+              }} style={{background:filterHours?"#1e3a5f22":"#0f1629",border:filterHours?"1px solid #60a5fa":"1px solid #1e2d4a",borderRadius:6,padding:"6px 14px",color:filterHours?"#60a5fa":"#475569",fontSize:10,cursor:"pointer",fontWeight:700}}>
+                {filterHours?"✅ ON":"⭕ OFF"}
+              </button>
+            </div>
+
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #0f1629"}}>
+              <div>
+                <div style={{fontSize:11,color:"#94a3b8",fontWeight:700}}>📅 Pause Week-end (Forex uniquement)</div>
+                <div style={{fontSize:10,color:"#334155"}}>Crypto trade 24h/24 7j/7 — désactivé par défaut</div>
+              </div>
+              <button onClick={()=>{
+                const v=!filterWeekend; setFilterWeekend(v);
+                apiCall("/api/config/filters","PUT",{"filter_weekend":v},token);
+              }} style={{background:filterWeekend?"#1e3a5f22":"#0f1629",border:filterWeekend?"1px solid #60a5fa":"1px solid #1e2d4a",borderRadius:6,padding:"6px 14px",color:filterWeekend?"#60a5fa":"#475569",fontSize:10,cursor:"pointer",fontWeight:700}}>
+                {filterWeekend?"✅ ON":"⭕ OFF"}
+              </button>
+            </div>
+
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0"}}>
+              <div>
+                <div style={{fontSize:11,color:"#f87171",fontWeight:700}}>⚠️ Pause macro (FOMC/CPI/NFP)</div>
+                <div style={{fontSize:10,color:"#334155"}}>Override manuel — suspend tout nouveau trade immédiatement</div>
+              </div>
+              <button onClick={()=>{
+                const v=!filterMacro; setFilterMacro(v);
+                apiCall("/api/config/filters","PUT",{"filter_macro":v},token);
+              }} style={{background:filterMacro?"#2d0a0a":"#0f1629",border:filterMacro?"1px solid #f87171":"1px solid #1e2d4a",borderRadius:6,padding:"6px 14px",color:filterMacro?"#f87171":"#475569",fontSize:10,cursor:"pointer",fontWeight:700}}>
+                {filterMacro?"🔴 ACTIF":"⭕ OFF"}
+              </button>
+            </div>
+          </div>
+
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#60a5fa",marginBottom:8}}>🤖 Analyse IA continue</div>
+            <div style={{fontSize:11,color:"#64748b",marginBottom:14}}>
+              Par défaut, l'IA ne s'appelle pas si un coin est déjà en position (économie de crédits).
+              Activez pour recevoir les avis IA en continu — utile pour le trading manuel.
+            </div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <span style={{fontSize:12,color:"#94a3b8"}}>{aiContinuous ? "🟢 Activée — L'IA analyse même les positions ouvertes" : "⚫ Désactivée — L'IA skip les coins déjà ouverts"}</span>
+              <button onClick={()=>{
+                const newVal = !aiContinuous;
+                setAiContinuous(newVal);
+                apiCall("/api/config/ai-continuous","PUT",{enabled:newVal},token).then(loadData);
+              }} style={{background:aiContinuous?"#052e16":"#1e2d4a",border:aiContinuous?"1px solid #34d399":"1px solid #475569",borderRadius:8,padding:"8px 16px",color:aiContinuous?"#34d399":"#94a3b8",fontWeight:700,fontSize:11,cursor:"pointer"}}>
+                {aiContinuous ? "✅ ON" : "⭕ OFF"}
+              </button>
+            </div>
+          </div>
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:14}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#94a3b8",marginBottom:10}}>Maintenance</div>
+            <div style={{fontSize:10,color:"#475569",marginBottom:10,lineHeight:1.6}}>
+              Nettoie les signaux en double et supprime ceux de plus de 24h. Garde uniquement le signal le plus récent par actif.
+            </div>
+            <button onClick={async()=>{
+              try{
+                const r = await apiCall("/api/cleanup","POST",null,token);
+                alert(r.message);
+                loadData();
+              }catch(e){alert("Erreur: "+e.message);}
+            }} style={{width:"100%",background:"transparent",border:"1px solid #f87171",borderRadius:7,padding:"9px",color:"#f87171",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer",marginBottom:8}}>
+              🧹 Nettoyer les signaux en double
+            </button>
+            <button onClick={async()=>{
+              if(!window.confirm("REINITIALISATION COMPLETE\n\nCela va effacer :\n- Tous les signaux\n- Tous les trades paper\n- L'historique\n- Le portefeuille (repart a 1000 USDC)\n\nEtes-vous sur ?")) return;
+              try{
+                const r = await apiCall("/api/reset-all","POST",null,token);
+                alert(r.message);
+                loadData();
+              }catch(e){alert("Erreur: "+e.message);}
+            }} style={{width:"100%",background:"transparent",border:"1px solid #dc2626",borderRadius:7,padding:"9px",color:"#dc2626",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+              ⚠️ Reinitialisation complete (signaux + trades + historique)
+            </button>
+          </div>
+
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#94a3b8",marginBottom:10}}>Compte</div>
+            <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #0a0e1a"}}>
+              <span style={{color:"#475569",fontSize:11}}>Email</span>
+              <span style={{color:"#94a3b8",fontSize:11}}>{email}</span>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0"}}>
+              <span style={{color:"#475569",fontSize:11}}>Session</span>
+              <span style={{color:"#34d399",fontSize:11}}>Active (30 jours)</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* LOGS */}
+      {tab==="logs" && (
+        <div style={{padding:14}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <span style={{fontSize:10,color:"#475569"}}>{persistentLogs?"📚 Historique persistant (200 entrées)":"⚡ Session courante (50 entrées)"}</span>
+            <button onClick={async()=>{
+              const v=!persistentLogs; setPersistentLogs(v);
+              const r=await apiCall(v?"/api/bot/logs?persistent=true":"/api/bot/logs","GET",null,token);
+              setBotLogs(r?.logs||[]);
+            }} style={{background:persistentLogs?"#1e3a5f":"#0f1629",border:persistentLogs?"1px solid #3b82f6":"1px solid #1e2d4a",borderRadius:6,padding:"4px 10px",color:persistentLogs?"#60a5fa":"#475569",fontSize:10,cursor:"pointer",fontWeight:700}}>
+              {persistentLogs?"📚 PERSISTANT":"⚡ SESSION"}
+            </button>
+          </div>
+          <div style={{background:"#050810",borderRadius:8,padding:12,height:420,overflowY:"auto",border:"1px solid #0f1629"}}>
+            {botLogs.length===0?<div style={{color:"#334155",fontSize:11}}>{isRunning?"En attente du premier scan...":"Démarrez le bot pour voir les logs"}</div>
+            :botLogs.map((l,i)=>(
+              <div key={i} style={{display:"flex",gap:8,marginBottom:3}}>
+                <span style={{color:"#334155",fontSize:10,whiteSpace:"nowrap"}}>{l.time}</span>
+                <span style={{color:l.level==="success"?"#34d399":l.level==="error"?"#f87171":l.level==="warning"?"#fbbf24":"#94a3b8",fontSize:11,lineHeight:1.5}}>{l.message}</span>
+              </div>
+            ))}
+            <div ref={logEnd}/>
+          </div>
+        </div>
+      )}
+
+      {/* PAPER TRADING */}
+      {tab==="paper" && (
+        <div style={{padding:16,maxWidth:900}}>
+
+          {/* STATS PORTEFEUILLE */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:16}}>
+            {[
+              {l:"SOLDE VIRTUEL",v:`${paper?.balance?.toFixed(2)||"1000.00"} USDC`,c:"#60a5fa"},
+              {l:"PNL OUVERT",v:`${paper?.total_pnl>=0?"+":""}${paper?.total_pnl?.toFixed(2)||"0.00"} USDC`,c:paper?.total_pnl>=0?"#34d399":"#f87171"},
+              {l:"PERFORMANCE",v:`${paper?.total_pnl_pct>=0?"+":""}${paper?.total_pnl_pct?.toFixed(2)||"0.00"}%`,c:paper?.total_pnl_pct>=0?"#34d399":"#f87171"},
+              {l:"TRADES OUVERTS",v:paper?.open_trades?.length||0,c:"#c084fc"},
+            ].map((s,i)=>(
+              <div key={i} style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:8,padding:"12px",textAlign:"center"}}>
+                <div style={{fontSize:16,fontWeight:700,color:s.c}}>{s.v}</div>
+                <div style={{fontSize:9,color:"#475569",marginTop:2}}>{s.l}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* MODE BANNER + SETTINGS */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:16}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+              <div>
+                <div style={{fontSize:13,fontWeight:700,color:config?.trading_mode==="paper"?"#fbbf24":"#34d399"}}>
+                  {config?.trading_mode==="paper"?"Mode Paper — Simulation autonome":"Mode Live — Trades reels"}
+                </div>
+                <div style={{fontSize:10,color:"#475569",marginTop:2}}>
+                  {config?.trading_mode==="paper"?"Le bot execute automatiquement chaque signal avec capital virtuel":"ATTENTION: trades sur votre vrai compte Hyperliquid"}
+                </div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:2,background:"#050810",borderRadius:6,padding:3,border:"1px solid #1e2d4a"}}>
+                <button onClick={()=>updateTradingMode("paper")} style={{padding:"6px 12px",borderRadius:4,border:"none",background:config?.trading_mode==="paper"?"#1e2d4a":"transparent",color:config?.trading_mode==="paper"?"#fbbf24":"#475569",fontWeight:700,fontSize:11,cursor:"pointer"}} title="Reinitialise signaux et trades au changement">PAPER</button>
+                <button onClick={()=>updateTradingMode("live")} style={{padding:"6px 12px",borderRadius:4,border:"none",background:config?.trading_mode==="live"?"#052e16":"transparent",color:config?.trading_mode==="live"?"#34d399":"#475569",fontWeight:700,fontSize:11,cursor:"pointer"}} title="Reinitialise signaux et trades au changement">LIVE</button>
+              </div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+              <div>
+                <div style={{fontSize:9,color:"#475569",marginBottom:4,letterSpacing:1}}>TAILLE PAR TRADE (% DU CAPITAL)</div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <input type="number" defaultValue={config?.position_pct||8} min="1" max="50"
+                    onBlur={e=>{apiCall("/api/config","PUT",{position_pct:Number(e.target.value)},token).then(()=>{loadData();flashSave("pct");});}}
+                    style={{flex:1,background:savedField==="pct"?"#0a1a0a":"#0a0e1a",border:savedField==="pct"?"1px solid #34d399":"1px solid #1e2d4a",borderRadius:6,padding:"8px 10px",color:savedField==="pct"?"#34d399":"#e2e8f0",fontFamily:"inherit",fontSize:12,transition:"all 0.3s"}}/>
+                  <span style={{color:"#60a5fa",fontWeight:700,fontSize:14}}>%</span>
+                </div>
+                <div style={{fontSize:9,color:"#334155",marginTop:4}}>≈ {Math.round((config?.position_pct||5)*10)} USDC sur 1000 USDC · Adaptatif</div>
+              </div>
+              <div>
+                <div style={{fontSize:10,color:"#f59e0b",marginBottom:6,fontWeight:700,letterSpacing:1}}>⚡ QUICK PROFIT (USDC)</div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <input type="number" min="0.5" max="10" step="0.5" defaultValue={config?.quick_profit_usd||1}
+                    onBlur={e=>{apiCall("/api/config","PUT",{quick_profit_usd:Number(e.target.value)},token).then(()=>{loadData();flashSave("qp");});}}
+                    style={{flex:1,background:savedField==="qp"?"#1a2e0a":"#0a0e1a",border:savedField==="qp"?"1px solid #34d399":"1px solid #f59e0b",borderRadius:6,padding:"8px 10px",color:savedField==="qp"?"#34d399":"#f59e0b",fontFamily:"inherit",fontSize:12,transition:"all 0.3s"}}/>
+                  <span style={{color:"#f59e0b",fontWeight:700,fontSize:14}}>$</span>
+                </div>
+                <div style={{fontSize:9,color:"#334155",marginTop:4}}>Fermeture automatique dès ce profit atteint (frais inclus)</div>
+              </div>
+              <div>
+                <div style={{fontSize:10,color:"#f87171",marginBottom:6,fontWeight:700,letterSpacing:1}}>🛡️ MAX LOSS (USDC)</div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <input type="number" min="0.25" max="5" step="0.25" defaultValue={config?.max_loss_usd||0.5}
+                    onBlur={e=>{apiCall("/api/config","PUT",{max_loss_usd:Number(e.target.value)},token).then(()=>{loadData();flashSave("ml");});}}
+                    style={{flex:1,background:savedField==="ml"?"#1a0a0a":"#0a0e1a",border:savedField==="ml"?"1px solid #34d399":"1px solid #f87171",borderRadius:6,padding:"8px 10px",color:savedField==="ml"?"#34d399":"#f87171",fontFamily:"inherit",fontSize:12,transition:"all 0.3s"}}/>
+                  <span style={{color:"#f87171",fontWeight:700,fontSize:14}}>$</span>
+                </div>
+                <div style={{fontSize:9,color:"#334155",marginTop:4}}>Fermeture automatique si perte dépasse ce montant</div>
+              </div>
+              <div>
+                <div style={{fontSize:9,color:"#475569",marginBottom:4,letterSpacing:1}}>TRADES SIMULTANES MAX</div>
+                <input type="number" defaultValue={config?.max_open_trades||5} min="1" max="20"
+                  onChange={e=>apiCall("/api/config","PUT",{max_open_trades:Number(e.target.value)},token).then(loadData)}
+                  style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"8px 10px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12}}/>
+              </div>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div style={{fontSize:10,color:"#334155"}}>
+                Solde initial: 1000 USDC · Le bot trade seul 24h/24
+              </div>
+              <button onClick={async()=>{
+                if(!confirm("Reinitialiser le portefeuille a 1000 USDC ?"))return;
+                await apiCall("/api/paper/reset","POST",null,token);
+                loadData();
+              }} style={{background:"transparent",border:"1px solid #334155",borderRadius:5,padding:"5px 10px",color:"#64748b",fontSize:10}}>
+                Reinitialiser
+              </button>
+            </div>
+          </div>
+
+          {/* TRADES OUVERTS */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:16}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#60a5fa",marginBottom:12}}>📈 Trades ouverts</div>
+            {!paper?.open_trades?.length
+              ? <div style={{color:"#334155",fontSize:11,textAlign:"center",padding:"20px 0"}}>Aucun trade ouvert — exécutez un signal !</div>
+              : paper.open_trades.map(trade=>(
+                <div key={trade.id} style={{background:"#0a0e1a",borderRadius:8,padding:12,marginBottom:8,border:`1px solid ${trade.pnl>=0?"#14532d":"#450a0a"}`}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                    <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                      <span style={{background:trade.action==="LONG"?"#052e16":"#2d0a0a",color:trade.action==="LONG"?"#34d399":"#f87171",padding:"2px 8px",borderRadius:4,fontSize:11,fontWeight:700}}>{trade.action}</span>
+                      <span style={{color:"#f1f5f9",fontWeight:700}}>{trade.coin}/USDC</span>
+                      <span style={{color:"#64748b",fontSize:10}}>x{trade.leverage}</span>
+                    </div>
+                    <div style={{display:"flex",gap:12,alignItems:"center"}}>
+                      <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontWeight:700,fontSize:14}}>
+                        {trade.pnl>=0?"+":""}{trade.pnl?.toFixed(2)} USDC
+                      </span>
+                      <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:11}}>
+                        ({trade.pnl_pct>=0?"+":""}{trade.pnl_pct?.toFixed(2)}%)
+                      </span>
+                      <button onClick={async()=>{
+                        await apiCall("/api/paper/close","POST",{trade_id:trade.id,reason:"MANUEL"},token);
+                        loadData();
+                      }} style={{background:"#2d0a0a",border:"1px solid #f87171",borderRadius:5,padding:"3px 10px",color:"#f87171",fontSize:10,fontWeight:700}}>
+                        Fermer
+                      </button>
+                    </div>
                   </div>
-                ))}
-                <div ref={logEnd}/>
-              </div>
-            </div>
-          )}
-
-          {/* RAPPORT */}
-          {tab==="rapport" && (
-            <div style={{padding:16,maxWidth:800}}>
-              <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:18,marginBottom:14}}>
-                <div style={{fontSize:13,fontWeight:700,color:"#94a3b8",marginBottom:4}}>Rapport de session TXT</div>
-                <div style={{fontSize:11,color:"#475569",marginBottom:16,lineHeight:1.7}}>
-                  Exportez un rapport complet avec signaux, suivi TP/SL et logs. Collez-le dans Claude pour analyse.
-                </div>
-
-                <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:14}}>
-                  {[{l:"Signaux",v:stats.totalSignals,c:"#60a5fa"},{l:"Confiance moy.",v:`${stats.avgConfidence}%`,c:confColor(stats.avgConfidence)},{l:"Marches",v:COINS.length,c:"#c084fc"}].map((s,i)=>(
-                    <div key={i} style={{background:"#0a0e1a",borderRadius:6,padding:"9px",textAlign:"center"}}>
-                      <div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div>
-                      <div style={{fontSize:9,color:"#475569",marginTop:2}}>{s.l}</div>
-                    </div>
-                  ))}
-                </div>
-
-                <div style={{background:"#0a0e1a",borderRadius:7,padding:12,marginBottom:14}}>
-                  <div style={{fontSize:10,color:"#475569",marginBottom:8,letterSpacing:1}}>SUIVI TP/SL EN TEMPS REEL</div>
-                  {signals.filter(s=>s.action!=="WAIT").length===0
-                    ?<div style={{color:"#334155",fontSize:11}}>Aucun signal a suivre.</div>
-                    :signals.filter(s=>s.action!=="WAIT").map(sig=>{
-                      const cur=prices[sig.coin]; if(!cur) return null;
-                      const dir=sig.action==="LONG"?1:-1;
-                      const pnl=((cur-sig.entry)/sig.entry*100*dir).toFixed(2);
-                      const tp1=sig.action==="LONG"?cur>=sig.takeProfit1:cur<=sig.takeProfit1;
-                      const tp2=sig.action==="LONG"?cur>=sig.takeProfit2:cur<=sig.takeProfit2;
-                      const sl=sig.action==="LONG"?cur<=sig.stopLoss:cur>=sig.stopLoss;
-                      return (
-                        <div key={sig.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid #0f1629"}}>
-                          <div style={{display:"flex",gap:7,alignItems:"center"}}>
-                            <span style={{color:sig.action==="LONG"?"#34d399":"#f87171",fontSize:10,fontWeight:700}}>{sig.action}</span>
-                            <span style={{color:"#e2e8f0",fontSize:11}}>{sig.coin}</span>
-                            <span style={{color:"#475569",fontSize:10}}>{sig.timestamp?.toLocaleTimeString("fr-FR")}</span>
-                          </div>
-                          <div style={{display:"flex",gap:8,fontSize:10}}>
-                            <span style={{color:parseFloat(pnl)>=0?"#34d399":"#f87171",fontWeight:700}}>{pnl>0?"+":""}{pnl}%</span>
-                            <span style={{color:tp1?"#34d399":"#334155"}}>TP1{tp1?"✓":"○"}</span>
-                            <span style={{color:tp2?"#34d399":"#334155"}}>TP2{tp2?"✓":"○"}</span>
-                            <span style={{color:sl?"#f87171":"#334155"}}>SL{sl?"✗":"○"}</span>
-                          </div>
-                        </div>
-                      );
-                    })
-                  }
-                </div>
-
-                <div style={{display:"flex",gap:10}}>
-                  <button onClick={dlTxt} style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#7c3aed)",border:"none",borderRadius:8,padding:"11px",color:"#fff",fontFamily:"inherit",fontWeight:700,fontSize:12,cursor:"pointer"}}>
-                    Telecharger .txt
-                  </button>
-                  <button onClick={copyReport} style={{flex:1,background:copied?"#052e16":"#0f1629",border:`1px solid ${copied?"#34d399":"#1e2d4a"}`,borderRadius:8,padding:"11px",color:copied?"#34d399":"#94a3b8",fontFamily:"inherit",fontWeight:700,fontSize:12,cursor:"pointer"}}>
-                    {copied?"Copie !":"Copier pour Claude"}
-                  </button>
-                </div>
-              </div>
-
-              <div style={{background:"#050810",border:"1px solid #0f1629",borderRadius:8,padding:12}}>
-                <div style={{fontSize:10,color:"#334155",marginBottom:6}}>APERCU DU RAPPORT</div>
-                <pre style={{color:"#475569",fontSize:10,lineHeight:1.6,whiteSpace:"pre-wrap",wordBreak:"break-word",margin:0,maxHeight:300,overflowY:"auto"}}>
-                  {generateReport(signals,logs,stats,sessionStart,prices)}
-                </pre>
-              </div>
-            </div>
-          )}
-          {/* PARAMETRES */}
-          {tab==="parametres" && (
-            <div style={{padding:16,maxWidth:600}}>
-              <div style={{background:bgT.panel,border:`1px solid ${bgT.border}`,borderRadius:10,padding:20,marginBottom:14}}>
-                <div style={{fontSize:13,fontWeight:700,color:br(tp.accent),marginBottom:4}}>Parametres de connexion</div>
-                <div style={{fontSize:11,color:"#475569",marginBottom:20,lineHeight:1.7}}>
-                  Modifiez vos informations a tout moment. Les changements s'appliquent au prochain scan.
-                </div>
-
-                <div style={{marginBottom:14}}>
-                  <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>WALLET HYPERLIQUID</div>
-                  <input value={liveW==="demo-mode"?"":liveW} onChange={e=>setLiveW(e.target.value)}
-                    placeholder="0x... (laisser vide = mode demo)"
-                    style={{width:"100%",background:bgT.bg,border:`1px solid ${bgT.border}`,borderRadius:7,padding:"9px 12px",color:br("#e2e8f0"),fontFamily:"inherit",fontSize:12,outline:"none"}}/>
-                  <div style={{fontSize:10,color:"#334155",marginTop:3}}>Lecture seule — visualisation de vos positions ouvertes</div>
-                </div>
-
-                <div style={{marginBottom:14}}>
-                  <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>CLE API ANTHROPIC (sk-ant-...)</div>
-                  <input value={liveK} onChange={e=>setLiveK(e.target.value)} type="password"
-                    placeholder="sk-ant-api03-..."
-                    style={{width:"100%",background:bgT.bg,border:`1px solid ${bgT.border}`,borderRadius:7,padding:"9px 12px",color:br("#e2e8f0"),fontFamily:"inherit",fontSize:12,outline:"none"}}/>
-                  <div style={{fontSize:10,color:"#334155",marginTop:3}}>Obtenir sur console.anthropic.com · Stockee en memoire uniquement</div>
-                </div>
-
-                <button onClick={()=>{
-                  const w=liveW.trim()||"demo-mode";
-                  const k=liveK.trim();
-                  setWallet(w); setApiKey(k);
-                  localStorage.setItem("hb_wallet", w==="demo-mode"?"":w);
-                  localStorage.setItem("hb_apikey", k);
-                  setSaved(true); setTimeout(()=>setSaved(false),2500);
-                  addLog(`Parametres mis a jour | Wallet: ${w==="demo-mode"?"Mode Demo":w.slice(0,8)+"..."} | API: ${k?"Cle definie":"Aucune"}`, "system");
-                }} style={{width:"100%",background:saved?"#052e16":`linear-gradient(135deg,#1d4ed8,#7c3aed)`,border:saved?`1px solid ${br(tp.long)}`:"none",borderRadius:8,padding:"11px",color:saved?br(tp.long):"#fff",fontFamily:"inherit",fontWeight:700,fontSize:12,cursor:"pointer",marginBottom:8}}>
-                  {saved ? "Sauvegarde !" : "Appliquer les changements"}
-                </button>
-                <button onClick={()=>{
-                  setLiveW(""); setLiveK(""); setWallet(""); setApiKey("");
-                  localStorage.removeItem("hb_wallet"); localStorage.removeItem("hb_apikey");
-                  addLog("Donnees effacees.", "system");
-                }} style={{width:"100%",background:"transparent",border:`1px solid ${bgT.border}`,borderRadius:7,padding:"9px",color:"#f87171",fontFamily:"inherit",fontSize:11,cursor:"pointer",marginBottom:8}}>
-                  Effacer les donnees sauvegardees
-                </button>
-
-                <div style={{background:bgT.bg,border:`1px solid ${bgT.border}`,borderRadius:8,padding:12}}>
-                  <div style={{fontSize:10,color:"#475569",marginBottom:8,letterSpacing:1}}>ETAT ACTUEL</div>
-                  {[
-                    {l:"Mode",        v: wallet==="demo-mode"?"Demo":"Wallet connecte"},
-                    {l:"Wallet",      v: wallet==="demo-mode"?"---":wallet.slice(0,10)+"..."+wallet.slice(-4)},
-                    {l:"Cle API",     v: apiKey?"Definie ("+apiKey.slice(0,12)+"...)":"Non definie"},
-                    {l:"Bot",         v: running?"Actif":"Inactif"},
-                    {l:"Marches",     v: COINS.length+"/"+ALL_COINS.length+" actifs"},
-                    {l:"Dernier scan",v: scanning?"En cours...":"Voir logs"},
-                  ].map((x,i)=>(
-                    <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:i<5?`1px solid ${bgT.border}`:"none"}}>
-                      <span style={{color:"#475569",fontSize:11}}>{x.l}</span>
-                      <span style={{color:br(tp.accent),fontSize:11,fontWeight:500}}>{x.v}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div style={{background:bgT.panel,border:`1px solid ${bgT.border}`,borderRadius:10,padding:16}}>
-                <div style={{fontSize:11,fontWeight:700,color:"#94a3b8",marginBottom:10}}>Guide rapide</div>
-                {[
-                  {step:"1",title:"Cle API Anthropic",desc:"console.anthropic.com → API Keys → Creer une cle. Rechargez 5$ pour commencer."},
-                  {step:"2",title:"Wallet (optionnel)",desc:"Votre adresse publique Hyperliquid (0x...) pour voir vos positions. Non obligatoire en demo."},
-                  {step:"3",title:"Cout estimé",desc:"~0.001$ par analyse · 13 marches = ~0.013$ par scan · ~0.78$/heure en continu."},
-                ].map((x,i)=>(
-                  <div key={i} style={{display:"flex",gap:12,padding:"10px 0",borderBottom:i<2?`1px solid ${bgT.border}`:"none"}}>
-                    <div style={{width:22,height:22,borderRadius:"50%",background:`linear-gradient(135deg,#1d4ed8,#7c3aed)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",flexShrink:0}}>{x.step}</div>
-                    <div>
-                      <div style={{fontSize:11,fontWeight:700,color:br(tp.accent),marginBottom:2}}>{x.title}</div>
-                      <div style={{fontSize:10,color:"#475569",lineHeight:1.6}}>{x.desc}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* MARCHES */}
-          {tab==="marches" && (
-            <div style={{padding:16,maxWidth:700}}>
-              <div style={{background:bgT.panel,border:`1px solid ${bgT.border}`,borderRadius:10,padding:16,marginBottom:14}}>
-                <div style={{fontSize:13,fontWeight:700,color:br(tp.accent),marginBottom:4}}>Gestion des actifs</div>
-                <div style={{fontSize:11,color:"#475569",marginBottom:16}}>
-                  Activez ou desactivez chaque marche. Seuls les marches actifs seront analyses au prochain scan.
-                </div>
-                <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
-                  <button onClick={()=>setActiveCoins(Object.fromEntries(ALL_COINS.map(c=>[c,true])))}
-                    style={{background:"transparent",border:`1px solid ${bgT.border}`,borderRadius:6,padding:"5px 12px",color:br(tp.accent),fontFamily:"inherit",fontSize:11,cursor:"pointer"}}>
-                    Tout activer
-                  </button>
-                  <button onClick={()=>setActiveCoins(Object.fromEntries(ALL_COINS.map(c=>[c,false])))}
-                    style={{background:"transparent",border:`1px solid ${bgT.border}`,borderRadius:6,padding:"5px 12px",color:"#64748b",fontFamily:"inherit",fontSize:11,cursor:"pointer"}}>
-                    Tout desactiver
-                  </button>
-                  <button onClick={()=>setActiveCoins(Object.fromEntries(["BTC","ETH"].map(c=>[c,true]).concat(ALL_COINS.filter(x=>!["BTC","ETH"].includes(x)).map(c=>[c,false]))))}
-                    style={{background:"transparent",border:`1px solid ${bgT.border}`,borderRadius:6,padding:"5px 12px",color:"#64748b",fontFamily:"inherit",fontSize:11,cursor:"pointer"}}>
-                    BTC + ETH seulement
-                  </button>
-                </div>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
-                  {ALL_COINS.map(coin=>{
-                    const on = activeCoins[coin];
-                    const price = prices[coin];
-                    return (
-                      <div key={coin} onClick={()=>toggleCoin(coin)}
-                        style={{background:on?bgT.bg:"transparent",border:`2px solid ${on?br(tp.accent):bgT.border}`,borderRadius:8,padding:"10px 12px",cursor:"pointer",transition:"all 0.2s",opacity:on?1:0.45}}>
-                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
-                          <span style={{fontWeight:700,color:on?br(tp.accent):"#64748b",fontSize:13}}>{coin}</span>
-                          <span style={{fontSize:10,fontWeight:700,color:on?br(tp.long):"#334155",background:on?"rgba(52,211,153,0.1)":"transparent",padding:"1px 6px",borderRadius:4}}>
-                            {on?"ON":"OFF"}
-                          </span>
-                        </div>
-                        <div style={{fontSize:11,color:on?"#94a3b8":"#334155"}}>
-                          {price ? "$"+price.toLocaleString("en-US",{maximumFractionDigits:2}) : "---"}
-                        </div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6}}>
+                    {[
+                      {l:"ENTRÉE",v:`$${trade.entry_price?.toLocaleString("en-US",{maximumFractionDigits:4})}`},
+                      {l:"ACTUEL",v:`$${trade.current_price?.toLocaleString("en-US",{maximumFractionDigits:4})}`},
+                      {l:"TAILLE",v:`${trade.size_usdc} USDC`},
+                      {l:"OUVERT",v:new Date(trade.opened_at).toLocaleTimeString("fr-FR")},
+                    ].map((x,i)=>(
+                      <div key={i} style={{background:"#0f1629",borderRadius:5,padding:"5px 8px"}}>
+                        <div style={{fontSize:8,color:"#475569"}}>{x.l}</div>
+                        <div style={{color:"#94a3b8",fontSize:11,fontWeight:500}}>{x.v}</div>
                       </div>
-                    );
-                  })}
+                    ))}
+                  </div>
+                  <div style={{display:"flex",gap:8,marginTop:8,fontSize:10}}>
+                    <span style={{color:"#f87171"}}>SL: ${trade.stop_loss?.toFixed(4)}</span>
+                    <span style={{color:"#34d399"}}>TP1: ${trade.take_profit1?.toFixed(4)}</span>
+                    <span style={{color:"#34d399"}}>TP2: ${trade.take_profit2?.toFixed(4)}</span>
+                  </div>
                 </div>
-                <div style={{marginTop:14,fontSize:11,color:"#475569",textAlign:"center"}}>
-                  {COINS.length} marche{COINS.length>1?"s":""} actif{COINS.length>1?"s":""} · Scan toutes les 60s
+              ))
+            }
+          </div>
+
+          {/* HISTORIQUE */}
+          {paper?.closed_trades?.length > 0 && (
+            <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16}}>
+              <div style={{fontSize:12,fontWeight:700,color:"#60a5fa",marginBottom:12}}>📋 Historique (20 derniers)</div>
+              {paper.closed_trades.map(trade=>(
+                <div key={trade.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #0a0e1a"}}>
+                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                    <span style={{color:trade.action==="LONG"?"#34d399":"#f87171",fontSize:10,fontWeight:700}}>{trade.action}</span>
+                    <span style={{color:"#e2e8f0",fontSize:11}}>{trade.coin}</span>
+                    <span style={{background:"#1e2d4a",color:"#60a5fa",padding:"1px 6px",borderRadius:3,fontSize:9}}>{trade.close_reason}</span>
+                  </div>
+                  <div style={{display:"flex",gap:12,alignItems:"center"}}>
+                    <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontWeight:700,fontSize:12}}>
+                      {trade.pnl>=0?"+":""}{trade.pnl?.toFixed(2)} USDC
+                    </span>
+                    <span style={{color:"#475569",fontSize:10}}>{new Date(trade.closed_at).toLocaleTimeString("fr-FR")}</span>
+                  </div>
                 </div>
-              </div>
+              ))}
             </div>
           )}
-        </>
+        </div>
+      )}
+
+      {/* STATS PERFORMANCE */}
+      {tab==="stats" && (
+        <div style={{padding:14}}>
+          {!dailyStats ? <div style={{color:"#475569",fontSize:12,textAlign:"center",padding:40}}>Chargement...</div> : (<>
+          {/* RESUME GLOBAL */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:14}}>
+            <div style={{background:"#052e16",border:"1px solid #34d399",borderRadius:10,padding:14,textAlign:"center"}}>
+              <div style={{fontSize:20,fontWeight:800,color:"#34d399"}}>{dailyStats.summary.total_wins}</div>
+              <div style={{fontSize:10,color:"#34d399"}}>TRADES GAGNANTS</div>
+              <div style={{fontSize:14,fontWeight:700,color:"#34d399"}}>+{dailyStats.summary.total_wins_usdc} USDC</div>
+            </div>
+            <div style={{background:"#2d0a0a",border:"1px solid #f87171",borderRadius:10,padding:14,textAlign:"center"}}>
+              <div style={{fontSize:20,fontWeight:800,color:"#f87171"}}>{dailyStats.summary.total_losses}</div>
+              <div style={{fontSize:10,color:"#f87171"}}>TRADES PERDANTS</div>
+              <div style={{fontSize:14,fontWeight:700,color:"#f87171"}}>{dailyStats.summary.total_losses_usdc} USDC</div>
+            </div>
+            <div style={{background:"#0a0e1a",border:"1px solid #3b82f6",borderRadius:10,padding:14,textAlign:"center"}}>
+              <div style={{fontSize:20,fontWeight:800,color:"#60a5fa"}}>{dailyStats.summary.win_rate}%</div>
+              <div style={{fontSize:10,color:"#60a5fa"}}>WIN RATE</div>
+              <div style={{fontSize:14,fontWeight:700,color: (dailyStats.summary.total_wins_usdc + dailyStats.summary.total_losses_usdc) >= 0 ? "#34d399":"#f87171"}}>
+                {(dailyStats.summary.total_wins_usdc + dailyStats.summary.total_losses_usdc).toFixed(2)} USDC NET
+              </div>
+            </div>
+          </div>
+
+          {/* STATS PAR JOUR */}
+          <div style={{background:"#0a0e1a",borderRadius:10,padding:14,border:"1px solid #1e2d4a",marginBottom:14}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#475569",marginBottom:10,letterSpacing:1}}>PAR JOUR</div>
+            {dailyStats.daily.map((d,i)=>(
+              <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #0f1629"}}>
+                <span style={{fontSize:11,color:"#64748b"}}>{d.day}</span>
+                <span style={{fontSize:11,color:"#34d399"}}>✅ {d.wins} (+{d.total_wins_usdc?.toFixed(2)} USDC)</span>
+                <span style={{fontSize:11,color:"#f87171"}}>❌ {d.losses} ({d.total_losses_usdc?.toFixed(2)} USDC)</span>
+                <span style={{fontSize:11,fontWeight:700,color:d.net_pnl>=0?"#34d399":"#f87171"}}>{d.net_pnl?.toFixed(2)} USDC</span>
+              </div>
+            ))}
+          </div>
+
+          {/* DETAIL GAINS */}
+          <div style={{background:"#052e16",borderRadius:10,padding:14,border:"1px solid #34d399",marginBottom:14}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#34d399",marginBottom:10,letterSpacing:1}}>✅ TRADES GAGNANTS</div>
+            {dailyStats.wins.map((t,i)=>(
+              <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #0a2a1a",fontSize:10}}>
+                <span style={{color:"#34d399",fontWeight:700}}>{t.action} {t.coin}</span>
+                <span style={{color:"#64748b"}}>{t.close_reason}</span>
+                <span style={{color:"#34d399",fontWeight:700}}>+{t.pnl?.toFixed(2)} USDC</span>
+                <span style={{color:"#334155"}}>{t.closed_at?.slice(11,16)}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* DETAIL PERTES */}
+          <div style={{background:"#2d0a0a",borderRadius:10,padding:14,border:"1px solid #f87171"}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#f87171",marginBottom:10,letterSpacing:1}}>❌ TRADES PERDANTS</div>
+            {dailyStats.losses.map((t,i)=>(
+              <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #2a0a0a",fontSize:10}}>
+                <span style={{color:"#f87171",fontWeight:700}}>{t.action} {t.coin}</span>
+                <span style={{color:"#64748b"}}>{t.close_reason}</span>
+                <span style={{color:"#f87171",fontWeight:700}}>{t.pnl?.toFixed(2)} USDC</span>
+                <span style={{color:"#334155"}}>{t.closed_at?.slice(11,16)}</span>
+              </div>
+            ))}
+          </div>
+          <button onClick={()=>{
+              const txt = `HYPERBOT AI -- PERFORMANCE\n${"=".repeat(60)}\nWin Rate: ${dailyStats?.summary?.win_rate}%\nTotal Gains: +${dailyStats?.summary?.total_wins_usdc} USDC\nTotal Pertes: ${dailyStats?.summary?.total_losses_usdc} USDC\nNet: ${(dailyStats?.summary?.total_wins_usdc||0)+(dailyStats?.summary?.total_losses_usdc||0)} USDC\n\nDETAIL PAR JOUR:\n${(dailyStats?.daily||[]).map(d=>`${d.day} | ✅${d.wins} ❌${d.losses} | Net: ${Math.round(d.net_pnl*100)/100} USDC`).join("\n")}`;
+              downloadTxt(txt, `performance-${new Date().toISOString().slice(0,10)}.txt`);
+            }}
+            style={{width:"100%",marginTop:12,background:"linear-gradient(135deg,#1d4ed8,#7c3aed)",border:"none",borderRadius:8,padding:"10px",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer"}}>
+            ⬇️ Télécharger Performance
+          </button>
+          </>)}
+        </div>
+      )}
+
+      {/* BILAN */}
+      {tab==="bilan" && (
+        <div style={{padding:14}}>
+          {!bilan ? <div style={{color:"#475569",fontSize:12,textAlign:"center",padding:40}}>
+            <button onClick={()=>apiCall("/api/bilan","GET",null,token).then(r=>setBilan(r))}
+              style={{background:"#1e2d4a",border:"1px solid #3b82f6",borderRadius:8,padding:"10px 20px",color:"#60a5fa",cursor:"pointer"}}>
+              📊 Charger le bilan
+            </button>
+          </div> : (<>
+
+          {/* BALANCE */}
+          <div style={{background:"#0a1628",border:"1px solid #1e3a5f",borderRadius:12,padding:16,marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <div style={{fontSize:11,color:"#475569",letterSpacing:1}}>💼 CAPITAL</div>
+              {bilan.reset_at && (() => {
+                const start = new Date(bilan.reset_at+"Z");
+                const now = new Date();
+                const diff = Math.floor((now - start) / 1000);
+                const h = Math.floor(diff/3600);
+                const m = Math.floor((diff%3600)/60);
+                const ratePerH = h > 0 ? (bilan.total?.net / (h + m/60)).toFixed(2) : "...";
+                return <div style={{fontSize:10,color:"#475569"}}>
+                  ⏱️ <span style={{color:"#60a5fa",fontWeight:700}}>{h}h{String(m).padStart(2,"0")}</span> de trading · 
+                  <span style={{color:"#34d399",fontWeight:700}}> {ratePerH}$/h</span>
+                </div>;
+              })()}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:18,fontWeight:800,color:"#60a5fa"}}>{bilan.balance} $</div>
+                <div style={{fontSize:9,color:"#334155"}}>DISPONIBLE</div>
+              </div>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:18,fontWeight:800,color:"#e2e8f0"}}>{bilan.total_capital} $</div>
+                <div style={{fontSize:9,color:"#334155"}}>TOTAL</div>
+              </div>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:18,fontWeight:800,color:bilan.performance_pct>=0?"#34d399":"#f87171"}}>
+                  {bilan.performance_pct>=0?"+":""}{bilan.performance_pct}%
+                </div>
+                <div style={{fontSize:9,color:"#334155"}}>PERFORMANCE</div>
+              </div>
+            </div>
+          </div>
+
+          {/* AUJOURD'HUI */}
+          <div style={{background:"#0a1628",border:"1px solid #1e3a5f",borderRadius:12,padding:16,marginBottom:12}}>
+            <div style={{fontSize:11,color:"#475569",marginBottom:8,letterSpacing:1}}>📅 AUJOURD'HUI</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+              <div style={{background:"#052e16",borderRadius:8,padding:10,textAlign:"center"}}>
+                <div style={{fontSize:16,fontWeight:800,color:"#34d399"}}>+{bilan.today.gains} $</div>
+                <div style={{fontSize:9,color:"#34d399"}}>{bilan.today.wins} GAINS</div>
+              </div>
+              <div style={{background:"#2d0a0a",borderRadius:8,padding:10,textAlign:"center"}}>
+                <div style={{fontSize:16,fontWeight:800,color:"#f87171"}}>{bilan.today.pertes} $</div>
+                <div style={{fontSize:9,color:"#f87171"}}>{bilan.today.losses} PERTES</div>
+              </div>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderTop:"1px solid #0f1629"}}>
+              <span style={{fontSize:11,color:"#64748b"}}>{bilan.today.total} trades · Win rate {bilan.today.win_rate}%</span>
+              <span style={{fontSize:13,fontWeight:800,color:bilan.today.net>=0?"#34d399":"#f87171"}}>
+                {bilan.today.net>=0?"+":""}{bilan.today.net} $ NET
+              </span>
+            </div>
+          </div>
+
+          {/* TOTAL DEPUIS DEBUT */}
+          <div style={{background:"#0a1628",border:"1px solid #1e3a5f",borderRadius:12,padding:16,marginBottom:12}}>
+            <div style={{fontSize:11,color:"#475569",marginBottom:8,letterSpacing:1}}>🏆 TOTAL DEPUIS LE DÉBUT</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+              <div style={{background:"#052e16",borderRadius:8,padding:10,textAlign:"center"}}>
+                <div style={{fontSize:16,fontWeight:800,color:"#34d399"}}>+{bilan.total.gains} $</div>
+                <div style={{fontSize:9,color:"#34d399"}}>{bilan.total.wins} GAINS</div>
+              </div>
+              <div style={{background:"#2d0a0a",borderRadius:8,padding:10,textAlign:"center"}}>
+                <div style={{fontSize:16,fontWeight:800,color:"#f87171"}}>{bilan.total.pertes} $</div>
+                <div style={{fontSize:9,color:"#f87171"}}>{bilan.total.losses} PERTES</div>
+              </div>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderTop:"1px solid #0f1629"}}>
+              <span style={{fontSize:11,color:"#64748b"}}>{bilan.total.total} trades · Win rate {bilan.total.win_rate}%</span>
+              <span style={{fontSize:13,fontWeight:800,color:bilan.total.net>=0?"#34d399":"#f87171"}}>
+                {bilan.total.net>=0?"+":""}{bilan.total.net} $ NET
+              </span>
+            </div>
+          </div>
+
+          {/* PAR JOUR */}
+          <div style={{background:"#0a1628",border:"1px solid #1e3a5f",borderRadius:12,padding:16}}>
+            <div style={{fontSize:11,color:"#475569",marginBottom:8,letterSpacing:1}}>📆 7 DERNIERS JOURS</div>
+            {bilan.daily.map((d,i)=>(
+              <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid #0f1629",fontSize:11}}>
+                <span style={{color:"#64748b"}}>{d.day}</span>
+                <span style={{color:"#34d399"}}>✅ {d.wins}</span>
+                <span style={{color:"#f87171"}}>❌ {d.losses}</span>
+                <span style={{color:"#64748b"}}>{d.total} trades</span>
+                <span style={{fontWeight:700,color:d.net>=0?"#34d399":"#f87171"}}>
+                  {d.net>=0?"+":""}{Math.round(d.net*100)/100} $
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <div style={{display:"flex",gap:8,marginTop:12}}>
+            <button onClick={()=>apiCall("/api/bilan","GET",null,token).then(r=>setBilan(r))}
+              style={{flex:1,background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:8,padding:"10px",color:"#475569",fontSize:11,cursor:"pointer"}}>
+              🔄 Actualiser
+            </button>
+            <button onClick={()=>downloadTxt(generateBilan(bilan,paper),`bilan-${new Date().toISOString().slice(0,10)}.txt`)}
+              style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#7c3aed)",border:"none",borderRadius:8,padding:"10px",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer"}}>
+              ⬇️ Télécharger Bilan
+            </button>
+          </div>
+
+          {/* PAR ACTIF */}
+          <div style={{background:"#0a1628",border:"1px solid #1e3a5f",borderRadius:12,padding:16,marginTop:12}}>
+            <div style={{fontSize:11,color:"#475569",marginBottom:8,letterSpacing:1}}>🎯 PERFORMANCE PAR ACTIF</div>
+            {(bilan.by_coin||[]).map((coin,i)=>{
+              const h = Math.floor((coin.total_minutes||0)/60);
+              const m = (coin.total_minutes||0)%60;
+              const timeStr = h>0?`${h}h${String(m).padStart(2,"0")}`:`${m}min`;
+              return (
+                <div key={i} style={{padding:"8px 0",borderBottom:"1px solid #0f1629"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:3}}>
+                    <span style={{fontSize:12,fontWeight:700,color:"#e2e8f0"}}>{coin.coin}</span>
+                    <span style={{fontSize:12,fontWeight:800,color:coin.net>=0?"#34d399":"#f87171"}}>
+                      {coin.net>=0?"+":""}{coin.net}$
+                    </span>
+                  </div>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#475569"}}>
+                    <span>✅{coin.wins} (+{coin.avg_gain}$) ❌{coin.losses} ({coin.avg_loss}$)</span>
+                    <span style={{color:coin.win_rate>=50?"#34d399":"#f87171"}}>{coin.win_rate}%</span>
+                  </div>
+                  <div style={{fontSize:9,color:"#334155",marginTop:2}}>
+                    ⏱️ {timeStr} de trading · {coin.total} trades
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          </>)}
+        </div>
+      )}
+
+      {/* RAPPORT */}
+      {tab==="rapport" && (
+        <div style={{padding:16,maxWidth:800}}>
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:20,marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#60a5fa",marginBottom:4}}>📄 Rapport de session</div>
+            <div style={{fontSize:11,color:"#475569",marginBottom:16,lineHeight:1.7}}>
+              Exportez tous les signaux avec niveaux, suivi TP/SL et analyse IA. Collez dans Claude pour analyse approfondie.
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:16}}>
+              {[{l:"Signaux",v:stats.total||0,c:"#60a5fa"},{l:"Confiance moy.",v:`${stats.avg_confidence||0}%`,c:confColor(stats.avg_confidence||0)},{l:"R/R moyen",v:stats.avg_rr||"--",c:"#c084fc"}].map((s,i)=>(
+                <div key={i} style={{background:"#0a0e1a",borderRadius:6,padding:"9px",textAlign:"center"}}>
+                  <div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div>
+                  <div style={{fontSize:9,color:"#475569",marginTop:2}}>{s.l}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{background:"#0a0e1a",borderRadius:7,padding:12,marginBottom:14}}>
+              <div style={{fontSize:10,color:"#475569",marginBottom:8,letterSpacing:1}}>SUIVI TP/SL EN TEMPS REEL</div>
+              {signals.filter(s=>s.action!=="WAIT").length===0
+                ?<div style={{color:"#334155",fontSize:11}}>Aucun signal a suivre.</div>
+                :signals.filter(s=>s.action!=="WAIT").slice(0,10).map(sig=>{
+                  const cur=prices[sig.coin]; if(!cur) return null;
+                  const dir=sig.action==="LONG"?1:-1;
+                  const pnl=((cur-sig.entry)/sig.entry*100*dir).toFixed(2);
+                  const tp1=sig.action==="LONG"?cur>=sig.take_profit1:cur<=sig.take_profit1;
+                  const tp2=sig.action==="LONG"?cur>=sig.take_profit2:cur<=sig.take_profit2;
+                  const sl=sig.action==="LONG"?cur<=sig.stop_loss:cur>=sig.stop_loss;
+                  return (
+                    <div key={sig.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid #0f1629"}}>
+                      <div style={{display:"flex",gap:7,alignItems:"center"}}>
+                        <span style={{color:sig.action==="LONG"?"#34d399":"#f87171",fontSize:10,fontWeight:700}}>{sig.action}</span>
+                        <span style={{color:"#e2e8f0",fontSize:11}}>{sig.coin}</span>
+                        <span style={{color:"#475569",fontSize:10}}>{new Date(sig.created_at).toLocaleTimeString("fr-FR")}</span>
+                      </div>
+                      <div style={{display:"flex",gap:8,fontSize:10}}>
+                        <span style={{color:parseFloat(pnl)>=0?"#34d399":"#f87171",fontWeight:700}}>{pnl>0?"+":""}{pnl}%</span>
+                        <span style={{color:tp1?"#34d399":"#334155"}}>TP1{tp1?"✓":"○"}</span>
+                        <span style={{color:tp2?"#34d399":"#334155"}}>TP2{tp2?"✓":"○"}</span>
+                        <span style={{color:sl?"#f87171":"#334155"}}>SL{sl?"✗":"○"}</span>
+                      </div>
+                    </div>
+                  );
+                })
+              }
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button onClick={()=>downloadTxt(generateReport(signals||[],stats||{},prices||{},email||"",paper),`hyperbot-${new Date().toISOString().slice(0,10)}.txt`)}
+                style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#7c3aed)",border:"none",borderRadius:8,padding:"11px",color:"#fff",fontWeight:700,fontSize:12}}>
+                ⬇️ Telecharger .txt
+              </button>
+              <button onClick={()=>{
+                const txt = generateReport(signals||[],stats||{},prices||{},email||"",paper);
+                if(!txt || txt.length < 10) { alert("Rapport vide - rechargez la page"); return; }
+                navigator.clipboard.writeText(txt)
+                  .then(()=>alert("✅ Copié ! (" + txt.length + " caractères)"))
+                  .catch(()=>{
+                    const ta = document.createElement("textarea");
+                    ta.value = txt;
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand("copy");
+                    document.body.removeChild(ta);
+                    alert("✅ Copié via fallback !");
+                  });
+              }}
+                style={{flex:1,background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:8,padding:"11px",color:"#94a3b8",fontWeight:700,fontSize:12}}>
+                📋 Copier pour Claude
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <div style={{textAlign:"center",padding:"14px",color:"#1e2d4a",fontSize:10,borderTop:"1px solid #0f1629",marginTop:16}}>
-        HyperBot AI - Outil d'analyse uniquement. Les performances passees ne garantissent pas les resultats futurs.
+        HyperBot AI — Serveur autonome 24h/24 · Powered by Claude
       </div>
     </div>
   );

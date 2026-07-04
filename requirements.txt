@@ -1,0 +1,6 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pyjwt==2.9.0
+hyperliquid-python-sdk==0.10.0
+eth-account==0.13.4
