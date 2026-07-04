@@ -740,7 +740,7 @@ Confirmer ?`
             <div style={{marginBottom:10}}>
               <div style={{fontSize:11,color:"#94a3b8",marginBottom:6,fontWeight:700}}>🔑 Clé API Privée (Mode LIVE uniquement)</div>
               <input type="password"
-                placeholder={config?.has_hl_api_key ? "✅ Clé active — saisir pour changer" : "Clé privée Hyperliquid..."}
+                placeholder={config?.hyperliquid_configured ? "✅ Clé active — saisir pour changer" : "Clé privée Hyperliquid..."}
                 value={hlApiKey} onChange={e=>setHlApiKey(e.target.value)}
                 style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"9px 12px",color:"#e2e8f0",fontSize:11,boxSizing:"border-box",marginBottom:8}}/>
               <div style={{fontSize:9,color:"#334155"}}>⚠️ Ne partagez jamais votre clé privée — stockée de façon sécurisée sur votre serveur</div>
@@ -751,9 +751,13 @@ Confirmer ?`
               if(hlWallet) payload.hl_wallet = hlWallet;
               if(hlApiKey && hlApiKey !== "****") payload.hl_api_key = hlApiKey;
               if(Object.keys(payload).length > 0)
-                apiCall("/api/config/hyperliquid","PUT",payload,token).then(loadData);
-            }} style={{width:"100%",background:"linear-gradient(135deg,#6d28d9,#7c3aed)",border:"none",borderRadius:6,padding:"9px",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer"}}>
-              ⚡ Sauvegarder config Hyperliquid
+                apiCall("/api/config/hyperliquid","PUT",payload,token)
+                  .then(()=>{ loadData(); flashSave("hl"); })
+                  .catch(e=>alert("Erreur lors de la sauvegarde : " + e.message));
+              else
+                alert("Renseigne au moins le wallet ou la cle avant de sauvegarder.");
+            }} style={{width:"100%",background:savedField==="hl"?"#34d399":"linear-gradient(135deg,#6d28d9,#7c3aed)",border:"none",borderRadius:6,padding:"9px",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer",transition:"all 0.3s"}}>
+              {savedField==="hl" ? "✅ Enregistre !" : "⚡ Sauvegarder config Hyperliquid"}
             </button>
           </div>
 
