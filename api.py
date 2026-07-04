@@ -348,14 +348,44 @@ def _open_positions() -> List[Dict[str, Any]]:
         else:
             pnl_pct = (pos["entry"] - price) / pos["entry"] * 100
         pnl = pos["size"] * pnl_pct / 100
+
+        # opened_at est stocke par bot_engine.py au format "%d/%m/%Y %H:%M:%S"
+        # (francais, sans fuseau) — converti en ISO pour que new Date(...) le
+        # parse correctement cote navigateur (ambigu sinon selon le moteur JS).
+        opened_at_iso = None
+        try:
+            opened_at_iso = datetime.strptime(pos["opened_at"], "%d/%m/%Y %H:%M:%S").isoformat()
+        except Exception:
+            pass
+
+        # Complements (leverage, take_profit1/2) recuperes depuis la ligne DB
+        # ouverte correspondante — calcules une seule fois a l entree, voir
+        # bot_engine.py (emit "trade_opened").
+        action = "LONG" if pos["type"] == "long" else "SHORT"
+        trade_id = db.get_open_trade_id_by_coin_action(ticker, action)
+        leverage = cfg.get("LEVERAGE", 1)
+        tp1 = tp2 = None
+        if trade_id:
+            row = db.get_trades(limit=1000)
+            match = next((r for r in row if r["id"] == trade_id), None)
+            if match:
+                leverage = match.get("leverage") or leverage
+                tp1 = match.get("take_profit1")
+                tp2 = match.get("take_profit2")
+
         out.append({
             "id": slot_key,
             "coin": ticker,
-            "action": "LONG" if pos["type"] == "long" else "SHORT",
+            "action": action,
             "entry_price": pos["entry"],
             "current_price": price,
             "size": pos["size"],
+            "size_usdc": round(pos["size"], 2),
+            "leverage": leverage,
             "stop_loss": pos["sl"],
+            "take_profit1": tp1,
+            "take_profit2": tp2,
+            "opened_at": opened_at_iso,
             "pnl": round(pnl, 4),
             "pnl_pct": round(pnl_pct, 3),
         })
@@ -596,17 +626,17 @@ def get_prices(email: str = Depends(require_user)):
     for k, s in bot.states.items():
         if s.current_price:
             prices[be.ticker_from_slot_key(k)] = s.current_price
-    return prices
+    return {"prices": prices}
 
 
 @app.get("/api/positions")
 def get_positions(email: str = Depends(require_user)):
-    return _open_positions()
+    return {"positions": _open_positions()}
 
 
 @app.get("/api/signals")
 def get_signals(limit: int = Query(50), email: str = Depends(require_user)):
-    return [_trade_row_to_signal(r) for r in db.get_trades(limit=limit)]
+    return {"signals": [_trade_row_to_signal(r) for r in db.get_trades(limit=limit)]}
 
 
 @app.get("/api/stats")
