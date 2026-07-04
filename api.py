@@ -305,6 +305,7 @@ def _mask(secret: Optional[str]) -> str:
 
 
 def _public_config() -> Dict[str, Any]:
+    last_times = [s.last_price_time for s in bot.states.values() if s.last_price_time]
     return {
         "trading_mode": cfg.get("MODE", "paper"),
         "profile": cfg.get("PROFILE", "swing"),
@@ -322,6 +323,8 @@ def _public_config() -> Dict[str, Any]:
         "filter_macro": cfg.get("CPI_BLACKOUT_ENABLED", True),
         "ai_continuous": db.get_config_override("ai_continuous", False),
         "running": bot.running,
+        "is_running": bot.running,
+        "last_scan": max(last_times).isoformat() if last_times else None,
         "ws_healthy": bot._is_ws_healthy() if bot.info is not None else False,
         "hyperliquid_configured": bool(cfg.get("PRIVATE_KEY") and cfg.get("WALLET_ADDRESS")),
     }
