@@ -691,6 +691,7 @@ def paper_portfolio(email: str = Depends(require_user)):
 
 @app.post("/api/paper/reset")
 def paper_reset(email: str = Depends(require_user)):
+    print(f"[AUDIT] /api/paper/reset appele par {email} a {datetime.now(timezone.utc).isoformat()}")
     if bot.running:
         raise HTTPException(400, "Arretez le bot avant de reinitialiser")
     db.clear_all_trades()
@@ -844,13 +845,17 @@ def get_stats_daily(email: str = Depends(require_user)):
 
 @app.post("/api/cleanup")
 def cleanup(email: str = Depends(require_user)):
+    print(f"[AUDIT] /api/cleanup appele par {email} a {datetime.now(timezone.utc).isoformat()}")
     # v3.2 — FIX : le bouton de l interface attend un champ "message" (via
     # alert(r.message)), jamais renvoye jusqu ici (d ou l impression que le
     # bouton "ne faisait rien"). Utilise desormais cleanup_signals, qui
     # cible specifiquement les doublons/orphelins "ouverts" (voir db.py) —
     # les trades reellement fermes (historique du Bilan) ne sont jamais
     # touches par ce nettoyage.
-    duplicates, stale = db.cleanup_signals(stale_hours=24)
+    duplicates, stale = db.cleanup_signals(
+        stale_hours=24,
+        protected_coins=[be.ticker_from_slot_key(k) for k, s in bot.states.items() if s.position],
+    )
     old_closed = db.delete_trades_older_than(30)
     total = duplicates + stale + old_closed
     if total == 0:
@@ -869,6 +874,7 @@ def cleanup(email: str = Depends(require_user)):
 
 @app.post("/api/reset-all")
 def reset_all(email: str = Depends(require_user)):
+    print(f"[AUDIT] /api/reset-all appele par {email} a {datetime.now(timezone.utc).isoformat()}")
     if bot.running:
         raise HTTPException(400, "Arretez le bot avant une reinitialisation complete")
     # v3.2 — FIX : preserve les identifiants Hyperliquid/Finnhub (wallet, cle
