@@ -296,6 +296,19 @@ function App() {
   const [finnhubKey, setFinnhubKey] = useState("");
   const [hlApiKey, setHlApiKey] = useState("");
   const [hlWallet, setHlWallet] = useState("");
+  const walletPrefilled = useRef(false);
+  // v3.2 — FIX : le champ Wallet ne se pre-remplissait jamais apres un
+  // rechargement de page (uniquement mis a jour par la saisie manuelle),
+  // donnant l impression trompeuse qu aucune cle n etait enregistree meme
+  // quand le bot tournait deja avec une cle valide. Un useEffect dedie (et
+  // non un simple "if" dans loadData) evite d ecraser la saisie en cours
+  // de l utilisateur a chaque rafraichissement periodique.
+  useEffect(() => {
+    if (config?.wallet && !walletPrefilled.current) {
+      setHlWallet(config.wallet);
+      walletPrefilled.current = true;
+    }
+  }, [config]);
   const [filterWeekend, setFilterWeekend] = useState(true);
   const [filterMacro, setFilterMacro] = useState(false);
   const [dailyStats, setDailyStats] = useState(null);
@@ -345,11 +358,15 @@ function App() {
         apiCall("/api/bot/logs","GET",null,token),
       ]);
       setConfig(cfg);
-      setAiContinuous(cfg?.ai_continuous === 1);
-      setFilterHours(cfg?.filter_hours !== 0);
-      if(cfg?.finnhub_key_preview) setFinnhubKey(cfg?.finnhub_key_preview);
-      setFilterWeekend(cfg?.filter_weekend === 1); // OFF par défaut pour crypto
-      setFilterMacro(cfg?.filter_macro === 1);
+      // v3.2 — FIX : ces champs sont de vrais booleens Python (true/false),
+      // pas des 0/1 — les comparaisons "=== 1" echouaient silencieusement
+      // en permanence (false !== 1 ET true !== 1, donc toujours false).
+      setAiContinuous(!!cfg?.ai_continuous);
+      setFilterHours(!!cfg?.filter_hours);
+      setFilterWeekend(!!cfg?.filter_weekend);
+      setFilterMacro(!!cfg?.filter_macro);
+      // v3.2 — FIX : le champ s appelle finnhub_key (masque), pas finnhub_key_preview
+      if(cfg?.finnhub_key) setFinnhubKey(cfg.finnhub_key);
       setBotLogs(botLogsRes?.logs||[]);
       setSignals(sigs?.signals||[]);
       setPrices(prc?.prices||{});
