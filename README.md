@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/29661157/README.md)
+[README.md](https://github.com/user-attachments/files/29662005/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
@@ -106,6 +106,48 @@ Cliquer sur ARRÊTER depuis la page web arrête bien le vrai bot qui tourne
 sur Railway (il n'y a qu'une seule instance, pas de simulation côté
 navigateur) — et cet arrêt persiste across redéploiements, comme décrit
 ci-dessus.
+
+## 4quater. Vérifier que la persistance fonctionne vraiment
+
+Va sur `https://TON_URL.up.railway.app/health` — tu verras :
+
+```json
+{
+  "data_dir": "/data",
+  "data_dir_configured": true,
+  "boot_count": 3,
+  ...
+}
+```
+
+- `data_dir_configured: false` → tu n'as pas défini `HYPERBOT_DATA_DIR` sur Railway → rien ne persiste.
+- `boot_count` doit **augmenter** (1, 2, 3...) à chaque redéploiement. S'il repart toujours à 1, le Volume n'est pas monté correctement même si la variable est définie (vérifie le point de montage dans Settings > Volumes).
+
+## 4quinquies. Garder les actifs actifs/inactifs sans Volume
+
+Comme pour les clés Hyperliquid/Finnhub, tu peux fixer les actifs actifs via
+une variable d'environnement Railway plutôt que via l'interface web (ce qui
+nécessiterait un Volume pour survivre à un redéploiement) :
+
+| Variable | Exemple | Rôle |
+|---|---|---|
+| `HYPERBOT_ACTIVE_COINS` | `BTC,ETH,SOL` | Liste des actifs actifs, séparés par des virgules (parmi BTC, PAXG, ETH, SOL, BNB, HYPE). Absente = tous actifs. |
+
+Un changement fait depuis l'interface web reste prioritaire tant que le
+process ne redémarre pas, mais **sans Volume, il est perdu au prochain
+redéploiement** — la variable d'environnement, elle, survit toujours.
+
+## 4sexies. Temps de fonctionnement réel (hors arrêts)
+
+Le "temps de trading" affiché dans le bilan ne compte plus le temps écoulé
+depuis un reset, mais le **temps réellement passé avec le bot démarré**
+(`running_seconds`) — les périodes où il était arrêté (manuellement ou
+suite à un redéploiement en attente de redémarrage) ne sont pas comptées.
+Ce compteur est stocké en base (`total_running_seconds` / `running_since`)
+et **nécessite donc lui aussi un Volume pour survivre aux redéploiements** —
+sans Volume, il repart de zéro à chaque redéploiement comme le reste des
+données dynamiques (trades, etc.), contrairement aux clés API qui peuvent
+être fixées par variable d'environnement.
 
 ## 5. Premier lancement
 
