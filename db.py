@@ -177,54 +177,56 @@ def delete_trades_older_than(days):
         return len(to_delete)
 
 
-def cleanup_signals(stale_hours=24, protected_coins=None):
+def cleanup_signals(stale_hours=24, protected_ids=None):
     """Nettoie la table trades en deux temps :
     1. DOUBLONS "ouverts" : un seul trade peut reellement etre ouvert a la
        fois par actif (voir architecture du bot) — si plusieurs lignes du
        meme coin ont closed_at IS NULL, ce sont forcement des orphelins
        (ex: positions paper perdues lors d un redeploiement avant le fix de
-       persistance) ou des doublons. On ne garde que le plus recent par coin.
+       persistance) ou des doublons. On ne garde que le plus recent par coin
+       (sauf la ligne protegee, si elle existe pour ce coin — voir ci-dessous).
     2. ANCIENS : supprime tout trade (ouvert ou ferme) cree il y a plus de
        stale_hours heures et qui n a jamais ete cloture proprement (evite
        de perdre les vrais trades fermes recemment, utiles au Bilan) — seuls
        les trades RESTES OUVERTS trop longtemps sont vises ici, pas
        l historique des trades fermes normalement.
 
-    protected_coins : iterable de tickers ayant REELLEMENT une position
-    ouverte en memoire du bot en ce moment (verifie cote appelant, voir
-    api.py). Ces coins sont ENTIEREMENT exclus du nettoyage — mieux vaut ne
-    rien toucher que de risquer de supprimer par erreur la ligne DB d une
-    position reellement active (le tri "plus recent = le bon" n est qu une
-    heuristique, pas une certitude).
+    protected_ids : iterable d IDs de lignes (pas de coins entiers !)
+    correspondant EXACTEMENT aux positions reellement ouvertes en memoire du
+    bot en ce moment (voir api.py, qui retrouve l id exact via
+    get_open_trade_id_by_coin_action). Seules CES lignes precises sont
+    exclues de toute suppression — les AUTRES doublons du meme coin restent
+    nettoyables normalement (contrairement a une version precedente qui
+    protegeait tout le coin, empechant par erreur le nettoyage des vrais
+    orphelins a cote d une position legitime).
     Retourne (doublons_supprimes, anciens_supprimes).
     """
-    protected = set(protected_coins or [])
+    protected = set(protected_ids or [])
     with _lock, _connect() as conn:
-        # 1. Doublons "ouverts" par coin (hors coins protege)
+        # 1. Doublons "ouverts" par coin (la ligne protegee, si presente,
+        #    est toujours gardee ; sinon on garde le plus recent)
         open_rows = conn.execute(
             "SELECT id, coin, created_at FROM trades WHERE closed_at IS NULL ORDER BY coin, id DESC"
         ).fetchall()
         by_coin = {}
         for r in open_rows:
-            if r["coin"] in protected:
-                continue
             by_coin.setdefault(r["coin"], []).append(r["id"])
         dup_ids = []
         for coin, ids in by_coin.items():
-            # ids est trie du plus recent (DESC) au plus ancien -> on garde ids[0]
-            dup_ids.extend(ids[1:])
+            keep = next((i for i in ids if i in protected), ids[0])
+            dup_ids.extend(i for i in ids if i != keep)
         if dup_ids:
             conn.executemany("DELETE FROM trades WHERE id=?", [(i,) for i in dup_ids])
 
         # 2. Trades restes "ouverts" trop longtemps (orphelins probables),
-        #    hors coins protege
+        #    hors ligne protegee
         cutoff = datetime.now(timezone.utc).timestamp() - stale_hours * 3600
         still_open = conn.execute(
             "SELECT id, coin, created_at FROM trades WHERE closed_at IS NULL"
         ).fetchall()
         stale_ids = []
         for r in still_open:
-            if r["coin"] in protected:
+            if r["id"] in protected:
                 continue
             try:
                 ts = datetime.fromisoformat(r["created_at"]).timestamp()
@@ -236,7 +238,7 @@ def cleanup_signals(stale_hours=24, protected_coins=None):
             conn.executemany("DELETE FROM trades WHERE id=?", [(i,) for i in stale_ids])
 
         conn.commit()
-        print(f"[AUDIT] cleanup_signals() a {now_iso()} — doublons supprimes: {dup_ids} | orphelins supprimes: {stale_ids} | coins proteges: {sorted(protected)}")
+        print(f"[AUDIT] cleanup_signals() a {now_iso()} — doublons supprimes: {dup_ids} | orphelins supprimes: {stale_ids} | ids proteges: {sorted(protected)}")
         return len(dup_ids), len(stale_ids)
 
 
