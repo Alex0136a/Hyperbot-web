@@ -54,9 +54,16 @@ def init_db():
                 pnl REAL,
                 reason TEXT,
                 created_at TEXT NOT NULL,
-                closed_at TEXT
+                closed_at TEXT,
+                rsi REAL
             )
         """)
+        # Migration : ajoute la colonne rsi si la table trades existait deja
+        # (CREATE TABLE IF NOT EXISTS n ajoute pas les colonnes manquantes a
+        # une table deja creee par une version anterieure du code).
+        existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()]
+        if "rsi" not in existing_cols:
+            conn.execute("ALTER TABLE trades ADD COLUMN rsi REAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS config_overrides (
                 key TEXT PRIMARY KEY,
@@ -100,15 +107,15 @@ def user_count():
 # ── Trades ───────────────────────────────────────────────────────────────
 def insert_open_trade(coin, action, confidence, leverage, position_size_pct,
                        risk_reward, timeframe, entry_price, stop_loss,
-                       take_profit1, take_profit2):
+                       take_profit1, take_profit2, rsi=None):
     with _lock, _connect() as conn:
         cur = conn.execute("""
             INSERT INTO trades (coin, action, confidence, leverage, position_size_pct,
                                  risk_reward, timeframe, entry_price, stop_loss,
-                                 take_profit1, take_profit2, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 take_profit1, take_profit2, rsi, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (coin, action, confidence, leverage, position_size_pct, risk_reward,
-              timeframe, entry_price, stop_loss, take_profit1, take_profit2, now_iso()))
+              timeframe, entry_price, stop_loss, take_profit1, take_profit2, rsi, now_iso()))
         conn.commit()
         return cur.lastrowid
 
