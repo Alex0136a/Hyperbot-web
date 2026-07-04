@@ -111,6 +111,43 @@ app.add_middleware(
 
 
 # ─────────────────────────────────────────────────────────────────────────
+#  AUTO-DEMARRAGE PERSISTANT (independant de la page web)
+# ─────────────────────────────────────────────────────────────────────────
+# Le bot tourne cote serveur (dans ce process), pas dans le navigateur : une
+# fois lance, il continue de tourner meme navigateur ferme. Pour qu il
+# redemarre TOUT SEUL apres un redeploiement/redemarrage Railway (sans
+# intervention manuelle sur la page web), on persiste un etat souhaite
+# ("running"/"stopped") en base, mis a jour par /api/bot/start et
+# /api/bot/stop. Au boot du process, on relit cet etat :
+#   - "running" (valeur par defaut, y compris au tout premier deploiement)
+#     -> demarrage automatique si la cle/wallet sont configures
+#   - "stopped" (l utilisateur a explicitement clique ARRETER) -> reste
+#     arrete tant qu il ne clique pas DEMARRER, meme apres un redeploiement.
+def _auto_start_if_desired():
+    desired = db.get_meta("bot_desired_state", "running")
+    if desired != "running":
+        log_buffer.append({
+            "time": datetime.now(timezone.utc).isoformat(), "level": "info",
+            "msg": "Demarrage automatique desactive (dernier etat : ARRETE manuellement)."
+        })
+        return
+    if not cfg.get("PRIVATE_KEY") or not cfg.get("WALLET_ADDRESS"):
+        log_buffer.append({
+            "time": datetime.now(timezone.utc).isoformat(), "level": "warn",
+            "msg": "Demarrage automatique impossible : cle API / wallet Hyperliquid non configures. Configurez-les puis demarrez manuellement."
+        })
+        return
+    bot.start()
+    log_buffer.append({
+        "time": datetime.now(timezone.utc).isoformat(), "level": "ok",
+        "msg": "Demarrage automatique du bot (etat persistant : en cours d execution)."
+    })
+
+
+_auto_start_if_desired()
+
+
+# ─────────────────────────────────────────────────────────────────────────
 #  AUTHENTIFICATION
 # ─────────────────────────────────────────────────────────────────────────
 class AuthBody(BaseModel):
@@ -378,12 +415,17 @@ def bot_start(email: str = Depends(require_user)):
             "d environnement HYPERBOT_PRIVATE_KEY / HYPERBOT_WALLET_ADDRESS."
         )
     bot.start()
+    db.set_meta("bot_desired_state", "running")
     return {"ok": True}
 
 
 @app.post("/api/bot/stop")
 def bot_stop(email: str = Depends(require_user)):
     bot.stop()
+    # Persiste explicitement l intention d arret : le bot ne redemarrera pas
+    # tout seul apres un redeploiement/redemarrage Railway tant que quelqu un
+    # n aura pas reclique sur DEMARRER (voir _auto_start_if_desired).
+    db.set_meta("bot_desired_state", "stopped")
     return {"ok": True}
 
 
