@@ -1481,7 +1481,7 @@ class BotEngine:
         survivre a un redemarrage/redeploiement) — indexe par slot_key (ex:
         "BTC_0"), pas par ticker brut, pour eviter toute ambiguite si un
         meme ticker occupait plusieurs emplacements."""
-        import json
+        import json, os
         positions = {}
         for sym, st in self.states.items():
             if st.position:
@@ -1489,23 +1489,27 @@ class BotEngine:
         try:
             with open(self.POSITIONS_FILE, "w") as f:
                 json.dump(positions, f, indent=2)
+            print(f"[POSITIONS] Sauvegarde OK : {len(positions)} position(s) -> {os.path.abspath(self.POSITIONS_FILE)} (coins: {[ticker_from_slot_key(k) for k in positions]})")
         except Exception as e:
-            print(f"[POSITIONS] Erreur sauvegarde : {e}")
+            print(f"[POSITIONS] ERREUR sauvegarde : {e}")
 
     def _load_saved_positions(self):
         """Charge les positions sauvegardees lors de la derniere session live."""
         import json, os
+        abspath = os.path.abspath(self.POSITIONS_FILE)
         if not os.path.exists(self.POSITIONS_FILE):
+            print(f"[POSITIONS] Aucun fichier trouve a {abspath} — rien a restaurer.")
             return {}
         try:
             with open(self.POSITIONS_FILE, "r") as f:
                 data = json.load(f)
+            print(f"[POSITIONS] Chargement OK depuis {abspath} : {len(data)} position(s) trouvee(s) (coins: {[ticker_from_slot_key(k) for k in data]})")
             # Vider le fichier apres lecture pour eviter double reconciliation
             with open(self.POSITIONS_FILE, "w") as f:
                 json.dump({}, f)
             return data
         except Exception as e:
-            print(f"[POSITIONS] Erreur lecture : {e}")
+            print(f"[POSITIONS] ERREUR lecture : {e}")
             return {}
 
     def emit(self, etype, data=None):
@@ -2042,6 +2046,7 @@ class BotEngine:
                 for sym in cfg["SYMBOLS"]:
                     if sym in prices and self.states[sym].position:
                         self._process_with_timeout(sym, prices[sym])
+                self._save_open_positions()
                 self._send_snapshot()
                 time.sleep(cfg["CYCLE_INTERVAL"])
                 continue
@@ -2055,6 +2060,7 @@ class BotEngine:
                 if sym in prices:
                     self._process_with_timeout(sym, prices[sym])
 
+            self._save_open_positions()
             self._send_snapshot()
             time.sleep(cfg["CYCLE_INTERVAL"])
 
