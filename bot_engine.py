@@ -1874,100 +1874,112 @@ class BotEngine:
     def _run(self):
         cfg = self.cfg
         self.emit("log", {"msg": "Connexion a Hyperliquid...", "level": "info"})
-        # Fix v3.1 : l ancien check comparait a un placeholder ("0xVOTRE_CLE...")
-        # qui ne correspondait jamais a la valeur par defaut reelle ("").
-        # Resultat : avec une cle vide, le bot tentait quand meme une connexion
-        # au lieu de basculer proprement en mode paper simule.
+        # v3.2 : la cle API + le wallet Hyperliquid sont desormais OBLIGATOIRES,
+        # en mode paper COMME en mode live — plus de repli silencieux vers des
+        # prix simules (_sim_prices). Le paper trading doit s appuyer sur les
+        # vraies donnees de marche (prix + WebSocket), seule la passation
+        # d ordres reels reste desactivee en paper (voir place_order/close_order,
+        # tous deux gates par cfg["MODE"]=="live").
         if not cfg["PRIVATE_KEY"] or not cfg["WALLET_ADDRESS"]:
-            self.emit("log", {"msg": "Cle API non configuree - mode paper simule.", "level": "warn"})
-        else:
-            self.info, self.exchange = connect_hyperliquid(cfg["PRIVATE_KEY"], cfg["WALLET_ADDRESS"])
-            if self.info is None:
-                self.emit("log", {"msg": "Connexion echouee.", "level": "error"})
-                self.emit("stopped", {})
-                return
-            self.emit("log", {"msg": "Connexion etablie.", "level": "ok"})
+            self.emit("log", {
+                "msg": "ERREUR : cle API et/ou wallet Hyperliquid manquants — obligatoires desormais (paper ET live). Configurez HYPERBOT_PRIVATE_KEY / HYPERBOT_WALLET_ADDRESS (ou via l API /api/config/hyperliquid) puis redemarrez.",
+                "level": "error"
+            })
+            self.running = False
+            self._started = False
+            self.emit("stopped", {})
+            return
 
-            # ── v3.1 : abonnement WebSocket temps reel (flux allMids) ─────────
-            # Objectif : verifier Max Loss / SL securite / Trailing TP a CHAQUE
-            # tick de prix recu, sans attendre le prochain cycle (CYCLE_INTERVAL).
-            # Fonctionne en mode paper ET live (lecture de prix uniquement, aucun
-            # ordre reel n est jamais passe depuis ce callback en dehors du mode
-            # live — voir _on_ws_allmids -> _manage_position -> close_order).
-            # Repli automatique sur la surveillance par cycle (15s) si l abonnement
-            # echoue (SDK incompatible, pas de reseau, etc.) — aucune perte de
-            # fonctionnalite, juste moins reactif.
-            try:
-                self.info.subscribe({"type": "allMids"}, self._on_ws_allmids)
-                self._ws_subscribed = True
-                self.emit("log", {"msg": "WebSocket temps reel actif — surveillance Max Loss/TP en direct (independante du cycle)", "level": "ok"})
-            except Exception as e:
-                self._ws_subscribed = False
-                self.emit("log", {"msg": f"Echec abonnement WebSocket ({e}) — repli sur surveillance par cycle ({cfg['CYCLE_INTERVAL']}s)", "level": "warn"})
+        self.info, self.exchange = connect_hyperliquid(cfg["PRIVATE_KEY"], cfg["WALLET_ADDRESS"])
+        if self.info is None:
+            self.emit("log", {"msg": "Connexion Hyperliquid echouee — verifiez la cle API / le wallet.", "level": "error"})
+            self.running = False
+            self._started = False
+            self.emit("stopped", {})
+            return
+        self.emit("log", {"msg": "Connexion etablie.", "level": "ok"})
 
-            # ── Application reelle du levier configure (fix v3.1 : LEVERAGE ──
-            # existait dans CONFIG mais n etait jamais envoye a Hyperliquid) ──
-            if cfg["MODE"] == "live":
-                leverage = cfg.get("LEVERAGE", 1)
-                real_tickers_lev = list({ticker_from_slot_key(s) for s in cfg["SYMBOLS"]})
-                lev_errors = []
-                for t in real_tickers_lev:
-                    try:
-                        self.exchange.update_leverage(leverage, t, is_cross=True)
-                    except Exception as e:
-                        lev_errors.append(t)
-                        print(f"[LEVERAGE] Echec x{leverage} sur {t} : {e}")
-                if lev_errors:
-                    self.emit("log", {"msg": f"Levier x{leverage} : echec sur {', '.join(lev_errors)} (verifiez manuellement sur Hyperliquid).", "level": "warn"})
-                else:
-                    self.emit("log", {"msg": f"Levier x{leverage} applique (cross margin) sur : {', '.join(real_tickers_lev)}", "level": "ok"})
+        # ── v3.1 : abonnement WebSocket temps reel (flux allMids) ─────────
+        # Objectif : verifier Max Loss / SL securite / Trailing TP a CHAQUE
+        # tick de prix recu, sans attendre le prochain cycle (CYCLE_INTERVAL).
+        # v3.2 : actif desormais systematiquement en paper ET en live, puisque
+        # la connexion Hyperliquid est obligatoire dans les deux modes — seul
+        # le PASSAGE D ORDRE reel reste reserve au mode live (voir plus bas et
+        # _on_ws_allmids -> _manage_position -> close_order).
+        # Repli automatique sur la surveillance par cycle (15s) si l abonnement
+        # echoue (SDK incompatible, pas de reseau, etc.) — aucune perte de
+        # fonctionnalite, juste moins reactif.
+        try:
+            self.info.subscribe({"type": "allMids"}, self._on_ws_allmids)
+            self._ws_subscribed = True
+            self.emit("log", {"msg": "WebSocket temps reel actif — surveillance Max Loss/TP en direct (independante du cycle)", "level": "ok"})
+        except Exception as e:
+            self._ws_subscribed = False
+            self.emit("log", {"msg": f"Echec abonnement WebSocket ({e}) — repli sur surveillance par cycle ({cfg['CYCLE_INTERVAL']}s)", "level": "warn"})
 
-            # ── Synchronisation capital réel Hyperliquid ──
-            if cfg["MODE"] == "live":
-                real_balance = sync_capital_from_hyperliquid(self.info, cfg["WALLET_ADDRESS"])
-                if real_balance is not None and real_balance > 0:
-                    self.capital = real_balance
-                    self.cfg["CAPITAL_USD"] = real_balance
-                    self.emit("log", {"msg": f"Capital synchronise depuis Hyperliquid : ${real_balance:.2f}", "level": "ok"})
-                else:
-                    self.emit("log", {"msg": "Sync capital echouee — capital local utilise.", "level": "warn"})
+        # ── Application reelle du levier configure (fix v3.1 : LEVERAGE ──
+        # existait dans CONFIG mais n etait jamais envoye a Hyperliquid) ──
+        if cfg["MODE"] == "live":
+            leverage = cfg.get("LEVERAGE", 1)
+            real_tickers_lev = list({ticker_from_slot_key(s) for s in cfg["SYMBOLS"]})
+            lev_errors = []
+            for t in real_tickers_lev:
+                try:
+                    self.exchange.update_leverage(leverage, t, is_cross=True)
+                except Exception as e:
+                    lev_errors.append(t)
+                    print(f"[LEVERAGE] Echec x{leverage} sur {t} : {e}")
+            if lev_errors:
+                self.emit("log", {"msg": f"Levier x{leverage} : echec sur {', '.join(lev_errors)} (verifiez manuellement sur Hyperliquid).", "level": "warn"})
+            else:
+                self.emit("log", {"msg": f"Levier x{leverage} applique (cross margin) sur : {', '.join(real_tickers_lev)}", "level": "ok"})
 
-                # ── Reconciliation : trades fermes par Hyperliquid pendant la deconnexion ──
-                saved_positions = self._load_saved_positions()
-                if saved_positions:
-                    ghost_trades = reconcile_closed_positions(self.info, cfg["WALLET_ADDRESS"], saved_positions, cfg)
-                    for gt in ghost_trades:
-                        sym = gt["symbol"]
-                        # Trouver la slot_key correspondant a ce ticker
-                        slot_key = next((s for s in self.states if ticker_from_slot_key(s) == sym), None)
-                        target = self.states.get(slot_key) if slot_key else None
-                        if target:
-                            target.trades += 1
-                            target.pnl    += gt["pnl"]
-                            if gt["win"]:
-                                target.wins += 1
-                            target.closed_trades.append(gt)
-                            self.cfg["CAPITAL_USD"] += gt["pnl"]
-                            level = "win" if gt["win"] else "loss"
-                            self.emit("trade", gt)
-                            self.emit("log", {"msg": f"[{sym}] {gt['reason']} pendant deconnexion @ ${gt['exit']:.2f} | PnL: ${gt['pnl']:.2f}", "level": level})
+        # ── Synchronisation capital réel Hyperliquid ──
+        if cfg["MODE"] == "live":
+            real_balance = sync_capital_from_hyperliquid(self.info, cfg["WALLET_ADDRESS"])
+            if real_balance is not None and real_balance > 0:
+                self.capital = real_balance
+                self.cfg["CAPITAL_USD"] = real_balance
+                self.emit("log", {"msg": f"Capital synchronise depuis Hyperliquid : ${real_balance:.2f}", "level": "ok"})
+            else:
+                self.emit("log", {"msg": "Sync capital echouee — capital local utilise.", "level": "warn"})
 
-                # ── Reprise des positions encore ouvertes apres crash ──
-                real_tickers = list({ticker_from_slot_key(s) for s in cfg["SYMBOLS"]})
-                recovered = recover_open_positions(self.info, cfg["WALLET_ADDRESS"], real_tickers, cfg)
-                if recovered:
-                    self.emit("log", {"msg": f"{len(recovered)} position(s) recuperee(s) apres reprise.", "level": "warn"})
-                    for ticker_sym, pos in recovered.items():
-                        # Trouver la slot_key correspondant a ce ticker
-                        slot_key = next((s for s in self.states if ticker_from_slot_key(s) == ticker_sym), None)
-                        if slot_key:
-                            self.states[slot_key].position = pos
-                            self.emit("log", {"msg": f"[{ticker_sym}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} reintegree | SL ${pos['sl']:.2f} | TP ${pos['tp']:.2f}", "level": "warn"})
-                            ensure_sl_on_hyperliquid(self.exchange, self.info, cfg["WALLET_ADDRESS"], ticker_sym, pos, cfg)
-                            self.emit("log", {"msg": f"[{ticker_sym}] Verification SL Hyperliquid effectuee", "level": "ok"})
-                else:
-                    self.emit("log", {"msg": "Aucune position ouverte a recuperer.", "level": "info"})
-                self._save_open_positions()
+            # ── Reconciliation : trades fermes par Hyperliquid pendant la deconnexion ──
+            saved_positions = self._load_saved_positions()
+            if saved_positions:
+                ghost_trades = reconcile_closed_positions(self.info, cfg["WALLET_ADDRESS"], saved_positions, cfg)
+                for gt in ghost_trades:
+                    sym = gt["symbol"]
+                    # Trouver la slot_key correspondant a ce ticker
+                    slot_key = next((s for s in self.states if ticker_from_slot_key(s) == sym), None)
+                    target = self.states.get(slot_key) if slot_key else None
+                    if target:
+                        target.trades += 1
+                        target.pnl    += gt["pnl"]
+                        if gt["win"]:
+                            target.wins += 1
+                        target.closed_trades.append(gt)
+                        self.cfg["CAPITAL_USD"] += gt["pnl"]
+                        level = "win" if gt["win"] else "loss"
+                        self.emit("trade", gt)
+                        self.emit("log", {"msg": f"[{sym}] {gt['reason']} pendant deconnexion @ ${gt['exit']:.2f} | PnL: ${gt['pnl']:.2f}", "level": level})
+
+            # ── Reprise des positions encore ouvertes apres crash ──
+            real_tickers = list({ticker_from_slot_key(s) for s in cfg["SYMBOLS"]})
+            recovered = recover_open_positions(self.info, cfg["WALLET_ADDRESS"], real_tickers, cfg)
+            if recovered:
+                self.emit("log", {"msg": f"{len(recovered)} position(s) recuperee(s) apres reprise.", "level": "warn"})
+                for ticker_sym, pos in recovered.items():
+                    # Trouver la slot_key correspondant a ce ticker
+                    slot_key = next((s for s in self.states if ticker_from_slot_key(s) == ticker_sym), None)
+                    if slot_key:
+                        self.states[slot_key].position = pos
+                        self.emit("log", {"msg": f"[{ticker_sym}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} reintegree | SL ${pos['sl']:.2f} | TP ${pos['tp']:.2f}", "level": "warn"})
+                        ensure_sl_on_hyperliquid(self.exchange, self.info, cfg["WALLET_ADDRESS"], ticker_sym, pos, cfg)
+                        self.emit("log", {"msg": f"[{ticker_sym}] Verification SL Hyperliquid effectuee", "level": "ok"})
+            else:
+                self.emit("log", {"msg": "Aucune position ouverte a recuperer.", "level": "info"})
+            self._save_open_positions()
 
         symbols_display = ", ".join(self._original_symbols)
         self.emit("log", {"msg": f"Demarrage | {symbols_display} | ${cfg['CAPITAL_USD']}", "level": "ok"})

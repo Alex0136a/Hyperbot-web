@@ -186,6 +186,7 @@ def _public_config() -> Dict[str, Any]:
         "ai_continuous": db.get_config_override("ai_continuous", False),
         "running": bot.running,
         "ws_healthy": bot._is_ws_healthy() if bot.info is not None else False,
+        "hyperliquid_configured": bool(cfg.get("PRIVATE_KEY") and cfg.get("WALLET_ADDRESS")),
     }
 
 
@@ -366,6 +367,16 @@ def put_ai_continuous(body: AiContinuousBody, email: str = Depends(require_user)
 def bot_start(email: str = Depends(require_user)):
     if bot.running:
         raise HTTPException(400, "Le bot tourne deja")
+    # v3.2 : la cle API + le wallet Hyperliquid sont obligatoires (paper ET
+    # live) — on le verifie ici pour repondre immediatement plutot que de
+    # laisser le thread du bot echouer silencieusement en arriere-plan.
+    if not cfg.get("PRIVATE_KEY") or not cfg.get("WALLET_ADDRESS"):
+        raise HTTPException(
+            400,
+            "Cle API et wallet Hyperliquid obligatoires (paper et live). "
+            "Configurez-les via /api/config/hyperliquid ou les variables "
+            "d environnement HYPERBOT_PRIVATE_KEY / HYPERBOT_WALLET_ADDRESS."
+        )
     bot.start()
     return {"ok": True}
 

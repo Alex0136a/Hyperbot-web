@@ -74,6 +74,17 @@ et les logs — ils ne doivent jamais être versionnés (données personnelles +
 4. **Volume persistant (important)** — Settings → Volumes → *Add Volume*, monte-le sur `/data`. Sans ça, la base SQLite, le capital et les logs sont **remis à zéro à chaque redéploiement**. Avec le volume monté sur `/data` et `HYPERBOT_DATA_DIR=/data`, tout survit aux redéploiements.
 5. Déploie. Railway te donne une URL (`https://xxxx.up.railway.app`) — c'est ton dashboard.
 
+## 4bis. Clé API Hyperliquid — désormais obligatoire (paper ET live)
+
+Depuis cette version, `HYPERBOT_PRIVATE_KEY` et `HYPERBOT_WALLET_ADDRESS` sont
+**obligatoires**, y compris en mode paper : le bot n'utilise plus jamais de
+prix simulés en interne. En mode paper, les prix et le flux WebSocket
+viennent bien de Hyperliquid — seule la **passation d'ordres réels** reste
+désactivée (aucun ordre n'est envoyé à l'exchange tant que `trading_mode`
+n'est pas `live`). Sans ces deux variables, `/api/bot/start` répond
+immédiatement avec une erreur 400 explicite plutôt que de démarrer un bot
+qui échouerait silencieusement.
+
 ## 5. Premier lancement
 
 Va sur l'URL Railway, clique "Créer un compte" et crée **ton unique compte**.
