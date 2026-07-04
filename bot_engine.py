@@ -108,6 +108,13 @@ CONFIG = {
                            "APT", "SEI", "DOGE", "XRP", "NEAR", "FTM", "AAVE",
                            "UNI", "CRV", "SUSHI", "GMX"],
 
+    # v3.2 — Actifs actifs par defaut au tout premier demarrage (modifiable
+    # ensuite depuis l interface web ou via HYPERBOT_ACTIVE_COINS) : parmi
+    # les 30 marches disponibles, seuls ceux-la sont scannes pour de
+    # nouvelles entrees tant que la selection n est pas changee.
+    "ACTIVE_COINS":       ["SUI", "TAO", "NEAR", "WIF", "SOL", "HYPE"],
+    "MAX_OPEN_TRADES":    6,
+
     # Tous les symboles sont des perpétuels — SPOT_SYMBOLS vide
     # PAXG remplace XAUT spot : index 187 sur Hyperliquid, levier max x10
     # Ticker direct "PAXG" dans l API (pas de @XXX)
@@ -115,23 +122,23 @@ CONFIG = {
     "SPOT_TICKER_MAP":    {},
     "SPOT_SL_ASSET_MAP":  {},
 
-    # Stop Loss / Take Profit specifiques par symbole (optionnel)
-    # Si absent, utilise STOP_LOSS_PCT et TAKE_PROFIT_PCT globaux
-    "SYMBOL_SL_PCT":      {"PAXG": 0.8, "SOL": 2.0},   # PAXG : or peu volatil | SOL : volatil
-    "SYMBOL_TP_PCT":      {"PAXG": 1.6},                # PAXG : ratio RR 1:2 sur or
+    # Stop Loss / Take Profit specifiques par symbole — v3.2 : generalises,
+    # plus aucune exception par symbole (voir PROFILE_SWING/PROFILE_SCALP,
+    # qui ecrasent de toute facon ces valeurs a chaque demarrage/reset via
+    # apply_profile). Utilise STOP_LOSS_PCT/TAKE_PROFIT_PCT globaux pour tous.
+    "SYMBOL_SL_PCT":      {},
+    "SYMBOL_TP_PCT":      {},
 
-    # RSI specifique par symbole — si absent utilise RSI_OVERSOLD / RSI_OVERBOUGHT globaux
-    "SYMBOL_RSI_OVERSOLD":   {"SOL": 30, "PAXG": 35},  # SOL assoupli 30 (etait 28)
-    "SYMBOL_RSI_OVERBOUGHT": {"SOL": 70, "PAXG": 65},  # SOL assoupli 70 (etait 72)
+    # RSI specifique par symbole — v3.2 : generalise, plus d exception.
+    "SYMBOL_RSI_OVERSOLD":   {},
+    "SYMBOL_RSI_OVERBOUGHT": {},
 
     # Symboles pour lesquels MACD + BB sont OBLIGATOIRES pour entrer (pas juste optionnels)
     "SYMBOL_REQUIRE_MACD_BB": [],
 
-    # Symboles pour lesquels l EMA200 est OBLIGATOIRE pour confirmer la direction :
-    # Long autorise uniquement si prix > EMA200 (tendance haussiere)
-    # Short autorise uniquement si prix < EMA200 (tendance baissiere)
-    # Evite les trades a contre-tendance — SOL exclu car deja tres filtre (MACD + BB + RSI strict)
-    "SYMBOL_REQUIRE_EMA200": ["BTC", "PAXG"],
+    # Symboles pour lesquels l EMA200 est OBLIGATOIRE — v3.2 : generalise,
+    # plus aucun symbole n a cette contrainte particuliere.
+    "SYMBOL_REQUIRE_EMA200": [],
 
     "CAPITAL_USD":        1000,
     "POSITION_SIZE_PCT":  5,               # 5% du capital par trade — coherent avec Max Loss -0.75$
@@ -164,11 +171,10 @@ CONFIG = {
 
     # Trailing Stop Loss — delta elargi pour ne pas couper les trades gagnants
     "TRAILING_STOP":      True,
-    "TRAILING_DELTA_PCT": 1.2,   # delta global BTC / SOL
+    "TRAILING_DELTA_PCT": 1.2,   # delta global, applique desormais a tous uniformement
 
-    # Delta Trailing SL specifique par symbole (optionnel)
-    # L or (PAXG) etant moins volatil, un delta plus serre preserve mieux les gains
-    "SYMBOL_TRAILING_DELTA_PCT": {"PAXG": 0.7},  # 0.7% pour l or vs 1.2% global
+    # v3.2 : plus de delta specifique par symbole — generalise a tous.
+    "SYMBOL_TRAILING_DELTA_PCT": {},
 
     # Seuil minimum de deplacement du Trailing SL avant synchronisation sur Hyperliquid.
     # Evite les appels API inutiles sur de micro-mouvements de prix.
@@ -309,30 +315,38 @@ CONFIG["FINNHUB_API_KEY"] = _os_env.environ.get("HYPERBOT_FINNHUB_API_KEY", CONF
 # ─────────────────────────────────────────────
 PROFILE_SWING = {
     "PROFILE":                  "swing",
+    # v3.2 — REGLES GENERALISEES A TOUS LES CRYPTOS : plus aucun traitement
+    # special par symbole (RSI, EMA, ATR, pivot, EMA200, cycles consecutifs).
+    # Tous les actifs (BTC, ETH, SOL, BNB, HYPE, PAXG et les 24 autres)
+    # utilisent exactement les memes seuils globaux ci-dessous.
+    # SEULE EXCEPTION : PAXG (l or) suit en plus les heures de fermeture du
+    # Forex (voir FOREX_SYMBOLS dans CONFIG, gere independamment de ce profil)
+    # — c est la seule difference de traitement qui subsiste pour l or.
     "RSI_OVERSOLD":             32,
     "RSI_OVERBOUGHT":           68,
-    "SYMBOL_RSI_OVERSOLD":      {"SOL": 30, "PAXG": 35},  # SOL assoupli 30 (etait 28)
-    "SYMBOL_RSI_OVERBOUGHT":    {"SOL": 70, "PAXG": 65},  # SOL assoupli 70 (etait 72)
-    # Mode RSI par symbole — "trend" : entre dans le sens du momentum (RSI>50=LONG, <50=SHORT)
-    # BTC, ETH, SOL, BNB, HYPE : suivi de tendance
-    # PAXG : retournement classique — or en range frequent, EMA20/50 suffit
-    "SYMBOL_RSI_MODE":          {"BTC": "trend", "HYPE": "trend", "ETH": "trend", "SOL": "trend", "BNB": "trend"},
+    "SYMBOL_RSI_OVERSOLD":      {},
+    "SYMBOL_RSI_OVERBOUGHT":    {},
+    # Mode RSI unique pour tous : "trend" (entre dans le sens du momentum,
+    # RSI>50=LONG, RSI<50=SHORT) — auparavant reserve a BTC/ETH/SOL/BNB/HYPE,
+    # desormais le comportement par defaut pour tout le monde (voir le
+    # fallback "trend" dans _process, plus "reversal").
+    "SYMBOL_RSI_MODE":          {},
     "EMA_SHORT":                12,
     "EMA_LONG":                 26,
-    # EMA specifiques par symbole — ecrasent EMA_SHORT/LONG globaux
-    # PAXG : EMA 20/50 plus lentes — mieux adaptees au rythme de l or
-    # Filtrent le bruit court terme et capturent les vraies tendances
-    "SYMBOL_EMA_SHORT":         {"PAXG": 20},
-    "SYMBOL_EMA_LONG":          {"PAXG": 50},
-    # EMA intermediaire — filtre de tendance 25-50 min sur TOUS les actifs
-    "SYMBOL_EMA_MID":           {"BTC": 50, "ETH": 50, "SOL": 50, "BNB": 50, "HYPE": 50},
+    "SYMBOL_EMA_SHORT":         {},
+    "SYMBOL_EMA_LONG":          {},
+    # EMA intermediaire — filtre de tendance 25-50 min, applique desormais a
+    # TOUS les actifs de la meme facon via EMA_MID_PERIOD (plus de dict par
+    # symbole).
+    "EMA_MID_PERIOD":           50,
+    "SYMBOL_EMA_MID":           {},
     "STOP_LOSS_PCT":            1.5,
     "TAKE_PROFIT_PCT":          1.5,
-    "SYMBOL_SL_PCT":            {"PAXG": 0.8, "SOL": 1.0, "BTC": 1.0},
-    "SYMBOL_TP_PCT":            {"PAXG": 1.5, "BTC": 1.5},
+    "SYMBOL_SL_PCT":            {},
+    "SYMBOL_TP_PCT":            {},
     "TRAILING_STOP":            True,
     "TRAILING_DELTA_PCT":       0.6,
-    "SYMBOL_TRAILING_DELTA_PCT":{"PAXG": 0.5, "BTC": 0.5},
+    "SYMBOL_TRAILING_DELTA_PCT":{},
     "TRAILING_TP":              True,
     "TRAILING_TP_STEP_PCT":     0.8,
     "TRAILING_TP_RSI_EXIT":     55,
@@ -340,56 +354,32 @@ PROFILE_SWING = {
     "TRAILING_TP_PROTECT_PCT":  0.97,
     "TRAILING_SL_MIN_MOVE_PCT": 0.1,
     "SYMBOL_REQUIRE_MACD_BB":   [],
-    "SYMBOL_REQUIRE_EMA200":    ["BTC", "PAXG"],
-    # Pivot EMA — croisement frais obligatoire avant entree (BTC et PAXG)
-    # SOL exclu : deja tres filtre avec MACD+BB
-    "PIVOT_CONFIRM_SYMBOLS":    ["BTC", "PAXG"],
-    # Cycles consecutifs requis par symbole avant entree
-    # PAXG : 2 cycles consecutifs dans le sens de la tendance
-    # Evite les faux croisements EMA de courte duree sur l or
-    "CONSEC_CONFIRM_SYMBOLS":   {"PAXG": 2},
+    "SYMBOL_REQUIRE_EMA200":    [],
+    "PIVOT_CONFIRM_SYMBOLS":    [],
+    "CONSEC_CONFIRM_SYMBOLS":   {},
     "VOLUME_MIN_RATIO":         1.2,
     "FOREX_WARMUP_MINUTES":     15,
-    # Filtre ATR en swing — bloque les entrees sur marche trop calme
-    # Seuil plus bas qu en scalping car on tolere plus de lenteur
+    # Filtre ATR en swing — bloque les entrees sur marche trop calme.
+    # Seuil global unique pour tous les actifs.
     "ATR_FILTER":               True,
     "ATR_PERIOD":               14,
     "ATR_MIN_PCT":              0.05,
-    "ATR_MIN_PCT_BY_SYMBOL":    {"BTC": 0.03, "PAXG": 0.02},  # seuils adaptes swing
+    "ATR_MIN_PCT_BY_SYMBOL":    {},
 
     # ── SL par paliers de gains (swing uniquement) ───────────────────────────
     "SL_LOCK_ENABLED":          True,
-    # Paliers globaux — BTC et SOL (TP a 3%)
     "SL_LOCK_STEPS": [
         (0.5, 0.0),   # +0.5% → breakeven
         (1.0, 0.9),   # +1.0% → +0.9%
         (1.5, 1.3),   # +1.5% → +1.3%
         (2.0, 1.8),   # +2.0% → +1.8%
     ],
-    # Paliers specifiques par symbole — ecrasent les paliers globaux
-    # PAXG : paliers adaptes au TP de 1.6%
-    "SL_LOCK_STEPS_BY_SYMBOL": {
-        "PAXG": [
-            (0.5, 0.0),   # +0.5% → breakeven (etait 0.3% — trop sensible)
-            (0.8, 0.7),   # +0.8% → +0.7%
-            (1.2, 1.1),   # +1.2% → +1.0%
-        ],
-        # BTC : paliers resserres, adaptes au SL 1.0% / TP 2.0%
-        # Fourchette BTC observee ~2% — progression plus fine pour
-        # securiser rapidement dans cette amplitude reduite
-        "BTC": [
-            (0.35, 0.0),  # +0.35% → breakeven
-            (0.7,  0.6),  # +0.7%  → +0.6%
-            (1.0,  0.9),  # +1.0%  → +0.9%
-            (1.5,  1.3),  # +1.5%  → +1.3%
-        ],
-    },
+    "SL_LOCK_STEPS_BY_SYMBOL": {},
 
     # Momentum Instantane — "ce qui se passe MAINTENANT" prevaut sur les EMA
     # Si le prix a bouge de +/-0.20% sur les 4 derniers cycles (2 min) dans
-    # le sens OPPOSE au signal EMA/RSI, l entree est bloquee.
-    # BTC : seuil releve a 0.20% (etait 0.15%) — plus selectif sur les SHORT
-    # en tendance haussiere de fond
+    # le sens OPPOSE au signal EMA/RSI, l entree est bloquee. Seuil unique
+    # pour tous les actifs.
     "MOMENTUM_PERIOD":          4,
     "MOMENTUM_THRESHOLD_PCT":   0.20,
 }
@@ -399,51 +389,43 @@ PROFILE_SCALP = {
     # RSI compromis swing/scalp — BTC entre plus facilement
     "RSI_OVERSOLD":             40,
     "RSI_OVERBOUGHT":           60,
-    "SYMBOL_RSI_OVERSOLD":      {"SOL": 38, "PAXG": 39},  # SOL assoupli 38 (etait 36)
-    "SYMBOL_RSI_OVERBOUGHT":    {"SOL": 62, "PAXG": 61},  # SOL assoupli 62 (etait 64)
-    # Mode RSI BTC + ETH + SOL + BNB + HYPE — suivi de tendance
-    # PAXG garde le retournement classique
-    "SYMBOL_RSI_MODE":          {"BTC": "trend", "HYPE": "trend", "ETH": "trend", "SOL": "trend", "BNB": "trend"},
+    "SYMBOL_RSI_OVERSOLD":      {},
+    "SYMBOL_RSI_OVERBOUGHT":    {},
+    "SYMBOL_RSI_MODE":          {},
     # EMA plus courtes pour etre plus reactif
     "EMA_SHORT":                8,
     "EMA_LONG":                 21,
-    # PAXG : EMA plus lentes meme en scalp pour eviter les faux croisements
-    "SYMBOL_EMA_SHORT":         {"PAXG": 15},
-    "SYMBOL_EMA_LONG":          {"PAXG": 35},
-    # EMA intermediaire scalp — fenetre plus courte (30 min) sur TOUS les actifs
-    "SYMBOL_EMA_MID":           {"BTC": 60, "ETH": 60, "SOL": 60, "BNB": 60, "HYPE": 60},
+    "SYMBOL_EMA_SHORT":         {},
+    "SYMBOL_EMA_LONG":          {},
+    # EMA intermediaire scalp — fenetre plus courte (30 min), uniforme pour tous
+    "EMA_MID_PERIOD":           30,
+    "SYMBOL_EMA_MID":           {},
     # SL et TP serres
     "STOP_LOSS_PCT":            0.4,
     "TAKE_PROFIT_PCT":          0.8,
-    "SYMBOL_SL_PCT":            {"PAXG": 0.3, "SOL": 0.5},
-    "SYMBOL_TP_PCT":            {"PAXG": 0.6},
+    "SYMBOL_SL_PCT":            {},
+    "SYMBOL_TP_PCT":            {},
     # Trailing serre
     "TRAILING_STOP":            True,
     "TRAILING_DELTA_PCT":       0.3,
-    "SYMBOL_TRAILING_DELTA_PCT":{"PAXG": 0.2},
+    "SYMBOL_TRAILING_DELTA_PCT":{},
     "TRAILING_TP":              True,
     "TRAILING_TP_STEP_PCT":     0.4,
     "TRAILING_TP_RSI_EXIT":     52,
     "TRAILING_TP_MIN_SIGNALS":  2,
     "TRAILING_TP_PROTECT_PCT":  0.97,
     "TRAILING_SL_MIN_MOVE_PCT": 0.05,
-    # EMA200 obligatoire sur PAXG uniquement — BTC libre pour attraper les gros mouvements
-    "SYMBOL_REQUIRE_EMA200":    ["PAXG"],
+    "SYMBOL_REQUIRE_EMA200":    [],
     "SYMBOL_REQUIRE_MACD_BB":   [],
-    # Pivot EMA — PAXG uniquement en scalp (BTC retire — trop restrictif sur cycles 30s)
-    # En scalp on veut reagir vite, pas attendre la confirmation parfaite
-    "PIVOT_CONFIRM_SYMBOLS":    ["PAXG"],
-    # Cycles consecutifs requis — PAXG : 2 cycles
-    "CONSEC_CONFIRM_SYMBOLS":   {"PAXG": 2},
+    "PIVOT_CONFIRM_SYMBOLS":    [],
+    "CONSEC_CONFIRM_SYMBOLS":   {},
     "VOLUME_MIN_RATIO":         1.0,
     "FOREX_WARMUP_MINUTES":     5,
-    # Filtre ATR — actif sur tous les symboles avec seuil adapte
-    # BTC : seuil tres bas 0.025% — laisse passer un maximum de mouvements en scalp
-    # PAXG et SOL : seuil 0.06%
+    # Filtre ATR — seuil global unique pour tous les actifs
     "ATR_FILTER":               True,
     "ATR_PERIOD":               14,
-    "ATR_MIN_PCT":              0.06,   # seuil global PAXG et SOL
-    "ATR_MIN_PCT_BY_SYMBOL":    {"BTC": 0.025},  # seuil tres permissif BTC scalp
+    "ATR_MIN_PCT":              0.06,
+    "ATR_MIN_PCT_BY_SYMBOL":    {},
     "ATR_EXCLUDE_SYMBOLS":      [],     # plus d exclusion
 
     # Support/Resistance — confirmation de breakout (SCALP uniquement)
@@ -1232,10 +1214,11 @@ class SymbolState:
         self.consec_bull     = 0
         self.consec_bear     = 0
 
-    def open_position(self, ptype, entry, sl, tp, size):
+    def open_position(self, ptype, entry, sl, tp, size, confidence=None):
         self.position = {
             "type": ptype, "entry": entry, "sl": sl, "tp": tp,
             "size": size, "opened_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            "confidence": confidence,
         }
         self.peak_price = entry
         self.trailing_tp_active = False
@@ -1651,29 +1634,39 @@ class BotEngine:
         base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
         return self.confidence_thresholds.get(ticker, base)
 
-    def _register_max_loss(self, ticker):
+    def _register_max_loss(self, ticker, entry_confidence=None):
         """Apres un Max Loss / SL securite sur un actif, on releve son seuil
-        de confiance minimum requis : le bot devient plus exigeant avant de
-        retenter cet actif, jusqu au plafond CONFIDENCE_MAX_PCT."""
+        de confiance minimum requis a : confiance qu avait CE trade a son
+        entree + 5% (pas juste +5% sur le dernier seuil utilise) — plus un
+        trade perdant avait ete pris avec confiance elevee, plus la barre
+        remonte haut pour le prochain, jusqu au plafond CONFIDENCE_MAX_PCT.
+        Si la confiance d entree n est pas disponible (positions recuperees
+        apres un crash, anciennes positions), on se rabat sur l ancien
+        comportement (+5% sur le seuil actuel).
+        """
         base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
         step = self.cfg.get("CONFIDENCE_STEP_PCT", 5.0)
         cap  = self.cfg.get("CONFIDENCE_MAX_PCT", 90.0)
         current = self.confidence_thresholds.get(ticker, base)
-        new_threshold = min(current + step, cap)
+        if entry_confidence is not None:
+            new_threshold = min(entry_confidence + step, cap)
+        else:
+            new_threshold = min(current + step, cap)
         if new_threshold != current:
             self.confidence_thresholds[ticker] = new_threshold
-            self.emit("log", {"msg": f"[{ticker}] Confiance minimale requise relevee a {new_threshold:.0f}% (apres perte)", "level": "warn"})
+            self.emit("log", {"msg": f"[{ticker}] Confiance minimale requise relevee a {new_threshold:.0f}% (confiance d entree {entry_confidence:.0f}% + {step:.0f}%)" if entry_confidence is not None else f"[{ticker}] Confiance minimale requise relevee a {new_threshold:.0f}% (apres perte)", "level": "warn"})
 
     def _register_win(self, ticker):
-        """Apres un trade gagnant sur un actif dont le seuil avait ete releve,
-        on redescend progressivement ce seuil vers la base."""
+        """Apres une sortie positive (Quick Profit ou Trailing TP), on rend
+        IMMEDIATEMENT et INTEGRALEMENT la confiance de base a cet actif
+        (reset complet, pas une simple decroissance de -5%) — un gain efface
+        entierement la mefiance accumulee suite a d eventuelles pertes
+        precedentes."""
         base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
-        step = self.cfg.get("CONFIDENCE_STEP_PCT", 5.0)
         current = self.confidence_thresholds.get(ticker, base)
         if current > base:
-            new_threshold = max(current - step, base)
-            self.confidence_thresholds[ticker] = new_threshold
-            self.emit("log", {"msg": f"[{ticker}] Confiance minimale requise redescendue a {new_threshold:.0f}% (apres gain)", "level": "ok"})
+            self.confidence_thresholds[ticker] = base
+            self.emit("log", {"msg": f"[{ticker}] Confiance minimale requise reinitialisee a {base:.0f}% (apres gain Quick Profit/Trailing TP)", "level": "ok"})
 
     # ── v3.1 : Blackout CPI (Finnhub) ────────────────────────────────────────
     def _refresh_cpi_events_if_needed(self):
@@ -2092,7 +2085,7 @@ class BotEngine:
                 close_order(self.exchange, ticker, pos, self.cfg)
             self.emit("trade", trade)
             self.emit("log", {"msg": f"[{ticker}] MAX LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (seuil -${max_loss_usd:.2f})", "level": "loss"})
-            self._register_max_loss(ticker)
+            self._register_max_loss(ticker, pos.get("confidence"))
             if mode == "live": self._save_open_positions()
             return
 
@@ -2107,7 +2100,7 @@ class BotEngine:
                 close_order(self.exchange, ticker, pos, self.cfg)
             self.emit("trade", trade)
             self.emit("log", {"msg": f"[{ticker}] SL SECURITE @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
-            self._register_max_loss(ticker)
+            self._register_max_loss(ticker, pos.get("confidence"))
             if mode == "live": self._save_open_positions()
             return
 
@@ -2190,7 +2183,7 @@ class BotEngine:
         # BTC/ETH : EMA50 swing (25 min) ou EMA60 scalp (30 min)
         # Prix > EMA_MID → tendance haussiere de fond → bloquer SHORT
         # Prix < EMA_MID → tendance baissiere de fond → bloquer LONG
-        ema_mid_period = cfg.get("SYMBOL_EMA_MID", {}).get(ticker, None)
+        ema_mid_period = cfg.get("SYMBOL_EMA_MID", {}).get(ticker, cfg.get("EMA_MID_PERIOD", 50))
         ema_mid = calc_ema(prices, ema_mid_period) if ema_mid_period else None
         macd, sig = calc_macd(prices, cfg["MACD_FAST"], cfg["MACD_SLOW"], cfg["MACD_SIGNAL"])
         bb_up, bb_mid, bb_low = calc_bollinger(prices, cfg["BB_PERIOD"], cfg["BB_STD"])
@@ -2399,7 +2392,7 @@ class BotEngine:
         # "reversal"  (defaut) : RSI < oversold (survente) pour LONG — strategie retournement
         # "trend"              : RSI > 50 pour LONG, RSI < 50 pour SHORT — strategie suivi tendance
         # BTC utilise le mode "trend" — entre dans le sens du momentum, pas contre lui
-        rsi_mode = cfg.get("SYMBOL_RSI_MODE", {}).get(ticker, "reversal")
+        rsi_mode = cfg.get("SYMBOL_RSI_MODE", {}).get(ticker, "trend")
         if rsi_mode == "trend":
             rsi_buy  = rsi > 50   # momentum haussier confirme
             rsi_sell = rsi < 50   # momentum baissier confirme
@@ -2626,7 +2619,7 @@ class BotEngine:
                 self.emit("log", {"msg": f"[{ticker}] Ordre non execute", "level": "warn"})
                 return
 
-        state.open_position(signal, price, sl_p, tp_p, size)
+        state.open_position(signal, price, sl_p, tp_p, size, confidence=confidence)
         if cfg["MODE"] == "live": self._save_open_positions()
 
         # ── v3.2 web : evenement structure pour l API (table trades / signaux) ──
@@ -2655,6 +2648,7 @@ class BotEngine:
             "stop_loss": sl_p,
             "take_profit1": tp1_price,
             "take_profit2": tp2_price,
+            "rsi": round(rsi, 1) if rsi is not None else None,
         })
 
 
