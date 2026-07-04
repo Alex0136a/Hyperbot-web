@@ -550,8 +550,8 @@ Confirmer ?`
                 ? <div style={{fontSize:9,color:"#334155",fontFamily:"monospace"}}>{isRunning?"⚡ En attente...":"● Bot arrêté"}</div>
                 : botLogs.slice(0,6).map((log,i)=>(
                   <div key={i} style={{display:"flex",gap:6,marginBottom:2}}>
-                    <span style={{fontSize:9,color:"#334155",whiteSpace:"nowrap",fontFamily:"monospace"}}>{log.time}</span>
-                    <span style={{fontSize:9,fontFamily:"monospace",color:log.level==="success"?"#34d399":log.level==="error"?"#f87171":log.level==="warning"?"#fbbf24":"#475569"}}>{log.message}</span>
+                    <span style={{fontSize:9,color:"#64748b",whiteSpace:"nowrap",fontFamily:"monospace"}}>{log.time}</span>
+                    <span style={{fontSize:9,fontFamily:"monospace",color:log.level==="success"?"#34d399":log.level==="error"?"#f87171":log.level==="warning"?"#fbbf24":"#94a3b8"}}>{log.message}</span>
                   </div>
                 ))
               }
@@ -897,7 +897,7 @@ Confirmer ?`
             {botLogs.length===0?<div style={{color:"#334155",fontSize:11}}>{isRunning?"En attente du premier scan...":"Démarrez le bot pour voir les logs"}</div>
             :botLogs.map((l,i)=>(
               <div key={i} style={{display:"flex",gap:8,marginBottom:3}}>
-                <span style={{color:"#334155",fontSize:10,whiteSpace:"nowrap"}}>{l.time}</span>
+                <span style={{color:"#64748b",fontSize:10,whiteSpace:"nowrap"}}>{l.time}</span>
                 <span style={{color:l.level==="success"?"#34d399":l.level==="error"?"#f87171":l.level==="warning"?"#fbbf24":"#94a3b8",fontSize:11,lineHeight:1.5}}>{l.message}</span>
               </div>
             ))}
