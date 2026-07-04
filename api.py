@@ -21,6 +21,7 @@ import os
 # fichiers avec des chemins relatifs, resolus par rapport au repertoire
 # courant du process.
 _DATA_DIR = os.environ.get("HYPERBOT_DATA_DIR", ".")
+_DATA_DIR_CONFIGURED = "HYPERBOT_DATA_DIR" in os.environ
 os.makedirs(_DATA_DIR, exist_ok=True)
 os.chdir(_DATA_DIR)
 
@@ -52,6 +53,15 @@ db.init_db()
 SUPPORTED_TICKERS = [be.ticker_from_slot_key(s) for s in be.CONFIG["SYMBOLS"]]
 
 cfg = dict(be.CONFIG)
+
+# v3.2 : fallback via variable d environnement pour ACTIVE_COINS — permet de
+# fixer les actifs actifs sans dependre d un Volume Railway (comme pour les
+# cles Hyperliquid/Finnhub). Une eventuelle valeur enregistree en base (via
+# l interface web, necessite un Volume) reste prioritaire si presente.
+_env_active_coins = os.environ.get("HYPERBOT_ACTIVE_COINS", "").strip()
+if _env_active_coins:
+    cfg["ACTIVE_COINS"] = [c.strip().upper() for c in _env_active_coins.split(",") if c.strip()]
+
 for k, v in db.get_all_config_overrides().items():
     cfg[k] = v
 be.apply_profile(cfg, cfg.get("PROFILE", "swing"))
@@ -61,10 +71,35 @@ if db.get_meta("initial_balance") is None:
 if db.get_meta("reset_at") is None:
     db.set_meta("reset_at", db.now_iso())
 
+# ── Diagnostic de persistance ────────────────────────────────────────────
+# BOOT_COUNT est stocke en base : s il repart TOUJOURS a 1 apres chaque
+# redeploiement Railway (au lieu de s incrementer 1, 2, 3...), c est la
+# preuve que les donnees ne persistent pas — HYPERBOT_DATA_DIR ne pointe
+# pas vers un Volume monte. Visible dans /health et dans les logs de
+# demarrage.
+BOOT_COUNT = int(db.get_meta("boot_count", "0")) + 1
+db.set_meta("boot_count", str(BOOT_COUNT))
+_startup_warnings = []
+if not _DATA_DIR_CONFIGURED:
+    _startup_warnings.append(
+        "HYPERBOT_DATA_DIR n est pas definie — les donnees (base, capital, cle "
+        "API) NE PERSISTERONT PAS entre deux redeploiements Railway. Cree un "
+        "Volume (Settings > Volumes), monte-le par exemple sur /data, et "
+        "definis HYPERBOT_DATA_DIR=/data."
+    )
+if BOOT_COUNT == 1:
+    _startup_warnings.append(
+        "Premier demarrage detecte pour cette base de donnees (boot_count=1). "
+        "Si ce nombre repart TOUJOURS a 1 apres un redeploiement, le Volume "
+        "n est pas correctement monte — voir /health."
+    )
+
 event_queue = queue.Queue()
 bot = be.BotEngine(cfg, event_queue)
 
 log_buffer = deque(maxlen=500)
+for _w in _startup_warnings:
+    log_buffer.append({"time": datetime.now(timezone.utc).isoformat(), "level": "warn", "msg": _w})
 _state_lock = threading.Lock()
 
 
@@ -110,6 +145,59 @@ app.add_middleware(
 )
 
 
+@app.on_event("shutdown")
+def _on_shutdown():
+    # Best-effort : accumule le temps de fonctionnement si le process
+    # s arrete proprement (Railway envoie SIGTERM avant un redeploiement).
+    # Ne couvre pas un arret brutal (crash, kill -9) — dans ce cas, la
+    # derniere fraction de temps depuis "running_since" ne sera comptee
+    # qu au prochain calcul via _get_running_seconds si "running_since"
+    # est encore renseigne (le calcul inclut deja la session en cours).
+    if bot.running:
+        _mark_running_stop_and_accumulate()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  TEMPS DE FONCTIONNEMENT REEL (exclut les periodes d arret)
+# ─────────────────────────────────────────────────────────────────────────
+# total_running_seconds (persiste en base) + running_since (horodatage du
+# demarrage en cours, tant que le bot tourne). La duree affichee au client
+# ne compte donc que le temps ou le bot a reellement tourne, jamais les
+# periodes ou il etait arrete — contrairement a un simple "temps ecoule
+# depuis le dernier reset".
+def _mark_running_start():
+    db.set_meta("running_since", db.now_iso())
+
+
+def _mark_running_stop_and_accumulate():
+    since = db.get_meta("running_since")
+    if not since:
+        return
+    try:
+        started = datetime.fromisoformat(since)
+        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+        total = float(db.get_meta("total_running_seconds", "0")) + max(elapsed, 0)
+        db.set_meta("total_running_seconds", str(total))
+    except Exception as e:
+        print(f"[uptime] Erreur calcul temps de fonctionnement: {e}")
+    finally:
+        db.set_meta("running_since", "")
+
+
+def _get_running_seconds() -> float:
+    """Temps de fonctionnement cumule, y compris la session en cours si le
+    bot tourne actuellement (sans attendre un arret pour la comptabiliser)."""
+    total = float(db.get_meta("total_running_seconds", "0"))
+    since = db.get_meta("running_since")
+    if since:
+        try:
+            started = datetime.fromisoformat(since)
+            total += max((datetime.now(timezone.utc) - started).total_seconds(), 0)
+        except Exception:
+            pass
+    return total
+
+
 # ─────────────────────────────────────────────────────────────────────────
 #  AUTO-DEMARRAGE PERSISTANT (independant de la page web)
 # ─────────────────────────────────────────────────────────────────────────
@@ -138,6 +226,7 @@ def _auto_start_if_desired():
         })
         return
     bot.start()
+    _mark_running_start()
     log_buffer.append({
         "time": datetime.now(timezone.utc).isoformat(), "level": "ok",
         "msg": "Demarrage automatique du bot (etat persistant : en cours d execution)."
@@ -415,6 +504,7 @@ def bot_start(email: str = Depends(require_user)):
             "d environnement HYPERBOT_PRIVATE_KEY / HYPERBOT_WALLET_ADDRESS."
         )
     bot.start()
+    _mark_running_start()
     db.set_meta("bot_desired_state", "running")
     return {"ok": True}
 
@@ -422,6 +512,7 @@ def bot_start(email: str = Depends(require_user)):
 @app.post("/api/bot/stop")
 def bot_stop(email: str = Depends(require_user)):
     bot.stop()
+    _mark_running_stop_and_accumulate()
     # Persiste explicitement l intention d arret : le bot ne redemarrera pas
     # tout seul apres un redeploiement/redemarrage Railway tant que quelqu un
     # n aura pas reclique sur DEMARRER (voir _auto_start_if_desired).
@@ -505,6 +596,8 @@ def paper_reset(email: str = Depends(require_user)):
     be.save_capital(bot.capital, 0, 0.0)
     db.set_meta("reset_at", db.now_iso())
     db.set_meta("initial_balance", str(bot.capital))
+    db.set_meta("total_running_seconds", "0")
+    db.set_meta("running_since", "")
     return {"ok": True}
 
 
@@ -628,6 +721,7 @@ def get_bilan(email: str = Depends(require_user)):
         "open_pnl": open_pnl,
         "open_count": len(open_positions),
         "reset_at": db.get_meta("reset_at"),
+        "running_seconds": round(_get_running_seconds()),
         "today": _aggregate(today_rows),
         "total": _aggregate(closed),
         "daily": _compute_daily(closed, days=7),
@@ -661,6 +755,8 @@ def reset_all(email: str = Depends(require_user)):
         state.closed_trades.clear()
     cfg.clear()
     cfg.update(be.CONFIG)
+    if _env_active_coins:
+        cfg["ACTIVE_COINS"] = [c.strip().upper() for c in _env_active_coins.split(",") if c.strip()]
     be.apply_profile(cfg, cfg.get("PROFILE", "swing"))
     # cfg["SYMBOLS"] doit rester sous forme de slot_keys ("BTC_0", ...) pour
     # rester coherent avec les cles de bot.states (jamais reconstruit ici) —
@@ -674,6 +770,8 @@ def reset_all(email: str = Depends(require_user)):
     be.save_capital(bot.capital, 0, 0.0)
     db.set_meta("reset_at", db.now_iso())
     db.set_meta("initial_balance", str(bot.capital))
+    db.set_meta("total_running_seconds", "0")
+    db.set_meta("running_since", "")
     log_buffer.clear()
     return {"ok": True}
 
@@ -692,4 +790,17 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "bot_running": bot.running, "version": be.BOT_VERSION, "build": be.BOT_BUILD}
+    return {
+        "ok": True,
+        "bot_running": bot.running,
+        "version": be.BOT_VERSION,
+        "build": be.BOT_BUILD,
+        "data_dir": _DATA_DIR,
+        "data_dir_configured": _DATA_DIR_CONFIGURED,
+        "boot_count": BOOT_COUNT,
+        "persistence_note": (
+            "boot_count doit augmenter (1, 2, 3...) a chaque redeploiement. "
+            "S il repart toujours a 1, le Volume Railway n est pas monte "
+            "correctement (voir HYPERBOT_DATA_DIR)."
+        ),
+    }
