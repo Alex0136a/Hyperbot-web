@@ -154,6 +154,15 @@ def _consume_events():
                 trade_id = db.get_open_trade_id_by_coin_action(ticker, action)
                 if trade_id:
                     db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"))
+                else:
+                    # v3.2 — diagnostic : auparavant, si aucune ligne ouverte
+                    # ne correspondait (coin/action), la fermeture etait
+                    # perdue EN SILENCE (le trade restait "ouvert" en base
+                    # pour toujours, jamais comptabilise dans le Bilan, meme
+                    # si la position etait bien fermee en memoire).
+                    msg = f"[event_consumer] ATTENTION : aucun trade ouvert trouve en base pour {ticker}/{action} (symbol brut={data.get('symbol')!r}, type brut={data.get('type')!r}) — fermeture perdue !"
+                    print(msg)
+                    _push_log("error", msg)
         except Exception as e:
             print(f"[event_consumer] Erreur traitement evenement {etype}: {e}")
 
@@ -342,54 +351,61 @@ def _open_positions() -> List[Dict[str, Any]]:
         pos = state.position
         if not pos:
             continue
-        ticker = be.ticker_from_slot_key(slot_key)
-        price = state.current_price or pos["entry"]
-        if pos["type"] == "long":
-            pnl_pct = (price - pos["entry"]) / pos["entry"] * 100
-        else:
-            pnl_pct = (pos["entry"] - price) / pos["entry"] * 100
-        pnl = pos["size"] * pnl_pct / 100
-
-        # opened_at est stocke par bot_engine.py au format "%d/%m/%Y %H:%M:%S"
-        # (francais, sans fuseau) — converti en ISO pour que new Date(...) le
-        # parse correctement cote navigateur (ambigu sinon selon le moteur JS).
-        opened_at_iso = None
         try:
-            opened_at_iso = datetime.strptime(pos["opened_at"], "%d/%m/%Y %H:%M:%S").isoformat()
-        except Exception:
-            pass
+            ticker = be.ticker_from_slot_key(slot_key)
+            price = state.current_price or pos["entry"]
+            if pos["type"] == "long":
+                pnl_pct = (price - pos["entry"]) / pos["entry"] * 100
+            else:
+                pnl_pct = (pos["entry"] - price) / pos["entry"] * 100
+            pnl = pos["size"] * pnl_pct / 100
 
-        # Complements (leverage, take_profit1/2) recuperes depuis la ligne DB
-        # ouverte correspondante — calcules une seule fois a l entree, voir
-        # bot_engine.py (emit "trade_opened").
-        action = "LONG" if pos["type"] == "long" else "SHORT"
-        trade_id = db.get_open_trade_id_by_coin_action(ticker, action)
-        leverage = cfg.get("LEVERAGE", 1)
-        tp1 = tp2 = None
-        if trade_id:
-            row = db.get_trades(limit=1000)
-            match = next((r for r in row if r["id"] == trade_id), None)
-            if match:
-                leverage = match.get("leverage") or leverage
-                tp1 = match.get("take_profit1")
-                tp2 = match.get("take_profit2")
+            # opened_at est stocke par bot_engine.py au format "%d/%m/%Y %H:%M:%S"
+            # (francais, sans fuseau) — converti en ISO pour que new Date(...) le
+            # parse correctement cote navigateur (ambigu sinon selon le moteur JS).
+            opened_at_iso = None
+            try:
+                opened_at_iso = datetime.strptime(pos["opened_at"], "%d/%m/%Y %H:%M:%S").isoformat()
+            except Exception:
+                pass
 
-        out.append({
-            "id": slot_key,
-            "coin": ticker,
-            "action": action,
-            "entry_price": pos["entry"],
-            "current_price": price,
-            "size": pos["size"],
-            "size_usdc": round(pos["size"], 2),
-            "leverage": leverage,
-            "stop_loss": pos["sl"],
-            "take_profit1": tp1,
-            "take_profit2": tp2,
-            "opened_at": opened_at_iso,
-            "pnl": round(pnl, 4),
-            "pnl_pct": round(pnl_pct, 3),
-        })
+            # Complements (leverage, take_profit1/2) recuperes depuis la ligne DB
+            # ouverte correspondante — calcules une seule fois a l entree, voir
+            # bot_engine.py (emit "trade_opened").
+            action = "LONG" if pos["type"] == "long" else "SHORT"
+            leverage = cfg.get("LEVERAGE", 1)
+            tp1 = tp2 = None
+            try:
+                trade_id = db.get_open_trade_id_by_coin_action(ticker, action)
+                if trade_id:
+                    rows = db.get_trades(limit=1000)
+                    match = next((r for r in rows if r["id"] == trade_id), None)
+                    if match:
+                        leverage = match.get("leverage") or leverage
+                        tp1 = match.get("take_profit1")
+                        tp2 = match.get("take_profit2")
+            except Exception as e:
+                print(f"[_open_positions] Erreur enrichissement DB pour {ticker}: {e}")
+
+            out.append({
+                "id": slot_key,
+                "coin": ticker,
+                "action": action,
+                "entry_price": pos["entry"],
+                "current_price": price,
+                "size": pos["size"],
+                "size_usdc": round(pos["size"], 2),
+                "leverage": leverage,
+                "stop_loss": pos["sl"],
+                "take_profit1": tp1,
+                "take_profit2": tp2,
+                "opened_at": opened_at_iso,
+                "pnl": round(pnl, 4),
+                "pnl_pct": round(pnl_pct, 3),
+            })
+        except Exception as e:
+            print(f"[_open_positions] Erreur sur la position {slot_key}, ignoree pour cette reponse: {e}")
+            continue
     return out
 
 
