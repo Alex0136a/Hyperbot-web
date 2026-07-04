@@ -1477,9 +1477,10 @@ class BotEngine:
     POSITIONS_FILE = "hyperbot_positions.json"
 
     def _save_open_positions(self):
-        """Sauvegarde les positions ouvertes en mode live pour reconciliation au redemarrage."""
-        if self.cfg.get("MODE") != "live":
-            return
+        """Sauvegarde les positions ouvertes (live ET paper depuis v3.2, pour
+        survivre a un redemarrage/redeploiement) — indexe par slot_key (ex:
+        "BTC_0"), pas par ticker brut, pour eviter toute ambiguite si un
+        meme ticker occupait plusieurs emplacements."""
         import json
         positions = {}
         for sym, st in self.states.items():
@@ -1999,6 +2000,28 @@ class BotEngine:
             else:
                 self.emit("log", {"msg": "Aucune position ouverte a recuperer.", "level": "info"})
             self._save_open_positions()
+        else:
+            # ── v3.2 : le mode PAPER beneficie desormais aussi de la ──────────
+            # persistance des positions (auparavant reservee au mode live).
+            # Sans ca, un redeploiement Railway pendant qu une position paper
+            # est ouverte la faisait disparaitre de la memoire du bot SANS
+            # jamais la clore proprement en base — elle restait alors
+            # eternellement "ouverte" dans le Bilan/l historique, meme si
+            # plus aucune gestion active ne s en occupait.
+            # Pas de reconciliation avec un exchange reel ici (ca n a pas de
+            # sens en simulation) : on restaure simplement telles quelles les
+            # positions sauvegardees lors du dernier arret/redemarrage.
+            saved_positions = self._load_saved_positions()
+            restored = 0
+            for slot_key, state in self.states.items():
+                pos = saved_positions.get(slot_key) if saved_positions else None
+                if pos and not state.position:
+                    ticker = ticker_from_slot_key(slot_key)
+                    state.position = pos
+                    restored += 1
+                    self.emit("log", {"msg": f"[{ticker}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} restauree (paper, apres redemarrage)", "level": "warn"})
+            if restored:
+                self.emit("log", {"msg": f"{restored} position(s) paper restauree(s) apres redemarrage.", "level": "warn"})
 
         symbols_display = ", ".join(self._original_symbols)
         self.emit("log", {"msg": f"Demarrage | {symbols_display} | ${cfg['CAPITAL_USD']}", "level": "ok"})
@@ -2086,7 +2109,7 @@ class BotEngine:
             self.emit("trade", trade)
             self.emit("log", {"msg": f"[{ticker}] MAX LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (seuil -${max_loss_usd:.2f})", "level": "loss"})
             self._register_max_loss(ticker, pos.get("confidence"))
-            if mode == "live": self._save_open_positions()
+            self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
             return
 
         # ── 2. SL Hyperliquid — filet de securite (ne devrait presque jamais
@@ -2101,7 +2124,7 @@ class BotEngine:
             self.emit("trade", trade)
             self.emit("log", {"msg": f"[{ticker}] SL SECURITE @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
             self._register_max_loss(ticker, pos.get("confidence"))
-            if mode == "live": self._save_open_positions()
+            self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
             return
 
         # ── 3. Trailing Take Profit a 2 etages (en $) ───────────────────────
@@ -2134,7 +2157,7 @@ class BotEngine:
                 self.emit("trade", trade)
                 self._register_win(ticker)
                 self.emit("log", {"msg": f"[{ticker}] TRAILING TP SORTIE @ ${price:.2f} | pic +${state.peak_pnl_usd:.2f} | PnL: +${pnl:.2f}", "level": "win"})
-                if mode == "live": self._save_open_positions()
+                self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
                 return
             else:
                 self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Trailing illimite actif | latent +${pnl_usd:.2f} | pic +${state.peak_pnl_usd:.2f}", "level": "dim"})
@@ -2149,7 +2172,7 @@ class BotEngine:
                 self.emit("trade", trade)
                 self._register_win(ticker)
                 self.emit("log", {"msg": f"[{ticker}] QUICK PROFIT @ ${price:.2f} | PnL: +${pnl:.2f}", "level": "win"})
-                if mode == "live": self._save_open_positions()
+                self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
                 return
             else:
                 self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Quick Profit arme | latent +${pnl_usd:.2f} (sortie si <= ${quick_lock:.2f})", "level": "dim"})
@@ -2620,7 +2643,7 @@ class BotEngine:
                 return
 
         state.open_position(signal, price, sl_p, tp_p, size, confidence=confidence)
-        if cfg["MODE"] == "live": self._save_open_positions()
+        self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
 
         # ── v3.2 web : evenement structure pour l API (table trades / signaux) ──
         # tp1/tp2 sont deduits des seuils $ (Quick Profit / Trailing) — notre
