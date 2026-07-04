@@ -1,3 +1,4 @@
+[README.md](https://github.com/user-attachments/files/29661157/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
@@ -84,6 +85,27 @@ désactivée (aucun ordre n'est envoyé à l'exchange tant que `trading_mode`
 n'est pas `live`). Sans ces deux variables, `/api/bot/start` répond
 immédiatement avec une erreur 400 explicite plutôt que de démarrer un bot
 qui échouerait silencieusement.
+
+## 4ter. Le bot tourne côté serveur, indépendamment du navigateur
+
+Le bot tourne **dans le process Railway**, pas dans ton navigateur : une
+fois démarré, il continue de tourner même si tu fermes l'onglet ou éteins
+ton PC. La page web n'est qu'une télécommande à distance.
+
+**Redémarrage automatique après un redéploiement** — l'état souhaité
+(DÉMARRÉ / ARRÊTÉ) est mémorisé en base à chaque clic sur DÉMARRER/ARRÊTER.
+Au démarrage du process (redéploiement Railway, crash-restart, etc.), le
+bot relit cet état :
+- s'il était **DÉMARRÉ**, il redémarre automatiquement tout seul (aucune
+  action requise sur la page web) ;
+- s'il était **ARRÊTÉ** (tu as explicitement cliqué ARRÊTER), il reste
+  arrêté même après un redéploiement, jusqu'à ce que tu recliques sur
+  DÉMARRER.
+
+Cliquer sur ARRÊTER depuis la page web arrête bien le vrai bot qui tourne
+sur Railway (il n'y a qu'une seule instance, pas de simulation côté
+navigateur) — et cet arrêt persiste across redéploiements, comme décrit
+ci-dessus.
 
 ## 5. Premier lancement
 
