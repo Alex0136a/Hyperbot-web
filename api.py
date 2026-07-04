@@ -840,8 +840,27 @@ def get_stats_daily(email: str = Depends(require_user)):
 
 @app.post("/api/cleanup")
 def cleanup(email: str = Depends(require_user)):
-    deleted = db.delete_trades_older_than(30)
-    return {"ok": True, "deleted": deleted}
+    # v3.2 — FIX : le bouton de l interface attend un champ "message" (via
+    # alert(r.message)), jamais renvoye jusqu ici (d ou l impression que le
+    # bouton "ne faisait rien"). Utilise desormais cleanup_signals, qui
+    # cible specifiquement les doublons/orphelins "ouverts" (voir db.py) —
+    # les trades reellement fermes (historique du Bilan) ne sont jamais
+    # touches par ce nettoyage.
+    duplicates, stale = db.cleanup_signals(stale_hours=24)
+    old_closed = db.delete_trades_older_than(30)
+    total = duplicates + stale + old_closed
+    if total == 0:
+        message = "Rien a nettoyer — aucun signal en double ou orphelin trouve."
+    else:
+        parts = []
+        if duplicates:
+            parts.append(f"{duplicates} doublon(s) ouvert(s)")
+        if stale:
+            parts.append(f"{stale} signal(aux) orphelin(s) (>24h sans fermeture)")
+        if old_closed:
+            parts.append(f"{old_closed} trade(s) ferme(s) de plus de 30 jours")
+        message = "Nettoyage termine : " + ", ".join(parts) + "."
+    return {"ok": True, "message": message, "duplicates": duplicates, "stale": stale, "old_closed": old_closed}
 
 
 @app.post("/api/reset-all")
@@ -876,7 +895,7 @@ def reset_all(email: str = Depends(require_user)):
     db.set_meta("total_running_seconds", "0")
     db.set_meta("running_since", "")
     log_buffer.clear()
-    return {"ok": True}
+    return {"ok": True, "message": "Reinitialisation complete effectuee : signaux, trades, historique et portefeuille remis a zero."}
 
 
 # ─────────────────────────────────────────────────────────────────────────
