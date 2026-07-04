@@ -545,6 +545,10 @@ def calc_support_resistance(prices, period=50):
 #  CONNEXION HYPERLIQUID
 # ─────────────────────────────────────────────
 def connect_hyperliquid(private_key, wallet_address):
+    """Retourne (info, exchange, error_detail). error_detail est None en cas
+    de succes, sinon un message texte precis (type + message de l exception)
+    — evite d avaler silencieusement la vraie cause d un echec de connexion
+    (mauvais format de cle, dependance manquante, probleme reseau, etc.)."""
     try:
         from hyperliquid.info import Info
         from hyperliquid.exchange import Exchange
@@ -556,9 +560,13 @@ def connect_hyperliquid(private_key, wallet_address):
         # surveillance Max Loss / Trailing TP en direct (voir _on_ws_allmids).
         info = Info(constants.MAINNET_API_URL, skip_ws=False)
         exchange = Exchange(account, constants.MAINNET_API_URL, vault_address=wallet_address)
-        return info, exchange
-    except Exception:
-        return None, None
+        return info, exchange, None
+    except Exception as e:
+        import traceback
+        detail = f"{type(e).__name__}: {e}"
+        print(f"[connect_hyperliquid] {detail}")
+        print(traceback.format_exc())
+        return None, None, detail
 
 def sync_capital_from_hyperliquid(info, wallet_address):
     """Lit le solde réel USDC depuis Hyperliquid et le retourne.
@@ -1890,9 +1898,9 @@ class BotEngine:
             self.emit("stopped", {})
             return
 
-        self.info, self.exchange = connect_hyperliquid(cfg["PRIVATE_KEY"], cfg["WALLET_ADDRESS"])
+        self.info, self.exchange, conn_error = connect_hyperliquid(cfg["PRIVATE_KEY"], cfg["WALLET_ADDRESS"])
         if self.info is None:
-            self.emit("log", {"msg": "Connexion Hyperliquid echouee — verifiez la cle API / le wallet.", "level": "error"})
+            self.emit("log", {"msg": f"Connexion Hyperliquid echouee — {conn_error}", "level": "error"})
             self.running = False
             self._started = False
             self.emit("stopped", {})
