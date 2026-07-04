@@ -94,7 +94,19 @@ CONFIG = {
 
     # Cryptos à trader — 6 slots disponibles
     # Modifiables depuis le dashboard via les boutons ACTIF 1 a 6
-    "SYMBOLS":            ["BTC", "PAXG", "ETH", "SOL", "BNB", "HYPE"],
+    # v3.2 — liste etendue a 30 actifs (Hyperliquid propose 300+ perpetuels,
+    # ces 30 sont les plus liquides/suivis). Les 6 premiers (BTC, PAXG, ETH,
+    # SOL, BNB, HYPE) beneficient d un reglage fin par symbole (voir
+    # SYMBOL_RSI_MODE, ATR_MIN_PCT_BY_SYMBOL, etc. plus bas) — les 24 autres
+    # utilisent les reglages globaux par defaut (pas de tuning specifique).
+    # ACTIVE_COINS (pilotable depuis l interface web) permet de n en activer
+    # qu une partie a la fois ; MAX_OPEN_TRADES limite le nombre de positions
+    # simultanees quel que soit le nombre d actifs actifs.
+    "SYMBOLS":            ["BTC", "PAXG", "ETH", "SOL", "BNB", "HYPE",
+                           "ARB", "AVAX", "LINK", "OP", "INJ", "TIA", "TAO",
+                           "WIF", "JUP", "PENDLE", "EIGEN", "RENDER", "SUI",
+                           "APT", "SEI", "DOGE", "XRP", "NEAR", "FTM", "AAVE",
+                           "UNI", "CRV", "SUSHI", "GMX"],
 
     # Tous les symboles sont des perpétuels — SPOT_SYMBOLS vide
     # PAXG remplace XAUT spot : index 187 sur Hyperliquid, levier max x10
@@ -1476,6 +1488,7 @@ class BotEngine:
         self._ws_subscribed = False
         self._last_ws_tick = None   # timestamp (time.time()) du dernier tick allMids recu
         self._ws_was_healthy = None  # None = pas encore evalue ; sert a detecter les transitions
+        self.all_mids = {}  # v3.2 : cache brut de tous les prix Hyperliquid (affichage marche complet)
 
     # ── Sauvegarde des positions ouvertes pour reconciliation au redemarrage ──
     POSITIONS_FILE = "hyperbot_positions.json"
@@ -1732,6 +1745,11 @@ class BotEngine:
             if not mids:
                 return
             self._last_ws_tick = time.time()
+            # v3.2 : cache BRUT de tous les prix recus (pas seulement nos
+            # symboles tradés) — permet a l API web d afficher un marche
+            # complet (jusqu a 30 cryptos) sans avoir besoin d ouvrir une
+            # position sur chacun.
+            self.all_mids = mids
             for slot_key, state in list(self.states.items()):
                 if not state.position:
                     continue
