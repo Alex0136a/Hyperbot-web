@@ -475,10 +475,14 @@ def put_config(body: ConfigBody, email: str = Depends(require_user)):
         clamped = max(1, min(body.max_open_trades, len(SUPPORTED_TICKERS)))
         _apply_and_persist("MAX_OPEN_TRADES", clamped)
 
-    if body.wallet is not None:
+    # v3.2 — FIX : ignore une chaine vide plutot que d ecraser un wallet deja
+    # enregistre — un formulaire n envoyant pas de wallet ne doit jamais
+    # pouvoir effacer celui deja configure (defense en profondeur, en plus
+    # du fix cote interface qui ne l envoie plus vide).
+    if body.wallet:
         _apply_and_persist("WALLET_ADDRESS", body.wallet)
 
-    if body.api_key is not None and not body.api_key.startswith("****"):
+    if body.api_key and not body.api_key.startswith("****"):
         _apply_and_persist("PRIVATE_KEY", body.api_key)
 
     if body.active_coins is not None:
@@ -507,9 +511,9 @@ class HyperliquidBody(BaseModel):
 def put_hyperliquid(body: HyperliquidBody, email: str = Depends(require_user)):
     wallet = body.wallet or body.hl_wallet
     api_key = body.api_key or body.hl_api_key
-    if wallet is not None:
+    if wallet:
         _apply_and_persist("WALLET_ADDRESS", wallet)
-    if api_key is not None and not api_key.startswith("****"):
+    if api_key and not api_key.startswith("****"):
         _apply_and_persist("PRIVATE_KEY", api_key)
     return {"ok": True, "note": "Prend effet au prochain demarrage du bot (arret puis demarrage)."}
 
@@ -867,6 +871,15 @@ def cleanup(email: str = Depends(require_user)):
 def reset_all(email: str = Depends(require_user)):
     if bot.running:
         raise HTTPException(400, "Arretez le bot avant une reinitialisation complete")
+    # v3.2 — FIX : preserve les identifiants Hyperliquid/Finnhub (wallet, cle
+    # privee, cle Finnhub) avant de tout effacer, puis les restaure apres —
+    # ce ne sont pas des "donnees de trading" a effacer par une remise a
+    # zero du portefeuille/historique, ce sont des identifiants de connexion.
+    # Un utilisateur ayant clique par erreur sur ce bouton (juste en dessous
+    # du nettoyage des doublons) se retrouvait auparavant a devoir tout
+    # ressaisir sans comprendre pourquoi.
+    preserved_keys = ("PRIVATE_KEY", "WALLET_ADDRESS", "FINNHUB_API_KEY")
+    preserved = {k: cfg.get(k) for k in preserved_keys if cfg.get(k)}
     db.clear_all_trades()
     db.clear_config_overrides()
     for state in bot.states.values():
@@ -879,6 +892,13 @@ def reset_all(email: str = Depends(require_user)):
     cfg.update(be.CONFIG)
     if _env_active_coins:
         cfg["ACTIVE_COINS"] = [c.strip().upper() for c in _env_active_coins.split(",") if c.strip()]
+    # Reapplique les identifiants preserves (prioritaires sur be.CONFIG au
+    # cas ou ils avaient ete saisis via le formulaire web, pas une variable
+    # d environnement) et les repersiste en base pour survivre eux aussi
+    # aux prochains redemarrages.
+    for k, v in preserved.items():
+        cfg[k] = v
+        db.set_config_override(k, v)
     be.apply_profile(cfg, cfg.get("PROFILE", "swing"))
     # cfg["SYMBOLS"] doit rester sous forme de slot_keys ("BTC_0", ...) pour
     # rester coherent avec les cles de bot.states (jamais reconstruit ici) —
