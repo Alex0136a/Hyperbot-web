@@ -177,7 +177,7 @@ def delete_trades_older_than(days):
         return len(to_delete)
 
 
-def cleanup_signals(stale_hours=24):
+def cleanup_signals(stale_hours=24, protected_coins=None):
     """Nettoie la table trades en deux temps :
     1. DOUBLONS "ouverts" : un seul trade peut reellement etre ouvert a la
        fois par actif (voir architecture du bot) — si plusieurs lignes du
@@ -189,15 +189,25 @@ def cleanup_signals(stale_hours=24):
        de perdre les vrais trades fermes recemment, utiles au Bilan) — seuls
        les trades RESTES OUVERTS trop longtemps sont vises ici, pas
        l historique des trades fermes normalement.
+
+    protected_coins : iterable de tickers ayant REELLEMENT une position
+    ouverte en memoire du bot en ce moment (verifie cote appelant, voir
+    api.py). Ces coins sont ENTIEREMENT exclus du nettoyage — mieux vaut ne
+    rien toucher que de risquer de supprimer par erreur la ligne DB d une
+    position reellement active (le tri "plus recent = le bon" n est qu une
+    heuristique, pas une certitude).
     Retourne (doublons_supprimes, anciens_supprimes).
     """
+    protected = set(protected_coins or [])
     with _lock, _connect() as conn:
-        # 1. Doublons "ouverts" par coin
+        # 1. Doublons "ouverts" par coin (hors coins protege)
         open_rows = conn.execute(
             "SELECT id, coin, created_at FROM trades WHERE closed_at IS NULL ORDER BY coin, id DESC"
         ).fetchall()
         by_coin = {}
         for r in open_rows:
+            if r["coin"] in protected:
+                continue
             by_coin.setdefault(r["coin"], []).append(r["id"])
         dup_ids = []
         for coin, ids in by_coin.items():
@@ -206,13 +216,16 @@ def cleanup_signals(stale_hours=24):
         if dup_ids:
             conn.executemany("DELETE FROM trades WHERE id=?", [(i,) for i in dup_ids])
 
-        # 2. Trades restes "ouverts" trop longtemps (orphelins probables)
+        # 2. Trades restes "ouverts" trop longtemps (orphelins probables),
+        #    hors coins protege
         cutoff = datetime.now(timezone.utc).timestamp() - stale_hours * 3600
         still_open = conn.execute(
-            "SELECT id, created_at FROM trades WHERE closed_at IS NULL"
+            "SELECT id, coin, created_at FROM trades WHERE closed_at IS NULL"
         ).fetchall()
         stale_ids = []
         for r in still_open:
+            if r["coin"] in protected:
+                continue
             try:
                 ts = datetime.fromisoformat(r["created_at"]).timestamp()
                 if ts < cutoff:
@@ -223,13 +236,18 @@ def cleanup_signals(stale_hours=24):
             conn.executemany("DELETE FROM trades WHERE id=?", [(i,) for i in stale_ids])
 
         conn.commit()
+        print(f"[AUDIT] cleanup_signals() a {now_iso()} — doublons supprimes: {dup_ids} | orphelins supprimes: {stale_ids} | coins proteges: {sorted(protected)}")
         return len(dup_ids), len(stale_ids)
 
 
 def clear_all_trades():
+    import traceback
     with _lock, _connect() as conn:
+        count_before = conn.execute("SELECT COUNT(*) AS c FROM trades").fetchone()["c"]
         conn.execute("DELETE FROM trades")
         conn.commit()
+    print(f"[AUDIT] clear_all_trades() appelee a {now_iso()} — {count_before} trade(s) supprime(s). Pile d appel :")
+    print("".join(traceback.format_stack()[:-1]))
 
 
 # ── Config persistante (survit aux redemarrages) ────────────────────────
