@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.db
+hyperbot_capital_*.json
+hyperbot_session_state_*.json
+hyperbot_positions.json
+hyperbot_log_*.txt
+.env
+venv/
