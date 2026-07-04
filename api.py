@@ -437,16 +437,25 @@ def put_config(body: ConfigBody, email: str = Depends(require_user)):
 
 
 class HyperliquidBody(BaseModel):
+    # v3.2 — FIX : l interface (index.html) envoie ces champs sous les noms
+    # "hl_wallet" / "hl_api_key" a cet endpoint precis (un autre formulaire,
+    # sur /api/config, utilise "wallet"/"api_key" — les deux sont donc geres
+    # ici par securite). Le mismatch precedent faisait que la requete
+    # "reussissait" (200 OK) sans rien enregistrer reellement.
     wallet: Optional[str] = None
     api_key: Optional[str] = None
+    hl_wallet: Optional[str] = None
+    hl_api_key: Optional[str] = None
 
 
 @app.put("/api/config/hyperliquid")
 def put_hyperliquid(body: HyperliquidBody, email: str = Depends(require_user)):
-    if body.wallet is not None:
-        _apply_and_persist("WALLET_ADDRESS", body.wallet)
-    if body.api_key is not None and not body.api_key.startswith("****"):
-        _apply_and_persist("PRIVATE_KEY", body.api_key)
+    wallet = body.wallet or body.hl_wallet
+    api_key = body.api_key or body.hl_api_key
+    if wallet is not None:
+        _apply_and_persist("WALLET_ADDRESS", wallet)
+    if api_key is not None and not api_key.startswith("****"):
+        _apply_and_persist("PRIVATE_KEY", api_key)
     return {"ok": True, "note": "Prend effet au prochain demarrage du bot (arret puis demarrage)."}
 
 
