@@ -15,16 +15,6 @@ Variables d environnement (voir README.md pour la liste complete) :
     HYPERBOT_PRIVATE_KEY / HYPERBOT_WALLET_ADDRESS / HYPERBOT_FINNHUB_API_KEY
 """
 import os
-
-# ── Dossier de donnees persistantes (a monter en Volume sur Railway) ─────
-# DOIT etre fait avant tout le reste : bot_engine.py et db.py ecrivent des
-# fichiers avec des chemins relatifs, resolus par rapport au repertoire
-# courant du process.
-_DATA_DIR = os.environ.get("HYPERBOT_DATA_DIR", ".")
-_DATA_DIR_CONFIGURED = "HYPERBOT_DATA_DIR" in os.environ
-os.makedirs(_DATA_DIR, exist_ok=True)
-os.chdir(_DATA_DIR)
-
 import json
 import queue
 import threading
@@ -38,9 +28,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
+# v3.2 — FIX CRITIQUE : les imports locaux (db, auth, bot_engine) DOIVENT se
+# faire AVANT tout changement de repertoire courant (os.chdir). Auparavant,
+# le chdir vers HYPERBOT_DATA_DIR (ex: /data) se faisait avant ces imports :
+# Python resolvait alors "import db" par rapport au NOUVEAU repertoire
+# courant (/data) au lieu du dossier contenant le code (/app), provoquant
+# un crash systematique ("ModuleNotFoundError: No module named 'db'") des
+# qu un Volume etait monte et HYPERBOT_DATA_DIR defini.
 import db
 import auth
 import bot_engine as be
+
+# ── Dossier de donnees persistantes (a monter en Volume sur Railway) ─────
+# Fait APRES les imports ci-dessus : seuls les FICHIERS ecrits a l execution
+# (base SQLite, capital, logs, session) doivent utiliser ce dossier — pas la
+# resolution des modules Python, deja faite a ce stade.
+_DATA_DIR = os.environ.get("HYPERBOT_DATA_DIR", ".")
+_DATA_DIR_CONFIGURED = "HYPERBOT_DATA_DIR" in os.environ
+os.makedirs(_DATA_DIR, exist_ok=True)
+os.chdir(_DATA_DIR)
 
 # ─────────────────────────────────────────────────────────────────────────
 #  INITIALISATION
