@@ -482,7 +482,15 @@ Confirmer ?`
 
   const saveConfig = async () => {
     try {
-      await apiCall("/api/config","PUT",{ wallet:liveW, api_key:(liveK && liveK.indexOf("****")!==0)?liveK:undefined, active_coins:activeCoins },token);
+      // v3.2 — FIX : n envoyer wallet/api_key que s ils sont reellement
+      // renseignes dans CE formulaire — sinon une simple sauvegarde de la
+      // selection d actifs (active_coins) ecrasait silencieusement le
+      // wallet deja enregistre par une valeur vide (liveW jamais rempli
+      // dans cette section specifique de l interface).
+      const payload = { active_coins: activeCoins };
+      if (liveW) payload.wallet = liveW;
+      if (liveK && liveK.indexOf("****") !== 0) payload.api_key = liveK;
+      await apiCall("/api/config","PUT",payload,token);
       setSaved(true); setTimeout(()=>setSaved(false),2500);
       addLog("✅ Paramètres sauvegardés", "system");
       loadData();
@@ -898,7 +906,7 @@ Confirmer ?`
               🧹 Nettoyer les signaux en double
             </button>
             <button onClick={async()=>{
-              if(!window.confirm("REINITIALISATION COMPLETE\n\nCela va effacer :\n- Tous les signaux\n- Tous les trades paper\n- L'historique\n- Le portefeuille (repart a 1000 USDC)\n\nEtes-vous sur ?")) return;
+              if(!window.confirm("REINITIALISATION COMPLETE\n\nCela va effacer :\n- Tous les signaux\n- Tous les trades paper\n- L'historique\n- Le portefeuille (repart a 1000 USDC)\n\nVotre cle API et wallet Hyperliquid NE seront PAS effaces.\n\nEtes-vous sur ?")) return;
               try{
                 const r = await apiCall("/api/reset-all","POST",null,token);
                 alert(r.message);
