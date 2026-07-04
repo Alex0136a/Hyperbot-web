@@ -578,7 +578,7 @@ Confirmer ?`
                 {l:"Mode trading",v:config.trading_mode==="paper"?"Paper (simulation)":"Live (reel)"},
                 {l:"Dernier scan",v:config.last_scan?new Date(config.last_scan).toLocaleTimeString("fr-FR"):"Jamais"},
                 {l:"Marchés actifs",v:`${activeCoins.length}/${ALL_COINS.length}`},
-                {l:"Clé API",v:config.has_api_key?"✅ Définie":"❌ Manquante"},
+                {l:"Clé API",v:config.hyperliquid_configured?"✅ Définie":"❌ Manquante"},
                 {l:"Wallet",v:config.wallet?`${config.wallet.slice(0,8)}...`:"Non défini"},
               ].map((x,i)=>(
                 <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:i<5?"1px solid #0a0e1a":"none"}}>
