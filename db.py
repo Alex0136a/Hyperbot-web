@@ -177,6 +177,55 @@ def delete_trades_older_than(days):
         return len(to_delete)
 
 
+def cleanup_signals(stale_hours=24):
+    """Nettoie la table trades en deux temps :
+    1. DOUBLONS "ouverts" : un seul trade peut reellement etre ouvert a la
+       fois par actif (voir architecture du bot) — si plusieurs lignes du
+       meme coin ont closed_at IS NULL, ce sont forcement des orphelins
+       (ex: positions paper perdues lors d un redeploiement avant le fix de
+       persistance) ou des doublons. On ne garde que le plus recent par coin.
+    2. ANCIENS : supprime tout trade (ouvert ou ferme) cree il y a plus de
+       stale_hours heures et qui n a jamais ete cloture proprement (evite
+       de perdre les vrais trades fermes recemment, utiles au Bilan) — seuls
+       les trades RESTES OUVERTS trop longtemps sont vises ici, pas
+       l historique des trades fermes normalement.
+    Retourne (doublons_supprimes, anciens_supprimes).
+    """
+    with _lock, _connect() as conn:
+        # 1. Doublons "ouverts" par coin
+        open_rows = conn.execute(
+            "SELECT id, coin, created_at FROM trades WHERE closed_at IS NULL ORDER BY coin, id DESC"
+        ).fetchall()
+        by_coin = {}
+        for r in open_rows:
+            by_coin.setdefault(r["coin"], []).append(r["id"])
+        dup_ids = []
+        for coin, ids in by_coin.items():
+            # ids est trie du plus recent (DESC) au plus ancien -> on garde ids[0]
+            dup_ids.extend(ids[1:])
+        if dup_ids:
+            conn.executemany("DELETE FROM trades WHERE id=?", [(i,) for i in dup_ids])
+
+        # 2. Trades restes "ouverts" trop longtemps (orphelins probables)
+        cutoff = datetime.now(timezone.utc).timestamp() - stale_hours * 3600
+        still_open = conn.execute(
+            "SELECT id, created_at FROM trades WHERE closed_at IS NULL"
+        ).fetchall()
+        stale_ids = []
+        for r in still_open:
+            try:
+                ts = datetime.fromisoformat(r["created_at"]).timestamp()
+                if ts < cutoff:
+                    stale_ids.append(r["id"])
+            except Exception:
+                continue
+        if stale_ids:
+            conn.executemany("DELETE FROM trades WHERE id=?", [(i,) for i in stale_ids])
+
+        conn.commit()
+        return len(dup_ids), len(stale_ids)
+
+
 def clear_all_trades():
     with _lock, _connect() as conn:
         conn.execute("DELETE FROM trades")
