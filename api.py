@@ -103,7 +103,7 @@ if BOOT_COUNT == 1:
 event_queue = queue.Queue()
 bot = be.BotEngine(cfg, event_queue)
 
-log_buffer = deque(maxlen=500)
+log_buffer = deque(maxlen=3000)
 _state_lock = threading.Lock()
 
 # v3.2 — FIX : l interface (index.html) attend un champ "message" (pas "msg")
@@ -312,7 +312,7 @@ def _public_config() -> Dict[str, Any]:
         "position_pct": cfg.get("POSITION_SIZE_PCT"),
         "max_loss_usd": cfg.get("MAX_LOSS_USD"),
         "quick_profit_usd": cfg.get("QUICK_PROFIT_ARM_USD"),
-        "max_open_trades": cfg.get("MAX_OPEN_TRADES", len(SUPPORTED_TICKERS)),
+        "max_open_trades": cfg.get("MAX_OPEN_TRADES", 6),
         "active_coins": cfg.get("ACTIVE_COINS") or SUPPORTED_TICKERS,
         "supported_coins": SUPPORTED_TICKERS,
         "wallet": cfg.get("WALLET_ADDRESS", ""),
@@ -423,7 +423,8 @@ def put_config(body: ConfigBody, email: str = Depends(require_user)):
         _apply_and_persist("QUICK_PROFIT_LOCK_USD", body.quick_profit_usd)
 
     if body.max_open_trades is not None:
-        _apply_and_persist("MAX_OPEN_TRADES", body.max_open_trades)
+        clamped = max(1, min(body.max_open_trades, len(SUPPORTED_TICKERS)))
+        _apply_and_persist("MAX_OPEN_TRADES", clamped)
 
     if body.wallet is not None:
         _apply_and_persist("WALLET_ADDRESS", body.wallet)
@@ -578,7 +579,24 @@ def bot_logs(persistent: bool = Query(False), limit: int = Query(200), email: st
 # ─────────────────────────────────────────────────────────────────────────
 @app.get("/api/prices")
 def get_prices(email: str = Depends(require_user)):
-    return {be.ticker_from_slot_key(k): s.current_price for k, s in bot.states.items() if s.current_price}
+    # v3.2 : priorite au cache WebSocket complet (bot.all_mids, alimente par
+    # le flux allMids — couvre potentiellement TOUS les actifs Hyperliquid,
+    # pas seulement ceux tradés par ce bot). Complete avec les prix suivis
+    # individuellement (state.current_price) pour nos symboles, au cas ou
+    # le WebSocket ne serait pas encore actif (repli cycle REST).
+    prices = {}
+    try:
+        for ticker, raw in (bot.all_mids or {}).items():
+            try:
+                prices[ticker] = float(raw)
+            except (TypeError, ValueError):
+                continue
+    except Exception:
+        pass
+    for k, s in bot.states.items():
+        if s.current_price:
+            prices[be.ticker_from_slot_key(k)] = s.current_price
+    return prices
 
 
 @app.get("/api/positions")
