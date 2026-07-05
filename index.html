@@ -389,11 +389,16 @@ function App() {
   const loadData = useCallback(async () => {
     if (!token) return;
     try {
-      // 1. PRIORITÉ ABSOLUE — trades ouverts et PnL
-      const pap = await apiCall("/api/paper/portfolio","GET",null,token);
-      setPaper(pap);
-      // 2. Données secondaires en parallèle
-      const [cfg, sigs, prc, st, pos, botLogsRes] = await Promise.all([
+      // v3.2 — FIX : paper/portfolio etait recupere SEPAREMENT et AVANT le
+      // reste (deux vagues sequentielles), ce qui pouvait creer un decalage
+      // temporel reel entre le prix utilise pour calculer le PnL de Paper
+      // Trading et celui recupere juste apres pour /api/prices (utilise par
+      // le rapport et le widget "suivi TP/SL") — sur un actif volatil, meme
+      // quelques centaines de ms d ecart suffisent a produire des % differents
+      // entre les deux vues, sans qu il y ait de bug de calcul en soi. Tout
+      // est desormais recupere EN UNE SEULE fois, au meme instant.
+      const [pap, cfg, sigs, prc, st, pos, botLogsRes] = await Promise.all([
+        apiCall("/api/paper/portfolio","GET",null,token),
         apiCall("/api/config","GET",null,token),
         apiCall("/api/signals?limit=50","GET",null,token),
         apiCall("/api/prices","GET",null,token),
@@ -401,6 +406,7 @@ function App() {
         apiCall("/api/positions","GET",null,token),
         apiCall("/api/bot/logs","GET",null,token),
       ]);
+      setPaper(pap);
       setConfig(cfg);
       // v3.2 — FIX : ces champs sont de vrais booleens Python (true/false),
       // pas des 0/1 — les comparaisons "=== 1" echouaient silencieusement
