@@ -1198,27 +1198,34 @@ Confirmer ?`
             }
           </div>
 
-          {/* HISTORIQUE */}
-          {paper?.closed_trades?.length > 0 && (
-            <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16}}>
-              <div style={{fontSize:12,fontWeight:700,color:"#60a5fa",marginBottom:12}}>📋 Historique (20 derniers)</div>
-              {paper.closed_trades.map(trade=>(
-                <div key={trade.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #0a0e1a"}}>
-                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                    <span style={{color:trade.action==="LONG"?"#34d399":"#f87171",fontSize:10,fontWeight:700}}>{trade.action}</span>
-                    <span style={{color:"#e2e8f0",fontSize:11}}>{trade.coin}</span>
-                    <span style={{background:"#1e2d4a",color:"#60a5fa",padding:"1px 6px",borderRadius:3,fontSize:9}}>{trade.close_reason}</span>
-                  </div>
-                  <div style={{display:"flex",gap:12,alignItems:"center"}}>
-                    <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontWeight:700,fontSize:12}}>
-                      {trade.pnl>=0?"+":""}{trade.pnl?.toFixed(2)} USDC
-                    </span>
-                    <span style={{color:"#94a3b8",fontSize:10}}>{new Date(trade.closed_at).toLocaleTimeString("fr-FR")}</span>
-                  </div>
+          {/* HISTORIQUE DES TRADES FERMES */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:16}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#60a5fa",marginBottom:12}}>📜 Historique (50 derniers trades fermés)</div>
+            {(() => {
+              const closedTrades = (signals||[]).filter(s=>s.closed_at).sort((a,b)=>new Date(b.closed_at)-new Date(a.closed_at)).slice(0,50);
+              if (!closedTrades.length) return <div style={{color:"#64748b",fontSize:11,textAlign:"center",padding:"20px 0"}}>Aucun trade fermé pour l'instant.</div>;
+              return (
+                <div style={{maxHeight:400,overflowY:"auto"}}>
+                  {closedTrades.map(trade=>(
+                    <div key={trade.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 4px",borderBottom:"1px solid #0a0e1a"}}>
+                      <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                        <span style={{background:trade.action==="LONG"?"#052e16":"#2d0a0a",color:trade.action==="LONG"?"#34d399":"#f87171",padding:"2px 7px",borderRadius:4,fontSize:10,fontWeight:700}}>{trade.action}</span>
+                        <span style={{color:"#f1f5f9",fontWeight:700,fontSize:12}}>{trade.coin}/USDC</span>
+                        <span style={{color:"#94a3b8",fontSize:9}}>{trade.reason||"?"}</span>
+                      </div>
+                      <div style={{display:"flex",gap:14,alignItems:"center"}}>
+                        <span style={{color:"#94a3b8",fontSize:9}}>{new Date(trade.closed_at).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</span>
+                        <span style={{color:(trade.pnl||0)>=0?"#34d399":"#f87171",fontWeight:700,fontSize:13}}>
+                          {(trade.pnl||0)>=0?"+":""}{trade.pnl?.toFixed(2)} USDC
+                        </span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          )}
+              );
+            })()}
+          </div>
+
         </div>
       )}
 
