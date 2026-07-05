@@ -627,7 +627,7 @@ Confirmer ?`
                 {l:"Mode",v:"Serveur 24h/24"},
                 {l:"Bot",v:isRunning?"✅ Actif":"⏹ Arrêté"},
                 {l:"Mode trading",v:config.trading_mode==="paper"?"Paper (simulation)":"Live (reel)"},
-                {l:"WebSocket",v:!config.ws_healthy?"⚪ N/A (bot arrêté)":config.ws_healthy?"🟢 Actif (temps réel)":"🔴 Hors service (repli cycle)"},
+                {l:"WebSocket",v:!isRunning?"⚪ N/A (bot arrêté)":config.ws_healthy?"🟢 Actif (temps réel)":"🔴 Hors service (repli cycle)"},
                 {l:"Dernier scan",v:config.last_scan?new Date(config.last_scan).toLocaleTimeString("fr-FR"):"Jamais"},
                 {l:"Marchés actifs",v:`${activeCoins.length}/${ALL_COINS.length}`},
                 {l:"Clé API",v:config.hyperliquid_configured?"✅ Définie":"❌ Manquante"},
