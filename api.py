@@ -710,8 +710,9 @@ def get_prices(email: str = Depends(require_user)):
     except Exception:
         pass
     for k, s in bot.states.items():
-        if s.current_price:
-            prices[be.ticker_from_slot_key(k)] = s.current_price
+        ticker = be.ticker_from_slot_key(k)
+        if s.current_price and ticker not in prices:
+            prices[ticker] = s.current_price
     return {"prices": prices}
 
 
