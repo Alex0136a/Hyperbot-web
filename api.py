@@ -647,6 +647,16 @@ def bot_stop(email: str = Depends(require_user)):
     return {"ok": True}
 
 
+@app.post("/api/bot/force-recollect")
+def force_recollect(email: str = Depends(require_user)):
+    """Force une collecte d indicateurs entierement fraiche pour tous les
+    actifs, sans attendre un redeploiement — utile si un probleme est
+    suspecte sur les indicateurs restaures (reprise rapide < 90s). Ne touche
+    ni aux positions ouvertes, ni au capital, ni a l historique."""
+    bot.force_fresh_collection()
+    return {"ok": True, "message": "Collecte fraiche forcee pour tous les actifs — les indicateurs vont se reconstruire progressivement."}
+
+
 @app.get("/api/bot/logs")
 def bot_logs(persistent: bool = Query(False), limit: int = Query(200), email: str = Depends(require_user)):
     if persistent:
