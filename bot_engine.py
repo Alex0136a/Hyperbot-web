@@ -1489,12 +1489,21 @@ class BotEngine:
         """Sauvegarde les positions ouvertes (live ET paper depuis v3.2, pour
         survivre a un redemarrage/redeploiement) — indexe par slot_key (ex:
         "BTC_0"), pas par ticker brut, pour eviter toute ambiguite si un
-        meme ticker occupait plusieurs emplacements."""
+        meme ticker occupait plusieurs emplacements.
+        v3.2 — FIX CRITIQUE : sauvegarde aussi l etat du Trailing TP (pic de
+        profit atteint, etage Quick Profit/Trailing) — sans ca, un
+        redemarrage faisait "oublier" au bot qu une position avait deja
+        depasse son pic, lui faisant reprendre une reference basse et rater
+        la fermeture qui aurait du se produire (perte de l avantage acquis)."""
         import json, os
         positions = {}
         for sym, st in self.states.items():
             if st.position:
-                positions[sym] = st.position
+                snapshot = dict(st.position)
+                snapshot["_peak_pnl_usd"] = st.peak_pnl_usd
+                snapshot["_tp_stage"] = st.tp_stage
+                snapshot["_trailing_tp_active"] = st.trailing_tp_active
+                positions[sym] = snapshot
         try:
             with open(self.POSITIONS_FILE, "w") as f:
                 json.dump(positions, f, indent=2)
@@ -2155,6 +2164,17 @@ class BotEngine:
                     slot_key = next((s for s in self.states if ticker_from_slot_key(s) == ticker_sym), None)
                     if slot_key:
                         self.states[slot_key].position = pos
+                        # v3.2 — FIX : recover_open_positions reconstruit la
+                        # position depuis l EXCHANGE reel (entry/sl/tp exacts),
+                        # mais ne connait pas la memoire du Trailing TP (pic de
+                        # profit, etage) — on la retrouve ici en croisant avec
+                        # notre propre sauvegarde (saved_positions, chargee plus
+                        # haut), pour ne pas "oublier" une progression deja faite.
+                        saved = saved_positions.get(slot_key) if saved_positions else None
+                        if saved:
+                            self.states[slot_key].peak_pnl_usd = saved.get("_peak_pnl_usd")
+                            self.states[slot_key].tp_stage = saved.get("_tp_stage", 0)
+                            self.states[slot_key].trailing_tp_active = saved.get("_trailing_tp_active", False)
                         self.emit("log", {"msg": f"[{ticker_sym}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} reintegree | SL ${pos['sl']:.2f} | TP ${pos['tp']:.2f}", "level": "warn"})
                         ensure_sl_on_hyperliquid(self.exchange, self.info, cfg["WALLET_ADDRESS"], ticker_sym, pos, cfg)
                         self.emit("log", {"msg": f"[{ticker_sym}] Verification SL Hyperliquid effectuee", "level": "ok"})
@@ -2178,9 +2198,19 @@ class BotEngine:
                 pos = saved_positions.get(slot_key) if saved_positions else None
                 if pos and not state.position:
                     ticker = ticker_from_slot_key(slot_key)
+                    # v3.2 — FIX : extrait l etat du Trailing TP (pic de profit,
+                    # etage) sauvegarde avec la position, pour ne pas "oublier"
+                    # qu elle avait deja depasse un pic avant le redemarrage.
+                    peak_pnl_usd = pos.pop("_peak_pnl_usd", None)
+                    tp_stage = pos.pop("_tp_stage", 0)
+                    trailing_tp_active = pos.pop("_trailing_tp_active", False)
                     state.position = pos
+                    state.peak_pnl_usd = peak_pnl_usd
+                    state.tp_stage = tp_stage
+                    state.trailing_tp_active = trailing_tp_active
                     restored += 1
-                    self.emit("log", {"msg": f"[{ticker}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} restauree (paper, apres redemarrage)", "level": "warn"})
+                    stage_info = f" | Trailing etage {tp_stage}, pic +${peak_pnl_usd:.2f}" if peak_pnl_usd is not None else ""
+                    self.emit("log", {"msg": f"[{ticker}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} restauree (paper, apres redemarrage){stage_info}", "level": "warn"})
             if restored:
                 self.emit("log", {"msg": f"{restored} position(s) paper restauree(s) apres redemarrage.", "level": "warn"})
 
