@@ -1588,6 +1588,7 @@ class BotEngine:
         au-dela, une collecte fraiche est toujours preferable (un trou de
         donnees trop long fausserait les indicateurs)."""
         import json
+        from datetime import timezone
         try:
             snapshot = {}
             for slot_key, st in self.states.items():
@@ -1615,6 +1616,7 @@ class BotEngine:
         evite de reprendre une collecte avec un trou de donnees trop
         important (fausserait RSI/EMA/MACD/ATR)."""
         import json, os
+        from datetime import timezone
         if not os.path.exists(self.INDICATOR_STATE_FILE):
             print("[INDICATEURS] Aucun etat sauvegarde trouve — collecte fraiche.")
             return
@@ -1677,6 +1679,7 @@ class BotEngine:
         """v3.2 — Prudence live : verifie/actualise l etat de la session de
         trading 24h. Appelee une fois par cycle. N affecte JAMAIS la gestion
         des positions deja ouvertes — seulement l ouverture de nouvelles."""
+        from datetime import timezone
         now = datetime.now(timezone.utc)
         if self.session_started_at is None:
             self.session_started_at = now
@@ -2343,52 +2346,68 @@ class BotEngine:
         self.emit("startup_ready", {})
 
         while self.running:
-            self.cycle += 1
-            self._check_ws_health_alert()
-            self._update_trading_session()
-            prices = self._get_prices_with_timeout(cfg.get("PRICE_FETCH_TIMEOUT_SEC", 10))
-            in_hours = is_trading_hours(cfg)
+            try:
+                self.cycle += 1
+                self._check_ws_health_alert()
+                self._update_trading_session()
+                prices = self._get_prices_with_timeout(cfg.get("PRICE_FETCH_TIMEOUT_SEC", 10))
+                in_hours = is_trading_hours(cfg)
 
-            # v3.2 — DIAGNOSTIC : verifie explicitement combien de prix (sur
-            # les 30 configures) sont reellement recuperes a chaque cycle, et
-            # lesquels manquent — permet de confirmer/infirmer un probleme de
-            # resolution de prix pour une partie des actifs (sans quoi ceux-la
-            # ne collectent jamais, silencieusement, indefiniment).
-            if self.cycle % 4 == 1:  # une fois toutes les ~4 cycles (~1 min), pas a chaque cycle
-                missing_syms = [ticker_from_slot_key(s) for s in cfg["SYMBOLS"] if s not in prices]
-                self.emit("log", {
-                    "msg": f"🔍 DIAGNOSTIC cycle {self.cycle} : {len(prices)}/{len(cfg['SYMBOLS'])} prix recuperes | in_hours={in_hours} | manquants: {missing_syms if missing_syms else 'aucun'}",
-                    "level": "warn"
-                })
+                # v3.2 — DIAGNOSTIC : verifie explicitement combien de prix (sur
+                # les 30 configures) sont reellement recuperes a chaque cycle, et
+                # lesquels manquent — permet de confirmer/infirmer un probleme de
+                # resolution de prix pour une partie des actifs (sans quoi ceux-la
+                # ne collectent jamais, silencieusement, indefiniment).
+                if self.cycle % 4 == 1:  # une fois toutes les ~4 cycles (~1 min), pas a chaque cycle
+                    missing_syms = [ticker_from_slot_key(s) for s in cfg["SYMBOLS"] if s not in prices]
+                    self.emit("log", {
+                        "msg": f"🔍 DIAGNOSTIC cycle {self.cycle} : {len(prices)}/{len(cfg['SYMBOLS'])} prix recuperes | in_hours={in_hours} | manquants: {missing_syms if missing_syms else 'aucun'}",
+                        "level": "warn"
+                    })
 
-            if not in_hours:
-                self.emit("log", {"msg": f"Hors plage {cfg['TRADE_HOUR_START']}h-{cfg['TRADE_HOUR_END']}h — nouvelles entrees suspendues (positions actives conservees)", "level": "dim"})
+                if not in_hours:
+                    self.emit("log", {"msg": f"Hors plage {cfg['TRADE_HOUR_START']}h-{cfg['TRADE_HOUR_END']}h — nouvelles entrees suspendues (positions actives conservees)", "level": "dim"})
+                    for sym in cfg["SYMBOLS"]:
+                        if sym in prices:
+                            self.states[sym].current_price = prices[sym]
+                    # Continuer a gerer les positions ouvertes (SL / Trailing TP)
+                    for sym in cfg["SYMBOLS"]:
+                        if sym in prices and self.states[sym].position:
+                            self._process_with_timeout(sym, prices[sym])
+                    self._save_open_positions()
+                    self._save_confidence_thresholds()
+                    self._send_snapshot()
+                    time.sleep(cfg["CYCLE_INTERVAL"])
+                    continue
+
+                if not prices:
+                    self.emit("log", {"msg": "Prix indisponibles", "level": "warn"})
+                    time.sleep(cfg["CYCLE_INTERVAL"])
+                    continue
+
                 for sym in cfg["SYMBOLS"]:
                     if sym in prices:
-                        self.states[sym].current_price = prices[sym]
-                # Continuer a gerer les positions ouvertes (SL / Trailing TP)
-                for sym in cfg["SYMBOLS"]:
-                    if sym in prices and self.states[sym].position:
                         self._process_with_timeout(sym, prices[sym])
+
                 self._save_open_positions()
                 self._save_confidence_thresholds()
                 self._send_snapshot()
                 time.sleep(cfg["CYCLE_INTERVAL"])
-                continue
-
-            if not prices:
-                self.emit("log", {"msg": "Prix indisponibles", "level": "warn"})
-                time.sleep(cfg["CYCLE_INTERVAL"])
-                continue
-
-            for sym in cfg["SYMBOLS"]:
-                if sym in prices:
-                    self._process_with_timeout(sym, prices[sym])
-
-            self._save_open_positions()
-            self._save_confidence_thresholds()
-            self._send_snapshot()
-            time.sleep(cfg["CYCLE_INTERVAL"])
+            except Exception as e:
+                # v3.2 — FILET DE SECURITE CRITIQUE : sans ce try/except, une
+                # exception inattendue (ex: le bug "timezone" du 05/07/2026)
+                # tuait le thread _run() COMPLETEMENT et SILENCIEUSEMENT — le
+                # bot semblait actif (WebSocket + positions geres normalement)
+                # mais plus aucun cycle, plus aucune collecte, plus aucune
+                # nouvelle entree, sans la moindre trace visible dans l app.
+                # Desormais : erreur loguee bien visible + le cycle suivant
+                # continue normalement au lieu de mourir.
+                import traceback
+                err_msg = f"🔴 ERREUR CRITIQUE dans le cycle {self.cycle} : {type(e).__name__}: {e}"
+                print(f"[_run] {err_msg}")
+                print(traceback.format_exc())
+                self.emit("log", {"msg": err_msg + " — le cycle suivant va reprendre normalement.", "level": "error"})
+                time.sleep(cfg.get("CYCLE_INTERVAL", 15))
 
         self.emit("stopped", {})
 
