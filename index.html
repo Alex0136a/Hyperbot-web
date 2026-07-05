@@ -355,6 +355,7 @@ function App() {
   const [advancedSettings, setAdvancedSettings] = useState(null);
   const [advancedEdits, setAdvancedEdits] = useState({});
   const [bilan, setBilan] = useState(null);
+  const [volatility, setVolatility] = useState(null);
   const [clock, setClock] = useState({utc:"", local:"", market:""});
   const [botLogs, setBotLogs] = useState([]);
   const [persistentLogs, setPersistentLogs] = useState(false);
@@ -528,6 +529,7 @@ Confirmer ?`
     {id:"rapport",label:"📄 Rapport"},
     {id:"stats",label:"📊 Performance"},
     {id:"bilan",label:"💰 Bilan"},
+    {id:"volatilite",label:"📈 Volatilité"},
   ];
 
   return (
@@ -601,7 +603,7 @@ Confirmer ?`
       {/* TABS */}
       <div style={{display:"flex",borderBottom:"1px solid #1e2d4a",background:"#0f1629",overflowX:"auto"}}>
         {TABS.map(t=>(
-          <button key={t.id} onClick={()=>{setTab(t.id); if(t.id==="stats") apiCall("/api/stats/daily","GET",null,token).then(r=>setDailyStats(r)); if(t.id==="rapport") loadData(); if(t.id==="bilan") apiCall("/api/bilan","GET",null,token).then(r=>setBilan(r)); if(t.id==="parametres") apiCall("/api/config/advanced","GET",null,token).then(r=>setAdvancedSettings(r));}} style={{padding:"10px 14px",background:"transparent",border:"none",borderBottom:tab===t.id?"2px solid #3b82f6":"2px solid transparent",color:tab===t.id?"#60a5fa":"#64748b",fontSize:11,fontWeight:tab===t.id?700:400,whiteSpace:"nowrap"}}>
+          <button key={t.id} onClick={()=>{setTab(t.id); if(t.id==="stats") apiCall("/api/stats/daily","GET",null,token).then(r=>setDailyStats(r)); if(t.id==="rapport") loadData(); if(t.id==="bilan") apiCall("/api/bilan","GET",null,token).then(r=>setBilan(r)); if(t.id==="parametres") apiCall("/api/config/advanced","GET",null,token).then(r=>setAdvancedSettings(r)); if(t.id==="volatilite") apiCall("/api/volatility","GET",null,token).then(r=>setVolatility(r));}} style={{padding:"10px 14px",background:"transparent",border:"none",borderBottom:tab===t.id?"2px solid #3b82f6":"2px solid transparent",color:tab===t.id?"#60a5fa":"#64748b",fontSize:11,fontWeight:tab===t.id?700:400,whiteSpace:"nowrap"}}>
             {t.label}
           </button>
         ))}
@@ -777,12 +779,12 @@ Confirmer ?`
                 const on=activeCoins.includes(coin);
                 return (
                   <div key={coin} onClick={()=>setActiveCoins(p=>on?p.filter(c=>c!==coin):[...p,coin])}
-                    style={{background:on?"#0a0e1a":"transparent",border:`2px solid ${on?"#3b82f6":"#1e2d4a"}`,borderRadius:8,padding:"10px 12px",cursor:"pointer",opacity:on?1:0.4}}>
+                    style={{background:on?"linear-gradient(135deg,#0f2352,#1a1440)":"#0a0e1a",border:`2px solid ${on?"#3b82f6":"#1e2d4a"}`,borderRadius:8,padding:"10px 12px",cursor:"pointer",opacity:on?1:0.45,boxShadow:on?"0 0 12px rgba(59,130,246,0.45)":"none",transition:"all 0.15s"}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                      <span style={{fontWeight:700,color:on?"#60a5fa":"#64748b"}}>{coin}</span>
-                      <span style={{fontSize:10,fontWeight:700,color:on?"#34d399":"#334155"}}>{on?"ON":"OFF"}</span>
+                      <span style={{fontWeight:800,color:on?"#93c5fd":"#64748b"}}>{on?"● ":""}{coin}</span>
+                      <span style={{fontSize:10,fontWeight:700,color:on?"#34d399":"#475569"}}>{on?"ON":"OFF"}</span>
                     </div>
-                    <div style={{fontSize:10,color:on?"#94a3b8":"#334155",marginTop:2}}>
+                    <div style={{fontSize:10,color:on?"#c7d2fe":"#475569",marginTop:2}}>
                       {prices[coin]?`$${prices[coin].toLocaleString("en-US",{maximumFractionDigits:2})}`:"---"}
                     </div>
                   </div>
@@ -1305,6 +1307,53 @@ Confirmer ?`
       )}
 
       {/* BILAN */}
+      {tab==="volatilite" && (
+        <div style={{padding:16,maxWidth:700}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <div style={{fontSize:11,color:"#94a3b8",lineHeight:1.6}}>
+              Classement en direct de la volatilité (ATR%) des 30 marchés — plus c'est haut, plus le mouvement de prix est fort en ce moment, donc plus le potentiel de capture est élevé avec tes seuils actuels (Max Loss/Quick Profit). <b>Clique sur une ligne pour activer/désactiver l'actif immédiatement</b> (sans repasser par l'onglet Marchés).
+            </div>
+            <button onClick={()=>apiCall("/api/volatility","GET",null,token).then(r=>setVolatility(r))}
+              style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 12px",color:"#60a5fa",fontSize:10,cursor:"pointer",whiteSpace:"nowrap",marginLeft:10}}>
+              🔄 Actualiser
+            </button>
+          </div>
+          {!volatility
+            ? <div style={{color:"#64748b",fontSize:12,textAlign:"center",padding:40}}>Chargement...</div>
+            : (() => {
+              const maxAtr = Math.max(...volatility.ranking.map(r=>r.atr_pct), 0.01);
+              return (
+                <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:12}}>
+                  {volatility.ranking.map((r,i)=>(
+                    <div key={r.coin} onClick={async()=>{
+                        const newList = r.active ? activeCoins.filter(c=>c!==r.coin) : [...activeCoins, r.coin];
+                        setActiveCoins(newList);
+                        try{
+                          await apiCall("/api/config","PUT",{active_coins:newList},token);
+                          apiCall("/api/volatility","GET",null,token).then(res=>setVolatility(res));
+                          loadData();
+                        }catch(e){ alert("Erreur: "+e.message); }
+                      }}
+                      style={{display:"flex",alignItems:"center",gap:10,padding:"8px 4px",borderBottom:i<volatility.ranking.length-1?"1px solid #0a0e1a":"none",cursor:"pointer"}}>
+                      <div style={{width:20,color:"#64748b",fontSize:10,textAlign:"right"}}>{i+1}</div>
+                      <div style={{width:60,fontWeight:700,fontSize:12,color:r.has_position?"#fbbf24":r.active?"#e2e8f0":"#64748b"}}>{r.coin}</div>
+                      <div style={{flex:1,background:"#0a0e1a",borderRadius:4,height:16,position:"relative",overflow:"hidden"}}>
+                        <div style={{width:`${Math.max((r.atr_pct/maxAtr)*100,2)}%`,height:"100%",background:r.active?"linear-gradient(90deg,#1d4ed8,#7c3aed)":"#334155",borderRadius:4}}/>
+                      </div>
+                      <div style={{width:60,textAlign:"right",fontSize:11,color:"#94a3b8",fontFamily:"monospace"}}>{r.atr_pct.toFixed(3)}%</div>
+                      <div style={{width:16,textAlign:"center"}} title={r.has_position?"Position ouverte sur cet actif — le désactiver n'affectera pas la position en cours, seulement les futures entrées":r.active?"Cliquer pour désactiver":"Cliquer pour activer"}>{r.has_position?"🔶":r.active?"✅":"⬜"}</div>
+                    </div>
+                  ))}
+                  <div style={{marginTop:10,fontSize:9,color:"#64748b"}}>
+                    ✅ actif sélectionné · 🔶 position ouverte · Mis à jour {new Date(volatility.updated_at).toLocaleTimeString("fr-FR")}
+                  </div>
+                </div>
+              );
+            })()
+          }
+        </div>
+      )}
+
       {tab==="bilan" && (
         <div style={{padding:14}}>
           {!bilan ? <div style={{color:"#94a3b8",fontSize:12,textAlign:"center",padding:40}}>
