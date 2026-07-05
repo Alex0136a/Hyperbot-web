@@ -824,8 +824,13 @@ def paper_portfolio(email: str = Depends(require_user)):
     wins = sum(1 for r in closed if (r["pnl"] or 0) > 0)
     win_rate = round(wins / len(closed) * 100, 1) if closed else 0
 
+    # v3.2 — FIX : "balance" (affiche "SOLDE VIRTUEL") ne deduisait pas les
+    # montants deja engages dans les positions ouvertes — il affichait donc
+    # le capital total, pas ce qu il reste reellement disponible pour de
+    # nouveaux trades.
+    engaged = sum(p["size"] for p in open_positions)
     return {
-        "balance": round(bot.capital + realized_pnl, 2),
+        "balance": round(bot.capital + realized_pnl - engaged, 2),
         "open_trades": open_positions,
         "total_pnl": unrealized_pnl,
         "total_pnl_pct": round(unrealized_pnl / initial_balance * 100, 3),
