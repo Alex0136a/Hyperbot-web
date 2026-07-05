@@ -1772,11 +1772,6 @@ class BotEngine:
 
     def stop(self):
         self.running = False
-        # Sauvegarde l etat des indicateurs AVANT toute autre chose, avec un
-        # horodatage precis a l instant de l arret — c est ce moment precis
-        # qui sert de reference pour la reprise rapide (< 90s) au prochain
-        # demarrage.
-        self._save_indicator_state()
         # Fermer proprement le WebSocket si actif, pour eviter d accumuler des
         # connexions/threads orphelins entre deux demarrages successifs.
         if self._ws_subscribed and self.info is not None:
@@ -2330,7 +2325,10 @@ class BotEngine:
                 self.emit("log", {"msg": f"{restored} position(s) paper restauree(s) apres redemarrage.", "level": "warn"})
 
         self._load_confidence_thresholds()
-        self._load_indicator_state_if_recent()
+        # v3.2 — sur demande : collecte des indicateurs TOUJOURS fraiche a
+        # chaque demarrage, plus de reprise rapide (<90s) — simplifie le
+        # comportement et evite toute ambiguite sur l etat restaure.
+        # (self._load_indicator_state_if_recent() volontairement desactive)
         self._load_trading_session()
 
         symbols_display = ", ".join(self._original_symbols)
@@ -2362,7 +2360,6 @@ class BotEngine:
                         self._process_with_timeout(sym, prices[sym])
                 self._save_open_positions()
                 self._save_confidence_thresholds()
-                self._save_indicator_state()
                 self._send_snapshot()
                 time.sleep(cfg["CYCLE_INTERVAL"])
                 continue
@@ -2378,7 +2375,6 @@ class BotEngine:
 
             self._save_open_positions()
             self._save_confidence_thresholds()
-            self._save_indicator_state()
             self._send_snapshot()
             time.sleep(cfg["CYCLE_INTERVAL"])
 
