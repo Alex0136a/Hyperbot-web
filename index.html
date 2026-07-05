@@ -279,7 +279,7 @@ function LoginPage({ onLogin }) {
         <div style={{textAlign:"center",marginBottom:28}}>
           <div style={{width:48,height:48,borderRadius:12,background:"linear-gradient(135deg,#3b82f6,#8b5cf6)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,margin:"0 auto 12px"}}>⚡</div>
           <div style={{fontSize:20,fontWeight:700,color:"#f1f5f9"}}>HyperBot AI</div>
-          <div style={{fontSize:11,color:"#64748b",marginTop:4}}>Trading autonome · Hyperliquid</div>
+          <div style={{fontSize:11,color:"#94a3b8",marginTop:4}}>Trading autonome · Hyperliquid</div>
         </div>
 
         <div style={{display:"flex",gap:4,marginBottom:20,background:"#0a0e1a",borderRadius:8,padding:4}}>
@@ -292,13 +292,13 @@ function LoginPage({ onLogin }) {
         </div>
 
         <div style={{marginBottom:12}}>
-          <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>EMAIL</div>
+          <div style={{fontSize:10,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>EMAIL</div>
           <input value={email} onChange={e=>setEmail(e.target.value)} type="email" placeholder="votre@email.com"
             style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:7,padding:"10px 12px",color:"#e2e8f0",fontSize:12}}/>
         </div>
 
         <div style={{marginBottom:20}}>
-          <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>MOT DE PASSE</div>
+          <div style={{fontSize:10,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>MOT DE PASSE</div>
           <input value={password} onChange={e=>setPassword(e.target.value)} type="password" placeholder="••••••••"
             onKeyDown={e=>e.key==="Enter"&&submit()}
             style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:7,padding:"10px 12px",color:"#e2e8f0",fontSize:12}}/>
@@ -311,7 +311,7 @@ function LoginPage({ onLogin }) {
           {loading?"Chargement...":(mode==="login"?"Se connecter":"Créer le compte")}
         </button>
 
-        <div style={{textAlign:"center",marginTop:16,fontSize:10,color:"#334155"}}>
+        <div style={{textAlign:"center",marginTop:16,fontSize:10,color:"#94a3b8"}}>
           Vos données sont chiffrées et stockées en sécurité
         </div>
       </div>
@@ -538,7 +538,7 @@ Confirmer ?`
           <div style={{width:32,height:32,borderRadius:8,background:"linear-gradient(135deg,#3b82f6,#8b5cf6)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>⚡</div>
           <div>
             <div style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>HyperBot AI</div>
-            <div style={{fontSize:10,color:"#64748b"}}>{email}</div>
+            <div style={{fontSize:10,color:"#94a3b8"}}>{email}</div>
           </div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:12}}>
@@ -548,7 +548,7 @@ Confirmer ?`
               <span style={{fontSize:11,color:isRunning?"#34d399":"#64748b"}}>{isRunning?"ACTIF":"INACTIF"}</span>
             </div>
             {isRunning && config?.started_at && (
-              <div style={{fontSize:9,color:"#475569"}}>
+              <div style={{fontSize:9,color:"#94a3b8"}}>
                 Démarré le {new Date(config.started_at).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}
               </div>
             )}
@@ -566,7 +566,7 @@ Confirmer ?`
             ? <button onClick={stopBot} style={{background:"#2d0a0a",border:"1px solid #f87171",borderRadius:6,padding:"5px 12px",color:"#f87171",fontSize:11,fontWeight:700}}>ARRETER</button>
             : <button onClick={startBot} disabled={loading} style={{background:"linear-gradient(135deg,#3b82f6,#8b5cf6)",border:"none",borderRadius:6,padding:"5px 14px",color:"#fff",fontSize:11,fontWeight:700}}>{loading?"...":"DEMARRER"}</button>
           }
-          <button onClick={logout} style={{background:"transparent",border:"1px solid #1e2d4a",borderRadius:6,padding:"5px 10px",color:"#64748b",fontSize:10}}>Déconnexion</button>
+          <button onClick={logout} style={{background:"transparent",border:"1px solid #1e2d4a",borderRadius:6,padding:"5px 10px",color:"#94a3b8",fontSize:10}}>Déconnexion</button>
         </div>
       </div>
 
@@ -575,7 +575,7 @@ Confirmer ?`
         {[{l:"SIGNAUX",v:stats.total||0,c:"#60a5fa"},{l:"LONG",v:stats.longs||0,c:"#34d399"},{l:"SHORT",v:stats.shorts||0,c:"#f87171"},{l:"CONFIANCE",v:stats.avg_confidence?`${stats.avg_confidence}%`:"--",c:confColor(stats.avg_confidence||0)}].map((s,i)=>(
           <div key={i} style={{background:"#0a0e1a",padding:"10px",textAlign:"center"}}>
             <div style={{fontSize:20,fontWeight:700,color:s.c}}>{s.v}</div>
-            <div style={{fontSize:9,color:"#475569",marginTop:2}}>{s.l}</div>
+            <div style={{fontSize:9,color:"#94a3b8",marginTop:2}}>{s.l}</div>
           </div>
         ))}
       </div>
@@ -584,12 +584,12 @@ Confirmer ?`
       <div style={{background:"#0a0e1a",borderTop:"1px solid #0f1629",padding:"8px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div style={{display:"flex",gap:20,alignItems:"center"}}>
           <div style={{textAlign:"center"}}>
-            <div style={{fontSize:9,color:"#334155",letterSpacing:1}}>UTC</div>
+            <div style={{fontSize:9,color:"#94a3b8",letterSpacing:1}}>UTC</div>
             <div style={{fontSize:13,fontWeight:800,color:"#60a5fa",fontFamily:"monospace"}}>{clock.utc}</div>
           </div>
           <div style={{width:1,height:28,background:"#1e2d4a"}}/>
           <div style={{textAlign:"center"}}>
-            <div style={{fontSize:9,color:"#334155",letterSpacing:1}}>GMT-4</div>
+            <div style={{fontSize:9,color:"#94a3b8",letterSpacing:1}}>GMT-4</div>
             <div style={{fontSize:13,fontWeight:800,color:"#e2e8f0",fontFamily:"monospace"}}>{clock.local}</div>
           </div>
         </div>
@@ -611,11 +611,11 @@ Confirmer ?`
       {tab==="dashboard" && (
         <div style={{padding:16}}>
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:14}}>
-            <div style={{fontSize:10,color:"#475569",marginBottom:10,letterSpacing:1}}>PRIX EN TEMPS RÉEL</div>
+            <div style={{fontSize:10,color:"#94a3b8",marginBottom:10,letterSpacing:1}}>PRIX EN TEMPS RÉEL</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:7}}>
               {ALL_COINS.filter(c=>prices[c]).map(coin=>(
                 <div key={coin} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:5,padding:"5px 10px",display:"flex",gap:7,alignItems:"center"}}>
-                  <span style={{color:"#64748b",fontSize:10}}>{coin}</span>
+                  <span style={{color:"#94a3b8",fontSize:10}}>{coin}</span>
                   <span style={{color:"#e2e8f0",fontWeight:700,fontSize:12}}>${prices[coin]?.toLocaleString("en-US",{maximumFractionDigits:2})}</span>
                 </div>
               ))}
@@ -623,21 +623,21 @@ Confirmer ?`
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
             <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14}}>
-              <div style={{fontSize:10,color:"#475569",marginBottom:8,letterSpacing:1}}>ACTIVITE DU BOT</div>
+              <div style={{fontSize:10,color:"#94a3b8",marginBottom:8,letterSpacing:1}}>ACTIVITE DU BOT</div>
             <div style={{maxHeight:100,overflowY:"auto",marginBottom:12}}>
               {botLogs.length===0
-                ? <div style={{fontSize:9,color:"#334155",fontFamily:"monospace"}}>{isRunning?"⚡ En attente...":"● Bot arrêté"}</div>
+                ? <div style={{fontSize:9,color:"#94a3b8",fontFamily:"monospace"}}>{isRunning?"⚡ En attente...":"● Bot arrêté"}</div>
                 : botLogs.slice(0,6).map((log,i)=>(
                   <div key={i} style={{display:"flex",gap:6,marginBottom:2}}>
-                    <span style={{fontSize:9,color:"#64748b",whiteSpace:"nowrap",fontFamily:"monospace"}}>{log.time}</span>
+                    <span style={{fontSize:9,color:"#94a3b8",whiteSpace:"nowrap",fontFamily:"monospace"}}>{log.time?new Date(log.time).toLocaleTimeString("fr-FR"):""}</span>
                     <span style={{fontSize:9,fontFamily:"monospace",color:log.level==="success"?"#34d399":log.level==="error"?"#f87171":log.level==="warning"?"#fbbf24":"#94a3b8"}}>{log.message}</span>
                   </div>
                 ))
               }
             </div>
-            <div style={{fontSize:9,color:"#475569",marginBottom:10,letterSpacing:1}}>DERNIERS SIGNAUX</div>
+            <div style={{fontSize:9,color:"#94a3b8",marginBottom:10,letterSpacing:1}}>DERNIERS SIGNAUX</div>
               {signals.filter(s=>s.action!=="WAIT").slice(0,5).length===0
-                ? <div style={{color:"#334155",fontSize:11,padding:"16px 0",textAlign:"center"}}>{isRunning?"Analyse en cours...":"Démarrez le bot"}</div>
+                ? <div style={{color:"#94a3b8",fontSize:11,padding:"16px 0",textAlign:"center"}}>{isRunning?"Analyse en cours...":"Démarrez le bot"}</div>
                 : signals.filter(s=>s.action!=="WAIT").slice(0,5).map(sig=>(
                   <div key={sig.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #0a0e1a"}}>
                     <div style={{display:"flex",gap:7,alignItems:"center"}}>
@@ -650,7 +650,7 @@ Confirmer ?`
               }
             </div>
             <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14}}>
-              <div style={{fontSize:10,color:"#475569",marginBottom:10,letterSpacing:1}}>STATUT SERVEUR</div>
+              <div style={{fontSize:10,color:"#94a3b8",marginBottom:10,letterSpacing:1}}>STATUT SERVEUR</div>
               {[
                 {l:"Mode",v:"Serveur 24h/24"},
                 {l:"Bot",v:isRunning?"✅ Actif":"⏹ Arrêté"},
@@ -662,7 +662,7 @@ Confirmer ?`
                 {l:"Wallet",v:config.wallet?`${config.wallet.slice(0,8)}...`:"Non défini"},
               ].map((x,i)=>(
                 <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:i<6?"1px solid #0a0e1a":"none"}}>
-                  <span style={{color:"#475569",fontSize:10}}>{x.l}</span>
+                  <span style={{color:"#94a3b8",fontSize:10}}>{x.l}</span>
                   <span style={{color:"#94a3b8",fontSize:10}}>{x.v}</span>
                 </div>
               ))}
@@ -675,7 +675,7 @@ Confirmer ?`
       {tab==="signaux" && (
         <div style={{padding:16}}>
           {signals.filter(s=>s.action!=="WAIT").length===0
-            ? <div style={{textAlign:"center",padding:50,color:"#475569"}}>{isRunning?"Analyse IA en cours...":"Aucun signal — démarrez le bot"}</div>
+            ? <div style={{textAlign:"center",padding:50,color:"#94a3b8"}}>{isRunning?"Analyse IA en cours...":"Aucun signal — démarrez le bot"}</div>
             : signals.filter(s=>s.action!=="WAIT").map(sig=>(
               <div key={sig.id} style={{background:"#0f1629",border:`1px solid ${sig.action==="LONG"?"#14532d":"#450a0a"}`,borderRadius:10,padding:14,marginBottom:12}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
@@ -686,25 +686,25 @@ Confirmer ?`
                   </div>
                   <div style={{textAlign:"right"}}>
                     <div style={{fontSize:18,fontWeight:700,color:confColor(sig.confidence)}}>{sig.confidence}%</div>
-                    <div style={{fontSize:9,color:"#475569"}}>CONFIANCE</div>
+                    <div style={{fontSize:9,color:"#94a3b8"}}>CONFIANCE</div>
                   </div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7,marginBottom:10}}>
                   {[{l:"ENTRÉE",v:`$${sig.entry?.toFixed(4)}`,c:"#60a5fa"},{l:"STOP LOSS",v:`$${sig.stop_loss?.toFixed(4)}`,c:"#f87171"},{l:"TP1",v:`$${sig.take_profit1?.toFixed(4)}`,c:"#34d399"},{l:"TP2",v:`$${sig.take_profit2?.toFixed(4)}`,c:"#34d399"}].map((x,i)=>(
                     <div key={i} style={{background:"#0a0e1a",borderRadius:5,padding:"7px 8px"}}>
-                      <div style={{fontSize:9,color:"#475569",marginBottom:2}}>{x.l}</div>
+                      <div style={{fontSize:9,color:"#94a3b8",marginBottom:2}}>{x.l}</div>
                       <div style={{fontSize:11,fontWeight:700,color:x.c}}>{x.v}</div>
                     </div>
                   ))}
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:7,marginBottom:10}}>
-                  <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#475569"}}>TAILLE</div><div style={{color:"#e2e8f0",fontWeight:700}}>{sig.position_size}%</div></div>
-                  <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#475569"}}>RISK/REWARD</div><div style={{color:sig.risk_reward>=2?"#34d399":"#fbbf24",fontWeight:700}}>{sig.risk_reward?.toFixed(2)}</div></div>
-                  <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#475569"}}>TIMEFRAME</div><div style={{color:"#94a3b8",fontSize:11}}>{sig.timeframe}</div></div>
+                  <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#94a3b8"}}>TAILLE</div><div style={{color:"#e2e8f0",fontWeight:700}}>{sig.position_size}%</div></div>
+                  <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#94a3b8"}}>RISK/REWARD</div><div style={{color:sig.risk_reward>=2?"#34d399":"#fbbf24",fontWeight:700}}>{sig.risk_reward?.toFixed(2)}</div></div>
+                  <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#94a3b8"}}>TIMEFRAME</div><div style={{color:"#94a3b8",fontSize:11}}>{sig.timeframe}</div></div>
                 </div>
                 {sig.reasoning&&<div style={{background:"#0a0e1a",borderRadius:5,padding:9,marginBottom:8,borderLeft:"3px solid #8b5cf6"}}><div style={{fontSize:9,color:"#c084fc",marginBottom:3}}>🤖 ANALYSE IA</div><div style={{color:"#94a3b8",fontSize:11,lineHeight:1.6}}>{sig.reasoning}</div></div>}
                 {sig.key_signals&&<div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:8}}>{JSON.parse(sig.key_signals||"[]").map((s,i)=><span key={i} style={{background:"#1e2d4a",color:"#60a5fa",padding:"2px 7px",borderRadius:3,fontSize:10}}>{s}</span>)}</div>}
-                <div style={{fontSize:10,color:"#334155"}}>
+                <div style={{fontSize:10,color:"#94a3b8"}}>
                   {new Date(sig.created_at).toLocaleString("fr-FR")} · RSI:{sig.rsi?.toFixed(1)} · Prix:{`$${sig.price?.toLocaleString()}`}
                   {prices[sig.coin]&&<span style={{marginLeft:8,color:((prices[sig.coin]-sig.entry)/sig.entry*100*(sig.action==="LONG"?1:-1))>=0?"#34d399":"#f87171"}}>
                     · PnL: {((prices[sig.coin]-sig.entry)/sig.entry*100*(sig.action==="LONG"?1:-1)).toFixed(2)}%
@@ -719,8 +719,8 @@ Confirmer ?`
       {/* POSITIONS */}
       {tab==="positions" && (
         <div style={{padding:16}}>
-          {!config.hyperliquid_configured?<div style={{textAlign:"center",padding:40,color:"#475569"}}>Configurez votre clé API/wallet dans Paramètres</div>
-          :positions.length===0?<div style={{textAlign:"center",padding:40,color:"#475569"}}>Aucune position ouverte</div>
+          {!config.hyperliquid_configured?<div style={{textAlign:"center",padding:40,color:"#94a3b8"}}>Configurez votre clé API/wallet dans Paramètres</div>
+          :positions.length===0?<div style={{textAlign:"center",padding:40,color:"#94a3b8"}}>Aucune position ouverte</div>
           :positions.map((p,i)=>{
             const pnl = p.pnl || 0;
             let duration = "--";
@@ -735,21 +735,21 @@ Confirmer ?`
                   <div style={{display:"flex",gap:7,alignItems:"center"}}>
                     <span style={{background:p.action==="LONG"?"#052e16":"#2d0a0a",color:p.action==="LONG"?"#34d399":"#f87171",padding:"2px 7px",borderRadius:4,fontSize:10,fontWeight:700}}>{p.action}</span>
                     <span style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>{p.coin}/USDC</span>
-                    <span style={{fontSize:9,color:"#64748b",background:"#0a0e1a",padding:"2px 6px",borderRadius:4}}>x{p.leverage||1}</span>
+                    <span style={{fontSize:9,color:"#94a3b8",background:"#0a0e1a",padding:"2px 6px",borderRadius:4}}>x{p.leverage||1}</span>
                   </div>
                   <div style={{textAlign:"right"}}>
                     <div style={{fontSize:15,fontWeight:700,color:pnl>=0?"#34d399":"#f87171"}}>{pnl>=0?"+":""}{pnl.toFixed(2)} USDC</div>
-                    <div style={{fontSize:9,color:"#64748b"}}>{p.pnl_pct>=0?"+":""}{p.pnl_pct}%</div>
+                    <div style={{fontSize:9,color:"#94a3b8"}}>{p.pnl_pct>=0?"+":""}{p.pnl_pct}%</div>
                   </div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7,marginBottom:7}}>
                   {[{l:"TAILLE",v:`${p.size_usdc} USDC`},{l:"ENTRÉE",v:`$${p.entry_price?.toLocaleString()}`},{l:"ACTUEL",v:`$${p.current_price?.toLocaleString()}`},{l:"DURÉE",v:duration}].map((x,j)=>(
-                    <div key={j} style={{background:"#0a0e1a",borderRadius:5,padding:"7px 8px"}}><div style={{fontSize:9,color:"#475569"}}>{x.l}</div><div style={{color:"#e2e8f0",fontWeight:700,fontSize:11}}>{x.v}</div></div>
+                    <div key={j} style={{background:"#0a0e1a",borderRadius:5,padding:"7px 8px"}}><div style={{fontSize:9,color:"#94a3b8"}}>{x.l}</div><div style={{color:"#e2e8f0",fontWeight:700,fontSize:11}}>{x.v}</div></div>
                   ))}
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:7}}>
                   {[{l:"STOP LOSS",v:p.stop_loss?`$${p.stop_loss.toLocaleString()}`:"--",c:"#f87171"},{l:"TP1",v:p.take_profit1?`$${p.take_profit1.toLocaleString()}`:"--",c:"#34d399"},{l:"TP2",v:p.take_profit2?`$${p.take_profit2.toLocaleString()}`:"--",c:"#34d399"}].map((x,j)=>(
-                    <div key={j} style={{background:"#0a0e1a",borderRadius:5,padding:"7px 8px"}}><div style={{fontSize:9,color:"#475569"}}>{x.l}</div><div style={{color:x.c,fontWeight:700,fontSize:11}}>{x.v}</div></div>
+                    <div key={j} style={{background:"#0a0e1a",borderRadius:5,padding:"7px 8px"}}><div style={{fontSize:9,color:"#94a3b8"}}>{x.l}</div><div style={{color:x.c,fontWeight:700,fontSize:11}}>{x.v}</div></div>
                   ))}
                 </div>
               </div>
@@ -770,7 +770,7 @@ Confirmer ?`
                   {x.l}
                 </button>
               ))}
-              <button onClick={()=>setActiveCoins([])} style={{background:"transparent",border:"1px solid #1e2d4a",borderRadius:6,padding:"5px 12px",color:"#64748b",fontSize:11}}>Tout désactiver</button>
+              <button onClick={()=>setActiveCoins([])} style={{background:"transparent",border:"1px solid #1e2d4a",borderRadius:6,padding:"5px 12px",color:"#94a3b8",fontSize:11}}>Tout désactiver</button>
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:16}}>
               {ALL_COINS.map(coin=>{
@@ -802,17 +802,17 @@ Confirmer ?`
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:20,marginBottom:14}}>
             <div style={{fontSize:13,fontWeight:700,color:"#60a5fa",marginBottom:16}}>Paramètres de connexion</div>
             <div style={{marginBottom:14}}>
-              <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>WALLET HYPERLIQUID</div>
+              <div style={{fontSize:10,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>WALLET HYPERLIQUID</div>
               <input value={liveW} onChange={e=>setLiveW(e.target.value)} placeholder="0x..."
                 style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:7,padding:"9px 12px",color:"#e2e8f0",fontSize:12}}/>
-              <div style={{fontSize:10,color:"#334155",marginTop:3}}>Lecture seule — visualisation de vos positions</div>
+              <div style={{fontSize:10,color:"#94a3b8",marginTop:3}}>Lecture seule — visualisation de vos positions</div>
             </div>
             <div style={{marginBottom:20}}>
-              <div style={{fontSize:10,color:"#475569",marginBottom:4,letterSpacing:1}}>CLÉ API ANTHROPIC</div>
+              <div style={{fontSize:10,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>CLÉ API ANTHROPIC</div>
               <input value={liveK} onChange={e=>setLiveK(e.target.value)} type="password"
                 placeholder={config?.has_api_key ? "✅ Clé active — saisir pour changer" : "sk-ant-... (clé Anthropic)"}
                 style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:7,padding:"9px 12px",color:"#e2e8f0",fontSize:12}}/>
-              <div style={{fontSize:10,color:"#334155",marginTop:3}}>Clé stockée de façon sécurisée sur le serveur · {config.has_api_key?"✅ Clé définie":"❌ Non définie"}</div>
+              <div style={{fontSize:10,color:"#94a3b8",marginTop:3}}>Clé stockée de façon sécurisée sur le serveur · {config.has_api_key?"✅ Clé définie":"❌ Non définie"}</div>
             </div>
             <button onClick={saveConfig}
               style={{width:"100%",background:saved?"#052e16":"linear-gradient(135deg,#1d4ed8,#7c3aed)",border:saved?"1px solid #34d399":"none",borderRadius:8,padding:"11px",color:saved?"#34d399":"#fff",fontWeight:700,fontSize:12}}>
@@ -823,7 +823,7 @@ Confirmer ?`
           {/* HYPERLIQUID CONFIG */}
           <div style={{background:"#0f1629",border:"1px solid #7c3aed",borderRadius:10,padding:16,marginBottom:14}}>
             <div style={{fontSize:13,fontWeight:700,color:"#a78bfa",marginBottom:4}}>⚡ Configuration Hyperliquid</div>
-            <div style={{fontSize:10,color:"#334155",marginBottom:12}}>Wallet et clé API pour le mode LIVE (optionnel en Paper Trading)</div>
+            <div style={{fontSize:10,color:"#94a3b8",marginBottom:12}}>Wallet et clé API pour le mode LIVE (optionnel en Paper Trading)</div>
             
             <div style={{marginBottom:10}}>
               <div style={{fontSize:11,color:"#94a3b8",marginBottom:6,fontWeight:700}}>🔗 Wallet Address</div>
@@ -838,7 +838,7 @@ Confirmer ?`
                 placeholder={config?.hyperliquid_configured ? "✅ Clé active — saisir pour changer" : "Clé privée Hyperliquid..."}
                 value={hlApiKey} onChange={e=>setHlApiKey(e.target.value)}
                 style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"9px 12px",color:"#e2e8f0",fontSize:11,boxSizing:"border-box",marginBottom:8}}/>
-              <div style={{fontSize:9,color:"#334155"}}>⚠️ Ne partagez jamais votre clé privée — stockée de façon sécurisée sur votre serveur</div>
+              <div style={{fontSize:9,color:"#94a3b8"}}>⚠️ Ne partagez jamais votre clé privée — stockée de façon sécurisée sur votre serveur</div>
             </div>
 
             <button onClick={()=>{
@@ -859,7 +859,7 @@ Confirmer ?`
           {/* FINNHUB KEY */}
           <div style={{background:"#0f1629",border:"1px solid #b45309",borderRadius:10,padding:16,marginBottom:14}}>
             <div style={{fontSize:13,fontWeight:700,color:"#f59e0b",marginBottom:4}}>🗓️ Calendrier Macro (Finnhub)</div>
-            <div style={{fontSize:10,color:"#334155",marginBottom:12}}>Clé gratuite sur finnhub.io — alertes FOMC/CPI/NFP automatiques</div>
+            <div style={{fontSize:10,color:"#94a3b8",marginBottom:12}}>Clé gratuite sur finnhub.io — alertes FOMC/CPI/NFP automatiques</div>
             <input
               type="password"
               placeholder="Clé Finnhub (ex: d1abc123...)"
@@ -876,12 +876,12 @@ Confirmer ?`
           {/* FILTRES TEMPORELS */}
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:14}}>
             <div style={{fontSize:13,fontWeight:700,color:"#f59e0b",marginBottom:4}}>⏰ Filtres de trading</div>
-            <div style={{fontSize:10,color:"#334155",marginBottom:12}}>Contrôlez quand le bot peut ouvrir de nouveaux trades</div>
+            <div style={{fontSize:10,color:"#94a3b8",marginBottom:12}}>Contrôlez quand le bot peut ouvrir de nouveaux trades</div>
             
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #0f1629"}}>
               <div>
                 <div style={{fontSize:11,color:"#94a3b8",fontWeight:700}}>🌙 Session creuse (21h-23h UTC)</div>
-                <div style={{fontSize:10,color:"#334155"}}>Fin session USA — liquidité faible. Session Asie (00h-08h) reste active pour HYPE/SOL/INJ</div>
+                <div style={{fontSize:10,color:"#94a3b8"}}>Fin session USA — liquidité faible. Session Asie (00h-08h) reste active pour HYPE/SOL/INJ</div>
               </div>
               <button onClick={()=>{
                 const v=!filterHours; setFilterHours(v);
@@ -894,7 +894,7 @@ Confirmer ?`
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #0f1629"}}>
               <div>
                 <div style={{fontSize:11,color:"#94a3b8",fontWeight:700}}>📅 Pause Week-end (Forex uniquement)</div>
-                <div style={{fontSize:10,color:"#334155"}}>Crypto trade 24h/24 7j/7 — désactivé par défaut</div>
+                <div style={{fontSize:10,color:"#94a3b8"}}>Crypto trade 24h/24 7j/7 — désactivé par défaut</div>
               </div>
               <button onClick={()=>{
                 const v=!filterWeekend; setFilterWeekend(v);
@@ -907,7 +907,7 @@ Confirmer ?`
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0"}}>
               <div>
                 <div style={{fontSize:11,color:"#f87171",fontWeight:700}}>⚠️ Pause macro (FOMC/CPI/NFP)</div>
-                <div style={{fontSize:10,color:"#334155"}}>Override manuel — suspend tout nouveau trade immédiatement</div>
+                <div style={{fontSize:10,color:"#94a3b8"}}>Override manuel — suspend tout nouveau trade immédiatement</div>
               </div>
               <button onClick={()=>{
                 const v=!filterMacro; setFilterMacro(v);
@@ -920,7 +920,7 @@ Confirmer ?`
 
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:14}}>
             <div style={{fontSize:13,fontWeight:700,color:"#60a5fa",marginBottom:8}}>🤖 Analyse IA continue</div>
-            <div style={{fontSize:11,color:"#64748b",marginBottom:14}}>
+            <div style={{fontSize:11,color:"#94a3b8",marginBottom:14}}>
               Par défaut, l'IA ne s'appelle pas si un coin est déjà en position (économie de crédits).
               Activez pour recevoir les avis IA en continu — utile pour le trading manuel.
             </div>
@@ -939,16 +939,16 @@ Confirmer ?`
           {/* REGLAGES AVANCES */}
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:14}}>
             <div style={{fontSize:11,fontWeight:700,color:"#94a3b8",marginBottom:4}}>⚙️ Réglages avancés (stratégie)</div>
-            <div style={{fontSize:10,color:"#475569",marginBottom:12,lineHeight:1.6}}>
+            <div style={{fontSize:10,color:"#94a3b8",marginBottom:12,lineHeight:1.6}}>
               Indicateurs, filtres, confiance et session — pour les utilisateurs avancés. Laisse les valeurs par défaut si tu n'es pas sûr.
             </div>
             {!advancedSettings
-              ? <div style={{color:"#334155",fontSize:11}}>Chargement...</div>
+              ? <div style={{color:"#94a3b8",fontSize:11}}>Chargement...</div>
               : <>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
                   {Object.entries(advancedSettings).map(([key,meta])=>(
                     <div key={key}>
-                      <div style={{fontSize:9,color:"#475569",marginBottom:3}}>{meta.label}</div>
+                      <div style={{fontSize:9,color:"#94a3b8",marginBottom:3}}>{meta.label}</div>
                       <input key={`${key}-${meta.value}`} type="number" step="any"
                         defaultValue={meta.value}
                         onChange={e=>setAdvancedEdits(p=>({...p,[key]:Number(e.target.value)}))}
@@ -973,7 +973,7 @@ Confirmer ?`
 
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:14}}>
             <div style={{fontSize:11,fontWeight:700,color:"#94a3b8",marginBottom:10}}>Maintenance</div>
-            <div style={{fontSize:10,color:"#475569",marginBottom:10,lineHeight:1.6}}>
+            <div style={{fontSize:10,color:"#94a3b8",marginBottom:10,lineHeight:1.6}}>
               Nettoie les signaux en double et supprime ceux de plus de 24h. Garde uniquement le signal le plus récent par actif.
             </div>
             <button onClick={async()=>{
@@ -1010,11 +1010,11 @@ Confirmer ?`
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16}}>
             <div style={{fontSize:11,fontWeight:700,color:"#94a3b8",marginBottom:10}}>Compte</div>
             <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #0a0e1a"}}>
-              <span style={{color:"#475569",fontSize:11}}>Email</span>
+              <span style={{color:"#94a3b8",fontSize:11}}>Email</span>
               <span style={{color:"#94a3b8",fontSize:11}}>{email}</span>
             </div>
             <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0"}}>
-              <span style={{color:"#475569",fontSize:11}}>Session</span>
+              <span style={{color:"#94a3b8",fontSize:11}}>Session</span>
               <span style={{color:"#34d399",fontSize:11}}>Active (30 jours)</span>
             </div>
           </div>
@@ -1025,7 +1025,7 @@ Confirmer ?`
       {tab==="logs" && (
         <div style={{padding:14}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-            <span style={{fontSize:10,color:"#475569"}}>{persistentLogs?"📚 Historique persistant (200 entrées)":"⚡ Session courante (50 entrées)"}</span>
+            <span style={{fontSize:10,color:"#94a3b8"}}>{persistentLogs?"📚 Historique persistant (200 entrées)":"⚡ Session courante (50 entrées)"}</span>
             <button onClick={async()=>{
               const v=!persistentLogs; setPersistentLogs(v);
               const r=await apiCall(v?"/api/bot/logs?persistent=true":"/api/bot/logs","GET",null,token);
@@ -1035,10 +1035,10 @@ Confirmer ?`
             </button>
           </div>
           <div style={{background:"#050810",borderRadius:8,padding:12,height:420,overflowY:"auto",border:"1px solid #0f1629"}}>
-            {botLogs.length===0?<div style={{color:"#334155",fontSize:11}}>{isRunning?"En attente du premier scan...":"Démarrez le bot pour voir les logs"}</div>
+            {botLogs.length===0?<div style={{color:"#94a3b8",fontSize:11}}>{isRunning?"En attente du premier scan...":"Démarrez le bot pour voir les logs"}</div>
             :botLogs.map((l,i)=>(
               <div key={i} style={{display:"flex",gap:8,marginBottom:3}}>
-                <span style={{color:"#64748b",fontSize:10,whiteSpace:"nowrap"}}>{l.time}</span>
+                <span style={{color:"#94a3b8",fontSize:10,whiteSpace:"nowrap"}}>{l.time?new Date(l.time).toLocaleTimeString("fr-FR"):""}</span>
                 <span style={{color:l.level==="success"?"#34d399":l.level==="error"?"#f87171":l.level==="warning"?"#fbbf24":"#94a3b8",fontSize:11,lineHeight:1.5}}>{l.message}</span>
               </div>
             ))}
@@ -1061,7 +1061,7 @@ Confirmer ?`
             ].map((s,i)=>(
               <div key={i} style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:8,padding:"12px",textAlign:"center"}}>
                 <div style={{fontSize:16,fontWeight:700,color:s.c}}>{s.v}</div>
-                <div style={{fontSize:9,color:"#475569",marginTop:2}}>{s.l}</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginTop:2}}>{s.l}</div>
               </div>
             ))}
           </div>
@@ -1073,7 +1073,7 @@ Confirmer ?`
                 <div style={{fontSize:13,fontWeight:700,color:config?.trading_mode==="paper"?"#fbbf24":"#34d399"}}>
                   {config?.trading_mode==="paper"?"Mode Paper — Simulation autonome":"Mode Live — Trades reels"}
                 </div>
-                <div style={{fontSize:10,color:"#475569",marginTop:2}}>
+                <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>
                   {config?.trading_mode==="paper"?"Le bot execute automatiquement chaque signal avec capital virtuel":"ATTENTION: trades sur votre vrai compte Hyperliquid"}
                 </div>
               </div>
@@ -1084,14 +1084,14 @@ Confirmer ?`
             </div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
               <div>
-                <div style={{fontSize:9,color:"#475569",marginBottom:4,letterSpacing:1}}>TAILLE PAR TRADE (% DU CAPITAL)</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>TAILLE PAR TRADE (% DU CAPITAL)</div>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                   <input key={`pct-${config?.position_pct}`} type="number" defaultValue={config?.position_pct||8} min="1" max="50"
                     onBlur={e=>{apiCall("/api/config","PUT",{position_pct:Number(e.target.value)},token).then(()=>{loadData();flashSave("pct");});}}
                     style={{flex:1,background:savedField==="pct"?"#0a1a0a":"#0a0e1a",border:savedField==="pct"?"1px solid #34d399":"1px solid #1e2d4a",borderRadius:6,padding:"8px 10px",color:savedField==="pct"?"#34d399":"#e2e8f0",fontFamily:"inherit",fontSize:12,transition:"all 0.3s"}}/>
                   <span style={{color:"#60a5fa",fontWeight:700,fontSize:14}}>%</span>
                 </div>
-                <div style={{fontSize:9,color:"#334155",marginTop:4}}>≈ {Math.round((config?.position_pct||5)*10)} USDC sur 1000 USDC · Adaptatif</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>≈ {Math.round((config?.position_pct||5)*10)} USDC sur 1000 USDC · Adaptatif</div>
               </div>
               <div>
                 <div style={{fontSize:10,color:"#f59e0b",marginBottom:6,fontWeight:700,letterSpacing:1}}>⚡ QUICK PROFIT (USDC)</div>
@@ -1101,7 +1101,7 @@ Confirmer ?`
                     style={{flex:1,background:savedField==="qp"?"#1a2e0a":"#0a0e1a",border:savedField==="qp"?"1px solid #34d399":"1px solid #f59e0b",borderRadius:6,padding:"8px 10px",color:savedField==="qp"?"#34d399":"#f59e0b",fontFamily:"inherit",fontSize:12,transition:"all 0.3s"}}/>
                   <span style={{color:"#f59e0b",fontWeight:700,fontSize:14}}>$</span>
                 </div>
-                <div style={{fontSize:9,color:"#334155",marginTop:4}}>Fermeture automatique dès ce profit atteint (frais inclus)</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>Fermeture automatique dès ce profit atteint (frais inclus)</div>
               </div>
               <div>
                 <div style={{fontSize:10,color:"#f87171",marginBottom:6,fontWeight:700,letterSpacing:1}}>🛡️ MAX LOSS (USDC)</div>
@@ -1111,31 +1111,31 @@ Confirmer ?`
                     style={{flex:1,background:savedField==="ml"?"#1a0a0a":"#0a0e1a",border:savedField==="ml"?"1px solid #34d399":"1px solid #f87171",borderRadius:6,padding:"8px 10px",color:savedField==="ml"?"#34d399":"#f87171",fontFamily:"inherit",fontSize:12,transition:"all 0.3s"}}/>
                   <span style={{color:"#f87171",fontWeight:700,fontSize:14}}>$</span>
                 </div>
-                <div style={{fontSize:9,color:"#334155",marginTop:4}}>Fermeture automatique si perte dépasse ce montant</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>Fermeture automatique si perte dépasse ce montant</div>
               </div>
               <div>
-                <div style={{fontSize:9,color:"#475569",marginBottom:4,letterSpacing:1}}>TRADES SIMULTANES MAX</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>TRADES SIMULTANES MAX</div>
                 <input key={`mot-${config?.max_open_trades}`} type="number" defaultValue={config?.max_open_trades||5} min="1" max="20"
                   onChange={e=>apiCall("/api/config","PUT",{max_open_trades:Number(e.target.value)},token).then(loadData)}
                   style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"8px 10px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12}}/>
               </div>
               <div>
-                <div style={{fontSize:9,color:"#475569",marginBottom:4,letterSpacing:1}}>🚨 AUTO-ACTIVATION (% confiance)</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>🚨 AUTO-ACTIVATION (% confiance)</div>
                 <input key={`aac-${config?.auto_activate_confidence_pct}`} type="number" defaultValue={config?.auto_activate_confidence_pct||80} min="50" max="100" step="1"
                   onChange={e=>apiCall("/api/config","PUT",{auto_activate_confidence_pct:Number(e.target.value)},token).then(loadData)}
                   style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"8px 10px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12}}/>
-                <div style={{fontSize:9,color:"#334155",marginTop:4}}>Un actif inactif se trade automatiquement si sa confiance atteint ce seuil</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>Un actif inactif se trade automatiquement si sa confiance atteint ce seuil</div>
               </div>
             </div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <div style={{fontSize:10,color:"#334155"}}>
+              <div style={{fontSize:10,color:"#94a3b8"}}>
                 Solde initial: 1000 USDC · Le bot trade seul 24h/24
               </div>
               <button onClick={async()=>{
                 if(!confirm("Reinitialiser le portefeuille a 1000 USDC ?"))return;
                 await apiCall("/api/paper/reset","POST",null,token);
                 loadData();
-              }} style={{background:"transparent",border:"1px solid #334155",borderRadius:5,padding:"5px 10px",color:"#64748b",fontSize:10}}>
+              }} style={{background:"transparent",border:"1px solid #334155",borderRadius:5,padding:"5px 10px",color:"#94a3b8",fontSize:10}}>
                 Reinitialiser
               </button>
             </div>
@@ -1145,14 +1145,14 @@ Confirmer ?`
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:"#60a5fa",marginBottom:12}}>📈 Trades ouverts</div>
             {!paper?.open_trades?.length
-              ? <div style={{color:"#334155",fontSize:11,textAlign:"center",padding:"20px 0"}}>Aucun trade ouvert — exécutez un signal !</div>
+              ? <div style={{color:"#94a3b8",fontSize:11,textAlign:"center",padding:"20px 0"}}>Aucun trade ouvert — exécutez un signal !</div>
               : paper.open_trades.map(trade=>(
                 <div key={trade.id} style={{background:"#0a0e1a",borderRadius:8,padding:12,marginBottom:8,border:`1px solid ${trade.pnl>=0?"#14532d":"#450a0a"}`}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
                     <div style={{display:"flex",gap:8,alignItems:"center"}}>
                       <span style={{background:trade.action==="LONG"?"#052e16":"#2d0a0a",color:trade.action==="LONG"?"#34d399":"#f87171",padding:"2px 8px",borderRadius:4,fontSize:11,fontWeight:700}}>{trade.action}</span>
                       <span style={{color:"#f1f5f9",fontWeight:700}}>{trade.coin}/USDC</span>
-                      <span style={{color:"#64748b",fontSize:10}}>x{trade.leverage}</span>
+                      <span style={{color:"#94a3b8",fontSize:10}}>x{trade.leverage}</span>
                     </div>
                     <div style={{display:"flex",gap:12,alignItems:"center"}}>
                       <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontWeight:700,fontSize:14}}>
@@ -1183,7 +1183,7 @@ Confirmer ?`
                       })()},
                     ].map((x,i)=>(
                       <div key={i} style={{background:"#0f1629",borderRadius:5,padding:"5px 8px"}}>
-                        <div style={{fontSize:8,color:"#475569"}}>{x.l}</div>
+                        <div style={{fontSize:8,color:"#94a3b8"}}>{x.l}</div>
                         <div style={{color:"#94a3b8",fontSize:11,fontWeight:500}}>{x.v}</div>
                       </div>
                     ))}
@@ -1213,7 +1213,7 @@ Confirmer ?`
                     <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontWeight:700,fontSize:12}}>
                       {trade.pnl>=0?"+":""}{trade.pnl?.toFixed(2)} USDC
                     </span>
-                    <span style={{color:"#475569",fontSize:10}}>{new Date(trade.closed_at).toLocaleTimeString("fr-FR")}</span>
+                    <span style={{color:"#94a3b8",fontSize:10}}>{new Date(trade.closed_at).toLocaleTimeString("fr-FR")}</span>
                   </div>
                 </div>
               ))}
@@ -1225,7 +1225,7 @@ Confirmer ?`
       {/* STATS PERFORMANCE */}
       {tab==="stats" && (
         <div style={{padding:14}}>
-          {!dailyStats ? <div style={{color:"#475569",fontSize:12,textAlign:"center",padding:40}}>Chargement...</div> : (<>
+          {!dailyStats ? <div style={{color:"#94a3b8",fontSize:12,textAlign:"center",padding:40}}>Chargement...</div> : (<>
           {/* RESUME GLOBAL */}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:14}}>
             <div style={{background:"#052e16",border:"1px solid #34d399",borderRadius:10,padding:14,textAlign:"center"}}>
@@ -1249,10 +1249,10 @@ Confirmer ?`
 
           {/* STATS PAR JOUR */}
           <div style={{background:"#0a0e1a",borderRadius:10,padding:14,border:"1px solid #1e2d4a",marginBottom:14}}>
-            <div style={{fontSize:11,fontWeight:700,color:"#475569",marginBottom:10,letterSpacing:1}}>PAR JOUR</div>
+            <div style={{fontSize:11,fontWeight:700,color:"#94a3b8",marginBottom:10,letterSpacing:1}}>PAR JOUR</div>
             {dailyStats.daily.map((d,i)=>(
               <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #0f1629"}}>
-                <span style={{fontSize:11,color:"#64748b"}}>{d.day}</span>
+                <span style={{fontSize:11,color:"#94a3b8"}}>{d.day}</span>
                 <span style={{fontSize:11,color:"#34d399"}}>✅ {d.wins} (+{d.total_wins_usdc?.toFixed(2)} USDC)</span>
                 <span style={{fontSize:11,color:"#f87171"}}>❌ {d.losses} ({d.total_losses_usdc?.toFixed(2)} USDC)</span>
                 <span style={{fontSize:11,fontWeight:700,color:d.net_pnl>=0?"#34d399":"#f87171"}}>{d.net_pnl?.toFixed(2)} USDC</span>
@@ -1266,9 +1266,9 @@ Confirmer ?`
             {dailyStats.wins.map((t,i)=>(
               <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #0a2a1a",fontSize:10}}>
                 <span style={{color:"#34d399",fontWeight:700}}>{t.action} {t.coin}</span>
-                <span style={{color:"#64748b"}}>{t.close_reason}</span>
+                <span style={{color:"#94a3b8"}}>{t.close_reason}</span>
                 <span style={{color:"#34d399",fontWeight:700}}>+{t.pnl?.toFixed(2)} USDC</span>
-                <span style={{color:"#334155"}}>{t.closed_at?.slice(11,16)}</span>
+                <span style={{color:"#94a3b8"}}>{t.closed_at?.slice(11,16)}</span>
               </div>
             ))}
           </div>
@@ -1279,9 +1279,9 @@ Confirmer ?`
             {dailyStats.losses.map((t,i)=>(
               <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #2a0a0a",fontSize:10}}>
                 <span style={{color:"#f87171",fontWeight:700}}>{t.action} {t.coin}</span>
-                <span style={{color:"#64748b"}}>{t.close_reason}</span>
+                <span style={{color:"#94a3b8"}}>{t.close_reason}</span>
                 <span style={{color:"#f87171",fontWeight:700}}>{t.pnl?.toFixed(2)} USDC</span>
-                <span style={{color:"#334155"}}>{t.closed_at?.slice(11,16)}</span>
+                <span style={{color:"#94a3b8"}}>{t.closed_at?.slice(11,16)}</span>
               </div>
             ))}
           </div>
@@ -1299,7 +1299,7 @@ Confirmer ?`
       {/* BILAN */}
       {tab==="bilan" && (
         <div style={{padding:14}}>
-          {!bilan ? <div style={{color:"#475569",fontSize:12,textAlign:"center",padding:40}}>
+          {!bilan ? <div style={{color:"#94a3b8",fontSize:12,textAlign:"center",padding:40}}>
             <button onClick={()=>apiCall("/api/bilan","GET",null,token).then(r=>setBilan(r))}
               style={{background:"#1e2d4a",border:"1px solid #3b82f6",borderRadius:8,padding:"10px 20px",color:"#60a5fa",cursor:"pointer"}}>
               📊 Charger le bilan
@@ -1309,13 +1309,13 @@ Confirmer ?`
           {/* BALANCE */}
           <div style={{background:"#0a1628",border:"1px solid #1e3a5f",borderRadius:12,padding:16,marginBottom:12}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-              <div style={{fontSize:11,color:"#475569",letterSpacing:1}}>💼 CAPITAL</div>
+              <div style={{fontSize:11,color:"#94a3b8",letterSpacing:1}}>💼 CAPITAL</div>
               {bilan.running_seconds != null ? (() => {
                 const diff = Math.floor(bilan.running_seconds);
                 const h = Math.floor(diff/3600);
                 const m = Math.floor((diff%3600)/60);
                 const ratePerH = h > 0 ? (bilan.total?.net / (h + m/60)).toFixed(2) : "...";
-                return <div style={{fontSize:10,color:"#475569"}}>
+                return <div style={{fontSize:10,color:"#94a3b8"}}>
                   ⏱️ <span style={{color:"#60a5fa",fontWeight:700}}>{h}h{String(m).padStart(2,"0")}</span> de fonctionnement reel (hors arrets) · 
                   <span style={{color:"#34d399",fontWeight:700}}> {ratePerH}$/h</span>
                 </div>;
@@ -1326,7 +1326,7 @@ Confirmer ?`
                 const h = Math.floor(diff/3600);
                 const m = Math.floor((diff%3600)/60);
                 const ratePerH = h > 0 ? (bilan.total?.net / (h + m/60)).toFixed(2) : "...";
-                return <div style={{fontSize:10,color:"#475569"}}>
+                return <div style={{fontSize:10,color:"#94a3b8"}}>
                   ⏱️ <span style={{color:"#60a5fa",fontWeight:700}}>{h}h{String(m).padStart(2,"0")}</span> de trading · 
                   <span style={{color:"#34d399",fontWeight:700}}> {ratePerH}$/h</span>
                 </div>;
@@ -1335,24 +1335,24 @@ Confirmer ?`
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
               <div style={{textAlign:"center"}}>
                 <div style={{fontSize:18,fontWeight:800,color:"#60a5fa"}}>{bilan.balance} $</div>
-                <div style={{fontSize:9,color:"#334155"}}>DISPONIBLE</div>
+                <div style={{fontSize:9,color:"#94a3b8"}}>DISPONIBLE</div>
               </div>
               <div style={{textAlign:"center"}}>
                 <div style={{fontSize:18,fontWeight:800,color:"#e2e8f0"}}>{bilan.total_capital} $</div>
-                <div style={{fontSize:9,color:"#334155"}}>TOTAL</div>
+                <div style={{fontSize:9,color:"#94a3b8"}}>TOTAL</div>
               </div>
               <div style={{textAlign:"center"}}>
                 <div style={{fontSize:18,fontWeight:800,color:bilan.performance_pct>=0?"#34d399":"#f87171"}}>
                   {bilan.performance_pct>=0?"+":""}{bilan.performance_pct}%
                 </div>
-                <div style={{fontSize:9,color:"#334155"}}>PERFORMANCE</div>
+                <div style={{fontSize:9,color:"#94a3b8"}}>PERFORMANCE</div>
               </div>
             </div>
           </div>
 
           {/* AUJOURD'HUI */}
           <div style={{background:"#0a1628",border:"1px solid #1e3a5f",borderRadius:12,padding:16,marginBottom:12}}>
-            <div style={{fontSize:11,color:"#475569",marginBottom:8,letterSpacing:1}}>📅 AUJOURD'HUI</div>
+            <div style={{fontSize:11,color:"#94a3b8",marginBottom:8,letterSpacing:1}}>📅 AUJOURD'HUI</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
               <div style={{background:"#052e16",borderRadius:8,padding:10,textAlign:"center"}}>
                 <div style={{fontSize:16,fontWeight:800,color:"#34d399"}}>+{bilan.today.gains} $</div>
@@ -1364,7 +1364,7 @@ Confirmer ?`
               </div>
             </div>
             <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderTop:"1px solid #0f1629"}}>
-              <span style={{fontSize:11,color:"#64748b"}}>{bilan.today.total} trades · Win rate {bilan.today.win_rate}%</span>
+              <span style={{fontSize:11,color:"#94a3b8"}}>{bilan.today.total} trades · Win rate {bilan.today.win_rate}%</span>
               <span style={{fontSize:13,fontWeight:800,color:bilan.today.net>=0?"#34d399":"#f87171"}}>
                 {bilan.today.net>=0?"+":""}{bilan.today.net} $ NET
               </span>
@@ -1373,7 +1373,7 @@ Confirmer ?`
 
           {/* TOTAL DEPUIS DEBUT */}
           <div style={{background:"#0a1628",border:"1px solid #1e3a5f",borderRadius:12,padding:16,marginBottom:12}}>
-            <div style={{fontSize:11,color:"#475569",marginBottom:8,letterSpacing:1}}>🏆 TOTAL DEPUIS LE DÉBUT</div>
+            <div style={{fontSize:11,color:"#94a3b8",marginBottom:8,letterSpacing:1}}>🏆 TOTAL DEPUIS LE DÉBUT</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
               <div style={{background:"#052e16",borderRadius:8,padding:10,textAlign:"center"}}>
                 <div style={{fontSize:16,fontWeight:800,color:"#34d399"}}>+{bilan.total.gains} $</div>
@@ -1385,7 +1385,7 @@ Confirmer ?`
               </div>
             </div>
             <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderTop:"1px solid #0f1629"}}>
-              <span style={{fontSize:11,color:"#64748b"}}>{bilan.total.total} trades · Win rate {bilan.total.win_rate}%</span>
+              <span style={{fontSize:11,color:"#94a3b8"}}>{bilan.total.total} trades · Win rate {bilan.total.win_rate}%</span>
               <span style={{fontSize:13,fontWeight:800,color:bilan.total.net>=0?"#34d399":"#f87171"}}>
                 {bilan.total.net>=0?"+":""}{bilan.total.net} $ NET
               </span>
@@ -1394,13 +1394,13 @@ Confirmer ?`
 
           {/* PAR JOUR */}
           <div style={{background:"#0a1628",border:"1px solid #1e3a5f",borderRadius:12,padding:16}}>
-            <div style={{fontSize:11,color:"#475569",marginBottom:8,letterSpacing:1}}>📆 7 DERNIERS JOURS</div>
+            <div style={{fontSize:11,color:"#94a3b8",marginBottom:8,letterSpacing:1}}>📆 7 DERNIERS JOURS</div>
             {bilan.daily.map((d,i)=>(
               <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid #0f1629",fontSize:11}}>
-                <span style={{color:"#64748b"}}>{d.day}</span>
+                <span style={{color:"#94a3b8"}}>{d.day}</span>
                 <span style={{color:"#34d399"}}>✅ {d.wins}</span>
                 <span style={{color:"#f87171"}}>❌ {d.losses}</span>
-                <span style={{color:"#64748b"}}>{d.total} trades</span>
+                <span style={{color:"#94a3b8"}}>{d.total} trades</span>
                 <span style={{fontWeight:700,color:d.net>=0?"#34d399":"#f87171"}}>
                   {d.net>=0?"+":""}{Math.round(d.net*100)/100} $
                 </span>
@@ -1410,7 +1410,7 @@ Confirmer ?`
 
           <div style={{display:"flex",gap:8,marginTop:12}}>
             <button onClick={()=>apiCall("/api/bilan","GET",null,token).then(r=>setBilan(r))}
-              style={{flex:1,background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:8,padding:"10px",color:"#475569",fontSize:11,cursor:"pointer"}}>
+              style={{flex:1,background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:8,padding:"10px",color:"#94a3b8",fontSize:11,cursor:"pointer"}}>
               🔄 Actualiser
             </button>
             <button onClick={()=>downloadTxt(generateBilan(bilan,paper),`bilan-${new Date().toISOString().slice(0,10)}.txt`)}
@@ -1430,7 +1430,7 @@ Confirmer ?`
 
           {/* PAR ACTIF */}
           <div style={{background:"#0a1628",border:"1px solid #1e3a5f",borderRadius:12,padding:16,marginTop:12}}>
-            <div style={{fontSize:11,color:"#475569",marginBottom:8,letterSpacing:1}}>🎯 PERFORMANCE PAR ACTIF</div>
+            <div style={{fontSize:11,color:"#94a3b8",marginBottom:8,letterSpacing:1}}>🎯 PERFORMANCE PAR ACTIF</div>
             {(bilan.by_coin||[]).map((coin,i)=>{
               const h = Math.floor((coin.total_minutes||0)/60);
               const m = (coin.total_minutes||0)%60;
@@ -1443,11 +1443,11 @@ Confirmer ?`
                       {coin.net>=0?"+":""}{coin.net}$
                     </span>
                   </div>
-                  <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#475569"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#94a3b8"}}>
                     <span>✅{coin.wins} (+{coin.avg_gain}$) ❌{coin.losses} ({coin.avg_loss}$)</span>
                     <span style={{color:coin.win_rate>=50?"#34d399":"#f87171"}}>{coin.win_rate}%</span>
                   </div>
-                  <div style={{fontSize:9,color:"#334155",marginTop:2}}>
+                  <div style={{fontSize:9,color:"#94a3b8",marginTop:2}}>
                     ⏱️ {timeStr} de trading · {coin.total} trades
                   </div>
                 </div>
@@ -1463,21 +1463,21 @@ Confirmer ?`
         <div style={{padding:16,maxWidth:800}}>
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:20,marginBottom:14}}>
             <div style={{fontSize:13,fontWeight:700,color:"#60a5fa",marginBottom:4}}>📄 Rapport de session</div>
-            <div style={{fontSize:11,color:"#475569",marginBottom:16,lineHeight:1.7}}>
+            <div style={{fontSize:11,color:"#94a3b8",marginBottom:16,lineHeight:1.7}}>
               Exportez tous les signaux avec niveaux, suivi TP/SL et analyse IA. Collez dans Claude pour analyse approfondie.
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:16}}>
               {[{l:"Signaux",v:stats.total||0,c:"#60a5fa"},{l:"Confiance moy.",v:`${stats.avg_confidence||0}%`,c:confColor(stats.avg_confidence||0)},{l:"R/R moyen",v:stats.avg_rr||"--",c:"#c084fc"}].map((s,i)=>(
                 <div key={i} style={{background:"#0a0e1a",borderRadius:6,padding:"9px",textAlign:"center"}}>
                   <div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div>
-                  <div style={{fontSize:9,color:"#475569",marginTop:2}}>{s.l}</div>
+                  <div style={{fontSize:9,color:"#94a3b8",marginTop:2}}>{s.l}</div>
                 </div>
               ))}
             </div>
             <div style={{background:"#0a0e1a",borderRadius:7,padding:12,marginBottom:14}}>
-              <div style={{fontSize:10,color:"#475569",marginBottom:8,letterSpacing:1}}>SUIVI TP/SL EN TEMPS REEL</div>
+              <div style={{fontSize:10,color:"#94a3b8",marginBottom:8,letterSpacing:1}}>SUIVI TP/SL EN TEMPS REEL</div>
               {signals.filter(s=>s.action!=="WAIT").length===0
-                ?<div style={{color:"#334155",fontSize:11}}>Aucun signal a suivre.</div>
+                ?<div style={{color:"#94a3b8",fontSize:11}}>Aucun signal a suivre.</div>
                 :signals.filter(s=>s.action!=="WAIT").slice(0,10).map(sig=>{
                   const cur=prices[sig.coin]; if(!cur) return null;
                   const dir=sig.action==="LONG"?1:-1;
@@ -1490,7 +1490,7 @@ Confirmer ?`
                       <div style={{display:"flex",gap:7,alignItems:"center"}}>
                         <span style={{color:sig.action==="LONG"?"#34d399":"#f87171",fontSize:10,fontWeight:700}}>{sig.action}</span>
                         <span style={{color:"#e2e8f0",fontSize:11}}>{sig.coin}</span>
-                        <span style={{color:"#475569",fontSize:10}}>{new Date(sig.created_at).toLocaleTimeString("fr-FR")}</span>
+                        <span style={{color:"#94a3b8",fontSize:10}}>{new Date(sig.created_at).toLocaleTimeString("fr-FR")}</span>
                       </div>
                       <div style={{display:"flex",gap:8,fontSize:10}}>
                         <span style={{color:parseFloat(pnl)>=0?"#34d399":"#f87171",fontWeight:700}}>{pnl>0?"+":""}{pnl}%</span>
