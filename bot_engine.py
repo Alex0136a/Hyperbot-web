@@ -1475,6 +1475,7 @@ class BotEngine:
 
     # ── Sauvegarde des positions ouvertes pour reconciliation au redemarrage ──
     POSITIONS_FILE = "hyperbot_positions.json"
+    CONFIDENCE_FILE = "hyperbot_confidence.json"
 
     def _save_open_positions(self):
         """Sauvegarde les positions ouvertes (live ET paper depuis v3.2, pour
@@ -1511,6 +1512,32 @@ class BotEngine:
         except Exception as e:
             print(f"[POSITIONS] ERREUR lecture : {e}")
             return {}
+
+    def _save_confidence_thresholds(self):
+        """Sauvegarde les seuils de confiance dynamiques par actif (survit aux
+        redemarrages/redeploiements) — sans ca, un Max Loss qui avait rendu
+        un actif plus exigeant serait oublie au prochain demarrage, comme si
+        de rien n etait."""
+        import json
+        try:
+            with open(self.CONFIDENCE_FILE, "w") as f:
+                json.dump(self.confidence_thresholds, f, indent=2)
+        except Exception as e:
+            print(f"[CONFIANCE] Erreur sauvegarde : {e}")
+
+    def _load_confidence_thresholds(self):
+        """Restaure les seuils de confiance dynamiques par actif au demarrage."""
+        import json, os
+        if not os.path.exists(self.CONFIDENCE_FILE):
+            return
+        try:
+            with open(self.CONFIDENCE_FILE, "r") as f:
+                data = json.load(f)
+            self.confidence_thresholds = {k: float(v) for k, v in data.items()}
+            if self.confidence_thresholds:
+                print(f"[CONFIANCE] Seuils restaures : {self.confidence_thresholds}")
+        except Exception as e:
+            print(f"[CONFIANCE] Erreur lecture : {e}")
 
     def emit(self, etype, data=None):
         self.q.put({"type": etype, "data": data or {}})
@@ -1660,6 +1687,7 @@ class BotEngine:
         if new_threshold != current:
             self.confidence_thresholds[ticker] = new_threshold
             self.emit("log", {"msg": f"[{ticker}] Confiance minimale requise relevee a {new_threshold:.0f}% (confiance d entree {entry_confidence:.0f}% + {step:.0f}%)" if entry_confidence is not None else f"[{ticker}] Confiance minimale requise relevee a {new_threshold:.0f}% (apres perte)", "level": "warn"})
+            self._save_confidence_thresholds()
 
     def _register_win(self, ticker):
         """Apres une sortie positive (Quick Profit ou Trailing TP), on rend
@@ -1672,6 +1700,7 @@ class BotEngine:
         if current > base:
             self.confidence_thresholds[ticker] = base
             self.emit("log", {"msg": f"[{ticker}] Confiance minimale requise reinitialisee a {base:.0f}% (apres gain Quick Profit/Trailing TP)", "level": "ok"})
+            self._save_confidence_thresholds()
 
     # ── v3.1 : Blackout CPI (Finnhub) ────────────────────────────────────────
     def _refresh_cpi_events_if_needed(self):
@@ -2027,6 +2056,8 @@ class BotEngine:
             if restored:
                 self.emit("log", {"msg": f"{restored} position(s) paper restauree(s) apres redemarrage.", "level": "warn"})
 
+        self._load_confidence_thresholds()
+
         symbols_display = ", ".join(self._original_symbols)
         self.emit("log", {"msg": f"Demarrage | {symbols_display} | ${cfg['CAPITAL_USD']}", "level": "ok"})
         self.emit("log", {"msg": f"Plage horaire : {cfg['TRADE_HOUR_START']}h-{cfg['TRADE_HOUR_END']}h Paris", "level": "info"})
@@ -2047,6 +2078,7 @@ class BotEngine:
                     if sym in prices and self.states[sym].position:
                         self._process_with_timeout(sym, prices[sym])
                 self._save_open_positions()
+                self._save_confidence_thresholds()
                 self._send_snapshot()
                 time.sleep(cfg["CYCLE_INTERVAL"])
                 continue
@@ -2061,6 +2093,7 @@ class BotEngine:
                     self._process_with_timeout(sym, prices[sym])
 
             self._save_open_positions()
+            self._save_confidence_thresholds()
             self._send_snapshot()
             time.sleep(cfg["CYCLE_INTERVAL"])
 
