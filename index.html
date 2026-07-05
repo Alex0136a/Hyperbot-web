@@ -1544,9 +1544,9 @@ Confirmer ?`
             </div>
             <div style={{background:"#0a0e1a",borderRadius:7,padding:12,marginBottom:14}}>
               <div style={{fontSize:10,color:"#94a3b8",marginBottom:8,letterSpacing:1}}>SUIVI TP/SL EN TEMPS REEL</div>
-              {signals.filter(s=>s.action!=="WAIT").length===0
-                ?<div style={{color:"#94a3b8",fontSize:11}}>Aucun signal a suivre.</div>
-                :signals.filter(s=>s.action!=="WAIT").slice(0,10).map(sig=>{
+              {signals.filter(s=>s.action!=="WAIT" && !s.closed_at).length===0
+                ?<div style={{color:"#94a3b8",fontSize:11}}>Aucun signal ouvert a suivre actuellement.</div>
+                :signals.filter(s=>s.action!=="WAIT" && !s.closed_at).slice(0,10).map(sig=>{
                   const cur=prices[sig.coin]; if(!cur) return null;
                   const dir=sig.action==="LONG"?1:-1;
                   const pnl=((cur-sig.entry)/sig.entry*100*dir).toFixed(2);
