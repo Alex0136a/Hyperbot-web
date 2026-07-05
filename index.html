@@ -508,7 +508,7 @@ Confirmer ?`
     {id:"marches",label:`🎯 Marchés (${activeCoins.length}/${ALL_COINS.length})`},
     {id:"parametres",label:"⚙️ Paramètres"},
     {id:"logs",label:"📋 Logs"},
-    {id:"paper",label:`🎮 Paper Trading`},
+    {id:"paper",label:config?.trading_mode==="live"?`🔴 Live Trading`:`🎮 Paper Trading`},
     {id:"rapport",label:"📄 Rapport"},
     {id:"stats",label:"📊 Performance"},
     {id:"bilan",label:"💰 Bilan"},
@@ -627,12 +627,13 @@ Confirmer ?`
                 {l:"Mode",v:"Serveur 24h/24"},
                 {l:"Bot",v:isRunning?"✅ Actif":"⏹ Arrêté"},
                 {l:"Mode trading",v:config.trading_mode==="paper"?"Paper (simulation)":"Live (reel)"},
+                {l:"WebSocket",v:!config.ws_healthy?"⚪ N/A (bot arrêté)":config.ws_healthy?"🟢 Actif (temps réel)":"🔴 Hors service (repli cycle)"},
                 {l:"Dernier scan",v:config.last_scan?new Date(config.last_scan).toLocaleTimeString("fr-FR"):"Jamais"},
                 {l:"Marchés actifs",v:`${activeCoins.length}/${ALL_COINS.length}`},
                 {l:"Clé API",v:config.hyperliquid_configured?"✅ Définie":"❌ Manquante"},
                 {l:"Wallet",v:config.wallet?`${config.wallet.slice(0,8)}...`:"Non défini"},
               ].map((x,i)=>(
-                <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:i<5?"1px solid #0a0e1a":"none"}}>
+                <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:i<6?"1px solid #0a0e1a":"none"}}>
                   <span style={{color:"#475569",fontSize:10}}>{x.l}</span>
                   <span style={{color:"#94a3b8",fontSize:10}}>{x.v}</span>
                 </div>
@@ -690,22 +691,37 @@ Confirmer ?`
       {/* POSITIONS */}
       {tab==="positions" && (
         <div style={{padding:16}}>
-          {!config.wallet?<div style={{textAlign:"center",padding:40,color:"#475569"}}>Définissez votre wallet dans Paramètres</div>
+          {!config.hyperliquid_configured?<div style={{textAlign:"center",padding:40,color:"#475569"}}>Configurez votre clé API/wallet dans Paramètres</div>
           :positions.length===0?<div style={{textAlign:"center",padding:40,color:"#475569"}}>Aucune position ouverte</div>
-          :positions.map((pos,i)=>{
-            const p=pos.position; const pnl=parseFloat(p.unrealizedPnl||0);
+          :positions.map((p,i)=>{
+            const pnl = p.pnl || 0;
+            let duration = "--";
+            if (p.opened_at) {
+              const diffSec = Math.max(0, Math.floor((new Date() - new Date(p.opened_at)) / 1000));
+              const h = Math.floor(diffSec/3600), m = Math.floor((diffSec%3600)/60);
+              duration = h>0 ? `${h}h${String(m).padStart(2,"0")}` : `${m}min`;
+            }
             return (
               <div key={i} style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:12}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
                   <div style={{display:"flex",gap:7,alignItems:"center"}}>
-                    <span style={{background:parseFloat(p.szi)>0?"#052e16":"#2d0a0a",color:parseFloat(p.szi)>0?"#34d399":"#f87171",padding:"2px 7px",borderRadius:4,fontSize:10,fontWeight:700}}>{parseFloat(p.szi)>0?"LONG":"SHORT"}</span>
+                    <span style={{background:p.action==="LONG"?"#052e16":"#2d0a0a",color:p.action==="LONG"?"#34d399":"#f87171",padding:"2px 7px",borderRadius:4,fontSize:10,fontWeight:700}}>{p.action}</span>
                     <span style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>{p.coin}/USDC</span>
+                    <span style={{fontSize:9,color:"#64748b",background:"#0a0e1a",padding:"2px 6px",borderRadius:4}}>x{p.leverage||1}</span>
                   </div>
-                  <span style={{fontSize:15,fontWeight:700,color:pnl>=0?"#34d399":"#f87171"}}>{pnl>=0?"+":""}{pnl.toFixed(2)} USDC</span>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:15,fontWeight:700,color:pnl>=0?"#34d399":"#f87171"}}>{pnl>=0?"+":""}{pnl.toFixed(2)} USDC</div>
+                    <div style={{fontSize:9,color:"#64748b"}}>{p.pnl_pct>=0?"+":""}{p.pnl_pct}%</div>
+                  </div>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7,marginBottom:7}}>
+                  {[{l:"TAILLE",v:`${p.size_usdc} USDC`},{l:"ENTRÉE",v:`$${p.entry_price?.toLocaleString()}`},{l:"ACTUEL",v:`$${p.current_price?.toLocaleString()}`},{l:"DURÉE",v:duration}].map((x,j)=>(
+                    <div key={j} style={{background:"#0a0e1a",borderRadius:5,padding:"7px 8px"}}><div style={{fontSize:9,color:"#475569"}}>{x.l}</div><div style={{color:"#e2e8f0",fontWeight:700,fontSize:11}}>{x.v}</div></div>
+                  ))}
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:7}}>
-                  {[{l:"TAILLE",v:Math.abs(parseFloat(p.szi)).toFixed(4)},{l:"ENTRÉE",v:`$${parseFloat(p.entryPx||0).toLocaleString()}`},{l:"LEVIER",v:`x${p.leverage?.value||"--"}`}].map((x,j)=>(
-                    <div key={j} style={{background:"#0a0e1a",borderRadius:5,padding:"7px 8px"}}><div style={{fontSize:9,color:"#475569"}}>{x.l}</div><div style={{color:"#e2e8f0",fontWeight:700,fontSize:11}}>{x.v}</div></div>
+                  {[{l:"STOP LOSS",v:p.stop_loss?`$${p.stop_loss.toLocaleString()}`:"--",c:"#f87171"},{l:"TP1",v:p.take_profit1?`$${p.take_profit1.toLocaleString()}`:"--",c:"#34d399"},{l:"TP2",v:p.take_profit2?`$${p.take_profit2.toLocaleString()}`:"--",c:"#34d399"}].map((x,j)=>(
+                    <div key={j} style={{background:"#0a0e1a",borderRadius:5,padding:"7px 8px"}}><div style={{fontSize:9,color:"#475569"}}>{x.l}</div><div style={{color:x.c,fontWeight:700,fontSize:11}}>{x.v}</div></div>
                   ))}
                 </div>
               </div>
@@ -906,6 +922,16 @@ Confirmer ?`
               🧹 Nettoyer les signaux en double
             </button>
             <button onClick={async()=>{
+              if(!window.confirm("Forcer une collecte fraiche ?\n\nTous les indicateurs (RSI, EMA, MACD...) repartent de zero et se reconstruisent progressivement (~12-13 min). Les positions ouvertes ne sont PAS affectees.\n\nContinuer ?")) return;
+              try{
+                const r = await apiCall("/api/bot/force-recollect","POST",null,token);
+                alert(r.message);
+                loadData();
+              }catch(e){alert("Erreur: "+e.message);}
+            }} style={{width:"100%",background:"transparent",border:"1px solid #60a5fa",borderRadius:7,padding:"9px",color:"#60a5fa",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer",marginBottom:8}}>
+              🔄 Forcer une nouvelle collecte
+            </button>
+            <button onClick={async()=>{
               if(!window.confirm("REINITIALISATION COMPLETE\n\nCela va effacer :\n- Tous les signaux\n- Tous les trades paper\n- L'historique\n- Le portefeuille (repart a 1000 USDC)\n\nVotre cle API et wallet Hyperliquid NE seront PAS effaces.\n\nEtes-vous sur ?")) return;
               try{
                 const r = await apiCall("/api/reset-all","POST",null,token);
@@ -1079,12 +1105,18 @@ Confirmer ?`
                       </button>
                     </div>
                   </div>
-                  <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6}}>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6}}>
                     {[
                       {l:"ENTRÉE",v:`$${trade.entry_price?.toLocaleString("en-US",{maximumFractionDigits:4})}`},
                       {l:"ACTUEL",v:`$${trade.current_price?.toLocaleString("en-US",{maximumFractionDigits:4})}`},
                       {l:"TAILLE",v:`${trade.size_usdc} USDC`},
-                      {l:"OUVERT",v:new Date(trade.opened_at).toLocaleTimeString("fr-FR")},
+                      {l:"OUVERT",v:trade.opened_at?new Date(trade.opened_at).toLocaleTimeString("fr-FR"):"--"},
+                      {l:"DURÉE",v:(()=>{
+                        if(!trade.opened_at) return "--";
+                        const diffSec = Math.max(0, Math.floor((new Date() - new Date(trade.opened_at)) / 1000));
+                        const h = Math.floor(diffSec/3600), m = Math.floor((diffSec%3600)/60);
+                        return h>0 ? `${h}h${String(m).padStart(2,"0")}` : `${m}min`;
+                      })()},
                     ].map((x,i)=>(
                       <div key={i} style={{background:"#0f1629",borderRadius:5,padding:"5px 8px"}}>
                         <div style={{fontSize:8,color:"#475569"}}>{x.l}</div>
