@@ -1052,12 +1052,13 @@ Confirmer ?`
         <div style={{padding:16,maxWidth:900}}>
 
           {/* STATS PORTEFEUILLE */}
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:16}}>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,marginBottom:16}}>
             {[
               {l:"SOLDE VIRTUEL",v:`${paper?.balance?.toFixed(2)||"1000.00"} USDC`,c:"#60a5fa"},
               {l:"PNL OUVERT",v:`${paper?.total_pnl>=0?"+":""}${paper?.total_pnl?.toFixed(2)||"0.00"} USDC`,c:paper?.total_pnl>=0?"#34d399":"#f87171"},
               {l:"PERFORMANCE",v:`${paper?.total_pnl_pct>=0?"+":""}${paper?.total_pnl_pct?.toFixed(2)||"0.00"}%`,c:paper?.total_pnl_pct>=0?"#34d399":"#f87171"},
               {l:"TRADES OUVERTS",v:paper?.open_trades?.length||0,c:"#c084fc"},
+              {l:"WIN RATE",v:`${paper?.win_rate??0}%`,c:"#fbbf24"},
             ].map((s,i)=>(
               <div key={i} style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:8,padding:"12px",textAlign:"center"}}>
                 <div style={{fontSize:16,fontWeight:700,color:s.c}}>{s.v}</div>
