@@ -1029,6 +1029,13 @@ Confirmer ?`
                   onChange={e=>apiCall("/api/config","PUT",{max_open_trades:Number(e.target.value)},token).then(loadData)}
                   style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"8px 10px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12}}/>
               </div>
+              <div>
+                <div style={{fontSize:9,color:"#475569",marginBottom:4,letterSpacing:1}}>🚨 AUTO-ACTIVATION (% confiance)</div>
+                <input type="number" defaultValue={config?.auto_activate_confidence_pct||80} min="50" max="100" step="1"
+                  onChange={e=>apiCall("/api/config","PUT",{auto_activate_confidence_pct:Number(e.target.value)},token).then(loadData)}
+                  style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"8px 10px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12}}/>
+                <div style={{fontSize:9,color:"#334155",marginTop:4}}>Un actif inactif se trade automatiquement si sa confiance atteint ce seuil</div>
+              </div>
             </div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
               <div style={{fontSize:10,color:"#334155"}}>
