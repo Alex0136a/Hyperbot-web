@@ -366,6 +366,7 @@ function App() {
   const [saved, setSaved] = useState(false);
   const [savedField, setSavedField] = useState("");
   const [loading, setLoading] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState(null);
   const logEnd = useRef(null);
   const pollRef = useRef(null);
 
@@ -417,6 +418,7 @@ function App() {
       setPositions(pos?.positions||[]);
       setActiveCoins(cfg?.active_coins||ALL_COINS);
       setIsRunning(!!cfg?.is_running);
+      setLastUpdate(new Date());
     } catch(e) { console.error(e); }
   }, [token]);
 
@@ -426,6 +428,18 @@ function App() {
       const id = setInterval(loadData, 5000);
       return () => clearInterval(id);
     }
+  }, [token, loadData]);
+
+  // v3.2 — FIX : les navigateurs ralentissent (parfois fortement) le
+  // setInterval ci-dessus quand l onglet est en arriere-plan (changement de
+  // fenetre, capture d ecran avec un autre outil, etc.) — les prix/signaux
+  // affiches pouvaient alors etre perimes de plusieurs minutes sans aucun
+  // indice visuel. On force desormais un rafraichissement IMMEDIAT des
+  // qu on revient sur l onglet, plutot que d attendre le prochain cycle.
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === "visible" && token) loadData(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, [token, loadData]);
 
   useEffect(() => { logEnd.current?.scrollIntoView({behavior:"smooth"}); }, [botLogs]);
@@ -1543,7 +1557,12 @@ Confirmer ?`
               ))}
             </div>
             <div style={{background:"#0a0e1a",borderRadius:7,padding:12,marginBottom:14}}>
-              <div style={{fontSize:10,color:"#94a3b8",marginBottom:8,letterSpacing:1}}>SUIVI TP/SL EN TEMPS REEL</div>
+              <div style={{fontSize:10,color:"#94a3b8",marginBottom:8,letterSpacing:1,display:"flex",justifyContent:"space-between"}}>
+                <span>SUIVI TP/SL EN TEMPS REEL</span>
+                <span style={{color:"#64748b",letterSpacing:0}}>
+                  {lastUpdate ? `Donnees mises a jour il y a ${Math.floor((new Date()-lastUpdate)/1000)}s` : ""}
+                </span>
+              </div>
               {signals.filter(s=>s.action!=="WAIT" && !s.closed_at).length===0
                 ?<div style={{color:"#94a3b8",fontSize:11}}>Aucun signal ouvert a suivre actuellement.</div>
                 :signals.filter(s=>s.action!=="WAIT" && !s.closed_at).slice(0,10).map(sig=>{
@@ -1572,24 +1591,52 @@ Confirmer ?`
               }
             </div>
             <div style={{display:"flex",gap:10}}>
-              <button onClick={()=>downloadTxt(generateReport(signals||[],stats||{},prices||{},email||"",paper),`hyperbot-${new Date().toISOString().slice(0,10)}.txt`)}
+              <button onClick={async()=>{
+                // v3.2 — FIX : re-recupere signaux/prix EN DIRECT au moment du
+                // clic, au lieu d utiliser l etat React potentiellement
+                // perime (le rafraichissement automatique toutes les 5s peut
+                // etre ralenti par le navigateur si l onglet est en arriere-
+                // plan — le rapport affichait alors une heure de generation
+                // recente mais des prix bien plus vieux, sans le signaler).
+                try{
+                  const [freshSigs, freshPrices, freshStats] = await Promise.all([
+                    apiCall("/api/signals?limit=50","GET",null,token),
+                    apiCall("/api/prices","GET",null,token),
+                    apiCall("/api/stats","GET",null,token),
+                  ]);
+                  const sigs = freshSigs?.signals||[];
+                  const prc = freshPrices?.prices||{};
+                  setSignals(sigs); setPrices(prc); setStats(freshStats);
+                  downloadTxt(generateReport(sigs,freshStats||{},prc,email||"",paper),`hyperbot-${new Date().toISOString().slice(0,10)}.txt`);
+                }catch(e){ alert("Erreur lors de la recuperation des donnees fraiches: "+e.message); }
+              }}
                 style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#7c3aed)",border:"none",borderRadius:8,padding:"11px",color:"#fff",fontWeight:700,fontSize:12}}>
                 ⬇️ Telecharger .txt
               </button>
-              <button onClick={()=>{
-                const txt = generateReport(signals||[],stats||{},prices||{},email||"",paper);
-                if(!txt || txt.length < 10) { alert("Rapport vide - rechargez la page"); return; }
-                navigator.clipboard.writeText(txt)
-                  .then(()=>alert("✅ Copié ! (" + txt.length + " caractères)"))
-                  .catch(()=>{
-                    const ta = document.createElement("textarea");
-                    ta.value = txt;
-                    document.body.appendChild(ta);
-                    ta.select();
-                    document.execCommand("copy");
-                    document.body.removeChild(ta);
-                    alert("✅ Copié via fallback !");
-                  });
+              <button onClick={async()=>{
+                try{
+                  const [freshSigs, freshPrices, freshStats] = await Promise.all([
+                    apiCall("/api/signals?limit=50","GET",null,token),
+                    apiCall("/api/prices","GET",null,token),
+                    apiCall("/api/stats","GET",null,token),
+                  ]);
+                  const sigs = freshSigs?.signals||[];
+                  const prc = freshPrices?.prices||{};
+                  setSignals(sigs); setPrices(prc); setStats(freshStats);
+                  const txt = generateReport(sigs,freshStats||{},prc,email||"",paper);
+                  if(!txt || txt.length < 10) { alert("Rapport vide - rechargez la page"); return; }
+                  navigator.clipboard.writeText(txt)
+                    .then(()=>alert("✅ Copié ! (" + txt.length + " caractères)"))
+                    .catch(()=>{
+                      const ta = document.createElement("textarea");
+                      ta.value = txt;
+                      document.body.appendChild(ta);
+                      ta.select();
+                      document.execCommand("copy");
+                      document.body.removeChild(ta);
+                      alert("✅ Copié via fallback !");
+                    });
+                }catch(e){ alert("Erreur lors de la recuperation des donnees fraiches: "+e.message); }
               }}
                 style={{flex:1,background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:8,padding:"11px",color:"#94a3b8",fontWeight:700,fontSize:12}}>
                 📋 Copier pour Claude
