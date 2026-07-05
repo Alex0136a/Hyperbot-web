@@ -200,6 +200,16 @@ def _consume_events():
                         _push_log("ok", msg)
                 except Exception as e:
                     print(f"[event_consumer] Erreur nettoyage automatique au demarrage : {e}")
+            elif etype == "active_coins_auto_added":
+                # v3.2 — un actif inactif vient d etre auto-active suite a une
+                # opportunite de tres forte confiance (voir
+                # _gate_active_or_auto_activate dans bot_engine.py). On
+                # persiste la nouvelle liste pour qu elle survive aux
+                # redemarrages, exactement comme un changement manuel.
+                new_list = data.get("active_coins")
+                if new_list:
+                    db.set_config_override("ACTIVE_COINS", new_list)
+                    print(f"[AUDIT] ACTIVE_COINS auto-etendu suite a une opportunite forte sur {data.get('ticker')} : {new_list}")
         except Exception as e:
             print(f"[event_consumer] Erreur traitement evenement {etype}: {e}")
 
@@ -360,6 +370,7 @@ def _public_config() -> Dict[str, Any]:
         "max_loss_usd": cfg.get("MAX_LOSS_USD"),
         "quick_profit_usd": cfg.get("QUICK_PROFIT_ARM_USD"),
         "max_open_trades": cfg.get("MAX_OPEN_TRADES", 6),
+        "auto_activate_confidence_pct": cfg.get("AUTO_ACTIVATE_CONFIDENCE_PCT", 80.0),
         "active_coins": cfg.get("ACTIVE_COINS") or SUPPORTED_TICKERS,
         "supported_coins": SUPPORTED_TICKERS,
         "wallet": cfg.get("WALLET_ADDRESS", ""),
@@ -479,6 +490,7 @@ class ConfigBody(BaseModel):
     max_loss_usd: Optional[float] = None
     quick_profit_usd: Optional[float] = None
     max_open_trades: Optional[int] = None
+    auto_activate_confidence_pct: Optional[float] = None
     wallet: Optional[str] = None
     api_key: Optional[str] = None
     active_coins: Optional[List[str]] = None
@@ -511,6 +523,10 @@ def put_config(body: ConfigBody, email: str = Depends(require_user)):
     if body.max_open_trades is not None:
         clamped = max(1, min(body.max_open_trades, len(SUPPORTED_TICKERS)))
         _apply_and_persist("MAX_OPEN_TRADES", clamped)
+
+    if body.auto_activate_confidence_pct is not None:
+        clamped_conf = max(50.0, min(body.auto_activate_confidence_pct, 100.0))
+        _apply_and_persist("AUTO_ACTIVATE_CONFIDENCE_PCT", clamped_conf)
 
     # v3.2 — FIX : ignore une chaine vide plutot que d ecraser un wallet deja
     # enregistre — un formulaire n envoyant pas de wallet ne doit jamais
