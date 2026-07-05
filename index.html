@@ -1313,7 +1313,7 @@ Confirmer ?`
             <div style={{fontSize:11,color:"#94a3b8",lineHeight:1.6}}>
               Classement en direct de la volatilité (ATR%) des 30 marchés — plus c'est haut, plus le mouvement de prix est fort en ce moment, donc plus le potentiel de capture est élevé avec tes seuils actuels (Max Loss/Quick Profit). <b>Clique sur une ligne pour activer/désactiver l'actif immédiatement</b> (sans repasser par l'onglet Marchés).
             </div>
-            <button onClick={()=>apiCall("/api/volatility","GET",null,token).then(r=>setVolatility(r))}
+            <button onClick={()=>apiCall("/api/volatility","GET",null,token).then(r=>setVolatility(r)).catch(e=>alert("Erreur: "+e.message))}
               style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 12px",color:"#60a5fa",fontSize:10,cursor:"pointer",whiteSpace:"nowrap",marginLeft:10}}>
               🔄 Actualiser
             </button>
