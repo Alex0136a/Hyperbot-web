@@ -274,6 +274,12 @@ CONFIG = {
     "CONFIDENCE_STEP_PCT": 5.0,   # Ajustement du seuil par actif a chaque perte/gain
     "CONFIDENCE_MAX_PCT":  90.0,  # Plafond du seuil dynamique (evite de bloquer un actif a vie)
 
+    # v3.2 — Auto-activation d un actif INACTIF (pas dans ACTIVE_COINS) si
+    # une opportunite exceptionnelle est detectee dessus (confiance >= ce
+    # seuil). Permet de profiter d une belle opportunite sur l un des 30
+    # marches suivis sans devoir l activer manuellement a l avance.
+    "AUTO_ACTIVATE_CONFIDENCE_PCT": 80.0,
+
     # ── Heures creuses crypto — nouvelles entrees suspendues (PAXG exclu, ─────
     #    deja gere par FOREX_SYMBOLS/is_forex_open) ───────────────────────────
     # Fenetre par defaut : 02h-06h UTC, periode de liquidite generalement la
@@ -1666,6 +1672,39 @@ class BotEngine:
         base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
         return self.confidence_thresholds.get(ticker, base)
 
+    def _gate_active_or_auto_activate(self, ticker, confidence, direction):
+        """Decide si un signal valide (confiance deja >= seuil normal) peut
+        reellement s executer, en fonction de la selection ACTIVE_COINS :
+        - Si l actif est deja actif -> laisse passer normalement.
+        - Si l actif est INACTIF mais que la confiance atteint le seuil
+          d auto-activation (AUTO_ACTIVATE_CONFIDENCE_PCT, defaut 80%) ->
+          l active automatiquement (persiste via evenement pour l API web),
+          logue une alarme bien visible, et laisse le trade s executer.
+        - Sinon (inactif, confiance insuffisante pour l auto-activation) ->
+          bloque silencieusement (pas de bruit pour chaque actif inactif a
+          chaque cycle).
+        Retourne True si le trade peut s executer, False sinon.
+        """
+        active_coins = self.cfg.get("ACTIVE_COINS")
+        if active_coins is None or ticker in active_coins:
+            return True  # pas de restriction, ou deja actif
+
+        auto_threshold = self.cfg.get("AUTO_ACTIVATE_CONFIDENCE_PCT", 80.0)
+        if confidence < auto_threshold:
+            return False  # inactif et pas assez fort pour justifier une auto-activation
+
+        # ── Auto-activation : opportunite trop belle pour la laisser passer ──
+        new_list = list(active_coins) + [ticker]
+        self.cfg["ACTIVE_COINS"] = new_list
+        self.emit("log", {
+            "msg": f"🚨 OPPORTUNITE FORTE [{ticker}] {direction.upper()} a {confidence:.0f}% de confiance (seuil auto-activation {auto_threshold:.0f}%) — actif AUTO-ACTIVE et trade en cours d execution.",
+            "level": "warn"
+        })
+        # Persistance cote API web (bot_engine.py ne touche jamais directement
+        # a la base de donnees, pour rester independant/portable).
+        self.emit("active_coins_auto_added", {"ticker": ticker, "active_coins": new_list})
+        return True
+
     def _register_max_loss(self, ticker, entry_confidence=None):
         """Apres un Max Loss / SL securite sur un actif, on releve son seuil
         de confiance minimum requis a : confiance qu avait CE trade a son
@@ -2290,12 +2329,10 @@ class BotEngine:
             self._maybe_manage_position_via_cycle(symbol, price, state)
             return
 
-        # ── v3.2 web : filtres pilotes depuis l interface (active_coins, ─────
-        #    max_open_trades) — ne bloquent que les NOUVELLES entrees ─────────
-        active_coins = cfg.get("ACTIVE_COINS")
-        if active_coins is not None and ticker not in active_coins:
-            return  # actif desactive depuis l interface — silencieux, pas de log (evite le bruit)
-
+        # ── v3.2 web : max_open_trades (pilote depuis l interface) — le filtre
+        #    active_coins est applique plus loin (apres le calcul de confiance),
+        #    pour permettre l auto-activation d un actif inactif si une
+        #    opportunite tres forte est detectee.
         max_open = cfg.get("MAX_OPEN_TRADES")
         if max_open is not None:
             open_count = sum(1 for st in self.states.values() if st.position)
@@ -2550,6 +2587,8 @@ class BotEngine:
                     "level": "dim"
                 })
                 return
+            if not self._gate_active_or_auto_activate(ticker, confidence, "long"):
+                return
             signal = "long"
             reasons = [f"RSI {rsi:.1f}", f"EMA{ema_short}/{ema_long} hausse", f"confiance {confidence:.0f}%"]
             if macd_bull:
@@ -2631,6 +2670,8 @@ class BotEngine:
                     "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT bloque — confiance {confidence:.0f}% < seuil requis {conf_threshold:.0f}%",
                     "level": "dim"
                 })
+                return
+            if not self._gate_active_or_auto_activate(ticker, confidence, "short"):
                 return
             signal = "short"
             reasons = [f"RSI {rsi:.1f}", f"EMA{ema_short}/{ema_long} baisse", f"confiance {confidence:.0f}%"]
