@@ -127,6 +127,23 @@ for _w in _startup_warnings:
     _push_log("warn", _w)
 
 
+def _compute_protected_trade_ids():
+    """IDs exacts (pas les coins) des trades en base correspondant a des
+    positions REELLEMENT ouvertes en memoire du bot en ce moment — utilise
+    a la fois par le nettoyage manuel et le balayage automatique au
+    demarrage."""
+    protected_ids = []
+    for slot_key, s in bot.states.items():
+        if not s.position:
+            continue
+        ticker = be.ticker_from_slot_key(slot_key)
+        action = "LONG" if s.position["type"] == "long" else "SHORT"
+        tid = db.get_open_trade_id_by_coin_action(ticker, action)
+        if tid:
+            protected_ids.append(tid)
+    return protected_ids
+
+
 def _consume_events():
     """Tourne en tache de fond : lit la queue du BotEngine et persiste les
     evenements pertinents (logs en memoire, trades en base)."""
@@ -163,6 +180,26 @@ def _consume_events():
                     msg = f"[event_consumer] ATTENTION : aucun trade ouvert trouve en base pour {ticker}/{action} (symbol brut={data.get('symbol')!r}, type brut={data.get('type')!r}) — fermeture perdue !"
                     print(msg)
                     _push_log("error", msg)
+            elif etype == "startup_ready":
+                # v3.2 — "programme balai" automatique au demarrage : a ce
+                # stade, la reconciliation Hyperliquid (mode live) ou la
+                # restauration des positions paper (voir bot_engine.py) est
+                # DEJA terminee — bot.states reflete donc l etat REEL exact.
+                # Tout trade "ouvert" en base qui ne correspond a AUCUNE
+                # position reelle a cet instant precis est forcement un
+                # orphelin (pas besoin d attendre 24h de delai comme pour le
+                # nettoyage manuel en cours de session, ou l incertitude est
+                # plus grande) — nettoyage immediat pour un tableau de bord
+                # propre des le demarrage.
+                try:
+                    protected_ids = _compute_protected_trade_ids()
+                    dup, stale = db.cleanup_signals(stale_hours=0, protected_ids=protected_ids)
+                    if dup or stale:
+                        msg = f"🧹 Nettoyage automatique au demarrage : {dup} doublon(s) + {stale} orphelin(s) supprime(s)."
+                        print(f"[AUDIT] {msg}")
+                        _push_log("ok", msg)
+                except Exception as e:
+                    print(f"[event_consumer] Erreur nettoyage automatique au demarrage : {e}")
         except Exception as e:
             print(f"[event_consumer] Erreur traitement evenement {etype}: {e}")
 
@@ -855,15 +892,7 @@ def cleanup(email: str = Depends(require_user)):
     # Retrouve l ID exact (pas juste le coin) de chaque position reellement
     # ouverte en memoire, pour proteger UNIQUEMENT cette ligne precise —
     # les eventuels AUTRES doublons du meme coin restent nettoyables.
-    protected_ids = []
-    for slot_key, s in bot.states.items():
-        if not s.position:
-            continue
-        ticker = be.ticker_from_slot_key(slot_key)
-        action = "LONG" if s.position["type"] == "long" else "SHORT"
-        tid = db.get_open_trade_id_by_coin_action(ticker, action)
-        if tid:
-            protected_ids.append(tid)
+    protected_ids = _compute_protected_trade_ids()
     duplicates, stale = db.cleanup_signals(stale_hours=24, protected_ids=protected_ids)
     old_closed = db.delete_trades_older_than(30)
     total = duplicates + stale + old_closed
