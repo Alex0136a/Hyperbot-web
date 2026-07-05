@@ -414,9 +414,14 @@ def _open_positions() -> List[Dict[str, Any]]:
             # opened_at est stocke par bot_engine.py au format "%d/%m/%Y %H:%M:%S"
             # (francais, sans fuseau) — converti en ISO pour que new Date(...) le
             # parse correctement cote navigateur (ambigu sinon selon le moteur JS).
+            # v3.2 — FIX : sans le "+00:00" explicite, le navigateur interprete
+            # cette heure comme une heure LOCALE (pas UTC), decalant l affichage
+            # de plusieurs heures selon le fuseau du visiteur (durees et heures
+            # d ouverture incoherentes, ex: "0min" alors que l heure affichee
+            # semblait ancienne).
             opened_at_iso = None
             try:
-                opened_at_iso = datetime.strptime(pos["opened_at"], "%d/%m/%Y %H:%M:%S").isoformat()
+                opened_at_iso = datetime.strptime(pos["opened_at"], "%d/%m/%Y %H:%M:%S").replace(tzinfo=timezone.utc).isoformat()
             except Exception:
                 pass
 
