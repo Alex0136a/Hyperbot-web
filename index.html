@@ -428,7 +428,7 @@ function App() {
     }
   }, [token, loadData]);
 
-  useEffect(() => { logEnd.current?.scrollIntoView({behavior:"smooth"}); }, [logs]);
+  useEffect(() => { logEnd.current?.scrollIntoView({behavior:"smooth"}); }, [botLogs]);
 
   useEffect(() => {
     const updateClock = () => {
@@ -1027,7 +1027,7 @@ Confirmer ?`
       {tab==="logs" && (
         <div style={{padding:14}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-            <span style={{fontSize:10,color:"#94a3b8"}}>{persistentLogs?"📚 Historique persistant (200 entrées)":"⚡ Session courante (50 entrées)"}</span>
+            <span style={{fontSize:10,color:"#94a3b8"}}>{persistentLogs?"📚 Historique persistant (200 dernières lignes)":"⚡ Monitoring en direct (200 dernières lignes, mis à jour toutes les 5s)"}</span>
             <button onClick={async()=>{
               const v=!persistentLogs; setPersistentLogs(v);
               const r=await apiCall(v?"/api/bot/logs?persistent=true":"/api/bot/logs","GET",null,token);
