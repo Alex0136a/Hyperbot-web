@@ -352,6 +352,8 @@ function App() {
   const [filterWeekend, setFilterWeekend] = useState(true);
   const [filterMacro, setFilterMacro] = useState(false);
   const [dailyStats, setDailyStats] = useState(null);
+  const [advancedSettings, setAdvancedSettings] = useState(null);
+  const [advancedEdits, setAdvancedEdits] = useState({});
   const [bilan, setBilan] = useState(null);
   const [clock, setClock] = useState({utc:"", local:"", market:""});
   const [botLogs, setBotLogs] = useState([]);
@@ -599,7 +601,7 @@ Confirmer ?`
       {/* TABS */}
       <div style={{display:"flex",borderBottom:"1px solid #1e2d4a",background:"#0f1629",overflowX:"auto"}}>
         {TABS.map(t=>(
-          <button key={t.id} onClick={()=>{setTab(t.id); if(t.id==="stats") apiCall("/api/stats/daily","GET",null,token).then(r=>setDailyStats(r)); if(t.id==="rapport") loadData(); if(t.id==="bilan") apiCall("/api/bilan","GET",null,token).then(r=>setBilan(r));}} style={{padding:"10px 14px",background:"transparent",border:"none",borderBottom:tab===t.id?"2px solid #3b82f6":"2px solid transparent",color:tab===t.id?"#60a5fa":"#64748b",fontSize:11,fontWeight:tab===t.id?700:400,whiteSpace:"nowrap"}}>
+          <button key={t.id} onClick={()=>{setTab(t.id); if(t.id==="stats") apiCall("/api/stats/daily","GET",null,token).then(r=>setDailyStats(r)); if(t.id==="rapport") loadData(); if(t.id==="bilan") apiCall("/api/bilan","GET",null,token).then(r=>setBilan(r)); if(t.id==="parametres") apiCall("/api/config/advanced","GET",null,token).then(r=>setAdvancedSettings(r));}} style={{padding:"10px 14px",background:"transparent",border:"none",borderBottom:tab===t.id?"2px solid #3b82f6":"2px solid transparent",color:tab===t.id?"#60a5fa":"#64748b",fontSize:11,fontWeight:tab===t.id?700:400,whiteSpace:"nowrap"}}>
             {t.label}
           </button>
         ))}
@@ -933,6 +935,42 @@ Confirmer ?`
               </button>
             </div>
           </div>
+
+          {/* REGLAGES AVANCES */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:14}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#94a3b8",marginBottom:4}}>⚙️ Réglages avancés (stratégie)</div>
+            <div style={{fontSize:10,color:"#475569",marginBottom:12,lineHeight:1.6}}>
+              Indicateurs, filtres, confiance et session — pour les utilisateurs avancés. Laisse les valeurs par défaut si tu n'es pas sûr.
+            </div>
+            {!advancedSettings
+              ? <div style={{color:"#334155",fontSize:11}}>Chargement...</div>
+              : <>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+                  {Object.entries(advancedSettings).map(([key,meta])=>(
+                    <div key={key}>
+                      <div style={{fontSize:9,color:"#475569",marginBottom:3}}>{meta.label}</div>
+                      <input type="number" step="any"
+                        defaultValue={meta.value}
+                        onChange={e=>setAdvancedEdits(p=>({...p,[key]:Number(e.target.value)}))}
+                        style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11}}/>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={async()=>{
+                  if(!Object.keys(advancedEdits).length){ alert("Aucun changement a sauvegarder."); return; }
+                  try{
+                    const r = await apiCall("/api/config/advanced","PUT",{values:advancedEdits},token);
+                    setAdvancedEdits({});
+                    apiCall("/api/config/advanced","GET",null,token).then(r=>setAdvancedSettings(r));
+                    alert(`${Object.keys(r.applied).length} réglage(s) mis à jour.`);
+                  }catch(e){alert("Erreur: "+e.message);}
+                }} style={{width:"100%",background:"linear-gradient(135deg,#1d4ed8,#7c3aed)",border:"none",borderRadius:8,padding:"10px",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer"}}>
+                  💾 Sauvegarder les réglages avancés
+                </button>
+              </>
+            }
+          </div>
+
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:14}}>
             <div style={{fontSize:11,fontWeight:700,color:"#94a3b8",marginBottom:10}}>Maintenance</div>
             <div style={{fontSize:10,color:"#475569",marginBottom:10,lineHeight:1.6}}>
