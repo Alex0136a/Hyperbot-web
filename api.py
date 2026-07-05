@@ -382,6 +382,9 @@ def _public_config() -> Dict[str, Any]:
         "ai_continuous": db.get_config_override("ai_continuous", False),
         "running": bot.running,
         "is_running": bot.running,
+        "started_at": db.get_meta("running_since") or None,
+        "session_started_at": bot.session_started_at.isoformat() if bot.session_started_at else None,
+        "trading_blocked": bot.trading_blocked,
         "last_scan": max(last_times).isoformat() if last_times else None,
         "ws_healthy": bot._is_ws_healthy() if bot.info is not None else False,
         "hyperliquid_configured": bool(cfg.get("PRIVATE_KEY") and cfg.get("WALLET_ADDRESS")),
@@ -871,6 +874,39 @@ def _compute_by_coin(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         })
     out.sort(key=lambda c: c["net"], reverse=True)
     return out
+
+
+@app.get("/api/report/daily-table")
+def get_daily_table(email: str = Depends(require_user)):
+    """Rapport journalier (fenetre glissante des dernieres 24h) : gains,
+    pertes, nombre de trades et performance par actif + une ligne total.
+    Concu pour etre telecharge en tableau (CSV) depuis l interface."""
+    closed = db.get_all_closed_trades()
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    recent = []
+    for r in closed:
+        if not r["closed_at"]:
+            continue
+        try:
+            if datetime.fromisoformat(r["closed_at"]) >= cutoff:
+                recent.append(r)
+        except Exception:
+            continue
+
+    initial_balance = float(db.get_meta("initial_balance", cfg["CAPITAL_USD"])) or 1.0
+    by_coin = _compute_by_coin(recent)
+    for row in by_coin:
+        row["performance_pct"] = round(row["net"] / initial_balance * 100, 3)
+
+    total = _aggregate(recent)
+    total["performance_pct"] = round(total["net"] / initial_balance * 100, 3)
+
+    return {
+        "period_start": cutoff.isoformat(),
+        "period_end": datetime.now(timezone.utc).isoformat(),
+        "by_coin": by_coin,
+        "total": total,
+    }
 
 
 @app.get("/api/bilan")
