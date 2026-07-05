@@ -1654,6 +1654,22 @@ class BotEngine:
         write_log(f"Actifs : {[s for s in self.cfg.get('SYMBOLS', [])]}", "info")
         write_log(f"{'='*60}", "info")
         threading.Thread(target=self._run, daemon=True).start()
+        # v3.2 : sauvegarde dediee toutes les 5s, decouplee du cycle de trading
+        # (15s) — reduit la fenetre de "fraicheur perdue" en cas de coupure
+        # brutale (redeploiement, crash) sans avoir a acce le rythme du cycle
+        # de trading lui-meme. Cout negligeable (petit fichier JSON local).
+        threading.Thread(target=self._periodic_save_loop, daemon=True).start()
+
+    def _periodic_save_loop(self):
+        while self.running:
+            time.sleep(5)
+            if not self.running:
+                break
+            try:
+                self._save_open_positions()
+                self._save_confidence_thresholds()
+            except Exception as e:
+                print(f"[SAVE-5S] Erreur : {e}")
 
     def stop(self):
         self.running = False
