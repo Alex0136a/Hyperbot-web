@@ -499,6 +499,67 @@ class ConfigBody(BaseModel):
     active_coins: Optional[List[str]] = None
 
 
+# v3.2 — Reglages avances : whitelist de parametres de STRATEGIE surs a
+# exposer/editer librement depuis l interface (indicateurs, filtres,
+# session, confiance...). Volontairement separee des reglages "structurels"
+# (SYMBOLS, cles API, wallet...) qui ont deja leurs propres formulaires
+# dedies et securises — pas question de les rendre modifiables via un
+# simple champ numerique generique.
+ADVANCED_SETTINGS = {
+    "RSI_PERIOD":              {"label": "RSI - Periode",                     "default": 14},
+    "RSI_OVERSOLD":            {"label": "RSI - Seuil survente",              "default": 32},
+    "RSI_OVERBOUGHT":          {"label": "RSI - Seuil surachat",              "default": 68},
+    "RSI_EXTREME_LOW":         {"label": "RSI - Zone survente extreme (no SHORT sous)",  "default": 15},
+    "RSI_EXTREME_HIGH":        {"label": "RSI - Zone surachat extreme (no LONG au-dessus)", "default": 85},
+    "EMA_SHORT":               {"label": "EMA courte - periode",              "default": 12},
+    "EMA_LONG":                {"label": "EMA longue - periode",              "default": 26},
+    "EMA_MID_PERIOD":          {"label": "EMA intermediaire - periode",       "default": 50},
+    "MACD_FAST":               {"label": "MACD - rapide",                    "default": 12},
+    "MACD_SLOW":               {"label": "MACD - lent",                      "default": 26},
+    "MACD_SIGNAL":             {"label": "MACD - signal",                    "default": 9},
+    "BB_PERIOD":               {"label": "Bollinger - periode",              "default": 20},
+    "BB_STD":                  {"label": "Bollinger - ecart-type",           "default": 2.0},
+    "ATR_PERIOD":              {"label": "ATR - periode",                    "default": 14},
+    "ATR_MIN_PCT":             {"label": "ATR - seuil min % (filtre marche calme)", "default": 0.05},
+    "VOLUME_MIN_RATIO":        {"label": "Volume - ratio minimum vs moyenne","default": 1.2},
+    "MOMENTUM_PERIOD":         {"label": "Momentum - periode (cycles)",      "default": 4},
+    "MOMENTUM_THRESHOLD_PCT":  {"label": "Momentum - seuil %",               "default": 0.20},
+    "CONFIDENCE_MIN_PCT":      {"label": "Confiance - seuil minimum %",      "default": 65.0},
+    "CONFIDENCE_STEP_PCT":     {"label": "Confiance - pas d ajustement %",   "default": 5.0},
+    "CONFIDENCE_MAX_PCT":      {"label": "Confiance - plafond dynamique %",  "default": 90.0},
+    "AUTO_ACTIVATE_CONFIDENCE_PCT": {"label": "Auto-activation - seuil %",   "default": 80.0},
+    "SESSION_MAX_HOURS":       {"label": "Session trading - duree max (h)",  "default": 23.75},
+    "CRYPTO_OFFPEAK_HOUR_START_UTC": {"label": "Heures creuses - debut (UTC)", "default": 2},
+    "CRYPTO_OFFPEAK_HOUR_END_UTC":   {"label": "Heures creuses - fin (UTC)",   "default": 6},
+    "CPI_BLACKOUT_BEFORE_MIN": {"label": "Blackout CPI - minutes avant",     "default": 15},
+    "CPI_BLACKOUT_AFTER_MIN":  {"label": "Blackout CPI - minutes apres",     "default": 30},
+}
+
+
+@app.get("/api/config/advanced")
+def get_advanced_config(email: str = Depends(require_user)):
+    return {
+        key: {"value": cfg.get(key, meta["default"]), "label": meta["label"], "default": meta["default"]}
+        for key, meta in ADVANCED_SETTINGS.items()
+    }
+
+
+class AdvancedConfigBody(BaseModel):
+    values: Dict[str, float]
+
+
+@app.put("/api/config/advanced")
+def put_advanced_config(body: AdvancedConfigBody, email: str = Depends(require_user)):
+    applied, ignored = {}, []
+    for key, value in body.values.items():
+        if key not in ADVANCED_SETTINGS:
+            ignored.append(key)
+            continue
+        _apply_and_persist(key, value)
+        applied[key] = value
+    return {"ok": True, "applied": applied, "ignored": ignored}
+
+
 @app.get("/api/config")
 def get_config(email: str = Depends(require_user)):
     return _public_config()
