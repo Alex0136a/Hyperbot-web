@@ -768,6 +768,7 @@ def paper_reset(email: str = Depends(require_user)):
     bot.capital = cfg["CAPITAL_USD"]
     bot.sessions = 0
     bot.total_pnl_all = 0.0
+    bot.clear_all_persisted_files()
     be.save_capital(bot.capital, 0, 0.0)
     db.set_meta("reset_at", db.now_iso())
     db.set_meta("initial_balance", str(bot.capital))
@@ -1037,6 +1038,7 @@ def reset_all(email: str = Depends(require_user)):
     bot.capital = cfg["CAPITAL_USD"]
     bot.sessions = 0
     bot.total_pnl_all = 0.0
+    bot.clear_all_persisted_files()
     be.save_capital(bot.capital, 0, 0.0)
     db.set_meta("reset_at", db.now_iso())
     db.set_meta("initial_balance", str(bot.capital))
