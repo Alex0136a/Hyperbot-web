@@ -202,11 +202,17 @@ ${thin}
         const tp1=sig.action==="LONG"?cur>=sig.take_profit1:cur<=sig.take_profit1;
         const tp2=sig.action==="LONG"?cur>=sig.take_profit2:cur<=sig.take_profit2;
         const sl=sig.action==="LONG"?cur<=sig.stop_loss:cur>=sig.stop_loss;
+        // v3.2 — croise avec la position reelle (taille exacte en $) pour
+        // afficher le PnL en $ en plus du % — plus parlant pour estimer la
+        // proximite des seuils Max Loss/Quick Profit, qui sont en $.
+        const matchTrade = (paper?.open_trades||[]).find(p=>p.coin===sig.coin && p.action===sig.action);
         t += `  Statut      : OUVERT
 `;
         t += `  Prix actuel : $${cur.toLocaleString()}
 `;
-        t += `  PnL latent (estimation) : ${pnl>0?"+":""}${pnl}%
+        if(matchTrade) t += `  PnL latent  : ${matchTrade.pnl>=0?"+":""}${matchTrade.pnl.toFixed(2)} USDC (${pnl>0?"+":""}${pnl}%)
+`;
+        else t += `  PnL latent (estimation) : ${pnl>0?"+":""}${pnl}%
 `;
         t += `  TP1         : ${tp1?"ATTEINT":"En attente"}
 `;
@@ -1578,6 +1584,11 @@ Confirmer ?`
                   const tp1=sig.action==="LONG"?cur>=sig.take_profit1:cur<=sig.take_profit1;
                   const tp2=sig.action==="LONG"?cur>=sig.take_profit2:cur<=sig.take_profit2;
                   const sl=sig.action==="LONG"?cur<=sig.stop_loss:cur>=sig.stop_loss;
+                  // v3.2 — croise avec la position reelle (taille exacte en $)
+                  // pour afficher le PnL en $ — bien plus parlant pour estimer
+                  // la proximite des seuils Max Loss/Quick Profit (en $, pas en %).
+                  const matchPos = (positions||[]).find(p=>p.coin===sig.coin && p.action===sig.action);
+                  const pnlUsd = matchPos ? matchPos.pnl : null;
                   return (
                     <div key={sig.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid #0f1629"}}>
                       <div style={{display:"flex",gap:7,alignItems:"center"}}>
@@ -1585,8 +1596,11 @@ Confirmer ?`
                         <span style={{color:"#e2e8f0",fontSize:11}}>{sig.coin}</span>
                         <span style={{color:"#94a3b8",fontSize:10}}>{new Date(sig.created_at).toLocaleTimeString("fr-FR")}</span>
                       </div>
-                      <div style={{display:"flex",gap:8,fontSize:10}}>
-                        <span style={{color:parseFloat(pnl)>=0?"#34d399":"#f87171",fontWeight:700}}>{pnl>0?"+":""}{pnl}%</span>
+                      <div style={{display:"flex",gap:8,fontSize:10,alignItems:"center"}}>
+                        {pnlUsd!=null && (
+                          <span style={{color:pnlUsd>=0?"#34d399":"#f87171",fontWeight:800}}>{pnlUsd>=0?"+":""}{pnlUsd.toFixed(2)}$</span>
+                        )}
+                        <span style={{color:parseFloat(pnl)>=0?"#34d399":"#f87171",fontWeight:700}}>({pnl>0?"+":""}{pnl}%)</span>
                         <span style={{color:tp1?"#34d399":"#334155"}}>TP1{tp1?"✓":"○"}</span>
                         <span style={{color:tp2?"#34d399":"#334155"}}>TP2{tp2?"✓":"○"}</span>
                         <span style={{color:sl?"#f87171":"#334155"}}>SL{sl?"✗":"○"}</span>
