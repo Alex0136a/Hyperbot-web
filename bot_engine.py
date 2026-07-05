@@ -2408,7 +2408,16 @@ class BotEngine:
         cfg   = self.cfg
         ticker = ticker_from_slot_key(symbol)   # vrai ticker API (ex: "BTC" depuis "BTC_0")
         state = self.states[symbol]
-        state.current_price  = price
+        # v3.2 — FIX : ne pas ecraser le prix avec la valeur REST (cycle,
+        # potentiellement vieille de 15s) si le WebSocket est sain — il
+        # fournit deja une valeur plus fraiche en continu pour les actifs en
+        # position. Sans ce garde-fou, les deux sources ecrivaient
+        # concurremment sur state.current_price depuis des threads
+        # differents, causant un "retour en arriere" brutal et confus du
+        # PnL affiche des qu un cycle REST arrivait apres plusieurs ticks
+        # WebSocket plus recents.
+        if not self._is_ws_healthy():
+            state.current_price = price
         state.last_price_time = datetime.now()
         state.price_history.append(price)
 
