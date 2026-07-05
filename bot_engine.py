@@ -1500,6 +1500,7 @@ class BotEngine:
         self._ws_subscribed = False
         self._last_ws_tick = None   # timestamp (time.time()) du dernier tick allMids recu
         self._ws_was_healthy = None  # None = pas encore evalue ; sert a detecter les transitions
+        self._last_ws_reconnect_attempt = None  # limite la frequence des tentatives de reconnexion
         self.all_mids = {}  # v3.2 : cache brut de tous les prix Hyperliquid (affichage marche complet)
 
     # ── Sauvegarde des positions ouvertes pour reconciliation au redemarrage ──
@@ -2061,10 +2062,30 @@ class BotEngine:
         retabli) et emet un log bien visible a chaque changement d etat
         (pas de spam a chaque cycle). C est ce log qui sert d alarme visible
         dans le panneau LOG EN DIRECT du dashboard (niveau 'error' = rouge).
+
+        v3.2 — FIX : tente aussi activement une RECONNEXION toutes les 60s
+        tant que le WebSocket reste defaillant (auparavant, le code se
+        contentait de detecter/loguer la panne et attendait passivement une
+        reconnexion automatique du SDK qui peut ne jamais survenir). Cette
+        partie s execute a CHAQUE appel, contrairement a l alarme qui ne
+        reagit qu aux transitions — sinon une seule tentative aurait lieu au
+        moment de la panne, jamais repetee ensuite.
         """
         if self.info is None:
             return  # pas de connexion Hyperliquid du tout (paper simule sans cle)
         healthy = self._is_ws_healthy()
+
+        if not healthy:
+            now_ts = time.time()
+            if self._last_ws_reconnect_attempt is None or (now_ts - self._last_ws_reconnect_attempt) >= 60:
+                self._last_ws_reconnect_attempt = now_ts
+                try:
+                    self.info.subscribe({"type": "allMids"}, self._on_ws_allmids)
+                    self._ws_subscribed = True
+                    self.emit("log", {"msg": "🔄 Tentative de reconnexion WebSocket effectuee.", "level": "warn"})
+                except Exception as e:
+                    self.emit("log", {"msg": f"🔄 Echec de la tentative de reconnexion WebSocket : {e} — nouvelle tentative dans 60s.", "level": "warn"})
+
         if self._ws_was_healthy is None:
             self._ws_was_healthy = healthy
             return
