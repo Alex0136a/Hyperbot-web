@@ -780,6 +780,28 @@ def get_prices(email: str = Depends(require_user)):
     return {"prices": prices}
 
 
+@app.get("/api/volatility")
+def get_volatility(email: str = Depends(require_user)):
+    """Classement en direct de la volatilite (ATR%) des actifs suivis — aide
+    a identifier ou le mouvement de prix est le plus fort a l instant present
+    (donc le potentiel de capture le plus eleve avec les seuils actuels)."""
+    active_coins = cfg.get("ACTIVE_COINS") or SUPPORTED_TICKERS
+    rows = []
+    for slot_key, state in bot.states.items():
+        ticker = be.ticker_from_slot_key(slot_key)
+        if state.current_atr_pct is None:
+            continue
+        rows.append({
+            "coin": ticker,
+            "atr_pct": round(state.current_atr_pct, 4),
+            "price": state.current_price,
+            "active": ticker in active_coins,
+            "has_position": bool(state.position),
+        })
+    rows.sort(key=lambda r: r["atr_pct"], reverse=True)
+    return {"ranking": rows, "updated_at": datetime.now(timezone.utc).isoformat()}
+
+
 @app.get("/api/positions")
 def get_positions(email: str = Depends(require_user)):
     return {"positions": _open_positions()}
