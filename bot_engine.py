@@ -2349,6 +2349,18 @@ class BotEngine:
             prices = self._get_prices_with_timeout(cfg.get("PRICE_FETCH_TIMEOUT_SEC", 10))
             in_hours = is_trading_hours(cfg)
 
+            # v3.2 — DIAGNOSTIC : verifie explicitement combien de prix (sur
+            # les 30 configures) sont reellement recuperes a chaque cycle, et
+            # lesquels manquent — permet de confirmer/infirmer un probleme de
+            # resolution de prix pour une partie des actifs (sans quoi ceux-la
+            # ne collectent jamais, silencieusement, indefiniment).
+            if self.cycle % 4 == 1:  # une fois toutes les ~4 cycles (~1 min), pas a chaque cycle
+                missing_syms = [ticker_from_slot_key(s) for s in cfg["SYMBOLS"] if s not in prices]
+                self.emit("log", {
+                    "msg": f"🔍 DIAGNOSTIC cycle {self.cycle} : {len(prices)}/{len(cfg['SYMBOLS'])} prix recuperes | in_hours={in_hours} | manquants: {missing_syms if missing_syms else 'aucun'}",
+                    "level": "warn"
+                })
+
             if not in_hours:
                 self.emit("log", {"msg": f"Hors plage {cfg['TRADE_HOUR_START']}h-{cfg['TRADE_HOUR_END']}h — nouvelles entrees suspendues (positions actives conservees)", "level": "dim"})
                 for sym in cfg["SYMBOLS"]:
