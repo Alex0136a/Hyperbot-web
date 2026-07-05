@@ -237,6 +237,20 @@ function downloadTxt(content, filename) {
   URL.revokeObjectURL(u);
 }
 
+function downloadCsv(rows, filename) {
+  // rows : tableau d objets simples (memes cles pour toutes les lignes)
+  if (!rows || !rows.length) return;
+  const headers = Object.keys(rows[0]);
+  const escape = v => `"${String(v ?? "").replace(/"/g,'""')}"`;
+  const lines = [headers.join(","), ...rows.map(r => headers.map(h => escape(r[h])).join(","))];
+  const csv = "\uFEFF" + lines.join("\r\n"); // BOM pour un bon affichage des accents dans Excel
+  const b = new Blob([csv], {type:"text/csv;charset=utf-8"});
+  const u = URL.createObjectURL(b);
+  const a = document.createElement("a");
+  a.href=u; a.download=filename; a.click();
+  URL.revokeObjectURL(u);
+}
+
 // ── LOGIN PAGE ───────────────────────────────────────────────
 function LoginPage({ onLogin }) {
   const [mode, setMode] = useState("login");
@@ -526,9 +540,21 @@ Confirmer ?`
           </div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:12}}>
-          <div style={{display:"flex",alignItems:"center",gap:6}}>
-            <div style={{width:8,height:8,borderRadius:"50%",background:isRunning?"#34d399":"#475569",boxShadow:isRunning?"0 0 8px #34d399":"none"}}/>
-            <span style={{fontSize:11,color:isRunning?"#34d399":"#64748b"}}>{isRunning?"ACTIF":"INACTIF"}</span>
+          <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:2}}>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:isRunning?"#34d399":"#475569",boxShadow:isRunning?"0 0 8px #34d399":"none"}}/>
+              <span style={{fontSize:11,color:isRunning?"#34d399":"#64748b"}}>{isRunning?"ACTIF":"INACTIF"}</span>
+            </div>
+            {isRunning && config?.started_at && (
+              <div style={{fontSize:9,color:"#475569"}}>
+                Démarré le {new Date(config.started_at).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}
+              </div>
+            )}
+            {isRunning && config?.trading_blocked && (
+              <div style={{fontSize:9,color:"#fbbf24",fontWeight:700}}>
+                ⏸️ Session terminée — attente fermeture positions
+              </div>
+            )}
           </div>
           <div style={{display:"flex",alignItems:"center",gap:2,background:"#050810",borderRadius:6,padding:3,border:"1px solid #1e2d4a"}}>
             <button onClick={()=>updateTradingMode("paper")} style={{padding:"4px 8px",borderRadius:4,border:"none",background:config?.trading_mode==="paper"?"#1e2d4a":"transparent",color:config?.trading_mode==="paper"?"#fbbf24":"#475569",fontSize:10,fontWeight:700,cursor:"pointer"}}>PAPER</button>
@@ -1352,6 +1378,15 @@ Confirmer ?`
             <button onClick={()=>downloadTxt(generateBilan(bilan,paper),`bilan-${new Date().toISOString().slice(0,10)}.txt`)}
               style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#7c3aed)",border:"none",borderRadius:8,padding:"10px",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer"}}>
               ⬇️ Télécharger Bilan
+            </button>
+            <button onClick={async()=>{
+              try {
+                const r = await apiCall("/api/report/daily-table","GET",null,token);
+                const rows = [...r.by_coin, {coin:"TOTAL", total:r.total.total, wins:r.total.wins, losses:r.total.losses, gains:r.total.gains, pertes:r.total.pertes, net:r.total.net, win_rate:r.total.win_rate, avg_gain:"", avg_loss:"", total_minutes:"", performance_pct:r.total.performance_pct}];
+                downloadCsv(rows, `rapport-journalier-${new Date().toISOString().slice(0,10)}.csv`);
+              } catch(e) { alert("Erreur: "+e.message); }
+            }} style={{flex:1,background:"linear-gradient(135deg,#059669,#10b981)",border:"none",borderRadius:8,padding:"10px",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer"}}>
+              📊 Rapport journalier (CSV)
             </button>
           </div>
 
