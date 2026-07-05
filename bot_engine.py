@@ -1482,6 +1482,8 @@ class BotEngine:
     # ── Sauvegarde des positions ouvertes pour reconciliation au redemarrage ──
     POSITIONS_FILE = "hyperbot_positions.json"
     CONFIDENCE_FILE = "hyperbot_confidence.json"
+    INDICATOR_STATE_FILE = "hyperbot_indicators.json"
+    INDICATOR_RESUME_MAX_GAP_SEC = 90  # au-dela, on repart en collecte fraiche
 
     def _save_open_positions(self):
         """Sauvegarde les positions ouvertes (live ET paper depuis v3.2, pour
@@ -1545,6 +1547,88 @@ class BotEngine:
         except Exception as e:
             print(f"[CONFIANCE] Erreur lecture : {e}")
 
+    def _save_indicator_state(self):
+        """Sauvegarde l etat des indicateurs (prix collectes, compteurs de
+        cycles consecutifs, etc.) avec un horodatage precis. Ne sera restaure
+        au demarrage QUE si l arret a dure moins de
+        INDICATOR_RESUME_MAX_GAP_SEC secondes (voir _load_indicator_state) —
+        au-dela, une collecte fraiche est toujours preferable (un trou de
+        donnees trop long fausserait les indicateurs)."""
+        import json
+        try:
+            snapshot = {}
+            for slot_key, st in self.states.items():
+                snapshot[slot_key] = {
+                    "price_history": list(st.price_history),
+                    "vol_history": list(st.vol_history),
+                    "mtf_prices": list(st.mtf_prices),
+                    "collecting": st.collecting,
+                    "consec_bull": st.consec_bull,
+                    "consec_bear": st.consec_bear,
+                    "prev_ema_s": st.prev_ema_s,
+                    "prev_ema_l": st.prev_ema_l,
+                    "prev_macd": st.prev_macd,
+                    "prev_sig": st.prev_sig,
+                }
+            payload = {"saved_at": datetime.now(timezone.utc).isoformat(), "states": snapshot}
+            with open(self.INDICATOR_STATE_FILE, "w") as f:
+                json.dump(payload, f)
+        except Exception as e:
+            print(f"[INDICATEURS] Erreur sauvegarde : {e}")
+
+    def _load_indicator_state_if_recent(self):
+        """Restaure l etat des indicateurs UNIQUEMENT si le fichier a ete
+        sauvegarde il y a moins de INDICATOR_RESUME_MAX_GAP_SEC secondes —
+        evite de reprendre une collecte avec un trou de donnees trop
+        important (fausserait RSI/EMA/MACD/ATR)."""
+        import json, os
+        if not os.path.exists(self.INDICATOR_STATE_FILE):
+            print("[INDICATEURS] Aucun etat sauvegarde trouve — collecte fraiche.")
+            return
+        try:
+            with open(self.INDICATOR_STATE_FILE, "r") as f:
+                payload = json.load(f)
+            saved_at = datetime.fromisoformat(payload["saved_at"])
+            gap = (datetime.now(timezone.utc) - saved_at).total_seconds()
+            if gap > self.INDICATOR_RESUME_MAX_GAP_SEC:
+                print(f"[INDICATEURS] Etat sauvegarde il y a {gap:.0f}s (> {self.INDICATOR_RESUME_MAX_GAP_SEC}s) — collecte fraiche.")
+                return
+            restored = 0
+            for slot_key, data in payload.get("states", {}).items():
+                st = self.states.get(slot_key)
+                if not st:
+                    continue
+                st.price_history = deque(data.get("price_history", []), maxlen=500)
+                st.vol_history = deque(data.get("vol_history", []), maxlen=50)
+                st.mtf_prices = deque(data.get("mtf_prices", []), maxlen=200)
+                st.collecting = data.get("collecting", True)
+                st.consec_bull = data.get("consec_bull", 0)
+                st.consec_bear = data.get("consec_bear", 0)
+                st.prev_ema_s = data.get("prev_ema_s")
+                st.prev_ema_l = data.get("prev_ema_l")
+                st.prev_macd = data.get("prev_macd")
+                st.prev_sig = data.get("prev_sig")
+                restored += 1
+            print(f"[INDICATEURS] Etat restaure ({gap:.0f}s d arret) : {restored} actif(s), collecte NON relancee.")
+            self.emit("log", {"msg": f"⏩ Reprise rapide : etat des indicateurs restaure ({gap:.0f}s d arret, < {self.INDICATOR_RESUME_MAX_GAP_SEC}s) — pas de nouvelle collecte necessaire.", "level": "ok"})
+        except Exception as e:
+            print(f"[INDICATEURS] Erreur lecture, collecte fraiche par securite : {e}")
+
+    def force_fresh_collection(self):
+        """Force une collecte entierement fraiche pour tous les actifs,
+        meme si un etat recent aurait pu etre restaure — utile si on
+        soupconne un probleme sur les indicateurs sans attendre un
+        redeploiement. Ne touche pas aux positions ouvertes ni au PnL."""
+        import os
+        for st in self.states.values():
+            st.reset_indicators()
+        try:
+            if os.path.exists(self.INDICATOR_STATE_FILE):
+                os.remove(self.INDICATOR_STATE_FILE)
+        except Exception as e:
+            print(f"[INDICATEURS] Erreur suppression fichier lors du forcage : {e}")
+        self.emit("log", {"msg": "🔄 Collecte forcee manuellement — tous les indicateurs repartent de zero (positions ouvertes non affectees).", "level": "warn"})
+
     def emit(self, etype, data=None):
         self.q.put({"type": etype, "data": data or {}})
         # Sauvegarde simultanee dans le fichier de log
@@ -1564,6 +1648,11 @@ class BotEngine:
 
     def stop(self):
         self.running = False
+        # Sauvegarde l etat des indicateurs AVANT toute autre chose, avec un
+        # horodatage precis a l instant de l arret — c est ce moment precis
+        # qui sert de reference pour la reprise rapide (< 90s) au prochain
+        # demarrage.
+        self._save_indicator_state()
         # Fermer proprement le WebSocket si actif, pour eviter d accumuler des
         # connexions/threads orphelins entre deux demarrages successifs.
         if self._ws_subscribed and self.info is not None:
@@ -2096,6 +2185,7 @@ class BotEngine:
                 self.emit("log", {"msg": f"{restored} position(s) paper restauree(s) apres redemarrage.", "level": "warn"})
 
         self._load_confidence_thresholds()
+        self._load_indicator_state_if_recent()
 
         symbols_display = ", ".join(self._original_symbols)
         self.emit("log", {"msg": f"Demarrage | {symbols_display} | ${cfg['CAPITAL_USD']}", "level": "ok"})
@@ -2125,6 +2215,7 @@ class BotEngine:
                         self._process_with_timeout(sym, prices[sym])
                 self._save_open_positions()
                 self._save_confidence_thresholds()
+                self._save_indicator_state()
                 self._send_snapshot()
                 time.sleep(cfg["CYCLE_INTERVAL"])
                 continue
@@ -2140,6 +2231,7 @@ class BotEngine:
 
             self._save_open_positions()
             self._save_confidence_thresholds()
+            self._save_indicator_state()
             self._send_snapshot()
             time.sleep(cfg["CYCLE_INTERVAL"])
 
