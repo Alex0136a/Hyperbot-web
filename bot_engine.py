@@ -1198,6 +1198,7 @@ class SymbolState:
         self.current_rsi   = None
         self.current_macd  = None
         self.current_atr_pct = None   # ATR% du dernier cycle — pour affichage dashboard
+        self._last_status_log_ts = None  # limite la frequence du log "latent" (voir _manage_position_impl)
         self.current_sig   = None
         self.prev_macd     = None
         self.prev_sig      = None
@@ -2502,7 +2503,14 @@ class BotEngine:
                 return
 
         # ── 4. Rien de declenche — affichage du latent ──────────────────────
-        self.emit("log", {"msg": f"[{ticker}] ${price:.2f} {pos['type'].upper()} | latent: ${pnl_usd:+.2f} | Max Loss: -${max_loss_usd:.2f} | SL secu: ${pos['sl']:.2f}", "level": "dim"})
+        # v3.2 — FIX : ce log se declenchait a CHAQUE tick WebSocket (plusieurs
+        # fois par seconde), inondant le buffer de logs et poussant hors de
+        # vue les messages plus rares (collecte des autres actifs, alarmes...).
+        # Limite desormais a une fois toutes les 30 secondes par actif.
+        now_ts = time.time()
+        if state._last_status_log_ts is None or (now_ts - state._last_status_log_ts) >= 30:
+            state._last_status_log_ts = now_ts
+            self.emit("log", {"msg": f"[{ticker}] ${price:.2f} {pos['type'].upper()} | latent: ${pnl_usd:+.2f} | Max Loss: -${max_loss_usd:.2f} | SL secu: ${pos['sl']:.2f}", "level": "dim"})
 
     def _process(self, symbol, price):
         cfg   = self.cfg
