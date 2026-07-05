@@ -1320,6 +1320,12 @@ Confirmer ?`
           </div>
           {!volatility
             ? <div style={{color:"#64748b",fontSize:12,textAlign:"center",padding:40}}>Chargement...</div>
+            : !volatility.ranking || volatility.ranking.length===0
+            ? <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:30,textAlign:"center",color:"#94a3b8",fontSize:12,lineHeight:1.8}}>
+                ⏳ Aucune donnée de volatilité pour l'instant.<br/>
+                Le bot doit collecter environ 50 cycles (~13 minutes) après chaque démarrage avant de pouvoir calculer l'ATR de chaque actif.<br/>
+                Réessaie dans quelques minutes avec le bouton "Actualiser" ci-dessus.
+              </div>
             : (() => {
               const maxAtr = Math.max(...volatility.ranking.map(r=>r.atr_pct), 0.01);
               return (
