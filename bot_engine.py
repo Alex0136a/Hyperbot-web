@@ -280,6 +280,22 @@ CONFIG = {
     # marches suivis sans devoir l activer manuellement a l avance.
     "AUTO_ACTIVATE_CONFIDENCE_PCT": 80.0,
 
+    # v3.2 — Prudence live : session de trading limitee a 23h45 sur chaque
+    # periode de 24h. Passe ce delai, plus aucune NOUVELLE entree n est
+    # ouverte tant que TOUTES les positions de la session ne sont pas
+    # fermees (normalement ou manuellement) — une fois toutes fermees, une
+    # nouvelle session de 24h redemarre immediatement. Les positions deja
+    # ouvertes continuent d etre gerees normalement (SL/Quick Profit/
+    # Trailing) pendant cette periode de blocage.
+    "SESSION_MAX_HOURS": 23.75,
+
+    # v3.2 — Zones RSI extremes : evite d entrer a contre-sens dans une zone
+    # de retournement violent probable (survente/surachat extreme). Ne
+    # bloque QUE les nouvelles entrees dans le sens "continuation" quand le
+    # RSI est deja tres extreme.
+    "RSI_EXTREME_LOW": 15,   # ne pas SHORT si RSI < ce seuil (survente extreme)
+    "RSI_EXTREME_HIGH": 85,  # ne pas LONG si RSI > ce seuil (surachat extreme)
+
     # ── Heures creuses crypto — nouvelles entrees suspendues (PAXG exclu, ─────
     #    deja gere par FOREX_SYMBOLS/is_forex_open) ───────────────────────────
     # Fenetre par defaut : 02h-06h UTC, periode de liquidite generalement la
@@ -1465,6 +1481,12 @@ class BotEngine:
         # Confiance minimale dynamique par actif (ticker -> seuil %)
         # Absent de ce dict = utilise CONFIDENCE_MIN_PCT (seuil de base)
         self.confidence_thresholds = {}
+        # v3.2 — Session de trading limitee a 23h45/24h (prudence live) :
+        # session_started_at = debut de la session en cours ; trading_blocked
+        # = True des que 23h45 sont ecoulees, jusqu a ce que toutes les
+        # positions de la session soient fermees.
+        self.session_started_at = None
+        self.trading_blocked = False
         # Cache du calendrier CPI Finnhub (evite d appeler l API a chaque cycle)
         self._cpi_events = []
         self._cpi_last_fetch = None
@@ -1483,6 +1505,7 @@ class BotEngine:
     POSITIONS_FILE = "hyperbot_positions.json"
     CONFIDENCE_FILE = "hyperbot_confidence.json"
     INDICATOR_STATE_FILE = "hyperbot_indicators.json"
+    TRADING_SESSION_FILE = "hyperbot_trading_session.json"
     INDICATOR_RESUME_MAX_GAP_SEC = 90  # au-dela, on repart en collecte fraiche
 
     def _save_open_positions(self):
@@ -1623,6 +1646,62 @@ class BotEngine:
         except Exception as e:
             print(f"[INDICATEURS] Erreur lecture, collecte fraiche par securite : {e}")
 
+    def _save_trading_session(self):
+        import json
+        try:
+            payload = {
+                "session_started_at": self.session_started_at.isoformat() if self.session_started_at else None,
+                "trading_blocked": self.trading_blocked,
+            }
+            with open(self.TRADING_SESSION_FILE, "w") as f:
+                json.dump(payload, f)
+        except Exception as e:
+            print(f"[SESSION] Erreur sauvegarde : {e}")
+
+    def _load_trading_session(self):
+        import json, os
+        if not os.path.exists(self.TRADING_SESSION_FILE):
+            return
+        try:
+            with open(self.TRADING_SESSION_FILE, "r") as f:
+                payload = json.load(f)
+            if payload.get("session_started_at"):
+                self.session_started_at = datetime.fromisoformat(payload["session_started_at"])
+            self.trading_blocked = payload.get("trading_blocked", False)
+            print(f"[SESSION] Restauree : debut={self.session_started_at}, bloquee={self.trading_blocked}")
+        except Exception as e:
+            print(f"[SESSION] Erreur lecture : {e}")
+
+    def _update_trading_session(self):
+        """v3.2 — Prudence live : verifie/actualise l etat de la session de
+        trading 24h. Appelee une fois par cycle. N affecte JAMAIS la gestion
+        des positions deja ouvertes — seulement l ouverture de nouvelles."""
+        now = datetime.now(timezone.utc)
+        if self.session_started_at is None:
+            self.session_started_at = now
+            self._save_trading_session()
+            return
+
+        max_hours = self.cfg.get("SESSION_MAX_HOURS", 23.75)
+        elapsed_hours = (now - self.session_started_at).total_seconds() / 3600
+
+        if not self.trading_blocked and elapsed_hours >= max_hours:
+            self.trading_blocked = True
+            self._save_trading_session()
+            open_count = sum(1 for st in self.states.values() if st.position)
+            self.emit("log", {
+                "msg": f"⏸️ SESSION DE TRADING TERMINEE ({elapsed_hours:.1f}h/{max_hours}h) — nouvelles entrees suspendues jusqu a la fermeture des {open_count} position(s) en cours.",
+                "level": "warn"
+            })
+
+        elif self.trading_blocked:
+            open_count = sum(1 for st in self.states.values() if st.position)
+            if open_count == 0:
+                self.session_started_at = now
+                self.trading_blocked = False
+                self._save_trading_session()
+                self.emit("log", {"msg": "▶️ Toutes les positions de la session precedente sont fermees — nouvelle session de trading (24h) demarree.", "level": "ok"})
+
     def force_fresh_collection(self):
         """Force une collecte entierement fraiche pour tous les actifs,
         meme si un etat recent aurait pu etre restaure — utile si on
@@ -1645,7 +1724,7 @@ class BotEngine:
         demarrage, le bot relisait ces fichiers restes intacts et
         restaurait les anciennes positions comme si de rien n etait."""
         import os
-        for f in (self.POSITIONS_FILE, self.CONFIDENCE_FILE, self.INDICATOR_STATE_FILE):
+        for f in (self.POSITIONS_FILE, self.CONFIDENCE_FILE, self.INDICATOR_STATE_FILE, self.TRADING_SESSION_FILE):
             try:
                 if os.path.exists(f):
                     os.remove(f)
@@ -1653,7 +1732,9 @@ class BotEngine:
             except Exception as e:
                 print(f"[RESET] Erreur suppression {f} : {e}")
         self.confidence_thresholds = {}
-        self.emit("log", {"msg": "🔄 Collecte forcee manuellement — tous les indicateurs repartent de zero (positions ouvertes non affectees).", "level": "warn"})
+        self.session_started_at = None
+        self.trading_blocked = False
+        self.emit("log", {"msg": "🔄 Fichiers de sauvegarde (positions, confiance, indicateurs, session) purges suite a une reinitialisation.", "level": "warn"})
 
     def emit(self, etype, data=None):
         self.q.put({"type": etype, "data": data or {}})
@@ -2249,6 +2330,7 @@ class BotEngine:
 
         self._load_confidence_thresholds()
         self._load_indicator_state_if_recent()
+        self._load_trading_session()
 
         symbols_display = ", ".join(self._original_symbols)
         self.emit("log", {"msg": f"Demarrage | {symbols_display} | ${cfg['CAPITAL_USD']}", "level": "ok"})
@@ -2264,6 +2346,7 @@ class BotEngine:
         while self.running:
             self.cycle += 1
             self._check_ws_health_alert()
+            self._update_trading_session()
             prices = self._get_prices_with_timeout(cfg.get("PRICE_FETCH_TIMEOUT_SEC", 10))
             in_hours = is_trading_hours(cfg)
 
@@ -2493,6 +2576,13 @@ class BotEngine:
             self._maybe_manage_position_via_cycle(symbol, price, state)
             return
 
+        # v3.2 — Prudence live : session de trading terminee (23h45 ecoulees) —
+        # aucune NOUVELLE entree tant que toutes les positions de la session
+        # precedente ne sont pas fermees. Les positions deja ouvertes
+        # continuent d etre gerees normalement (deja fait juste au-dessus).
+        if self.trading_blocked:
+            return
+
         # ── v3.2 web : max_open_trades (pilote depuis l interface) — le filtre
         #    active_coins est applique plus loin (apres le calcul de confiance),
         #    pour permettre l auto-activation d un actif inactif si une
@@ -2685,6 +2775,16 @@ class BotEngine:
         reasons = []
 
         if rsi_buy and ema_bull and trend_up:
+            # v3.2 — Zone RSI extreme : evite d entrer LONG (continuation
+            # haussiere) quand le marche est deja en surachat extreme —
+            # risque de retournement violent plus eleve dans cette zone.
+            rsi_extreme_high = cfg.get("RSI_EXTREME_HIGH", 85)
+            if rsi > rsi_extreme_high:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG bloque — zone de surachat extreme (RSI > {rsi_extreme_high}), risque de retournement",
+                    "level": "dim"
+                })
+                return
             # Filtre EMA intermediaire — tendance 25-50 min
             # Bloquer LONG si prix sous EMA_MID (tendance baissiere de fond)
             if ema_mid is not None and price < ema_mid:
@@ -2768,6 +2868,16 @@ class BotEngine:
             if momentum_pct is not None:
                 reasons.append(f"momentum {momentum_pct:+.2f}%")
         elif rsi_sell and ema_bear and trend_down:
+            # v3.2 — Zone RSI extreme : evite d entrer SHORT (continuation
+            # baissiere) quand le marche est deja en survente extreme —
+            # risque de rebond violent plus eleve dans cette zone.
+            rsi_extreme_low = cfg.get("RSI_EXTREME_LOW", 15)
+            if rsi < rsi_extreme_low:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT bloque — zone de survente extreme (RSI < {rsi_extreme_low}), risque de rebond",
+                    "level": "dim"
+                })
+                return
             # Filtre EMA intermediaire — tendance 25-50 min
             # Bloquer SHORT si prix au-dessus EMA_MID (tendance haussiere de fond)
             if ema_mid is not None and price > ema_mid:
