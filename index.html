@@ -1318,6 +1318,11 @@ Confirmer ?`
               🔄 Actualiser
             </button>
           </div>
+          <div style={{display:"flex",gap:16,fontSize:10,color:"#94a3b8",marginBottom:10,background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 10px"}}>
+            <span>✅ <span style={{color:"#e2e8f0"}}>actif sélectionné</span> (pas de position en cours)</span>
+            <span>🔶 <span style={{color:"#fbbf24"}}>position ouverte</span> en ce moment</span>
+            <span>⬜ <span style={{color:"#64748b"}}>non sélectionné</span> (suivi pour info uniquement)</span>
+          </div>
           {!volatility
             ? <div style={{color:"#64748b",fontSize:12,textAlign:"center",padding:40}}>Chargement...</div>
             : !volatility.ranking || volatility.ranking.length===0
