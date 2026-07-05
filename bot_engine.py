@@ -2062,6 +2062,13 @@ class BotEngine:
         self.emit("log", {"msg": f"Demarrage | {symbols_display} | ${cfg['CAPITAL_USD']}", "level": "ok"})
         self.emit("log", {"msg": f"Plage horaire : {cfg['TRADE_HOUR_START']}h-{cfg['TRADE_HOUR_END']}h Paris", "level": "info"})
 
+        # v3.2 — signale la fin complete de l initialisation (reconciliation
+        # Hyperliquid en live deja faite, restauration paper deja faite) :
+        # permet a l API web de lancer un nettoyage automatique des
+        # signaux/trades orphelins juste apres, en connaissant avec
+        # certitude l etat REEL des positions a cet instant precis.
+        self.emit("startup_ready", {})
+
         while self.running:
             self.cycle += 1
             self._check_ws_health_alert()
