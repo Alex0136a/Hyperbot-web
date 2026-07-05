@@ -876,8 +876,65 @@ def get_bilan(email: str = Depends(require_user)):
 
 @app.get("/api/stats/daily")
 def get_stats_daily(email: str = Depends(require_user)):
+    # v3.2 — FIX : l onglet Performance attend un OBJET structure precis
+    # (summary/daily/wins/losses avec des noms de champs specifiques comme
+    # total_wins_usdc, net_pnl, close_reason...), completement different de
+    # ce que renvoyait cette route auparavant (une simple liste avec les
+    # noms de _aggregate) — d ou la page blanche sans aucune donnee.
     closed = db.get_all_closed_trades()
-    return _compute_daily(closed, days=7)
+    wins_rows   = [r for r in closed if (r["pnl"] or 0) > 0]
+    losses_rows = [r for r in closed if (r["pnl"] or 0) <= 0]
+    total_wins_usdc = round(sum(r["pnl"] for r in wins_rows), 2)
+    total_losses_usdc = round(sum(r["pnl"] for r in losses_rows), 2)
+    win_rate = round(len(wins_rows) / len(closed) * 100, 1) if closed else 0
+
+    today = datetime.now(timezone.utc).date()
+    buckets = {}
+    for i in range(7):
+        d = today - timedelta(days=6 - i)
+        buckets[d.strftime("%d/%m")] = []
+    for r in closed:
+        if not r["closed_at"]:
+            continue
+        try:
+            key = _day_key(r["closed_at"])
+        except Exception:
+            continue
+        if key in buckets:
+            buckets[key].append(r)
+
+    daily = []
+    for day, day_rows in buckets.items():
+        dw = [r for r in day_rows if (r["pnl"] or 0) > 0]
+        dl = [r for r in day_rows if (r["pnl"] or 0) <= 0]
+        daily.append({
+            "day": day,
+            "wins": len(dw),
+            "total_wins_usdc": round(sum(r["pnl"] for r in dw), 2),
+            "losses": len(dl),
+            "total_losses_usdc": round(sum(r["pnl"] for r in dl), 2),
+            "net_pnl": round(sum(r["pnl"] or 0 for r in day_rows), 2),
+        })
+
+    def _fmt(r):
+        return {
+            "action": r["action"], "coin": r["coin"],
+            "close_reason": r["reason"] or "?",
+            "pnl": r["pnl"], "closed_at": r["closed_at"],
+        }
+
+    return {
+        "summary": {
+            "total_wins": len(wins_rows),
+            "total_wins_usdc": total_wins_usdc,
+            "total_losses": len(losses_rows),
+            "total_losses_usdc": total_losses_usdc,
+            "win_rate": win_rate,
+        },
+        "daily": daily,
+        "wins": [_fmt(r) for r in sorted(wins_rows, key=lambda r: r["closed_at"] or "", reverse=True)],
+        "losses": [_fmt(r) for r in sorted(losses_rows, key=lambda r: r["closed_at"] or "", reverse=True)],
+    }
 
 
 @app.post("/api/cleanup")
