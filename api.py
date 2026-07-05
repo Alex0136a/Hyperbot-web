@@ -810,10 +810,26 @@ def get_stats(email: str = Depends(require_user)):
 
 @app.get("/api/paper/portfolio")
 def paper_portfolio(email: str = Depends(require_user)):
-    total_pnl = sum(s.pnl for s in bot.states.values())
+    # v3.2 — FIX : l interface attend total_pnl/total_pnl_pct (le PnL NON
+    # REALISE des positions actuellement ouvertes), alors que cette route ne
+    # renvoyait que le PnL REALISE cumule (s.pnl, uniquement des trades deja
+    # fermes) — d ou "PnL ouvert" et "Performance" bloques a 0.00 en
+    # permanence, meme avec des positions ouvertes en profit/perte.
+    open_positions = _open_positions()
+    unrealized_pnl = round(sum(p["pnl"] for p in open_positions), 2)
+    realized_pnl = sum(s.pnl for s in bot.states.values())
+    initial_balance = float(db.get_meta("initial_balance", cfg["CAPITAL_USD"])) or 1.0
+
+    closed = db.get_all_closed_trades()
+    wins = sum(1 for r in closed if (r["pnl"] or 0) > 0)
+    win_rate = round(wins / len(closed) * 100, 1) if closed else 0
+
     return {
-        "balance": round(bot.capital + total_pnl, 2),
-        "open_trades": _open_positions(),
+        "balance": round(bot.capital + realized_pnl, 2),
+        "open_trades": open_positions,
+        "total_pnl": unrealized_pnl,
+        "total_pnl_pct": round(unrealized_pnl / initial_balance * 100, 3),
+        "win_rate": win_rate,
     }
 
 
@@ -973,18 +989,24 @@ def get_daily_table(email: str = Depends(require_user)):
 @app.get("/api/bilan")
 def get_bilan(email: str = Depends(require_user)):
     closed = db.get_all_closed_trades()
-    total_pnl_open = sum(s.pnl for s in bot.states.values())  # realise cette session (redondant avec DB si tout est bien synchro)
+    total_pnl_realized = sum(s.pnl for s in bot.states.values())  # realise cette session
     initial_balance = float(db.get_meta("initial_balance", cfg["CAPITAL_USD"]))
-    total_capital = bot.capital + total_pnl_open
     open_positions = _open_positions()
     open_pnl = round(sum(p["pnl"] for p in open_positions), 2)
+    # v3.2 — FIX : total_capital n incluait que le PnL REALISE (trades deja
+    # fermes) — tant qu aucun trade n avait encore ete cloture dans la
+    # session, "Total" et "Performance" restaient figes a 1000$/+0%, meme
+    # avec des positions ouvertes clairement en profit/perte. On inclut
+    # desormais aussi le PnL LATENT (mark-to-market), comme pour Paper
+    # Trading — Capital total = valeur reelle actuelle du portefeuille.
+    total_capital = bot.capital + total_pnl_realized + open_pnl
     performance_pct = round((total_capital - initial_balance) / initial_balance * 100, 2) if initial_balance else 0
 
     today_str = datetime.now(timezone.utc).strftime("%d/%m")
     today_rows = [r for r in closed if r["closed_at"] and _day_key(r["closed_at"]) == today_str]
 
     return {
-        "balance": round(total_capital - sum(p["size"] for p in open_positions), 2),
+        "balance": round(bot.capital + total_pnl_realized - sum(p["size"] for p in open_positions), 2),
         "total_capital": round(total_capital, 2),
         "initial_balance": round(initial_balance, 2),
         "performance_pct": performance_pct,
