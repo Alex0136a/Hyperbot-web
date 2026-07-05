@@ -1636,6 +1636,23 @@ class BotEngine:
                 os.remove(self.INDICATOR_STATE_FILE)
         except Exception as e:
             print(f"[INDICATEURS] Erreur suppression fichier lors du forcage : {e}")
+
+    def clear_all_persisted_files(self):
+        """v3.2 — FIX CRITIQUE : supprime les fichiers de sauvegarde sur
+        disque (positions, seuils de confiance, etat des indicateurs).
+        Sans cet appel, une reinitialisation depuis l interface (base de
+        donnees + memoire vidées) ne servait a rien : au prochain
+        demarrage, le bot relisait ces fichiers restes intacts et
+        restaurait les anciennes positions comme si de rien n etait."""
+        import os
+        for f in (self.POSITIONS_FILE, self.CONFIDENCE_FILE, self.INDICATOR_STATE_FILE):
+            try:
+                if os.path.exists(f):
+                    os.remove(f)
+                    print(f"[RESET] Fichier supprime : {f}")
+            except Exception as e:
+                print(f"[RESET] Erreur suppression {f} : {e}")
+        self.confidence_thresholds = {}
         self.emit("log", {"msg": "🔄 Collecte forcee manuellement — tous les indicateurs repartent de zero (positions ouvertes non affectees).", "level": "warn"})
 
     def emit(self, etype, data=None):
