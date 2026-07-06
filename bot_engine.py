@@ -108,12 +108,18 @@ CONFIG = {
                            "APT", "SEI", "DOGE", "XRP", "NEAR", "FTM", "AAVE",
                            "UNI", "CRV", "SUSHI", "GMX"],
 
-    # v3.2 — Actifs actifs par defaut au tout premier demarrage (modifiable
-    # ensuite depuis l interface web ou via HYPERBOT_ACTIVE_COINS) : parmi
-    # les 30 marches disponibles, seuls ceux-la sont scannes pour de
-    # nouvelles entrees tant que la selection n est pas changee.
-    "ACTIVE_COINS":       ["SUI", "TAO", "NEAR", "WIF", "SOL", "HYPE"],
-    "MAX_OPEN_TRADES":    6,
+    # v3.2 — Nouvelle approche : les 30 marches sont TOUS eligibles par
+    # defaut (le bot pioche librement parmi eux selon le score de
+    # confiance de chacun, pas de presélection restrictive) — la limite
+    # reelle est desormais MAX_OPEN_TRADES (15 par defaut). L onglet
+    # Marchés reste disponible pour EXCLURE manuellement un actif si
+    # besoin, mais ce n est plus une liste a activer un par un.
+    "ACTIVE_COINS":       ["BTC", "PAXG", "ETH", "SOL", "BNB", "HYPE",
+                           "ARB", "AVAX", "LINK", "OP", "INJ", "TIA", "TAO",
+                           "WIF", "JUP", "PENDLE", "EIGEN", "RENDER", "SUI",
+                           "APT", "SEI", "DOGE", "XRP", "NEAR", "FTM", "AAVE",
+                           "UNI", "CRV", "SUSHI", "GMX"],
+    "MAX_OPEN_TRADES":    15,
 
     # Tous les symboles sont des perpétuels — SPOT_SYMBOLS vide
     # PAXG remplace XAUT spot : index 187 sur Hyperliquid, levier max x10
@@ -287,7 +293,10 @@ CONFIG = {
     # nouvelle session de 24h redemarre immediatement. Les positions deja
     # ouvertes continuent d etre gerees normalement (SL/Quick Profit/
     # Trailing) pendant cette periode de blocage.
-    "SESSION_MAX_HOURS": 23.75,
+    # v3.2 — SESSION_MAX_HOURS retire : le decoupage se fait desormais sur
+    # le jour calendaire UTC fixe (00h00-23h59:59), sans aucun blocage des
+    # nouvelles entrees en fin de journee. Voir api.py pour l attribution
+    # des statistiques par jour d OUVERTURE (pas de fermeture).
 
     # v3.2 — Zones RSI extremes : evite d entrer a contre-sens dans une zone
     # de retournement violent probable (survente/surachat extreme). Ne
@@ -1482,12 +1491,10 @@ class BotEngine:
         # Confiance minimale dynamique par actif (ticker -> seuil %)
         # Absent de ce dict = utilise CONFIDENCE_MIN_PCT (seuil de base)
         self.confidence_thresholds = {}
-        # v3.2 — Session de trading limitee a 23h45/24h (prudence live) :
-        # session_started_at = debut de la session en cours ; trading_blocked
-        # = True des que 23h45 sont ecoulees, jusqu a ce que toutes les
-        # positions de la session soient fermees.
-        self.session_started_at = None
-        self.trading_blocked = False
+        # v3.2 — File d attente des candidats valides du cycle en cours,
+        # classes par confiance decroissante puis executes en priorite dans
+        # cet ordre jusqu a MAX_OPEN_TRADES (voir _finalize_pending_candidates).
+        self._pending_candidates = []
         # Cache du calendrier CPI Finnhub (evite d appeler l API a chaque cycle)
         self._cpi_events = []
         self._cpi_last_fetch = None
@@ -1507,7 +1514,6 @@ class BotEngine:
     POSITIONS_FILE = "hyperbot_positions.json"
     CONFIDENCE_FILE = "hyperbot_confidence.json"
     INDICATOR_STATE_FILE = "hyperbot_indicators.json"
-    TRADING_SESSION_FILE = "hyperbot_trading_session.json"
     INDICATOR_RESUME_MAX_GAP_SEC = 90  # au-dela, on repart en collecte fraiche
 
     def _save_open_positions(self):
@@ -1650,63 +1656,6 @@ class BotEngine:
         except Exception as e:
             print(f"[INDICATEURS] Erreur lecture, collecte fraiche par securite : {e}")
 
-    def _save_trading_session(self):
-        import json
-        try:
-            payload = {
-                "session_started_at": self.session_started_at.isoformat() if self.session_started_at else None,
-                "trading_blocked": self.trading_blocked,
-            }
-            with open(self.TRADING_SESSION_FILE, "w") as f:
-                json.dump(payload, f)
-        except Exception as e:
-            print(f"[SESSION] Erreur sauvegarde : {e}")
-
-    def _load_trading_session(self):
-        import json, os
-        if not os.path.exists(self.TRADING_SESSION_FILE):
-            return
-        try:
-            with open(self.TRADING_SESSION_FILE, "r") as f:
-                payload = json.load(f)
-            if payload.get("session_started_at"):
-                self.session_started_at = datetime.fromisoformat(payload["session_started_at"])
-            self.trading_blocked = payload.get("trading_blocked", False)
-            print(f"[SESSION] Restauree : debut={self.session_started_at}, bloquee={self.trading_blocked}")
-        except Exception as e:
-            print(f"[SESSION] Erreur lecture : {e}")
-
-    def _update_trading_session(self):
-        """v3.2 — Prudence live : verifie/actualise l etat de la session de
-        trading 24h. Appelee une fois par cycle. N affecte JAMAIS la gestion
-        des positions deja ouvertes — seulement l ouverture de nouvelles."""
-        from datetime import timezone
-        now = datetime.now(timezone.utc)
-        if self.session_started_at is None:
-            self.session_started_at = now
-            self._save_trading_session()
-            return
-
-        max_hours = self.cfg.get("SESSION_MAX_HOURS", 23.75)
-        elapsed_hours = (now - self.session_started_at).total_seconds() / 3600
-
-        if not self.trading_blocked and elapsed_hours >= max_hours:
-            self.trading_blocked = True
-            self._save_trading_session()
-            open_count = sum(1 for st in self.states.values() if st.position)
-            self.emit("log", {
-                "msg": f"⏸️ SESSION DE TRADING TERMINEE ({elapsed_hours:.1f}h/{max_hours}h) — nouvelles entrees suspendues jusqu a la fermeture des {open_count} position(s) en cours.",
-                "level": "warn"
-            })
-
-        elif self.trading_blocked:
-            open_count = sum(1 for st in self.states.values() if st.position)
-            if open_count == 0:
-                self.session_started_at = now
-                self.trading_blocked = False
-                self._save_trading_session()
-                self.emit("log", {"msg": "▶️ Toutes les positions de la session precedente sont fermees — nouvelle session de trading (24h) demarree.", "level": "ok"})
-
     def force_fresh_collection(self):
         """Force une collecte entierement fraiche pour tous les actifs,
         meme si un etat recent aurait pu etre restaure — utile si on
@@ -1729,7 +1678,7 @@ class BotEngine:
         demarrage, le bot relisait ces fichiers restes intacts et
         restaurait les anciennes positions comme si de rien n etait."""
         import os
-        for f in (self.POSITIONS_FILE, self.CONFIDENCE_FILE, self.INDICATOR_STATE_FILE, self.TRADING_SESSION_FILE):
+        for f in (self.POSITIONS_FILE, self.CONFIDENCE_FILE, self.INDICATOR_STATE_FILE):
             try:
                 if os.path.exists(f):
                     os.remove(f)
@@ -1737,9 +1686,7 @@ class BotEngine:
             except Exception as e:
                 print(f"[RESET] Erreur suppression {f} : {e}")
         self.confidence_thresholds = {}
-        self.session_started_at = None
-        self.trading_blocked = False
-        self.emit("log", {"msg": "🔄 Fichiers de sauvegarde (positions, confiance, indicateurs, session) purges suite a une reinitialisation.", "level": "warn"})
+        self.emit("log", {"msg": "🔄 Fichiers de sauvegarde (positions, confiance, indicateurs) purges suite a une reinitialisation.", "level": "warn"})
 
     def emit(self, etype, data=None):
         self.q.put({"type": etype, "data": data or {}})
@@ -2353,7 +2300,8 @@ class BotEngine:
         # chaque demarrage, plus de reprise rapide (<90s) — simplifie le
         # comportement et evite toute ambiguite sur l etat restaure.
         # (self._load_indicator_state_if_recent() volontairement desactive)
-        self._load_trading_session()
+        # (session de trading 24h retiree — voir jour calendaire UTC fixe,
+        # gere cote API pour les statistiques uniquement, sans blocage)
 
         symbols_display = ", ".join(self._original_symbols)
         self.emit("log", {"msg": f"Demarrage | {symbols_display} | ${cfg['CAPITAL_USD']}", "level": "ok"})
@@ -2370,7 +2318,6 @@ class BotEngine:
             try:
                 self.cycle += 1
                 self._check_ws_health_alert()
-                self._update_trading_session()
                 prices = self._get_prices_with_timeout(cfg.get("PRICE_FETCH_TIMEOUT_SEC", 10))
                 in_hours = is_trading_hours(cfg)
 
@@ -2406,9 +2353,11 @@ class BotEngine:
                     time.sleep(cfg["CYCLE_INTERVAL"])
                     continue
 
+                self._pending_candidates = []
                 for sym in cfg["SYMBOLS"]:
                     if sym in prices:
                         self._process_with_timeout(sym, prices[sym])
+                self._finalize_pending_candidates()
 
                 self._save_open_positions()
                 self._save_confidence_thresholds()
@@ -2632,12 +2581,12 @@ class BotEngine:
             self._maybe_manage_position_via_cycle(symbol, price, state)
             return
 
-        # v3.2 — Prudence live : session de trading terminee (23h45 ecoulees) —
-        # aucune NOUVELLE entree tant que toutes les positions de la session
-        # precedente ne sont pas fermees. Les positions deja ouvertes
-        # continuent d etre gerees normalement (deja fait juste au-dessus).
-        if self.trading_blocked:
-            return
+        # v3.2 — Le blocage "session 23h45" est retire : les nouvelles entrees
+        # restent possibles jusqu a 23h59:59 UTC. Le decoupage en jours
+        # calendaires UTC (00h00-23h59:59) ne sert plus qu aux statistiques
+        # (voir api.py), avec attribution au jour d OUVERTURE du trade — les
+        # positions ouvertes a cheval sur minuit continuent normalement
+        # jusqu a leur fermeture naturelle, sans aucune interruption.
 
         # ── v3.2 web : max_open_trades (pilote depuis l interface) — le filtre
         #    active_coins est applique plus loin (apres le calcul de confiance),
@@ -3025,6 +2974,33 @@ class BotEngine:
             self.emit("log", {"msg": f"[{ticker}] Signal ignore - volume faible", "level": "dim"})
             return
 
+        # v3.2 — Nouvelle approche "meilleur score de confiance" : au lieu
+        # d executer immediatement (ce qui favorise arbitrairement le premier
+        # actif rencontre dans l ordre de balayage des 30 symboles), on met
+        # ce candidat valide en file d attente. Une fois TOUS les symboles du
+        # cycle evalues, _run() classe tous les candidats par confiance
+        # decroissante et remplit les slots disponibles (MAX_OPEN_TRADES)
+        # en priorite avec les meilleurs — les autres sont laisses de cote
+        # pour ce cycle (ils resteront candidats aux cycles suivants si le
+        # signal persiste).
+        self._pending_candidates.append({
+            "symbol": symbol, "ticker": ticker, "state": state, "signal": signal,
+            "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": rsi_mode,
+            "reasons": reasons, "prices": prices,
+        })
+
+    def _finalize_open(self, cand):
+        """v3.2 — Execution reelle d un candidat retenu (voir _process et la
+        file d attente _pending_candidates). Contient exactement la logique
+        d ouverture qui etait auparavant executee immediatement en fin de
+        _process — inchangee, juste deplacee pour s executer apres le
+        classement par confiance de fin de cycle."""
+        cfg = self.cfg
+        symbol, ticker, state, signal, price, confidence, rsi, rsi_mode, reasons, prices = (
+            cand["symbol"], cand["ticker"], cand["state"], cand["signal"], cand["price"],
+            cand["confidence"], cand["rsi"], cand["rsi_mode"], cand["reasons"], cand["prices"]
+        )
+
         capital_engaged = sum(s.position["size"] for s in self.states.values() if s.position)
         total_pnl = sum(s.pnl for s in self.states.values())
         capital_available = cfg["CAPITAL_USD"] + total_pnl - capital_engaged
@@ -3090,6 +3066,29 @@ class BotEngine:
             "take_profit2": tp2_price,
             "rsi": round(rsi, 1) if rsi is not None else None,
         })
+
+    def _finalize_pending_candidates(self):
+        """v3.2 — Appelee une fois par cycle, APRES avoir evalue tous les
+        symboles : classe les candidats valides par confiance decroissante
+        et remplit les slots disponibles (MAX_OPEN_TRADES) en priorite avec
+        les meilleurs scores. Les candidats laisses de cote ce cycle (faute
+        de place) resteront candidats aux cycles suivants si leur signal
+        persiste toujours."""
+        if not self._pending_candidates:
+            return
+        cfg = self.cfg
+        self._pending_candidates.sort(key=lambda c: c["confidence"], reverse=True)
+        max_open = cfg.get("MAX_OPEN_TRADES")
+        for cand in self._pending_candidates:
+            open_count = sum(1 for st in self.states.values() if st.position)
+            if max_open is not None and open_count >= max_open:
+                self.emit("log", {
+                    "msg": f"[{cand['ticker']}] Slot plein ({open_count}/{max_open}) — candidat a {cand['confidence']:.0f}% laisse de cote ce cycle (meilleurs scores prioritaires).",
+                    "level": "dim"
+                })
+                continue
+            self._finalize_open(cand)
+        self._pending_candidates = []
 
 
 # ─────────────────────────────────────────────
