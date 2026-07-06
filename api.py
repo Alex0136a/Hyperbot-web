@@ -369,7 +369,7 @@ def _public_config() -> Dict[str, Any]:
         "position_pct": cfg.get("POSITION_SIZE_PCT"),
         "max_loss_usd": cfg.get("MAX_LOSS_USD"),
         "quick_profit_usd": cfg.get("QUICK_PROFIT_ARM_USD"),
-        "max_open_trades": cfg.get("MAX_OPEN_TRADES", 6),
+        "max_open_trades": cfg.get("MAX_OPEN_TRADES", 15),
         "auto_activate_confidence_pct": cfg.get("AUTO_ACTIVATE_CONFIDENCE_PCT", 80.0),
         "active_coins": cfg.get("ACTIVE_COINS") or SUPPORTED_TICKERS,
         "supported_coins": SUPPORTED_TICKERS,
@@ -383,8 +383,6 @@ def _public_config() -> Dict[str, Any]:
         "running": bot.running,
         "is_running": bot.running,
         "started_at": db.get_meta("running_since") or None,
-        "session_started_at": bot.session_started_at.isoformat() if bot.session_started_at else None,
-        "trading_blocked": bot.trading_blocked,
         "last_scan": max(last_times).isoformat() if last_times else None,
         "ws_healthy": bot._is_ws_healthy() if bot.info is not None else False,
         "hyperliquid_configured": bool(cfg.get("PRIVATE_KEY") and cfg.get("WALLET_ADDRESS")),
@@ -533,7 +531,6 @@ ADVANCED_SETTINGS = {
     "CONFIDENCE_STEP_PCT":     {"label": "Confiance - pas d ajustement %",   "default": 5.0},
     "CONFIDENCE_MAX_PCT":      {"label": "Confiance - plafond dynamique %",  "default": 90.0},
     "AUTO_ACTIVATE_CONFIDENCE_PCT": {"label": "Auto-activation - seuil %",   "default": 80.0},
-    "SESSION_MAX_HOURS":       {"label": "Session trading - duree max (h)",  "default": 23.75},
     "CRYPTO_OFFPEAK_HOUR_START_UTC": {"label": "Heures creuses - debut (UTC)", "default": 2},
     "CRYPTO_OFFPEAK_HOUR_END_UTC":   {"label": "Heures creuses - fin (UTC)",   "default": 6},
     "CPI_BLACKOUT_BEFORE_MIN": {"label": "Blackout CPI - minutes avant",     "default": 15},
@@ -937,16 +934,22 @@ def _aggregate(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _compute_daily(rows: List[Dict[str, Any]], days: int = 7) -> List[Dict[str, Any]]:
+    """v3.2 — Jour calendaire UTC fixe (00h00-23h59:59) : chaque trade est
+    attribue au jour ou il a ete OUVERT (created_at), pas ferme (closed_at).
+    Un trade ouvert juste avant minuit et ferme apres compte donc pour la
+    journee de son ouverture — coherent avec le decoupage en jours fixes
+    demande, sans qu un trade a cheval sur minuit ne soit "perdu" ou compte
+    deux fois."""
     today = datetime.now(timezone.utc).date()
     buckets = {}
     for i in range(days):
         d = today - timedelta(days=days - 1 - i)
         buckets[d.strftime("%d/%m")] = []
     for r in rows:
-        if not r["closed_at"]:
+        if not r["created_at"]:
             continue
         try:
-            key = _day_key(r["closed_at"])
+            key = _day_key(r["created_at"])
         except Exception:
             continue
         if key in buckets:
@@ -987,20 +990,18 @@ def _compute_by_coin(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 @app.get("/api/report/daily-table")
 def get_daily_table(email: str = Depends(require_user)):
-    """Rapport journalier (fenetre glissante des dernieres 24h) : gains,
-    pertes, nombre de trades et performance par actif + une ligne total.
-    Concu pour etre telecharge en tableau (CSV) depuis l interface."""
+    """Rapport journalier sur le jour calendaire UTC FIXE en cours
+    (00h00:00 a 23h59:59) : gains, pertes, nombre de trades et performance
+    par actif + une ligne total. v3.2 — attribution par date d OUVERTURE
+    (created_at) : un trade ouvert aujourd hui mais ferme demain (ou plus
+    tard) compte pour la journee de son ouverture, pas de sa fermeture —
+    coherent avec le decoupage en jours fixes (plus de session glissante
+    de 24h ni de blocage en fin de journee). Concu pour etre telecharge
+    en tableau (CSV) depuis l interface."""
     closed = db.get_all_closed_trades()
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-    recent = []
-    for r in closed:
-        if not r["closed_at"]:
-            continue
-        try:
-            if datetime.fromisoformat(r["closed_at"]) >= cutoff:
-                recent.append(r)
-        except Exception:
-            continue
+    today_str = datetime.now(timezone.utc).strftime("%d/%m")
+    day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    recent = [r for r in closed if r["created_at"] and _day_key(r["created_at"]) == today_str]
 
     initial_balance = float(db.get_meta("initial_balance", cfg["CAPITAL_USD"])) or 1.0
     by_coin = _compute_by_coin(recent)
@@ -1011,8 +1012,8 @@ def get_daily_table(email: str = Depends(require_user)):
     total["performance_pct"] = round(total["net"] / initial_balance * 100, 3)
 
     return {
-        "period_start": cutoff.isoformat(),
-        "period_end": datetime.now(timezone.utc).isoformat(),
+        "period_start": day_start.isoformat(),
+        "period_end": (day_start + timedelta(hours=23, minutes=59, seconds=59)).isoformat(),
         "by_coin": by_coin,
         "total": total,
     }
@@ -1035,7 +1036,10 @@ def get_bilan(email: str = Depends(require_user)):
     performance_pct = round((total_capital - initial_balance) / initial_balance * 100, 2) if initial_balance else 0
 
     today_str = datetime.now(timezone.utc).strftime("%d/%m")
-    today_rows = [r for r in closed if r["closed_at"] and _day_key(r["closed_at"]) == today_str]
+    # v3.2 — jour calendaire UTC fixe : attribution par date d OUVERTURE
+    # (created_at), pas de fermeture — un trade ouvert aujourd hui mais
+    # ferme demain compte pour aujourd hui.
+    today_rows = [r for r in closed if r["created_at"] and _day_key(r["created_at"]) == today_str]
 
     return {
         "balance": round(bot.capital + total_pnl_realized - sum(p["size"] for p in open_positions), 2),
