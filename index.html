@@ -580,11 +580,6 @@ Confirmer ?`
                 Démarré le {new Date(config.started_at).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}
               </div>
             )}
-            {isRunning && config?.trading_blocked && (
-              <div style={{fontSize:9,color:"#fbbf24",fontWeight:700}}>
-                ⏸️ Session terminée — attente fermeture positions
-              </div>
-            )}
           </div>
           <div style={{display:"flex",alignItems:"center",gap:2,background:"#050810",borderRadius:6,padding:3,border:"1px solid #1e2d4a"}}>
             <button onClick={()=>updateTradingMode("paper")} style={{padding:"4px 8px",borderRadius:4,border:"none",background:config?.trading_mode==="paper"?"#1e2d4a":"transparent",color:config?.trading_mode==="paper"?"#fbbf24":"#475569",fontSize:10,fontWeight:700,cursor:"pointer"}}>PAPER</button>
@@ -1144,7 +1139,7 @@ Confirmer ?`
               </div>
               <div>
                 <div style={{fontSize:9,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>TRADES SIMULTANES MAX</div>
-                <input key={`mot-${config?.max_open_trades}`} type="number" defaultValue={config?.max_open_trades||5} min="1" max="20"
+                <input key={`mot-${config?.max_open_trades}`} type="number" defaultValue={config?.max_open_trades||15} min="1" max="30"
                   onChange={e=>apiCall("/api/config","PUT",{max_open_trades:Number(e.target.value)},token).then(loadData)}
                   style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"8px 10px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12}}/>
               </div>
