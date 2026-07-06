@@ -3024,10 +3024,22 @@ class BotEngine:
 
         size = min(capital_available * cfg["POSITION_SIZE_PCT"] / 100, capital_available)
 
-        # ── v3.1 : SL Hyperliquid = filet de securite fixe uniquement ────────
-        # (le SL %/symbole n est plus utilise pour la gestion normale des sorties,
-        # voir MAX_LOSS_USD gere par le bot dans _manage_position)
-        safety_sl_pct = cfg.get("EXCHANGE_SAFETY_SL_PCT", 1.5)
+        # ── v3.2 — FIX CRITIQUE : le SL Hyperliquid etait un % FIXE
+        # (EXCHANGE_SAFETY_SL_PCT, ex: 2.0%), independant de la taille reelle
+        # de la position. Sur une petite position (ex: 29$, frequente
+        # maintenant avec jusqu a 15 trades simultanes qui divisent le
+        # capital), le seuil MAX_LOSS_USD (0,75$) correspond a un mouvement
+        # de prix PLUS GRAND que ce SL fixe (0,75/29 = 2,59% > 2,0%) — le
+        # filet de secours se declenchait alors AVANT que le Max Loss
+        # intelligent du bot n ait sa chance, devenant le mecanisme de
+        # sortie PRINCIPAL au lieu d un filet rarement utilise. Le SL est
+        # desormais calcule dynamiquement par position, avec une marge de
+        # securite au-dela du seuil Max Loss reel de CETTE taille precise.
+        max_loss_usd = cfg.get("MAX_LOSS_USD", 0.75)
+        min_safety_pct = cfg.get("EXCHANGE_SAFETY_SL_PCT", 2.0)
+        max_loss_implied_pct = (max_loss_usd / size * 100) if size > 0 else min_safety_pct
+        safety_margin = cfg.get("EXCHANGE_SAFETY_SL_MARGIN", 1.4)  # 40% de marge au-dela du Max Loss
+        safety_sl_pct = max(min_safety_pct, max_loss_implied_pct * safety_margin)
         sl_p = price * (1 - safety_sl_pct/100) if signal == "long" else price * (1 + safety_sl_pct/100)
         # tp_p conserve uniquement a titre informatif / pour le bouton manuel TP
         # du dashboard — plus jamais envoye a Hyperliquid ni utilise pour fermer
