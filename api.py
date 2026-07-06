@@ -524,6 +524,8 @@ ADVANCED_SETTINGS = {
     "BB_STD":                  {"label": "Bollinger - ecart-type",           "default": 2.0},
     "ATR_PERIOD":              {"label": "ATR - periode",                    "default": 14},
     "ATR_MIN_PCT":             {"label": "ATR - seuil min % (filtre marche calme)", "default": 0.05},
+    "EXCHANGE_SAFETY_SL_PCT":  {"label": "SL Hyperliquid - % minimum plancher",   "default": 2.0},
+    "EXCHANGE_SAFETY_SL_MARGIN": {"label": "SL Hyperliquid - marge vs Max Loss (x)", "default": 1.4},
     "VOLUME_MIN_RATIO":        {"label": "Volume - ratio minimum vs moyenne","default": 1.2},
     "MOMENTUM_PERIOD":         {"label": "Momentum - periode (cycles)",      "default": 4},
     "MOMENTUM_THRESHOLD_PCT":  {"label": "Momentum - seuil %",               "default": 0.20},
