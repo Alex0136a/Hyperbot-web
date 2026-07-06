@@ -2027,11 +2027,24 @@ class BotEngine:
             if self._last_ws_reconnect_attempt is None or (now_ts - self._last_ws_reconnect_attempt) >= 60:
                 self._last_ws_reconnect_attempt = now_ts
                 try:
+                    # v3.2 — FIX : un simple re-abonnement (self.info.subscribe)
+                    # sur le MEME objet Info ne recree pas de connexion
+                    # physique si le websocket sous-jacent est reellement mort
+                    # — il peut silencieusement echouer a vie. On recree donc
+                    # entierement la connexion (nouvel objet Info + Exchange,
+                    # nouveau websocket), exactement comme au demarrage initial.
+                    cfg = self.cfg
+                    new_info, new_exchange, conn_error = connect_hyperliquid(cfg["PRIVATE_KEY"], cfg["WALLET_ADDRESS"])
+                    if conn_error:
+                        raise RuntimeError(conn_error)
+                    self.info = new_info
+                    self.exchange = new_exchange
                     self.info.subscribe({"type": "allMids"}, self._on_ws_allmids)
                     self._ws_subscribed = True
-                    self.emit("log", {"msg": "🔄 Tentative de reconnexion WebSocket effectuee.", "level": "warn"})
+                    self._last_ws_tick = time.time()  # evite un "faux mort" immediat le temps du 1er tick
+                    self.emit("log", {"msg": "🔄 Reconnexion WebSocket effectuee (nouvelle connexion etablie).", "level": "warn"})
                 except Exception as e:
-                    self.emit("log", {"msg": f"🔄 Echec de la tentative de reconnexion WebSocket : {e} — nouvelle tentative dans 60s.", "level": "warn"})
+                    self.emit("log", {"msg": f"🔄 Echec de la reconnexion WebSocket : {e} — nouvelle tentative dans 60s.", "level": "warn"})
 
         if self._ws_was_healthy is None:
             self._ws_was_healthy = healthy
