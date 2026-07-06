@@ -943,7 +943,7 @@ def _compute_daily(rows: List[Dict[str, Any]], days: int = 7) -> List[Dict[str, 
     today = datetime.now(timezone.utc).date()
     buckets = {}
     for i in range(days):
-        d = today - timedelta(days=days - 1 - i)
+        d = today - timedelta(days=i)  # v3.2 — du plus recent (aujourd hui) au plus vieux
         buckets[d.strftime("%d/%m")] = []
     for r in rows:
         if not r["created_at"]:
