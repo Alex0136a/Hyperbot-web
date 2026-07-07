@@ -516,7 +516,7 @@ ADVANCED_SETTINGS = {
     "RSI_EXTREME_HIGH":        {"label": "RSI - Zone surachat extreme (no LONG au-dessus)", "default": 85},
     "EMA_SHORT":               {"label": "EMA courte - periode",              "default": 12},
     "EMA_LONG":                {"label": "EMA longue - periode",              "default": 26},
-    "EMA_MID_PERIOD":          {"label": "EMA intermediaire - periode",       "default": 50},
+    "EMA_MID_PERIOD":          {"label": "EMA intermediaire - periode (cycles, ~33min a 10s/cycle)", "default": 200},
     "MACD_FAST":               {"label": "MACD - rapide",                    "default": 12},
     "MACD_SLOW":               {"label": "MACD - lent",                      "default": 26},
     "MACD_SIGNAL":             {"label": "MACD - signal",                    "default": 9},
