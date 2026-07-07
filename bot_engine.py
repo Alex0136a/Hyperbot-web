@@ -278,7 +278,7 @@ CONFIG = {
     },
     "CONFIDENCE_MIN_PCT":  65.0,  # Seuil minimum pour prendre un trade
     "CONFIDENCE_STEP_PCT": 5.0,   # Ajustement du seuil par actif a chaque perte/gain
-    "CONFIDENCE_MAX_PCT":  90.0,  # Plafond du seuil dynamique (evite de bloquer un actif a vie)
+    "CONFIDENCE_MAX_PCT":  87.0,  # Plafond du seuil dynamique (evite de bloquer un actif a vie)
 
     # v3.2 — Auto-activation d un actif INACTIF (pas dans ACTIVE_COINS) si
     # une opportunite exceptionnelle est detectee dessus (confiance >= ce
