@@ -2536,11 +2536,23 @@ class BotEngine:
             state.trailing_tp_active = True
             state.peak_pnl_usd = pnl_usd
             self.emit("log", {"msg": f"[{ticker}] Profit +${pnl_usd:.2f} — Quick Profit arme (sortie si retour a ${quick_lock:.2f})", "level": "signal"})
+            # v3.2 — FIX CRITIQUE : sans ce retour immediat, le code continuait
+            # vers la verification de fermeture PLUS BAS (meme cycle, meme
+            # valeur de pnl_usd) — et comme QUICK_PROFIT_ARM_USD et
+            # QUICK_PROFIT_LOCK_USD sont generalement identiques (meme champ
+            # dans l interface), la condition "pnl_usd <= quick_lock" etait
+            # DEJA vraie au moment meme de l armement, fermant la position
+            # instantanement, sans jamais laisser de vraie chance a une
+            # montee suivie d une redescente. Le stage=1 est maintenant
+            # confirme sur ce cycle, la verification de fermeture ne se fera
+            # qu a partir du PROCHAIN cycle.
+            return
 
         if state.tp_stage == 1 and pnl_usd >= trail_arm:
             state.tp_stage = 2
             state.peak_pnl_usd = pnl_usd
             self.emit("log", {"msg": f"[{ticker}] Profit +${pnl_usd:.2f} — Trailing illimite active (persiste tant que le profit progresse)", "level": "signal"})
+            return  # v3.2 — coherence avec le fix Quick Profit ci-dessus
 
         if state.tp_stage == 2:
             if state.peak_pnl_usd is None or pnl_usd > state.peak_pnl_usd:
