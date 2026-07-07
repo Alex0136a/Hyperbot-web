@@ -268,13 +268,14 @@ CONFIG = {
     # du total plutot que compte comme un echec).
     # Valeurs par defaut raisonnables — a ajuster selon les resultats observes.
     "CONFIDENCE_WEIGHTS": {
-        "macd":      20,   # MACD aligne avec la direction du signal
+        "macd":      15,   # MACD aligne avec la direction du signal
         "bollinger": 15,   # Prix du bon cote de la bande de Bollinger
-        "volume":    15,   # Volume superieur a la moyenne recente
+        "volume":    10,   # Volume superieur a la moyenne recente
         "ema200":    15,   # Alignement avec la tendance longue (EMA200)
-        "ema_mid":   15,   # Alignement avec la tendance intermediaire (25-50 min)
+        "ema_mid":   10,   # Alignement avec la tendance intermediaire (25-50 min)
         "momentum":  10,   # Momentum instantane franchement dans le sens du signal
         "consec":    10,   # Cycles consecutifs au-dela du minimum requis (conviction)
+        "breakout":  15,   # v3.2 — Casse une resistance/support recent (comportement de trader)
     },
     "CONFIDENCE_MIN_PCT":  65.0,  # Seuil minimum pour prendre un trade
     "CONFIDENCE_STEP_PCT": 5.0,   # Ajustement du seuil par actif a chaque perte/gain
@@ -477,6 +478,11 @@ PROFILE_SCALP = {
     # SHORT : prix doit CASSER en-dessous du support des 50 derniers cycles
     # Filtre les faux signaux RSI/EMA en exigeant un vrai mouvement directionnel
     "SR_PERIOD":                50,
+    # v3.2 — Filtre marge Support/Resistance : bloque une entree si le
+    # support/resistance recent (50 cycles) est trop proche pour laisser la
+    # place a un Quick Profit avant de s y heurter. Actif par defaut pour
+    # tous les profils (avant : reserve au breakout scalp uniquement).
+    "SR_MIN_ROOM_FILTER":       True,
 
     # Momentum Instantane — "ce qui se passe MAINTENANT" prevaut sur les EMA
     # Si le prix a bouge de +/-0.10% sur les 4 derniers cycles (2 min) dans
@@ -1847,7 +1853,8 @@ class BotEngine:
     # ── v3.1 : Score de confiance et seuil dynamique par actif ──────────────
     def _score_confidence(self, direction, macd_bull, macd_bear, bb_low_ok, bb_up_ok,
                            vol_ok, ema200, ema_mid, price, momentum_pct,
-                           momentum_threshold, consec, min_consec, cfg):
+                           momentum_threshold, consec, min_consec, cfg,
+                           support=None, resistance=None):
         """Calcule un score de confiance 0-100% a partir des confirmations
         optionnelles disponibles pour ce signal (en plus des filtres deja
         obligatoires comme RSI/EMA/tendance qui ont deja valide avant d arriver
@@ -1881,6 +1888,15 @@ class BotEngine:
             add("momentum", momentum_pct >= half if direction == "long" else momentum_pct <= -half)
 
         add("consec", consec > min_consec)
+
+        # v3.2 — Comportement de trader : casser une resistance (LONG) ou un
+        # support (SHORT) recent est une vraie confirmation de force, pas
+        # juste l absence d obstacle — un trader experimente y voit un
+        # signal a part entiere, pas seulement un "pas de blocage".
+        if direction == "long" and resistance is not None:
+            add("breakout", price > resistance)
+        elif direction == "short" and support is not None:
+            add("breakout", price < support)
 
         if available <= 0:
             return 100.0  # aucun critere optionnel disponible -> ne bloque pas artificiellement
@@ -2836,14 +2852,15 @@ class BotEngine:
         # Evite les faux croisements EMA de courte duree sur l or
         min_consec = cfg.get("CONSEC_CONFIRM_SYMBOLS", {}).get(ticker, 1)
 
-        # Support / Resistance — confirmation de breakout en SCALP uniquement
-        # LONG  valide si le prix CASSE au-dessus de la resistance recente (50 cycles = 25min)
-        # SHORT valide si le prix CASSE en-dessous du support recent
+        # Support / Resistance — calcule desormais pour TOUS les profils
+        # (avant : uniquement pour confirmer un breakout en scalp). Sert
+        # aussi au nouveau filtre "marge suffisante pour Quick Profit"
+        # (voir plus bas) : LONG bloque si la resistance est trop proche
+        # pour laisser la place a un Quick Profit, SHORT bloque si le
+        # support est trop proche.
         is_scalp = cfg.get("PROFILE") == "scalp"
         sr_period = cfg.get("SR_PERIOD", 50)
-        support, resistance = (None, None)
-        if is_scalp:
-            support, resistance = calc_support_resistance(prices, sr_period)
+        support, resistance = calc_support_resistance(prices, sr_period)
 
         # Sauvegarder les EMA pour le prochain cycle
         state.prev_ema_s = ema_s
@@ -2979,7 +2996,8 @@ class BotEngine:
             confidence = self._score_confidence(
                 "long", macd_bull, macd_bear, bb_low_ok, bb_up_ok, vol_ok,
                 ema200, ema_mid, price, momentum_pct, momentum_threshold,
-                state.consec_bull, min_consec, cfg
+                state.consec_bull, min_consec, cfg,
+                support=support, resistance=resistance
             )
             conf_threshold = self._get_confidence_threshold(ticker)
             if confidence < conf_threshold:
@@ -2988,11 +3006,29 @@ class BotEngine:
                     "level": "dim"
                 })
                 return
+            # v3.2 — Filtre marge Resistance : bloque un LONG si la resistance
+            # recente (plus haut des 50 derniers cycles) est trop proche pour
+            # laisser assez de place a un Quick Profit avant de s y heurter.
+            # Estimation conservatrice (sans levier) : si la marge suffit pour
+            # x1, elle suffit d autant plus pour un levier plus eleve.
+            if resistance is not None and price <= resistance and cfg.get("SR_MIN_ROOM_FILTER", True):
+                qp_arm_usd = cfg.get("QUICK_PROFIT_ARM_USD", 1.0)
+                est_size = cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100
+                min_room_pct = (qp_arm_usd / est_size * 100) if est_size > 0 else 0
+                room_pct = (resistance - price) / price * 100
+                if room_pct < min_room_pct:
+                    self.emit("log", {
+                        "msg": f"[{ticker}] ${price:.2f} LONG bloque — resistance ${resistance:.2f} trop proche ({room_pct:.2f}% < {min_room_pct:.2f}% necessaire pour Quick Profit)",
+                        "level": "dim"
+                    })
+                    return
             if not self._gate_active_or_auto_activate(ticker, confidence, "long"):
                 return
             signal = "long"
             adx_str = f"ADX {adx:.0f}" if adx is not None else "ADX ?"
             reasons = [f"RSI {rsi:.1f}", f"EMA{ema_short}/{ema_long} hausse", f"{adx_str} ({rsi_mode})", f"confiance {confidence:.0f}%"]
+            if resistance is not None and price > resistance:
+                reasons.append(f"breakout resistance ${resistance:.2f}")
             if macd_bull:
                 reasons.append("MACD hausse")
             if bb_low_ok:
@@ -3074,7 +3110,8 @@ class BotEngine:
             confidence = self._score_confidence(
                 "short", macd_bull, macd_bear, bb_low_ok, bb_up_ok, vol_ok,
                 ema200, ema_mid, price, momentum_pct, momentum_threshold,
-                state.consec_bear, min_consec, cfg
+                state.consec_bear, min_consec, cfg,
+                support=support, resistance=resistance
             )
             conf_threshold = self._get_confidence_threshold(ticker)
             if confidence < conf_threshold:
@@ -3083,11 +3120,27 @@ class BotEngine:
                     "level": "dim"
                 })
                 return
+            # v3.2 — Filtre marge Support : bloque un SHORT si le support
+            # recent (plus bas des 50 derniers cycles) est trop proche pour
+            # laisser assez de place a un Quick Profit avant de s y heurter.
+            if support is not None and price >= support and cfg.get("SR_MIN_ROOM_FILTER", True):
+                qp_arm_usd = cfg.get("QUICK_PROFIT_ARM_USD", 1.0)
+                est_size = cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100
+                min_room_pct = (qp_arm_usd / est_size * 100) if est_size > 0 else 0
+                room_pct = (price - support) / price * 100
+                if room_pct < min_room_pct:
+                    self.emit("log", {
+                        "msg": f"[{ticker}] ${price:.2f} SHORT bloque — support ${support:.2f} trop proche ({room_pct:.2f}% < {min_room_pct:.2f}% necessaire pour Quick Profit)",
+                        "level": "dim"
+                    })
+                    return
             if not self._gate_active_or_auto_activate(ticker, confidence, "short"):
                 return
             signal = "short"
             adx_str = f"ADX {adx:.0f}" if adx is not None else "ADX ?"
             reasons = [f"RSI {rsi:.1f}", f"EMA{ema_short}/{ema_long} baisse", f"{adx_str} ({rsi_mode})", f"confiance {confidence:.0f}%"]
+            if support is not None and price < support:
+                reasons.append(f"breakdown support ${support:.2f}")
             if macd_bear:
                 reasons.append("MACD baisse")
             if bb_up_ok:
