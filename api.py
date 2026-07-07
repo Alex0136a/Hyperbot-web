@@ -528,6 +528,9 @@ ADVANCED_SETTINGS = {
     "ADX_PERIOD":              {"label": "ADX - periode",                    "default": 14},
     "ADX_TREND_THRESHOLD":     {"label": "ADX - seuil Trend/Reversal",       "default": 25.0},
     "SR_PERIOD":               {"label": "Support/Resistance - periode (cycles)", "default": 50},
+    "QUICK_PROFIT_GIVEBACK_PCT": {"label": "Quick Profit - marge de repli (%)", "default": 20.0},
+    "QUICK_PROFIT_MIN_LOCK_USD": {"label": "Quick Profit - plancher garanti ($)", "default": 1.0},
+    "TRAILING_TP_MARGIN_USD":    {"label": "Trailing - marge au-dessus du Quick Profit ($)", "default": 0.5},
     "EXCHANGE_SAFETY_SL_USD":  {"label": "SL Hyperliquid - montant $ (filet de securite)", "default": 1.5},
     "VOLUME_MIN_RATIO":        {"label": "Volume - ratio minimum vs moyenne","default": 1.2},
     "MOMENTUM_PERIOD":         {"label": "Momentum - periode (cycles)",      "default": 4},
@@ -589,7 +592,6 @@ def put_config(body: ConfigBody, email: str = Depends(require_user)):
 
     if body.quick_profit_usd is not None:
         _apply_and_persist("QUICK_PROFIT_ARM_USD", body.quick_profit_usd)
-        _apply_and_persist("QUICK_PROFIT_LOCK_USD", body.quick_profit_usd)
 
     if body.max_open_trades is not None:
         clamped = max(1, min(body.max_open_trades, len(SUPPORTED_TICKERS)))
