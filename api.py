@@ -163,7 +163,7 @@ def _consume_events():
                     risk_reward=data["risk_reward"], timeframe=data["timeframe"],
                     entry_price=data["entry"], stop_loss=data["stop_loss"],
                     take_profit1=data["take_profit1"], take_profit2=data["take_profit2"],
-                    rsi=data.get("rsi"),
+                    rsi=data.get("rsi"), entry_reasons=data.get("entry_reasons"),
                 )
             elif etype == "trade":
                 ticker = be.ticker_from_slot_key(data.get("symbol", ""))
@@ -476,6 +476,7 @@ def _trade_row_to_signal(row: Dict[str, Any]) -> Dict[str, Any]:
         "entry": row["entry_price"],
         "price": row["entry_price"],
         "rsi": row["rsi"] if "rsi" in row.keys() else None,
+        "entry_reasons": row["entry_reasons"] if "entry_reasons" in row.keys() else None,
         "stop_loss": row["stop_loss"],
         "take_profit1": row["take_profit1"],
         "take_profit2": row["take_profit2"],
