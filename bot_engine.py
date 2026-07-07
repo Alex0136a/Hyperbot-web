@@ -250,16 +250,22 @@ CONFIG = {
 
     # Trailing Take Profit a 2 etages, en dollars de PnL latent :
     # Etage 1 (Quick Profit)   : arme des que le profit atteint QUICK_PROFIT_ARM_USD.
-    #                            Si le profit retombe a QUICK_PROFIT_LOCK_USD ou moins,
-    #                            fermeture immediate pour capturer ce montant.
+    #                            Si le profit retombe a QUICK_PROFIT_ARM_USD x
+    #                            (1 - QUICK_PROFIT_GIVEBACK_PCT/100) ou moins,
+    #                            fermeture pour capturer ce montant. v3.2 — FIX :
+    #                            une vraie marge de repli est essentielle, sinon
+    #                            le moindre bruit de marche ferme la position des
+    #                            l armement, sans jamais laisser de chance au
+    #                            Trailing illimite.
     # Etage 2 (Trailing illimite) : active des que le profit atteint TRAILING_TP_ARM_USD.
     #                            Le pic de profit est traque en continu ; la position
     #                            reste ouverte tant qu un nouveau pic est atteint et se
     #                            ferme des que le profit cesse de progresser (1ere baisse
     #                            depuis le pic), pour capturer le maximum atteint.
-    "QUICK_PROFIT_ARM_USD":   1.0,
-    "QUICK_PROFIT_LOCK_USD":  1.0,
-    "TRAILING_TP_ARM_USD":    1.5,
+    "QUICK_PROFIT_ARM_USD":       1.0,
+    "QUICK_PROFIT_GIVEBACK_PCT":  20.0,  # marge de repli autorisee avant fermeture (% du niveau d armement)
+    "QUICK_PROFIT_MIN_LOCK_USD":  1.0,   # plancher garanti — le seuil de fermeture ne descend jamais en dessous
+    "TRAILING_TP_MARGIN_USD":     0.5,   # le Trailing s arme toujours a QUICK_PROFIT_ARM_USD + cette marge
 
     # ── Score de confiance (0-100%) — filtre final avant toute entree ───────
     # Poids relatifs des confirmations optionnelles disponibles pour un signal.
@@ -2570,8 +2576,36 @@ class BotEngine:
 
         # ── 3. Trailing Take Profit a 2 etages (en $) ───────────────────────
         quick_arm  = cfg.get("QUICK_PROFIT_ARM_USD", 1.0)
-        quick_lock = cfg.get("QUICK_PROFIT_LOCK_USD", 1.0)
-        trail_arm  = cfg.get("TRAILING_TP_ARM_USD", 1.5)
+        # v3.2 — FIX CRITIQUE #2 : QUICK_PROFIT_LOCK_USD etait auparavant lu
+        # tel quel depuis la config, ou il etait quasi-systematiquement
+        # IDENTIQUE a quick_arm (les deux alimentes par le meme champ unique
+        # "QUICK PROFIT" dans l interface). Sans marge reelle entre armement
+        # et fermeture, le moindre micro-recul de prix (bruit de marche
+        # normal, meme 1 cycle apres l armement) suffisait a satisfaire
+        # "pnl <= quick_lock" et fermait la position — l empechant presque
+        # toujours d atteindre le Trailing illimite. Le seuil de fermeture
+        # est desormais TOUJOURS calcule avec une vraie marge de repli
+        # (QUICK_PROFIT_GIVEBACK_PCT, defaut 20%) sous le niveau d armement,
+        # laissant une vraie chance au prix de continuer a monter.
+        # v3.2 — FIX #3 : le % seul peut descendre sous l objectif REEL de
+        # gain net (ex: arme a 1,1$, marge 20% -> lock a 0,88$, alors que
+        # l objectif etait un minimum de 1$ net). Un plancher garanti
+        # (QUICK_PROFIT_MIN_LOCK_USD) empeche desormais le seuil de
+        # fermeture de descendre sous ce montant absolu, quel que soit le
+        # niveau d armement choisi — la marge en % ne s applique qu au-dessus
+        # de ce plancher.
+        giveback_pct = cfg.get("QUICK_PROFIT_GIVEBACK_PCT", 20.0)
+        min_lock_usd = cfg.get("QUICK_PROFIT_MIN_LOCK_USD", 1.0)
+        naive_lock = quick_arm * (1 - giveback_pct / 100)
+        quick_lock = min(quick_arm, max(naive_lock, min_lock_usd))
+        # v3.2 — FIX #4 simplifie : plus de reglage TRAILING_TP_ARM_USD
+        # separe a garder synchronise manuellement avec le Quick Profit — le
+        # Trailing s arme desormais TOUJOURS a quick_arm + une marge fixe
+        # (TRAILING_TP_MARGIN_USD, defaut 0,5$). Quel que soit le niveau
+        # d armement Quick Profit choisi, l ecart entre les deux etages reste
+        # coherent automatiquement, sans jamais avoir a y penser.
+        trail_margin = cfg.get("TRAILING_TP_MARGIN_USD", 0.5)
+        trail_arm = quick_arm + trail_margin
 
         if state.tp_stage == 0 and pnl_usd >= quick_arm:
             state.tp_stage = 1
@@ -3256,7 +3290,7 @@ class BotEngine:
         # de mouvement de prix doit en tenir compte pour rester exacte.
         max_loss_usd  = cfg.get("MAX_LOSS_USD", 0.75)
         qp_arm_usd    = cfg.get("QUICK_PROFIT_ARM_USD", 1.0)
-        trail_arm_usd = cfg.get("TRAILING_TP_ARM_USD", 1.5)
+        trail_arm_usd = qp_arm_usd + cfg.get("TRAILING_TP_MARGIN_USD", 0.5)
         if notional > 0:
             pct1 = qp_arm_usd / notional * 100
             pct2 = trail_arm_usd / notional * 100
