@@ -1373,11 +1373,18 @@ Confirmer ?`
                         <div style={{width:`${Math.max((r.atr_pct/maxAtr)*100,2)}%`,height:"100%",background:r.active?"linear-gradient(90deg,#1d4ed8,#7c3aed)":"#334155",borderRadius:4}}/>
                       </div>
                       <div style={{width:60,textAlign:"right",fontSize:11,color:"#94a3b8",fontFamily:"monospace"}}>{r.atr_pct.toFixed(3)}%</div>
+                      <div style={{width:78,textAlign:"center"}}>
+                        {r.mode && (
+                          <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:4,background:r.mode==="trend"?"#052e16":"#1e1147",color:r.mode==="trend"?"#34d399":"#c084fc"}} title={`ADX ${r.adx}`}>
+                            {r.mode==="trend"?"📈 TREND":"🔄 REVERSAL"}
+                          </span>
+                        )}
+                      </div>
                       <div style={{width:16,textAlign:"center"}} title={r.has_position?"Position ouverte sur cet actif — le désactiver n'affectera pas la position en cours, seulement les futures entrées":r.active?"Cliquer pour désactiver":"Cliquer pour activer"}>{r.has_position?"🔶":r.active?"✅":"⬜"}</div>
                     </div>
                   ))}
                   <div style={{marginTop:10,fontSize:9,color:"#64748b"}}>
-                    ✅ actif sélectionné · 🔶 position ouverte · Mis à jour {new Date(volatility.updated_at).toLocaleTimeString("fr-FR")}
+                    ✅ actif sélectionné · 🔶 position ouverte · 📈 TREND (ADX fort, suit la tendance) · 🔄 REVERSAL (ADX faible, parie sur l'oscillation) · Mis à jour {new Date(volatility.updated_at).toLocaleTimeString("fr-FR")}
                   </div>
                 </div>
               );
