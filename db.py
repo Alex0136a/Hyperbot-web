@@ -55,7 +55,8 @@ def init_db():
                 reason TEXT,
                 created_at TEXT NOT NULL,
                 closed_at TEXT,
-                rsi REAL
+                rsi REAL,
+                entry_reasons TEXT
             )
         """)
         # Migration : ajoute la colonne rsi si la table trades existait deja
@@ -64,6 +65,8 @@ def init_db():
         existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()]
         if "rsi" not in existing_cols:
             conn.execute("ALTER TABLE trades ADD COLUMN rsi REAL")
+        if "entry_reasons" not in existing_cols:
+            conn.execute("ALTER TABLE trades ADD COLUMN entry_reasons TEXT")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS config_overrides (
                 key TEXT PRIMARY KEY,
@@ -107,15 +110,15 @@ def user_count():
 # ── Trades ───────────────────────────────────────────────────────────────
 def insert_open_trade(coin, action, confidence, leverage, position_size_pct,
                        risk_reward, timeframe, entry_price, stop_loss,
-                       take_profit1, take_profit2, rsi=None):
+                       take_profit1, take_profit2, rsi=None, entry_reasons=None):
     with _lock, _connect() as conn:
         cur = conn.execute("""
             INSERT INTO trades (coin, action, confidence, leverage, position_size_pct,
                                  risk_reward, timeframe, entry_price, stop_loss,
-                                 take_profit1, take_profit2, rsi, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 take_profit1, take_profit2, rsi, entry_reasons, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (coin, action, confidence, leverage, position_size_pct, risk_reward,
-              timeframe, entry_price, stop_loss, take_profit1, take_profit2, rsi, now_iso()))
+              timeframe, entry_price, stop_loss, take_profit1, take_profit2, rsi, entry_reasons, now_iso()))
         conn.commit()
         return cur.lastrowid
 
