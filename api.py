@@ -527,6 +527,7 @@ ADVANCED_SETTINGS = {
     "ATR_MIN_PCT":             {"label": "ATR - seuil min % (filtre marche calme)", "default": 0.05},
     "ADX_PERIOD":              {"label": "ADX - periode",                    "default": 14},
     "ADX_TREND_THRESHOLD":     {"label": "ADX - seuil Trend/Reversal",       "default": 25.0},
+    "SR_PERIOD":               {"label": "Support/Resistance - periode (cycles)", "default": 50},
     "EXCHANGE_SAFETY_SL_USD":  {"label": "SL Hyperliquid - montant $ (filet de securite)", "default": 1.5},
     "VOLUME_MIN_RATIO":        {"label": "Volume - ratio minimum vs moyenne","default": 1.2},
     "MOMENTUM_PERIOD":         {"label": "Momentum - periode (cycles)",      "default": 4},
