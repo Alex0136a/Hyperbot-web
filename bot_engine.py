@@ -2654,18 +2654,30 @@ class BotEngine:
                 return
 
         elif state.tp_stage == 1:
-            if pnl_usd <= quick_lock:
+            # v3.2 — FIX : l etage Quick Profit suit desormais le PIC reellement
+            # atteint (comme le Trailing illimite), au lieu d un plancher fixe
+            # calcule uniquement sur le niveau d armement. Avant ce fix : profit
+            # arme a 1,1$, monte a 1,45$, puis redescend -> le bot laissait tout
+            # filer jusqu au plancher fixe (~1$) sans rien capturer entre-temps.
+            # Desormais : la marge de repli s applique au PIC observe, pas au
+            # niveau d armement — un repli confirme depuis 1,45$ ferme bien plus
+            # tot (~1,16$ avec une marge de 20%), jamais sous le plancher garanti.
+            if state.peak_pnl_usd is None or pnl_usd > state.peak_pnl_usd:
+                state.peak_pnl_usd = pnl_usd
+            dynamic_lock = max(state.peak_pnl_usd * (1 - giveback_pct / 100), min_lock_usd)
+            dynamic_lock = min(dynamic_lock, state.peak_pnl_usd)
+            if pnl_usd <= dynamic_lock:
                 pnl, _, trade = state.close_position(price, "QUICK PROFIT")
                 trade["symbol"] = symbol
                 if mode == "live" and self.exchange:
                     close_order(self.exchange, ticker, pos, self.cfg)
                 self.emit("trade", trade)
                 self._register_win(ticker)
-                self.emit("log", {"msg": f"[{ticker}] QUICK PROFIT @ ${price:.2f} | PnL: +${pnl:.2f}", "level": "win"})
+                self.emit("log", {"msg": f"[{ticker}] QUICK PROFIT @ ${price:.2f} | PnL: +${pnl:.2f} (pic +${state.peak_pnl_usd:.2f})", "level": "win"})
                 self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
                 return
             else:
-                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Quick Profit arme | latent +${pnl_usd:.2f} (sortie si <= ${quick_lock:.2f})", "level": "dim"})
+                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Quick Profit arme | latent +${pnl_usd:.2f} (pic +${state.peak_pnl_usd:.2f}, sortie si repli confirme a ${dynamic_lock:.2f})", "level": "dim"})
                 return
 
         # ── 4. Rien de declenche — affichage du latent ──────────────────────
