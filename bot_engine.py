@@ -220,7 +220,7 @@ CONFIG = {
     "TRADE_HOUR_END":     24,
 
     "MODE":               "paper",
-    "CYCLE_INTERVAL":     15,
+    "CYCLE_INTERVAL":     10,
     # Duree (s) sans tick WebSocket recu au-dela de laquelle le cycle reprend
     # la main sur la surveillance des positions ouvertes (filet de secours si
     # le WebSocket se deconnecte silencieusement). Voir _on_ws_allmids et
@@ -2441,7 +2441,7 @@ class BotEngine:
                 print(f"[_run] {err_msg}")
                 print(traceback.format_exc())
                 self.emit("log", {"msg": err_msg + " — le cycle suivant va reprendre normalement.", "level": "error"})
-                time.sleep(cfg.get("CYCLE_INTERVAL", 15))
+                time.sleep(cfg.get("CYCLE_INTERVAL", 10))
 
         self.emit("stopped", {})
 
