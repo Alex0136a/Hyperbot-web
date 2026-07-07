@@ -397,6 +397,15 @@ PROFILE_SWING = {
     "ATR_MIN_PCT":              0.05,
     "ATR_MIN_PCT_BY_SYMBOL":    {},
 
+    # v3.2 — Detection automatique du mode Trend/Reversal via l ADX (force
+    # de la tendance), par actif, a chaque cycle. ADX >= seuil -> mode
+    # "trend" (suivi de tendance). ADX < seuil -> mode "reversal" (parie
+    # sur un retournement en marche sans direction nette). SYMBOL_RSI_MODE
+    # reste disponible pour forcer manuellement un mode fixe sur un actif
+    # precis, en priorite sur cette detection automatique.
+    "ADX_PERIOD":               14,
+    "ADX_TREND_THRESHOLD":      25.0,
+
     # ── SL par paliers de gains (swing uniquement) ───────────────────────────
     "SL_LOCK_ENABLED":          True,
     "SL_LOCK_STEPS": [
@@ -493,6 +502,47 @@ def calc_ema(prices, period):
     for p in prices[period:]:
         ema = p * k + ema * (1 - k)
     return ema
+
+def calc_adx(prices, period=14):
+    """Average Directional Index (approxime) — mesure la FORCE d une
+    tendance, independamment de sa direction. Contrairement a l ATR (qui
+    mesure l amplitude du mouvement), l ADX mesure si ce mouvement est
+    DIRECTIONNEL (tendance nette) ou erratique (range/oscillation).
+    - ADX eleve (~25+)  : vraie tendance en cours -> mode "trend" adapte
+      (suivre le mouvement, RSI>50 achete, RSI<50 vend).
+    - ADX faible (~20-) : marche en range, sans direction nette -> mode
+      "reversal" adapte (RSI survente achete, RSI surachat vend — parier
+      sur l oscillation plutot que sur une tendance qui ne vient pas).
+    Comme calc_atr, utilise les variations de close (pas de high/low
+    disponibles) — une approximation fidele dans l esprit de l ADX
+    classique, pas une implementation Wilder exacte.
+    Retourne une valeur 0-100, ou None si donnees insuffisantes.
+    """
+    if len(prices) < period * 2 + 1:
+        return None
+    diffs = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+    plus_dm  = [d if d > 0 else 0 for d in diffs]
+    minus_dm = [-d if d < 0 else 0 for d in diffs]
+    tr       = [abs(d) for d in diffs]
+
+    dx_values = []
+    for end in range(period, len(diffs) + 1):
+        window_tr = sum(tr[end-period:end])
+        if window_tr <= 0:
+            continue
+        window_plus  = sum(plus_dm[end-period:end])
+        window_minus = sum(minus_dm[end-period:end])
+        plus_di  = 100 * window_plus / window_tr
+        minus_di = 100 * window_minus / window_tr
+        di_sum = plus_di + minus_di
+        if di_sum <= 0:
+            continue
+        dx_values.append(100 * abs(plus_di - minus_di) / di_sum)
+
+    if not dx_values:
+        return None
+    return sum(dx_values[-period:]) / min(period, len(dx_values))
+
 
 def calc_rsi(prices, period=14):
     if len(prices) < period + 1:
@@ -1207,6 +1257,7 @@ class SymbolState:
         self.current_rsi   = None
         self.current_macd  = None
         self.current_atr_pct = None   # ATR% du dernier cycle — pour affichage dashboard
+        self.current_adx = None       # ADX du dernier cycle — force de tendance (mode trend/reversal)
         self._last_status_log_ts = None  # limite la frequence du log "latent" (voir _manage_position_impl)
         self.current_sig   = None
         self.prev_macd     = None
@@ -2766,11 +2817,27 @@ class BotEngine:
         rsi_oversold   = cfg.get("SYMBOL_RSI_OVERSOLD",  {}).get(ticker, cfg["RSI_OVERSOLD"])
         rsi_overbought = cfg.get("SYMBOL_RSI_OVERBOUGHT", {}).get(ticker, cfg["RSI_OVERBOUGHT"])
 
-        # Mode RSI — deux logiques possibles par symbole :
-        # "reversal"  (defaut) : RSI < oversold (survente) pour LONG — strategie retournement
-        # "trend"              : RSI > 50 pour LONG, RSI < 50 pour SHORT — strategie suivi tendance
-        # BTC utilise le mode "trend" — entre dans le sens du momentum, pas contre lui
-        rsi_mode = cfg.get("SYMBOL_RSI_MODE", {}).get(ticker, "trend")
+        # v3.2 — Mode RSI DETECTE AUTOMATIQUEMENT via l ADX (force de la
+        # tendance), au lieu d un mode fixe par symbole :
+        # "reversal" : RSI < oversold (survente) pour LONG — parie sur un
+        #              retournement/oscillation. Adapte a un marche en RANGE
+        #              (ADX faible — pas de direction nette soutenue).
+        # "trend"    : RSI > 50 pour LONG, RSI < 50 pour SHORT — suit le
+        #              momentum en cours. Adapte a un marche DIRECTIONNEL
+        #              (ADX eleve — vraie tendance en cours).
+        # Un override manuel via SYMBOL_RSI_MODE reste prioritaire si
+        # configure explicitement pour un actif (force le mode quel que
+        # soit l ADX) — sinon, detection automatique a chaque cycle.
+        manual_mode = cfg.get("SYMBOL_RSI_MODE", {}).get(ticker)
+        adx = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
+        state.current_adx = adx
+        if manual_mode:
+            rsi_mode = manual_mode
+        elif adx is not None:
+            adx_trend_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
+            rsi_mode = "trend" if adx >= adx_trend_threshold else "reversal"
+        else:
+            rsi_mode = "trend"  # ADX pas encore calculable (collecte insuffisante) — valeur de repli
         if rsi_mode == "trend":
             rsi_buy  = rsi > 50   # momentum haussier confirme
             rsi_sell = rsi < 50   # momentum baissier confirme
@@ -2872,7 +2939,8 @@ class BotEngine:
             if not self._gate_active_or_auto_activate(ticker, confidence, "long"):
                 return
             signal = "long"
-            reasons = [f"RSI {rsi:.1f}", f"EMA{ema_short}/{ema_long} hausse", f"confiance {confidence:.0f}%"]
+            adx_str = f"ADX {adx:.0f}" if adx is not None else "ADX ?"
+            reasons = [f"RSI {rsi:.1f}", f"EMA{ema_short}/{ema_long} hausse", f"{adx_str} ({rsi_mode})", f"confiance {confidence:.0f}%"]
             if macd_bull:
                 reasons.append("MACD hausse")
             if bb_low_ok:
@@ -2966,7 +3034,8 @@ class BotEngine:
             if not self._gate_active_or_auto_activate(ticker, confidence, "short"):
                 return
             signal = "short"
-            reasons = [f"RSI {rsi:.1f}", f"EMA{ema_short}/{ema_long} baisse", f"confiance {confidence:.0f}%"]
+            adx_str = f"ADX {adx:.0f}" if adx is not None else "ADX ?"
+            reasons = [f"RSI {rsi:.1f}", f"EMA{ema_short}/{ema_long} baisse", f"{adx_str} ({rsi_mode})", f"confiance {confidence:.0f}%"]
             if macd_bear:
                 reasons.append("MACD baisse")
             if bb_up_ok:
