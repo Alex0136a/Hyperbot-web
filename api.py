@@ -533,7 +533,7 @@ ADVANCED_SETTINGS = {
     "MOMENTUM_THRESHOLD_PCT":  {"label": "Momentum - seuil %",               "default": 0.20},
     "CONFIDENCE_MIN_PCT":      {"label": "Confiance - seuil minimum %",      "default": 65.0},
     "CONFIDENCE_STEP_PCT":     {"label": "Confiance - pas d ajustement %",   "default": 5.0},
-    "CONFIDENCE_MAX_PCT":      {"label": "Confiance - plafond dynamique %",  "default": 90.0},
+    "CONFIDENCE_MAX_PCT":      {"label": "Confiance - plafond dynamique %",  "default": 87.0},
     "AUTO_ACTIVATE_CONFIDENCE_PCT": {"label": "Auto-activation - seuil %",   "default": 80.0},
     "CRYPTO_OFFPEAK_HOUR_START_UTC": {"label": "Heures creuses - debut (UTC)", "default": 2},
     "CRYPTO_OFFPEAK_HOUR_END_UTC":   {"label": "Heures creuses - fin (UTC)",   "default": 6},
