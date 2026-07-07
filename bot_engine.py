@@ -3185,6 +3185,7 @@ class BotEngine:
             "take_profit1": tp1_price,
             "take_profit2": tp2_price,
             "rsi": round(rsi, 1) if rsi is not None else None,
+            "entry_reasons": " | ".join(reasons),
         })
 
     def _finalize_pending_candidates(self):
