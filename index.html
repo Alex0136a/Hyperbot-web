@@ -1375,7 +1375,7 @@ Confirmer ?`
                       <div style={{width:60,textAlign:"right",fontSize:11,color:"#94a3b8",fontFamily:"monospace"}}>{r.atr_pct.toFixed(3)}%</div>
                       <div style={{width:78,textAlign:"center"}}>
                         {r.mode && (
-                          <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:4,background:r.mode==="trend"?"#052e16":"#1e1147",color:r.mode==="trend"?"#34d399":"#c084fc"}} title={`ADX ${r.adx}`}>
+                          <span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:4,background:r.mode==="trend"?"#052e16":"#1e1147",color:r.mode==="trend"?"#34d399":"#c084fc"}} title={r.adx!=null?`ADX ${r.adx}`:"ADX pas encore calculable — mode Trend par défaut (l'actif reste tradable)"}>
                             {r.mode==="trend"?"📈 TREND":"🔄 REVERSAL"}
                           </span>
                         )}
