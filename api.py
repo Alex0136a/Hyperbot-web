@@ -524,6 +524,8 @@ ADVANCED_SETTINGS = {
     "BB_STD":                  {"label": "Bollinger - ecart-type",           "default": 2.0},
     "ATR_PERIOD":              {"label": "ATR - periode",                    "default": 14},
     "ATR_MIN_PCT":             {"label": "ATR - seuil min % (filtre marche calme)", "default": 0.05},
+    "ADX_PERIOD":              {"label": "ADX - periode",                    "default": 14},
+    "ADX_TREND_THRESHOLD":     {"label": "ADX - seuil Trend/Reversal",       "default": 25.0},
     "EXCHANGE_SAFETY_SL_PCT":  {"label": "SL Hyperliquid - % minimum plancher",   "default": 2.0},
     "EXCHANGE_SAFETY_SL_MARGIN": {"label": "SL Hyperliquid - marge vs Max Loss (x)", "default": 1.4},
     "VOLUME_MIN_RATIO":        {"label": "Volume - ratio minimum vs moyenne","default": 1.2},
@@ -788,16 +790,29 @@ def get_prices(email: str = Depends(require_user)):
 def get_volatility(email: str = Depends(require_user)):
     """Classement en direct de la volatilite (ATR%) des actifs suivis — aide
     a identifier ou le mouvement de prix est le plus fort a l instant present
-    (donc le potentiel de capture le plus eleve avec les seuils actuels)."""
+    (donc le potentiel de capture le plus eleve avec les seuils actuels).
+    Inclut aussi l ADX (force de la tendance) et le mode detecte
+    (trend/reversal) pour chaque actif."""
     active_coins = cfg.get("ACTIVE_COINS") or SUPPORTED_TICKERS
+    adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
+    manual_modes = cfg.get("SYMBOL_RSI_MODE", {})
     rows = []
     for slot_key, state in bot.states.items():
         ticker = be.ticker_from_slot_key(slot_key)
         if state.current_atr_pct is None:
             continue
+        adx = state.current_adx
+        if manual_modes.get(ticker):
+            mode = manual_modes[ticker]
+        elif adx is not None:
+            mode = "trend" if adx >= adx_threshold else "reversal"
+        else:
+            mode = None
         rows.append({
             "coin": ticker,
             "atr_pct": round(state.current_atr_pct, 4),
+            "adx": round(adx, 1) if adx is not None else None,
+            "mode": mode,
             "price": state.current_price,
             "active": ticker in active_coins,
             "has_position": bool(state.position),
