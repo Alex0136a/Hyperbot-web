@@ -555,7 +555,8 @@ Confirmer ?`
   const isRunning = config.is_running;
   const TABS = [
     {id:"dashboard",label:"📊 Tableau de bord"},
-    {id:"signaux",label:`⚡ Signaux (${stats.total||0})`},
+    {id:"signaux",label:`⚡ Signaux (${positions.length})`},
+    {id:"historique",label:`📜 Historique (${stats.total||0})`},
     {id:"positions",label:`📈 Positions (${positions.length})`},
     {id:"marches",label:`🎯 Marchés (${activeCoins.length}/${ALL_COINS.length})`},
     {id:"parametres",label:"⚙️ Paramètres"},
@@ -705,6 +706,57 @@ Confirmer ?`
 
       {/* SIGNAUX */}
       {tab==="signaux" && (
+        <div style={{padding:16}}>
+          <div style={{fontSize:11,color:"#94a3b8",marginBottom:12,lineHeight:1.6}}>
+            Signaux des trades <b>actuellement ouverts</b>, avec les informations ayant motivé leur ouverture. Un trade disparaît d'ici dès qu'il se ferme (retrouvable ensuite dans l'onglet Historique).
+          </div>
+          {signals.filter(s=>s.action!=="WAIT" && !s.closed_at).length===0
+            ? <div style={{textAlign:"center",padding:50,color:"#94a3b8"}}>{isRunning?"Aucun trade ouvert actuellement...":"Bot arrêté — aucun trade en cours"}</div>
+            : signals.filter(s=>s.action!=="WAIT" && !s.closed_at).map(sig=>(
+              <div key={sig.id} style={{background:"#0f1629",border:`1px solid ${sig.action==="LONG"?"#14532d":"#450a0a"}`,borderRadius:10,padding:14,marginBottom:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                    <span style={{background:sig.action==="LONG"?"#052e16":"#2d0a0a",color:sig.action==="LONG"?"#34d399":"#f87171",padding:"3px 9px",borderRadius:5,fontSize:12,fontWeight:700}}>{sig.action}</span>
+                    <span style={{fontSize:15,fontWeight:700,color:"#f1f5f9"}}>{sig.coin}/USDC</span>
+                    <span style={{background:"#1e2d4a",color:"#60a5fa",padding:"1px 7px",borderRadius:4,fontSize:10}}>x{sig.leverage}</span>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:18,fontWeight:700,color:confColor(sig.confidence)}}>{sig.confidence}%</div>
+                    <div style={{fontSize:9,color:"#94a3b8"}}>CONFIANCE A L'OUVERTURE</div>
+                  </div>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7,marginBottom:10}}>
+                  {[{l:"ENTRÉE",v:`$${sig.entry?.toFixed(4)}`,c:"#60a5fa"},{l:"STOP LOSS",v:`$${sig.stop_loss?.toFixed(4)}`,c:"#f87171"},{l:"TP1",v:`$${sig.take_profit1?.toFixed(4)}`,c:"#34d399"},{l:"TP2",v:`$${sig.take_profit2?.toFixed(4)}`,c:"#34d399"}].map((x,i)=>(
+                    <div key={i} style={{background:"#0a0e1a",borderRadius:5,padding:"7px 8px"}}>
+                      <div style={{fontSize:9,color:"#94a3b8",marginBottom:2}}>{x.l}</div>
+                      <div style={{fontSize:11,fontWeight:700,color:x.c}}>{x.v}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:7,marginBottom:10}}>
+                  <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#94a3b8"}}>TAILLE</div><div style={{color:"#e2e8f0",fontWeight:700}}>{sig.position_size}%</div></div>
+                  <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#94a3b8"}}>RISK/REWARD</div><div style={{color:sig.risk_reward>=2?"#34d399":"#fbbf24",fontWeight:700}}>{sig.risk_reward?.toFixed(2)}</div></div>
+                  <div style={{background:"#0a0e1a",borderRadius:5,padding:"6px 8px"}}><div style={{fontSize:9,color:"#94a3b8"}}>RSI A L'ENTRÉE</div><div style={{color:"#94a3b8",fontSize:11}}>{sig.rsi?.toFixed(1)??"--"}</div></div>
+                </div>
+                {sig.entry_reasons && (
+                  <div style={{background:"#0a0e1a",borderRadius:5,padding:9,marginBottom:8,borderLeft:"3px solid #8b5cf6"}}>
+                    <div style={{fontSize:9,color:"#c084fc",marginBottom:3}}>🧠 CE QUI A DÉCLENCHÉ L'OUVERTURE</div>
+                    <div style={{color:"#94a3b8",fontSize:11,lineHeight:1.6}}>{sig.entry_reasons}</div>
+                  </div>
+                )}
+                <div style={{fontSize:10,color:"#94a3b8"}}>
+                  Ouvert le {new Date(sig.created_at).toLocaleString("fr-FR")}
+                  {prices[sig.coin]&&<span style={{marginLeft:8,color:((prices[sig.coin]-sig.entry)/sig.entry*100*(sig.action==="LONG"?1:-1))>=0?"#34d399":"#f87171"}}>
+                    · PnL latent : {((prices[sig.coin]-sig.entry)/sig.entry*100*(sig.action==="LONG"?1:-1)).toFixed(2)}%
+                  </span>}
+                </div>
+              </div>
+            ))
+          }
+        </div>
+      )}
+
+      {tab==="historique" && (
         <div style={{padding:16}}>
           {signals.filter(s=>s.action!=="WAIT").length===0
             ? <div style={{textAlign:"center",padding:50,color:"#94a3b8"}}>{isRunning?"Analyse IA en cours...":"Aucun signal — démarrez le bot"}</div>
