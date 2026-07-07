@@ -385,6 +385,8 @@ def _public_config() -> Dict[str, Any]:
         "started_at": db.get_meta("running_since") or None,
         "last_scan": max(last_times).isoformat() if last_times else None,
         "ws_healthy": bot._is_ws_healthy() if bot.info is not None else False,
+        "offpeak_hour_start": cfg.get("CRYPTO_OFFPEAK_HOUR_START_UTC", 21),
+        "offpeak_hour_end": cfg.get("CRYPTO_OFFPEAK_HOUR_END_UTC", 23),
         "hyperliquid_configured": bool(cfg.get("PRIVATE_KEY") and cfg.get("WALLET_ADDRESS")),
     }
 
@@ -539,8 +541,8 @@ ADVANCED_SETTINGS = {
     "CONFIDENCE_STEP_PCT":     {"label": "Confiance - pas d ajustement %",   "default": 5.0},
     "CONFIDENCE_MAX_PCT":      {"label": "Confiance - plafond dynamique %",  "default": 87.0},
     "AUTO_ACTIVATE_CONFIDENCE_PCT": {"label": "Auto-activation - seuil %",   "default": 80.0},
-    "CRYPTO_OFFPEAK_HOUR_START_UTC": {"label": "Heures creuses - debut (UTC)", "default": 2},
-    "CRYPTO_OFFPEAK_HOUR_END_UTC":   {"label": "Heures creuses - fin (UTC)",   "default": 6},
+    "CRYPTO_OFFPEAK_HOUR_START_UTC": {"label": "Heures creuses - debut (UTC)", "default": 21},
+    "CRYPTO_OFFPEAK_HOUR_END_UTC":   {"label": "Heures creuses - fin (UTC)",   "default": 23},
     "CPI_BLACKOUT_BEFORE_MIN": {"label": "Blackout CPI - minutes avant",     "default": 15},
     "CPI_BLACKOUT_AFTER_MIN":  {"label": "Blackout CPI - minutes apres",     "default": 30},
 }
