@@ -316,8 +316,8 @@ CONFIG = {
     #    deja gere par FOREX_SYMBOLS/is_forex_open) ───────────────────────────
     # Fenetre par defaut : 02h-06h UTC, periode de liquidite generalement la
     # plus faible sur les marches crypto. A ajuster si besoin.
-    "CRYPTO_OFFPEAK_HOUR_START_UTC": 2,
-    "CRYPTO_OFFPEAK_HOUR_END_UTC":   6,
+    "CRYPTO_OFFPEAK_HOUR_START_UTC": 21,
+    "CRYPTO_OFFPEAK_HOUR_END_UTC":   23,
 
     # ── Blackout CPI (annonces US) via calendrier economique Finnhub ─────────
     # Cle chargeable depuis la variable d environnement HYPERBOT_FINNHUB_API_KEY.
@@ -1197,17 +1197,20 @@ def is_forex_open():
 
 def is_crypto_offpeak(cfg):
     """Heures creuses du marche crypto — periode de liquidite generalement
-    la plus faible (fin de session US / debut de session asiatique), calculee
-    en UTC (le marche crypto est mondial et 24/7, contrairement au Forex/PAXG
-    deja gere separement via FOREX_SYMBOLS).
-    Fenetre par defaut : 02h00-06h00 UTC (consensus general de marche) —
-    ajustable via CRYPTO_OFFPEAK_HOUR_START_UTC / _END_UTC dans CONFIG.
+    la plus faible (fin de session US, Europe deja fermee depuis plusieurs
+    heures, avant reprise de la session asiatique), calculee en UTC (le
+    marche crypto est mondial et 24/7, contrairement au Forex/PAXG deja
+    gere separement via FOREX_SYMBOLS).
+    Fenetre par defaut : 21h00-23h00 UTC — Europe ferme ~16h UTC, US ferme
+    ~20h-22h UTC, Asie ne rouvre que vers minuit UTC : c est le seul moment
+    ou les trois grandes sessions sont simultanement creuses.
+    Ajustable via CRYPTO_OFFPEAK_HOUR_START_UTC / _END_UTC dans CONFIG.
     Ne bloque que les NOUVELLES entrees ; les positions ouvertes continuent
     d etre gerees normalement.
     """
     from datetime import datetime as _dt, timezone
-    start = cfg.get("CRYPTO_OFFPEAK_HOUR_START_UTC", 2)
-    end   = cfg.get("CRYPTO_OFFPEAK_HOUR_END_UTC", 6)
+    start = cfg.get("CRYPTO_OFFPEAK_HOUR_START_UTC", 21)
+    end   = cfg.get("CRYPTO_OFFPEAK_HOUR_END_UTC", 23)
     hour  = _dt.now(timezone.utc).hour
     if start <= end:
         return start <= hour < end
