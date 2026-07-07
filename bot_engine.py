@@ -368,8 +368,11 @@ PROFILE_SWING = {
     "SYMBOL_EMA_LONG":          {},
     # EMA intermediaire — filtre de tendance 25-50 min, applique desormais a
     # TOUS les actifs de la meme facon via EMA_MID_PERIOD (plus de dict par
-    # symbole).
-    "EMA_MID_PERIOD":           50,
+    # symbole). v3.2 — recalibre pour representer une VRAIE fenetre de
+    # 25-50 min avec CYCLE_INTERVAL=10s (200 cycles x 10s = ~33 min,
+    # milieu de la fourchette). La collecte initiale plus longue qui en
+    # decoule est compensee par la reprise rapide (persistance <10 min).
+    "EMA_MID_PERIOD":           200,
     "SYMBOL_EMA_MID":           {},
     "STOP_LOSS_PCT":            1.5,
     "TAKE_PROFIT_PCT":          1.5,
@@ -438,7 +441,8 @@ PROFILE_SCALP = {
     "SYMBOL_EMA_SHORT":         {},
     "SYMBOL_EMA_LONG":          {},
     # EMA intermediaire scalp — fenetre plus courte (30 min), uniforme pour tous
-    "EMA_MID_PERIOD":           30,
+    # v3.2 — recalibre pour ~30 min reelles avec CYCLE_INTERVAL=10s
+    "EMA_MID_PERIOD":           180,
     "SYMBOL_EMA_MID":           {},
     # SL et TP serres
     "STOP_LOSS_PCT":            0.4,
@@ -1565,7 +1569,7 @@ class BotEngine:
     POSITIONS_FILE = "hyperbot_positions.json"
     CONFIDENCE_FILE = "hyperbot_confidence.json"
     INDICATOR_STATE_FILE = "hyperbot_indicators.json"
-    INDICATOR_RESUME_MAX_GAP_SEC = 90  # au-dela, on repart en collecte fraiche
+    INDICATOR_RESUME_MAX_GAP_SEC = 600  # 10 min — au-dela, on repart en collecte fraiche
 
     def _save_open_positions(self):
         """Sauvegarde les positions ouvertes (live ET paper depuis v3.2, pour
@@ -1774,6 +1778,10 @@ class BotEngine:
 
     def stop(self):
         self.running = False
+        # Sauvegarde l etat des indicateurs AVANT toute autre chose, avec un
+        # horodatage precis a l instant de l arret — sert de reference pour
+        # la reprise rapide (< 10 min cumulees) au prochain demarrage.
+        self._save_indicator_state()
         # Fermer proprement le WebSocket si actif, pour eviter d accumuler des
         # connexions/threads orphelins entre deux demarrages successifs.
         if self._ws_subscribed and self.info is not None:
@@ -2360,10 +2368,14 @@ class BotEngine:
                 self.emit("log", {"msg": f"{restored} position(s) paper restauree(s) apres redemarrage.", "level": "warn"})
 
         self._load_confidence_thresholds()
-        # v3.2 — sur demande : collecte des indicateurs TOUJOURS fraiche a
-        # chaque demarrage, plus de reprise rapide (<90s) — simplifie le
-        # comportement et evite toute ambiguite sur l etat restaure.
-        # (self._load_indicator_state_if_recent() volontairement desactive)
+        # v3.2 — REACTIVE : la collecte des indicateurs (notamment l EMA
+        # intermediaire, desormais calibree sur une vraie fenetre de 25-50
+        # min) est trop longue pour repartir de zero a chaque redemarrage
+        # anodin (redeploiement, coupure breve). Reprise rapide reactivee
+        # avec un seuil elargi a 10 minutes cumulees (voir
+        # INDICATOR_RESUME_MAX_GAP_SEC) : au-dela, collecte fraiche par
+        # securite (un trou de donnees trop long fausserait les indicateurs).
+        self._load_indicator_state_if_recent()
         # (session de trading 24h retiree — voir jour calendaire UTC fixe,
         # gere cote API pour les statistiques uniquement, sans blocage)
 
@@ -2408,6 +2420,7 @@ class BotEngine:
                             self._process_with_timeout(sym, prices[sym])
                     self._save_open_positions()
                     self._save_confidence_thresholds()
+                    self._save_indicator_state()
                     self._send_snapshot()
                     time.sleep(cfg["CYCLE_INTERVAL"])
                     continue
@@ -2425,6 +2438,7 @@ class BotEngine:
 
                 self._save_open_positions()
                 self._save_confidence_thresholds()
+                self._save_indicator_state()
                 self._send_snapshot()
                 time.sleep(cfg["CYCLE_INTERVAL"])
             except Exception as e:
