@@ -245,7 +245,7 @@ CONFIG = {
     # pour la gestion normale des sorties : il sert desormais UNIQUEMENT a
     # poser un ordre de securite fixe sur Hyperliquid (filet de secours si
     # le bot est deconnecte / en retard). La gestion normale se fait en $ :
-    "EXCHANGE_SAFETY_SL_PCT": 2.0,   # SL pose sur Hyperliquid — filet de securite uniquement (cas bot non surveille)
+    "EXCHANGE_SAFETY_SL_USD": 1.5,   # SL pose sur Hyperliquid, ancre en $ (filet de securite uniquement, cas bot non surveille) — double du Max Loss par defaut
     "MAX_LOSS_USD":           0.75,  # Perte max geree par le bot avant fermeture immediate
 
     # Trailing Take Profit a 2 etages, en dollars de PnL latent :
@@ -1301,11 +1301,11 @@ class SymbolState:
         self.consec_bull     = 0
         self.consec_bear     = 0
 
-    def open_position(self, ptype, entry, sl, tp, size, confidence=None):
+    def open_position(self, ptype, entry, sl, tp, size, confidence=None, leverage=1):
         self.position = {
             "type": ptype, "entry": entry, "sl": sl, "tp": tp,
             "size": size, "opened_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-            "confidence": confidence,
+            "confidence": confidence, "leverage": leverage,
         }
         self.peak_price = entry
         self.trailing_tp_active = False
@@ -1889,6 +1889,29 @@ class BotEngine:
     def _get_confidence_threshold(self, ticker):
         base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
         return self.confidence_thresholds.get(ticker, base)
+
+    def _compute_prudent_leverage(self, ticker, confidence, rsi_mode):
+        """v3.2 — Levier prudent, calcule INDIVIDUELLEMENT pour chaque trade
+        (plus une valeur fixe globale). Trois garde-fous cumulatifs :
+        1. JAMAIS de levier en mode "reversal" — un pari a contre-courant
+           est deja plus risque par nature, pas besoin d en rajouter.
+        2. JAMAIS de levier sur un actif actuellement en "penalite" (son
+           seuil de confiance dynamique est deja releve suite a une perte
+           recente) — pas de raison de prendre plus de risque sur un actif
+           qui vient de mal se comporter.
+        3. Sinon, levier croissant avec la force du signal, plafonne a x3 :
+           65-74% confiance -> x1 | 75-84% -> x2 | 85%+ -> x3.
+        """
+        if rsi_mode != "trend":
+            return 1
+        base_threshold = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
+        if self.confidence_thresholds.get(ticker, base_threshold) > base_threshold:
+            return 1
+        if confidence >= 85:
+            return 3
+        elif confidence >= 75:
+            return 2
+        return 1
 
     def _gate_active_or_auto_activate(self, ticker, confidence, direction):
         """Decide si un signal valide (confiance deja >= seuil normal) peut
@@ -2496,7 +2519,10 @@ class BotEngine:
             pnl_pct = (price - pos["entry"]) / pos["entry"] * 100
         else:
             pnl_pct = (pos["entry"] - price) / pos["entry"] * 100
-        pnl_usd = pos["size"] * pnl_pct / 100
+        # v3.2 — le levier amplifie le PnL reel (notionnel = taille x levier),
+        # essentiel pour que Max Loss/Quick Profit restent coherents avec le
+        # levier prudent applique par trade (voir _compute_prudent_leverage).
+        pnl_usd = pos["size"] * pos.get("leverage", 1) * pnl_pct / 100
 
         # ── 1. MAX LOSS — priorite absolue, gere par le bot ─────────────────
         max_loss_usd = cfg.get("MAX_LOSS_USD", 0.75)
@@ -3119,22 +3145,23 @@ class BotEngine:
 
         size = min(capital_available * cfg["POSITION_SIZE_PCT"] / 100, capital_available)
 
-        # ── v3.2 — FIX CRITIQUE : le SL Hyperliquid etait un % FIXE
-        # (EXCHANGE_SAFETY_SL_PCT, ex: 2.0%), independant de la taille reelle
-        # de la position. Sur une petite position (ex: 29$, frequente
-        # maintenant avec jusqu a 15 trades simultanes qui divisent le
-        # capital), le seuil MAX_LOSS_USD (0,75$) correspond a un mouvement
-        # de prix PLUS GRAND que ce SL fixe (0,75/29 = 2,59% > 2,0%) — le
-        # filet de secours se declenchait alors AVANT que le Max Loss
-        # intelligent du bot n ait sa chance, devenant le mecanisme de
-        # sortie PRINCIPAL au lieu d un filet rarement utilise. Le SL est
-        # desormais calcule dynamiquement par position, avec une marge de
-        # securite au-dela du seuil Max Loss reel de CETTE taille precise.
-        max_loss_usd = cfg.get("MAX_LOSS_USD", 0.75)
-        min_safety_pct = cfg.get("EXCHANGE_SAFETY_SL_PCT", 2.0)
-        max_loss_implied_pct = (max_loss_usd / size * 100) if size > 0 else min_safety_pct
-        safety_margin = cfg.get("EXCHANGE_SAFETY_SL_MARGIN", 1.4)  # 40% de marge au-dela du Max Loss
-        safety_sl_pct = max(min_safety_pct, max_loss_implied_pct * safety_margin)
+        # v3.2 — le levier prudent doit etre connu AVANT le calcul du SL de
+        # securite, puisque le notionnel reel (taille x levier) determine le
+        # % de mouvement correspondant a un montant $ donne.
+        leverage = self._compute_prudent_leverage(ticker, confidence, rsi_mode)
+        notional = size * leverage
+
+        # ── v3.2 — FIX : le SL Hyperliquid est desormais ancre DIRECTEMENT
+        # en dollars (EXCHANGE_SAFETY_SL_USD, defaut 1,5$ — le double du Max
+        # Loss de 0,75$), plutot qu en % fixe. Un % fixe (ex: 2.0%) pouvait
+        # correspondre a MOINS de 0,75$ sur une petite position (ex: 29$ :
+        # 2% = 0,58$ < 0,75$), faisant declencher le filet de secours AVANT
+        # le Max Loss intelligent du bot. En ancrant directement le seuil en
+        # $, le SL de sécurité reste toujours a une marge fixe et previsible
+        # au-dela du Max Loss, quelle que soit la taille ou le levier reels
+        # de CETTE position precise.
+        safety_sl_usd = cfg.get("EXCHANGE_SAFETY_SL_USD", 1.5)
+        safety_sl_pct = (safety_sl_usd / notional * 100) if notional > 0 else 2.0
         sl_p = price * (1 - safety_sl_pct/100) if signal == "long" else price * (1 + safety_sl_pct/100)
         # tp_p conserve uniquement a titre informatif / pour le bouton manuel TP
         # du dashboard — plus jamais envoye a Hyperliquid ni utilise pour fermer
@@ -3145,9 +3172,19 @@ class BotEngine:
         label = "LONG" if signal == "long" else "SHORT"
         _, atr_at_entry = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
         atr_str = f"ATR {atr_at_entry:.3f}%" if atr_at_entry else "ATR ?"
-        self.emit("log", {"msg": f"[{ticker}] {label} @ ${price:.2f} | RSI:{rsi:.1f}({rsi_mode}) | {atr_str} | {' | '.join(reasons)} | ${size:.2f} | MaxLoss -${cfg.get('MAX_LOSS_USD', 0.75):.2f} | SL secu {safety_sl_pct}% [PERP]", "level": "signal"})
+        lev_str = f"x{leverage}" if leverage > 1 else "x1"
+
+        self.emit("log", {"msg": f"[{ticker}] {label} @ ${price:.2f} | RSI:{rsi:.1f}({rsi_mode}) | {atr_str} | {' | '.join(reasons)} | ${size:.2f} {lev_str} | MaxLoss -${cfg.get('MAX_LOSS_USD', 0.75):.2f} | SL secu {safety_sl_pct:.2f}% [PERP]", "level": "signal"})
 
         if cfg["MODE"] == "live" and self.exchange:
+            # v3.2 — applique le levier PRUDENT specifique a ce trade sur
+            # Hyperliquid (remplace/surcharge le levier uniforme applique au
+            # demarrage) — chaque trade peut donc avoir un levier different
+            # selon sa confiance/mode/etat de penalite.
+            try:
+                self.exchange.update_leverage(leverage, ticker, is_cross=True)
+            except Exception as e:
+                self.emit("log", {"msg": f"[{ticker}] Echec application levier prudent x{leverage} : {e} — poursuite avec le levier deja en place.", "level": "warn"})
             # tp_price=None : plus d ordre TP fixe sur Hyperliquid, la prise de
             # profit est entierement geree par le bot (Quick Profit / Trailing)
             ok = place_order(self.exchange, ticker, signal == "long", size, price, cfg, sl_price=sl_p, tp_price=None)
@@ -3155,19 +3192,21 @@ class BotEngine:
                 self.emit("log", {"msg": f"[{ticker}] Ordre non execute", "level": "warn"})
                 return
 
-        state.open_position(signal, price, sl_p, tp_p, size, confidence=confidence)
+        state.open_position(signal, price, sl_p, tp_p, size, confidence=confidence, leverage=leverage)
         self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
 
         # ── v3.2 web : evenement structure pour l API (table trades / signaux) ──
         # tp1/tp2 sont deduits des seuils $ (Quick Profit / Trailing) — notre
         # bot ne raisonne pas en % fixe comme un TP1/TP2 classique, ceci est
         # une conversion informative en prix equivalent au moment de l entree.
+        # v3.2 — le notionnel reel est size x leverage : la conversion $ -> %
+        # de mouvement de prix doit en tenir compte pour rester exacte.
         max_loss_usd  = cfg.get("MAX_LOSS_USD", 0.75)
         qp_arm_usd    = cfg.get("QUICK_PROFIT_ARM_USD", 1.0)
         trail_arm_usd = cfg.get("TRAILING_TP_ARM_USD", 1.5)
-        if size > 0:
-            pct1 = qp_arm_usd / size * 100
-            pct2 = trail_arm_usd / size * 100
+        if notional > 0:
+            pct1 = qp_arm_usd / notional * 100
+            pct2 = trail_arm_usd / notional * 100
             tp1_price = price * (1 + pct1/100) if signal == "long" else price * (1 - pct1/100)
             tp2_price = price * (1 + pct2/100) if signal == "long" else price * (1 - pct2/100)
         else:
@@ -3176,7 +3215,7 @@ class BotEngine:
             "coin": ticker,
             "action": label,
             "confidence": round(confidence, 1),
-            "leverage": cfg.get("LEVERAGE", 1),
+            "leverage": leverage,
             "position_size_pct": cfg["POSITION_SIZE_PCT"],
             "risk_reward": round(qp_arm_usd / max_loss_usd, 2) if max_loss_usd else None,
             "timeframe": cfg.get("PROFILE", "swing"),
