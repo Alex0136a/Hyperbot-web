@@ -373,6 +373,7 @@ function App() {
   const [savedField, setSavedField] = useState("");
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(null);
+  const [nowTick, setNowTick] = useState(Date.now());
   const logEnd = useRef(null);
   const pollRef = useRef(null);
 
@@ -455,6 +456,14 @@ function App() {
   }, [token, loadData]);
 
   useEffect(() => { logEnd.current?.scrollIntoView({behavior:"smooth"}); }, [botLogs]);
+
+  // v3.2 — vrai chronometre en direct pour la duree des trades ouverts
+  // (Paper Trading) : re-render force chaque seconde, independant du
+  // rafraichissement des donnees (toutes les 5s).
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     const updateClock = () => {
@@ -748,9 +757,9 @@ Confirmer ?`
             const pnl = p.pnl || 0;
             let duration = "--";
             if (p.opened_at) {
-              const diffSec = Math.max(0, Math.floor((new Date() - new Date(p.opened_at)) / 1000));
-              const h = Math.floor(diffSec/3600), m = Math.floor((diffSec%3600)/60);
-              duration = h>0 ? `${h}h${String(m).padStart(2,"0")}` : `${m}min`;
+              const diffSec = Math.max(0, Math.floor((nowTick - new Date(p.opened_at).getTime()) / 1000));
+              const h = Math.floor(diffSec/3600), m = Math.floor((diffSec%3600)/60), s = diffSec%60;
+              duration = h>0 ? `${h}h${String(m).padStart(2,"0")}m${String(s).padStart(2,"0")}s` : `${m}m${String(s).padStart(2,"0")}s`;
             }
             return (
               <div key={i} style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:12}}>
@@ -1201,9 +1210,9 @@ Confirmer ?`
                       {l:"OUVERT",v:trade.opened_at?new Date(trade.opened_at).toLocaleTimeString("fr-FR"):"--"},
                       {l:"DURÉE",v:(()=>{
                         if(!trade.opened_at) return "--";
-                        const diffSec = Math.max(0, Math.floor((new Date() - new Date(trade.opened_at)) / 1000));
-                        const h = Math.floor(diffSec/3600), m = Math.floor((diffSec%3600)/60);
-                        return h>0 ? `${h}h${String(m).padStart(2,"0")}` : `${m}min`;
+                        const diffSec = Math.max(0, Math.floor((nowTick - new Date(trade.opened_at).getTime()) / 1000));
+                        const h = Math.floor(diffSec/3600), m = Math.floor((diffSec%3600)/60), s = diffSec%60;
+                        return h>0 ? `${h}h${String(m).padStart(2,"0")}m${String(s).padStart(2,"0")}s` : `${m}m${String(s).padStart(2,"0")}s`;
                       })()},
                     ].map((x,i)=>(
                       <div key={i} style={{background:"#0f1629",borderRadius:5,padding:"5px 8px"}}>
