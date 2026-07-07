@@ -807,7 +807,12 @@ def get_volatility(email: str = Depends(require_user)):
         elif adx is not None:
             mode = "trend" if adx >= adx_threshold else "reversal"
         else:
-            mode = None
+            # v3.2 — FIX : le bot bascule sur "trend" par defaut si l ADX
+            # n est pas encore calculable (collecte insuffisante) — l API
+            # doit refleter EXACTEMENT ce meme comportement, sinon
+            # l interface affichait aucun badge, donnant l impression
+            # trompeuse d un actif "non tradable" alors qu il l est deja.
+            mode = "trend"
         rows.append({
             "coin": ticker,
             "atr_pct": round(state.current_atr_pct, 4),
