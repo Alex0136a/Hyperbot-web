@@ -404,7 +404,7 @@ PROFILE_SWING = {
     # Filtre ATR en swing — bloque les entrees sur marche trop calme.
     # Seuil global unique pour tous les actifs.
     "ATR_FILTER":               True,
-    "ATR_PERIOD":               14,
+    "ATR_PERIOD":               21,   # v3.2 — recalibre (14->21) pour preserver ~3min30 reelles avec le cycle a 10s (etait calibre pour 15s)
     "ATR_MIN_PCT":              0.05,
     "ATR_MIN_PCT_BY_SYMBOL":    {},
 
@@ -475,7 +475,7 @@ PROFILE_SCALP = {
     "FOREX_WARMUP_MINUTES":     5,
     # Filtre ATR — seuil global unique pour tous les actifs
     "ATR_FILTER":               True,
-    "ATR_PERIOD":               14,
+    "ATR_PERIOD":               21,   # v3.2 — recalibre (14->21) pour preserver la fenetre reelle originale avec le cycle a 10s
     "ATR_MIN_PCT":              0.06,
     "ATR_MIN_PCT_BY_SYMBOL":    {},
     "ATR_EXCLUDE_SYMBOLS":      [],     # plus d exclusion
