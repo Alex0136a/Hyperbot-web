@@ -266,6 +266,7 @@ CONFIG = {
     "QUICK_PROFIT_GIVEBACK_PCT":  20.0,  # marge de repli autorisee avant fermeture (% du niveau d armement)
     "QUICK_PROFIT_MIN_LOCK_USD":  1.0,   # plancher garanti — le seuil de fermeture ne descend jamais en dessous
     "TRAILING_TP_MARGIN_USD":     0.5,   # le Trailing s arme toujours a QUICK_PROFIT_ARM_USD + cette marge
+    "TRAILING_TP_GIVEBACK_PCT":   15.0,  # marge de repli confirmee avant fermeture (% du pic atteint)
 
     # ── Score de confiance (0-100%) — filtre final avant toute entree ───────
     # Poids relatifs des confirmations optionnelles disponibles pour un signal.
@@ -2638,19 +2639,38 @@ class BotEngine:
                 state.peak_pnl_usd = pnl_usd
                 self.emit("log", {"msg": f"[{ticker}] ${price:.2f} nouveau pic latent +${pnl_usd:.2f} — Trailing illimite poursuit", "level": "info"})
                 return
-            elif pnl_usd < state.peak_pnl_usd:
-                # Le profit ne progresse plus -> on prend le pic atteint
+            # v3.2 — Marge de repli PROGRESSIVE : se resserre a mesure que le
+            # pic grandit, pour proteger plus agressivement un gros gain deja
+            # acquis, tout en laissant de quoi respirer au trade sur un petit
+            # pic recent. Base sur un MULTIPLE du seuil d entree en Trailing
+            # (trail_arm) plutot qu un montant $ fixe, pour rester coherent
+            # quelle que soit la taille de position ou le levier utilise.
+            base_giveback   = cfg.get("TRAILING_TP_GIVEBACK_PCT", 15.0)
+            tier2_mult      = cfg.get("TRAILING_TIER2_MULT", 2.0)
+            tier2_giveback  = cfg.get("TRAILING_TIER2_GIVEBACK_PCT", 10.0)
+            tier3_mult      = cfg.get("TRAILING_TIER3_MULT", 4.0)
+            tier3_giveback  = cfg.get("TRAILING_TIER3_GIVEBACK_PCT", 6.0)
+            peak_ratio = state.peak_pnl_usd / trail_arm if trail_arm > 0 else 0
+            if peak_ratio >= tier3_mult:
+                trailing_giveback_pct = tier3_giveback
+            elif peak_ratio >= tier2_mult:
+                trailing_giveback_pct = tier2_giveback
+            else:
+                trailing_giveback_pct = base_giveback
+            trailing_lock = state.peak_pnl_usd * (1 - trailing_giveback_pct / 100)
+            if pnl_usd <= trailing_lock:
+                # Le profit a recule de facon CONFIRMEE depuis le pic -> on prend
                 pnl, _, trade = state.close_position(price, f"TRAILING TP (pic +${state.peak_pnl_usd:.2f})")
                 trade["symbol"] = symbol
                 if mode == "live" and self.exchange:
                     close_order(self.exchange, ticker, pos, self.cfg)
                 self.emit("trade", trade)
                 self._register_win(ticker)
-                self.emit("log", {"msg": f"[{ticker}] TRAILING TP SORTIE @ ${price:.2f} | pic +${state.peak_pnl_usd:.2f} | PnL: +${pnl:.2f}", "level": "win"})
+                self.emit("log", {"msg": f"[{ticker}] TRAILING TP SORTIE @ ${price:.2f} | pic +${state.peak_pnl_usd:.2f} | marge {trailing_giveback_pct:.0f}% | PnL: +${pnl:.2f}", "level": "win"})
                 self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
                 return
             else:
-                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Trailing illimite actif | latent +${pnl_usd:.2f} | pic +${state.peak_pnl_usd:.2f}", "level": "dim"})
+                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Trailing illimite actif | latent +${pnl_usd:.2f} | pic +${state.peak_pnl_usd:.2f} | marge {trailing_giveback_pct:.0f}% (sortie si repli confirme a ${trailing_lock:.2f})", "level": "dim"})
                 return
 
         elif state.tp_stage == 1:
