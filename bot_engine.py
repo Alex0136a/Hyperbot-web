@@ -2598,7 +2598,16 @@ class BotEngine:
         # fermeture de descendre sous ce montant absolu, quel que soit le
         # niveau d armement choisi — la marge en % ne s applique qu au-dessus
         # de ce plancher.
-        giveback_pct = cfg.get("QUICK_PROFIT_GIVEBACK_PCT", 20.0)
+        # v3.2 — FIX : le levier amplifie le PnL affiche mais PAS le vrai
+        # mouvement de prix necessaire pour l atteindre — sans compensation,
+        # une position a x3 a une tolerance de repli 3 fois plus etroite en
+        # termes de VRAI mouvement de prix, la rendant vulnerable a "sauter"
+        # par-dessus le seuil entre deux verifications (10s de cycle). La
+        # marge de repli est donc multipliee par le levier reel de CETTE
+        # position, pour restaurer une tolerance de prix equivalente peu
+        # importe le levier utilise.
+        position_leverage = pos.get("leverage", 1)
+        giveback_pct = min(cfg.get("QUICK_PROFIT_GIVEBACK_PCT", 20.0) * position_leverage, 80.0)
         min_lock_usd = cfg.get("QUICK_PROFIT_MIN_LOCK_USD", 1.0)
         naive_lock = quick_arm * (1 - giveback_pct / 100)
         quick_lock = min(quick_arm, max(naive_lock, min_lock_usd))
@@ -2645,11 +2654,15 @@ class BotEngine:
             # pic recent. Base sur un MULTIPLE du seuil d entree en Trailing
             # (trail_arm) plutot qu un montant $ fixe, pour rester coherent
             # quelle que soit la taille de position ou le levier utilise.
-            base_giveback   = cfg.get("TRAILING_TP_GIVEBACK_PCT", 15.0)
+            # v3.2 — Meme compensation de levier que pour le Quick Profit :
+            # la marge de repli (tous paliers) est multipliee par le levier
+            # reel de CETTE position, pour restaurer une tolerance de VRAI
+            # mouvement de prix equivalente peu importe le levier utilise.
+            base_giveback   = min(cfg.get("TRAILING_TP_GIVEBACK_PCT", 15.0) * position_leverage, 80.0)
             tier2_mult      = cfg.get("TRAILING_TIER2_MULT", 2.0)
-            tier2_giveback  = cfg.get("TRAILING_TIER2_GIVEBACK_PCT", 10.0)
+            tier2_giveback  = min(cfg.get("TRAILING_TIER2_GIVEBACK_PCT", 10.0) * position_leverage, 80.0)
             tier3_mult      = cfg.get("TRAILING_TIER3_MULT", 4.0)
-            tier3_giveback  = cfg.get("TRAILING_TIER3_GIVEBACK_PCT", 6.0)
+            tier3_giveback  = min(cfg.get("TRAILING_TIER3_GIVEBACK_PCT", 6.0) * position_leverage, 80.0)
             peak_ratio = state.peak_pnl_usd / trail_arm if trail_arm > 0 else 0
             if peak_ratio >= tier3_mult:
                 trailing_giveback_pct = tier3_giveback
