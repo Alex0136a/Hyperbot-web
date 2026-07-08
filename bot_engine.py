@@ -3011,11 +3011,14 @@ class BotEngine:
         reasons = []
 
         if rsi_buy and ema_bull and trend_up:
-            # v3.2 — Zone RSI extreme : evite d entrer LONG (continuation
-            # haussiere) quand le marche est deja en surachat extreme —
-            # risque de retournement violent plus eleve dans cette zone.
+            # v3.2 — FIX : ce filtre ne s applique qu en mode "reversal". En
+            # mode "trend" (suivi de tendance), un RSI eleve (85-97) est
+            # justement la MEILLEURE confirmation du signal — pas un danger a
+            # eviter. Applique sans distinction, ce filtre bloquait exactement
+            # les signaux les plus forts du mode trend, contredisant sa propre
+            # logique et asphyxiant le nombre de trades pris.
             rsi_extreme_high = cfg.get("RSI_EXTREME_HIGH", 85)
-            if rsi > rsi_extreme_high:
+            if rsi_mode == "reversal" and rsi > rsi_extreme_high:
                 self.emit("log", {
                     "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG bloque — zone de surachat extreme (RSI > {rsi_extreme_high}), risque de retournement",
                     "level": "dim"
@@ -3124,11 +3127,12 @@ class BotEngine:
             if momentum_pct is not None:
                 reasons.append(f"momentum {momentum_pct:+.2f}%")
         elif rsi_sell and ema_bear and trend_down:
-            # v3.2 — Zone RSI extreme : evite d entrer SHORT (continuation
-            # baissiere) quand le marche est deja en survente extreme —
-            # risque de rebond violent plus eleve dans cette zone.
+            # v3.2 — FIX : meme correction que pour LONG — ce filtre ne
+            # s applique qu en mode "reversal". En mode "trend", un RSI tres
+            # bas (5-20) est la meilleure confirmation de la continuation
+            # baissiere, pas un danger.
             rsi_extreme_low = cfg.get("RSI_EXTREME_LOW", 15)
-            if rsi < rsi_extreme_low:
+            if rsi_mode == "reversal" and rsi < rsi_extreme_low:
                 self.emit("log", {
                     "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT bloque — zone de survente extreme (RSI < {rsi_extreme_low}), risque de rebond",
                     "level": "dim"
