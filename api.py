@@ -525,7 +525,7 @@ ADVANCED_SETTINGS = {
     "MACD_SIGNAL":             {"label": "MACD - signal",                    "default": 9},
     "BB_PERIOD":               {"label": "Bollinger - periode",              "default": 20},
     "BB_STD":                  {"label": "Bollinger - ecart-type",           "default": 2.0},
-    "ATR_PERIOD":              {"label": "ATR - periode",                    "default": 14},
+    "ATR_PERIOD":              {"label": "ATR - periode (cycles)",           "default": 21},
     "ATR_MIN_PCT":             {"label": "ATR - seuil min % (filtre marche calme)", "default": 0.05},
     "ADX_PERIOD":              {"label": "ADX - periode",                    "default": 14},
     "ADX_TREND_THRESHOLD":     {"label": "ADX - seuil Trend/Reversal",       "default": 25.0},
