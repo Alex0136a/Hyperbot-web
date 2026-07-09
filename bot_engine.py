@@ -285,8 +285,8 @@ CONFIG = {
         "breakout":  15,   # v3.2 — Casse une resistance/support recent (comportement de trader)
     },
     "CONFIDENCE_MIN_PCT":  65.0,  # Seuil minimum pour prendre un trade
-    "CONFIDENCE_STEP_PCT": 5.0,   # Ajustement du seuil par actif a chaque perte/gain
-    "CONFIDENCE_MAX_PCT":  87.0,  # Plafond du seuil dynamique (evite de bloquer un actif a vie)
+    "CONFIDENCE_STEP_PCT": 0.0,   # Ajustement du seuil par actif a chaque perte/gain
+    "CONFIDENCE_MAX_PCT":  0.0,  # Plafond du seuil dynamique (evite de bloquer un actif a vie)
 
     # v3.2 — Auto-activation d un actif INACTIF (pas dans ACTIVE_COINS) si
     # une opportunite exceptionnelle est detectee dessus (confiance >= ce
@@ -405,7 +405,7 @@ PROFILE_SWING = {
     # Seuil global unique pour tous les actifs.
     "ATR_FILTER":               True,
     "ATR_PERIOD":               21,   # v3.2 — recalibre (14->21) pour preserver ~3min30 reelles avec le cycle a 10s (etait calibre pour 15s)
-    "ATR_MIN_PCT":              0.05,
+    "ATR_MIN_PCT":              0.015,
     "ATR_MIN_PCT_BY_SYMBOL":    {},
 
     # v3.2 — Detection automatique du mode Trend/Reversal via l ADX (force
@@ -476,7 +476,7 @@ PROFILE_SCALP = {
     # Filtre ATR — seuil global unique pour tous les actifs
     "ATR_FILTER":               True,
     "ATR_PERIOD":               21,   # v3.2 — recalibre (14->21) pour preserver la fenetre reelle originale avec le cycle a 10s
-    "ATR_MIN_PCT":              0.06,
+    "ATR_MIN_PCT":              0.02,
     "ATR_MIN_PCT_BY_SYMBOL":    {},
     "ATR_EXCLUDE_SYMBOLS":      [],     # plus d exclusion
 
