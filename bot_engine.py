@@ -1770,6 +1770,19 @@ class BotEngine:
         except Exception as e:
             print(f"[INDICATEURS] Erreur suppression fichier lors du forcage : {e}")
 
+    def reset_confidence_penalties(self):
+        """v3.2 — Reinitialisation CIBLEE : remet tous les seuils de confiance
+        dynamiques a la base, sans toucher aux positions ouvertes, au
+        capital ni a l historique des trades. Utile quand de nombreux actifs
+        sont "au frigo" suite a une serie de pertes (ex: pendant des tests
+        intensifs), sans avoir a attendre la decroissance automatique (2h
+        par defaut) ni a faire une reinitialisation complete destructrice."""
+        count = len(self.confidence_thresholds)
+        self.confidence_thresholds = {}
+        self.confidence_threshold_set_at = {}
+        self._save_confidence_thresholds()
+        self.emit("log", {"msg": f"🔄 {count} penalite(s) de confiance reinitialisee(s) manuellement — tous les actifs repartent au seuil de base.", "level": "ok"})
+
     def clear_all_persisted_files(self):
         """v3.2 — FIX CRITIQUE : supprime les fichiers de sauvegarde sur
         disque (positions, seuils de confiance, etat des indicateurs).
