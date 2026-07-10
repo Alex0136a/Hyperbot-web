@@ -738,6 +738,17 @@ def force_recollect(email: str = Depends(require_user)):
     return {"ok": True, "message": "Collecte fraiche forcee pour tous les actifs — les indicateurs vont se reconstruire progressivement."}
 
 
+@app.post("/api/bot/reset-confidence")
+def reset_confidence(email: str = Depends(require_user)):
+    """Reinitialisation CIBLEE des seuils de confiance dynamiques par actif —
+    ne touche ni aux positions ouvertes, ni au capital, ni a l historique.
+    Utile quand de nombreux actifs sont "au frigo" (seuil eleve suite a des
+    pertes), sans avoir a attendre la decroissance automatique ni a faire
+    une reinitialisation complete destructrice."""
+    bot.reset_confidence_penalties()
+    return {"ok": True, "message": "Toutes les penalites de confiance ont ete reinitialisees — chaque actif repart au seuil de base."}
+
+
 @app.get("/api/bot/logs")
 def bot_logs(persistent: bool = Query(False), limit: int = Query(200), email: str = Depends(require_user)):
     if persistent:
