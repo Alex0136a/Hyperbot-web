@@ -285,8 +285,14 @@ CONFIG = {
         "breakout":  15,   # v3.2 — Casse une resistance/support recent (comportement de trader)
     },
     "CONFIDENCE_MIN_PCT":  65.0,  # Seuil minimum pour prendre un trade
-    "CONFIDENCE_STEP_PCT": 0.0,   # Ajustement du seuil par actif a chaque perte/gain
-    "CONFIDENCE_MAX_PCT":  0.0,  # Plafond du seuil dynamique (evite de bloquer un actif a vie)
+    "CONFIDENCE_STEP_PCT": 5.0,   # Ajustement du seuil par actif a chaque perte/gain
+    "CONFIDENCE_MAX_PCT":  87.0,  # Plafond du seuil dynamique (evite de bloquer un actif a vie)
+    # v3.2 — Decroissance automatique : si un actif reste penalise sans avoir
+    # eu l occasion de regagner sa confiance (perte, puis plus aucun signal
+    # qualifiant faute d atteindre le seuil releve) pendant ce delai, son
+    # seuil redescend automatiquement a la base — evite un blocage permanent.
+    # 0 ou negatif = decroissance desactivee (comportement d avant).
+    "CONFIDENCE_RESET_HOURS": 2.0,
 
     # v3.2 — Auto-activation d un actif INACTIF (pas dans ACTIVE_COINS) si
     # une opportunite exceptionnelle est detectee dessus (confiance >= ce
@@ -1562,6 +1568,13 @@ class BotEngine:
         # Confiance minimale dynamique par actif (ticker -> seuil %)
         # Absent de ce dict = utilise CONFIDENCE_MIN_PCT (seuil de base)
         self.confidence_thresholds = {}
+        # v3.2 — Horodatage de la derniere elevation de seuil par actif (ticker
+        # -> datetime UTC) — permet une decroissance automatique apres un
+        # delai (CONFIDENCE_RESET_HOURS) si l actif n a pas eu l occasion de
+        # gagner entre-temps, pour eviter qu il ne reste bloque indefiniment
+        # (plus le seuil est haut, moins il a de chances de se qualifier pour
+        # une nouvelle tentative qui lui permettrait de redescendre).
+        self.confidence_threshold_set_at = {}
         # v3.2 — File d attente des candidats valides du cycle en cours,
         # classes par confiance decroissante puis executes en priorite dans
         # cet ordre jusqu a MAX_OPEN_TRADES (voir _finalize_pending_candidates).
@@ -1636,23 +1649,39 @@ class BotEngine:
         """Sauvegarde les seuils de confiance dynamiques par actif (survit aux
         redemarrages/redeploiements) — sans ca, un Max Loss qui avait rendu
         un actif plus exigeant serait oublie au prochain demarrage, comme si
-        de rien n etait."""
+        de rien n etait. v3.2 — sauvegarde aussi l horodatage de chaque
+        elevation, pour que la decroissance automatique par delai (voir
+        _decay_confidence_thresholds) survive elle aussi aux redemarrages."""
         import json
         try:
+            payload = {
+                "thresholds": self.confidence_thresholds,
+                "set_at": {k: v.isoformat() for k, v in self.confidence_threshold_set_at.items()},
+            }
             with open(self.CONFIDENCE_FILE, "w") as f:
-                json.dump(self.confidence_thresholds, f, indent=2)
+                json.dump(payload, f, indent=2)
         except Exception as e:
             print(f"[CONFIANCE] Erreur sauvegarde : {e}")
 
     def _load_confidence_thresholds(self):
-        """Restaure les seuils de confiance dynamiques par actif au demarrage."""
+        """Restaure les seuils de confiance dynamiques par actif au demarrage,
+        ainsi que leurs horodatages (pour la decroissance automatique).
+        Compatible avec l ancien format (juste un dict plat de seuils, sans
+        horodatages) pour ne pas perdre une sauvegarde faite avant ce fix."""
         import json, os
         if not os.path.exists(self.CONFIDENCE_FILE):
             return
         try:
             with open(self.CONFIDENCE_FILE, "r") as f:
                 data = json.load(f)
-            self.confidence_thresholds = {k: float(v) for k, v in data.items()}
+            if "thresholds" in data:
+                self.confidence_thresholds = {k: float(v) for k, v in data["thresholds"].items()}
+                self.confidence_threshold_set_at = {
+                    k: datetime.fromisoformat(v) for k, v in data.get("set_at", {}).items()
+                }
+            else:
+                # ancien format : dict plat de seuils, sans horodatages
+                self.confidence_thresholds = {k: float(v) for k, v in data.items()}
             if self.confidence_thresholds:
                 print(f"[CONFIANCE] Seuils restaures : {self.confidence_thresholds}")
         except Exception as e:
@@ -1757,6 +1786,7 @@ class BotEngine:
             except Exception as e:
                 print(f"[RESET] Erreur suppression {f} : {e}")
         self.confidence_thresholds = {}
+        self.confidence_threshold_set_at = {}
         self.emit("log", {"msg": "🔄 Fichiers de sauvegarde (positions, confiance, indicateurs) purges suite a une reinitialisation.", "level": "warn"})
 
     def emit(self, etype, data=None):
@@ -1982,6 +2012,7 @@ class BotEngine:
         apres un crash, anciennes positions), on se rabat sur l ancien
         comportement (+5% sur le seuil actuel).
         """
+        from datetime import timezone
         base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
         step = self.cfg.get("CONFIDENCE_STEP_PCT", 5.0)
         cap  = self.cfg.get("CONFIDENCE_MAX_PCT", 90.0)
@@ -1992,6 +2023,7 @@ class BotEngine:
             new_threshold = min(current + step, cap)
         if new_threshold != current:
             self.confidence_thresholds[ticker] = new_threshold
+            self.confidence_threshold_set_at[ticker] = datetime.now(timezone.utc)
             self.emit("log", {"msg": f"[{ticker}] Confiance minimale requise relevee a {new_threshold:.0f}% (confiance d entree {entry_confidence:.0f}% + {step:.0f}%)" if entry_confidence is not None else f"[{ticker}] Confiance minimale requise relevee a {new_threshold:.0f}% (apres perte)", "level": "warn"})
             self._save_confidence_thresholds()
 
@@ -2005,8 +2037,40 @@ class BotEngine:
         current = self.confidence_thresholds.get(ticker, base)
         if current > base:
             self.confidence_thresholds[ticker] = base
+            self.confidence_threshold_set_at.pop(ticker, None)
             self.emit("log", {"msg": f"[{ticker}] Confiance minimale requise reinitialisee a {base:.0f}% (apres gain Quick Profit/Trailing TP)", "level": "ok"})
             self._save_confidence_thresholds()
+
+    def _decay_confidence_thresholds(self):
+        """v3.2 — Sur demande : evite qu un actif reste bloque INDEFINIMENT a
+        un seuil de confiance eleve. Auparavant, la SEULE facon de redescendre
+        etait de GAGNER un trade sur cet actif — mais plus le seuil est haut,
+        moins il a de chances de se qualifier pour une nouvelle tentative qui
+        lui permettrait justement de redescendre (risque de blocage
+        permanent). Apres CONFIDENCE_RESET_HOURS (defaut 2h) sans avoir pu
+        rejouer sa chance sur cet actif, le seuil redescend automatiquement
+        au niveau de base — lui donnant une nouvelle occasion equitable,
+        plutot que de rester "au frigo" indefiniment.
+        Appelee une fois par cycle (verification peu couteuse)."""
+        from datetime import timezone
+        reset_hours = self.cfg.get("CONFIDENCE_RESET_HOURS", 2.0)
+        if reset_hours <= 0:
+            return  # decroissance desactivee si regle a 0 ou moins
+        base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
+        now = datetime.now(timezone.utc)
+        for ticker in list(self.confidence_thresholds.keys()):
+            set_at = self.confidence_threshold_set_at.get(ticker)
+            if set_at is None:
+                continue  # pas d horodatage (ex: restaure d une ancienne sauvegarde) -> ne pas forcer un reset immediat
+            elapsed_h = (now - set_at).total_seconds() / 3600
+            if elapsed_h >= reset_hours:
+                self.confidence_thresholds[ticker] = base
+                self.confidence_threshold_set_at.pop(ticker, None)
+                self.emit("log", {
+                    "msg": f"[{ticker}] Confiance minimale requise redescendue a {base:.0f}% ({elapsed_h:.1f}h sans nouvelle tentative — nouvelle chance equitable accordee)",
+                    "level": "ok"
+                })
+                self._save_confidence_thresholds()
 
     # ── v3.1 : Blackout CPI (Finnhub) ────────────────────────────────────────
     def _refresh_cpi_events_if_needed(self):
@@ -2443,6 +2507,7 @@ class BotEngine:
             try:
                 self.cycle += 1
                 self._check_ws_health_alert()
+                self._decay_confidence_thresholds()
                 prices = self._get_prices_with_timeout(cfg.get("PRICE_FETCH_TIMEOUT_SEC", 10))
                 in_hours = is_trading_hours(cfg)
 
