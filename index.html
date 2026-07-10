@@ -964,8 +964,8 @@ Confirmer ?`
             
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #0f1629"}}>
               <div>
-                <div style={{fontSize:11,color:"#94a3b8",fontWeight:700}}>🌙 Session creuse (21h-23h UTC)</div>
-                <div style={{fontSize:10,color:"#94a3b8"}}>Fin session USA — liquidité faible. Session Asie (00h-08h) reste active pour HYPE/SOL/INJ</div>
+                <div style={{fontSize:11,color:"#94a3b8",fontWeight:700}}>🌙 Heures creuses crypto ({config?.offpeak_hour_start??2}h-{config?.offpeak_hour_end??6}h UTC)</div>
+                <div style={{fontSize:10,color:"#94a3b8"}}>Suspend les nouvelles entrées sur cette plage (liquidité généralement plus faible). Les positions déjà ouvertes continuent d'être gérées normalement.</div>
               </div>
               <button onClick={()=>{
                 const v=!filterHours; setFilterHours(v);
@@ -1078,6 +1078,16 @@ Confirmer ?`
               }catch(e){alert("Erreur: "+e.message);}
             }} style={{width:"100%",background:"transparent",border:"1px solid #60a5fa",borderRadius:7,padding:"9px",color:"#60a5fa",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer",marginBottom:8}}>
               🔄 Forcer une nouvelle collecte
+            </button>
+            <button onClick={async()=>{
+              if(!window.confirm("Réinitialiser les pénalités de confiance ?\n\nTous les actifs actuellement bloqués à un seuil élevé (suite à des pertes) repartent au seuil de base. Aucun impact sur les positions ouvertes, le capital ou l'historique.\n\nContinuer ?")) return;
+              try{
+                const r = await apiCall("/api/bot/reset-confidence","POST",null,token);
+                alert(r.message);
+                loadData();
+              }catch(e){alert("Erreur: "+e.message);}
+            }} style={{width:"100%",background:"transparent",border:"1px solid #c084fc",borderRadius:7,padding:"9px",color:"#c084fc",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer",marginBottom:8}}>
+              🎯 Réinitialiser les pénalités de confiance
             </button>
             <button onClick={async()=>{
               if(!window.confirm("REINITIALISATION COMPLETE\n\nCela va effacer :\n- Tous les signaux\n- Tous les trades paper\n- L'historique\n- Le portefeuille (repart a 1000 USDC)\n\nVotre cle API et wallet Hyperliquid NE seront PAS effaces.\n\nEtes-vous sur ?")) return;
