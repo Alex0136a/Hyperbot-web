@@ -750,7 +750,7 @@ def reset_confidence(email: str = Depends(require_user)):
 
 
 @app.get("/api/bot/logs")
-def bot_logs(persistent: bool = Query(False), limit: int = Query(200), email: str = Depends(require_user)):
+def bot_logs(persistent: bool = Query(False), limit: int = Query(200), search: str = Query(None), email: str = Depends(require_user)):
     if persistent:
         # Lit la fin du fichier de log sur disque (persiste entre redemarrages
         # si HYPERBOT_DATA_DIR pointe vers un Volume Railway).
@@ -758,11 +758,22 @@ def bot_logs(persistent: bool = Query(False), limit: int = Query(200), email: st
         # ("YYYY-MM-DD HH:MM:SS [LEVEL   ] message"), mais l interface attend
         # des objets {time, level, message} comme pour les logs en direct —
         # sans ce parsing, les logs persistants s affichaient vides.
+        # v3.2 — FIX #2 : la limite par defaut (200 lignes) etait bien trop
+        # basse compte tenu du volume de log genere (jusqu a 30 actifs
+        # values a chaque cycle de 10s) — elle ne couvrait parfois que 2-3
+        # minutes reelles, alors que le fichier lui-meme garde 24h. Un
+        # parametre "search" permet desormais de filtrer par mot-cle (ex: un
+        # ticker precis) AVANT d appliquer la limite, pour retrouver un
+        # evenement precis n importe ou dans la fenetre de 24h — pas
+        # seulement dans les dernieres minutes.
         import re
         pattern = re.compile(r"^(\S+ \S+) \[(\w+)\s*\] (.*)$")
         try:
             with open(be.LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()[-limit:]
+                all_lines = f.readlines()
+            if search:
+                all_lines = [l for l in all_lines if search.lower() in l.lower()]
+            lines = all_lines[-limit:]
             parsed = []
             for line in lines:
                 line = line.rstrip("\n")
