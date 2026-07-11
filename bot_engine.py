@@ -146,7 +146,7 @@ CONFIG = {
     # plus aucun symbole n a cette contrainte particuliere.
     "SYMBOL_REQUIRE_EMA200": [],
 
-    "CAPITAL_USD":        1000,
+    "CAPITAL_USD":        100,
     "POSITION_SIZE_PCT":  5,               # 5% du capital par trade — coherent avec Max Loss -0.75$
     "LEVERAGE":           1,
 
@@ -240,33 +240,30 @@ CONFIG = {
     # Profil actif au demarrage : "swing" ou "scalp"
     "PROFILE":            "swing",
 
-    # ── Moteur de risque en DOLLARS (v3.1) ──────────────────────────────────
-    # Le SL % ci-dessus (STOP_LOSS_PCT / SYMBOL_SL_PCT) n est plus utilise
-    # pour la gestion normale des sorties : il sert desormais UNIQUEMENT a
-    # poser un ordre de securite fixe sur Hyperliquid (filet de secours si
-    # le bot est deconnecte / en retard). La gestion normale se fait en $ :
-    "EXCHANGE_SAFETY_SL_USD": 1.5,   # SL pose sur Hyperliquid, ancre en $ (filet de securite uniquement, cas bot non surveille) — double du Max Loss par defaut
-    "MAX_LOSS_USD":           0.75,  # Perte max geree par le bot avant fermeture immediate
+    # ── Moteur de risque en % DE E (v4.0) ────────────────────────────────────
+    # E = taille de l entree (POSITION_SIZE_PCT % du capital), AVANT levier.
+    # Le SL % "legacy" ci-dessus (STOP_LOSS_PCT / SYMBOL_SL_PCT) n est plus
+    # utilise pour la gestion normale des sorties : il sert desormais
+    # UNIQUEMENT a poser un ordre de securite fixe sur Hyperliquid (filet de
+    # secours si le bot est deconnecte / en retard). La gestion normale se
+    # fait entierement en % de E :
+    "SL_PCT_OF_E":            1.5,   # Stop Loss = -1.5% de E -> fermeture immediate geree par le bot
+    "EXCHANGE_SAFETY_SL_MULT": 2.0,  # SL pose sur Hyperliquid = ce multiple du SL bot (filet de securite uniquement)
 
-    # Trailing Take Profit a 2 etages, en dollars de PnL latent :
-    # Etage 1 (Quick Profit)   : arme des que le profit atteint QUICK_PROFIT_ARM_USD.
-    #                            Si le profit retombe a QUICK_PROFIT_ARM_USD x
-    #                            (1 - QUICK_PROFIT_GIVEBACK_PCT/100) ou moins,
-    #                            fermeture pour capturer ce montant. v3.2 — FIX :
-    #                            une vraie marge de repli est essentielle, sinon
-    #                            le moindre bruit de marche ferme la position des
-    #                            l armement, sans jamais laisser de chance au
-    #                            Trailing illimite.
-    # Etage 2 (Trailing illimite) : active des que le profit atteint TRAILING_TP_ARM_USD.
-    #                            Le pic de profit est traque en continu ; la position
-    #                            reste ouverte tant qu un nouveau pic est atteint et se
-    #                            ferme des que le profit cesse de progresser (1ere baisse
-    #                            depuis le pic), pour capturer le maximum atteint.
-    "QUICK_PROFIT_ARM_USD":       1.0,
-    "QUICK_PROFIT_GIVEBACK_PCT":  20.0,  # marge de repli autorisee avant fermeture (% du niveau d armement)
-    "QUICK_PROFIT_MIN_LOCK_USD":  1.0,   # plancher garanti — le seuil de fermeture ne descend jamais en dessous
-    "TRAILING_TP_MARGIN_USD":     0.5,   # le Trailing s arme toujours a QUICK_PROFIT_ARM_USD + cette marge
-    "TRAILING_TP_GIVEBACK_PCT":   15.0,  # marge de repli confirmee avant fermeture (% du pic atteint)
+    # Trailing Take Profit (TTP), entierement en % de E :
+    #   - Arme des que le gain latent atteint TTP_ARM1_PCT_OF_E (defaut 1.2%
+    #     de E). Le seuil de sortie est alors fixe a TTP_LOCK1_PCT_OF_E
+    #     (defaut 1.0% de E) tant que le pic n a pas atteint TTP_ARM2_PCT_OF_E.
+    #   - Des que le PIC atteint TTP_ARM2_PCT_OF_E (defaut 1.5% de E), le
+    #     seuil de sortie devient pic - TTP_TRAIL_GAP_PCT_OF_E (defaut 0.3%
+    #     de E) et continue de suivre le pic a l infini (trailing pur) —
+    #     note : au moment ou le pic atteint exactement TTP_ARM2_PCT_OF_E, ce
+    #     seuil vaut deja TTP_ARM2_PCT_OF_E - TTP_TRAIL_GAP_PCT_OF_E, cense
+    #     etre egal a TTP_LOCK2 souhaite (1.5 - 0.3 = 1.2% de E par defaut).
+    "TTP_ARM1_PCT_OF_E":      1.2,
+    "TTP_LOCK1_PCT_OF_E":     1.0,
+    "TTP_ARM2_PCT_OF_E":      1.5,
+    "TTP_TRAIL_GAP_PCT_OF_E": 0.3,
 
     # ── Score de confiance (0-100%) — filtre final avant toute entree ───────
     # Poids relatifs des confirmations optionnelles disponibles pour un signal.
@@ -2596,20 +2593,23 @@ class BotEngine:
             self._manage_position_impl(symbol, price, state)
 
     def _manage_position_impl(self, symbol, price, state):
-        """v3.1 — Moteur de risque en dollars.
-        1) Max Loss (-0.75$ par defaut) : sortie immediate geree par le bot.
-        2) SL Hyperliquid (1.5%) : filet de securite uniquement (cas ou le
-           bot serait en retard/deconnecte) — ne devrait quasiment jamais
-           se declencher avant le Max Loss ci-dessus en usage normal.
-        3) Trailing Take Profit a 2 etages, en $ de PnL latent :
-           - Etage 1 "Quick Profit" : arme des +QUICK_PROFIT_ARM_USD (defaut 1$).
-             Si le profit retombe a QUICK_PROFIT_LOCK_USD (defaut 1$) ou moins,
-             fermeture immediate pour capturer ce montant.
-           - Etage 2 "Trailing illimite" : active des +TRAILING_TP_ARM_USD
-             (defaut 1.5$). Le pic de profit est traque en continu ; la
-             position reste ouverte tant qu un nouveau pic est atteint et se
-             ferme des que le profit cesse de progresser (1ere baisse depuis
-             le pic), pour capturer le maximum atteint.
+        """v4.0 — Moteur de risque entierement en % de E (taille d entree,
+        avant levier). E = pos["size"].
+        1) Stop Loss (-SL_PCT_OF_E % de E, defaut -1.5%) : sortie immediate
+           geree par le bot.
+        2) SL Hyperliquid : filet de securite uniquement (cas ou le bot
+           serait en retard/deconnecte) — ne devrait quasiment jamais se
+           declencher avant le Stop Loss ci-dessus en usage normal.
+        3) Trailing Take Profit (TTP), en % de E :
+           - Arme des que le gain latent atteint TTP_ARM1_PCT_OF_E (defaut
+             1.2% de E). Seuil de sortie fixe a TTP_LOCK1_PCT_OF_E (defaut
+             1.0% de E) tant que le PIC atteint n a pas rejoint
+             TTP_ARM2_PCT_OF_E.
+           - Des que le pic atteint TTP_ARM2_PCT_OF_E (defaut 1.5% de E), le
+             seuil de sortie devient pic - TTP_TRAIL_GAP_PCT_OF_E (defaut
+             0.3% de E) et continue de suivre le pic a l infini (trailing
+             pur, sans plafond) — capture le maximum atteint des que le
+             profit cesse de progresser.
         """
         cfg    = self.cfg
         ticker = ticker_from_slot_key(symbol)
@@ -2618,31 +2618,35 @@ class BotEngine:
             return
         mode = cfg["MODE"]
 
+        # E = taille de l entree (avant levier) — base de tous les % ci-dessous
+        E = pos["size"]
+
         # ── PnL latent en $ ───────────────────────────────────────────────
         if pos["type"] == "long":
             pnl_pct = (price - pos["entry"]) / pos["entry"] * 100
         else:
             pnl_pct = (pos["entry"] - price) / pos["entry"] * 100
-        # v3.2 — le levier amplifie le PnL reel (notionnel = taille x levier),
-        # essentiel pour que Max Loss/Quick Profit restent coherents avec le
-        # levier prudent applique par trade (voir _compute_prudent_leverage).
-        pnl_usd = pos["size"] * pos.get("leverage", 1) * pnl_pct / 100
+        # le levier amplifie le PnL reel (notionnel = E x levier), essentiel
+        # pour que Stop Loss/TTP restent coherents avec le levier prudent
+        # applique par trade (voir _compute_prudent_leverage).
+        pnl_usd = E * pos.get("leverage", 1) * pnl_pct / 100
 
-        # ── 1. MAX LOSS — priorite absolue, gere par le bot ─────────────────
-        max_loss_usd = cfg.get("MAX_LOSS_USD", 0.75)
-        if pnl_usd <= -max_loss_usd:
-            pnl, _, trade = state.close_position(price, "MAX LOSS")
+        # ── 1. STOP LOSS — % de E, priorite absolue, gere par le bot ────────
+        sl_pct_of_e = cfg.get("SL_PCT_OF_E", 1.5)
+        sl_usd = -E * sl_pct_of_e / 100
+        if pnl_usd <= sl_usd:
+            pnl, _, trade = state.close_position(price, "STOP LOSS")
             trade["symbol"] = symbol
             if mode == "live" and self.exchange:
                 close_order(self.exchange, ticker, pos, self.cfg)
             self.emit("trade", trade)
-            self.emit("log", {"msg": f"[{ticker}] MAX LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (seuil -${max_loss_usd:.2f})", "level": "loss"})
+            self.emit("log", {"msg": f"[{ticker}] STOP LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (seuil -{sl_pct_of_e:.2f}% de E=${E:.2f} = -${-sl_usd:.2f})", "level": "loss"})
             self._register_max_loss(ticker, pos.get("confidence"))
-            self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
+            self._save_open_positions()  # sauvegarde en live ET en paper
             return
 
         # ── 2. SL Hyperliquid — filet de securite (ne devrait presque jamais
-        #      se declencher en premier, le Max Loss $ est plus serre) ───────
+        #      se declencher en premier, le Stop Loss bot est plus serre) ────
         sl_hit = (pos["type"] == "long" and price <= pos["sl"]) or \
                  (pos["type"] == "short" and price >= pos["sl"])
         if sl_hit:
@@ -2653,142 +2657,53 @@ class BotEngine:
             self.emit("trade", trade)
             self.emit("log", {"msg": f"[{ticker}] SL SECURITE @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
             self._register_max_loss(ticker, pos.get("confidence"))
-            self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
+            self._save_open_positions()  # sauvegarde en live ET en paper
             return
 
-        # ── 3. Trailing Take Profit a 2 etages (en $) ───────────────────────
-        quick_arm  = cfg.get("QUICK_PROFIT_ARM_USD", 1.0)
-        # v3.2 — FIX CRITIQUE #2 : QUICK_PROFIT_LOCK_USD etait auparavant lu
-        # tel quel depuis la config, ou il etait quasi-systematiquement
-        # IDENTIQUE a quick_arm (les deux alimentes par le meme champ unique
-        # "QUICK PROFIT" dans l interface). Sans marge reelle entre armement
-        # et fermeture, le moindre micro-recul de prix (bruit de marche
-        # normal, meme 1 cycle apres l armement) suffisait a satisfaire
-        # "pnl <= quick_lock" et fermait la position — l empechant presque
-        # toujours d atteindre le Trailing illimite. Le seuil de fermeture
-        # est desormais TOUJOURS calcule avec une vraie marge de repli
-        # (QUICK_PROFIT_GIVEBACK_PCT, defaut 20%) sous le niveau d armement,
-        # laissant une vraie chance au prix de continuer a monter.
-        # v3.2 — FIX #3 : le % seul peut descendre sous l objectif REEL de
-        # gain net (ex: arme a 1,1$, marge 20% -> lock a 0,88$, alors que
-        # l objectif etait un minimum de 1$ net). Un plancher garanti
-        # (QUICK_PROFIT_MIN_LOCK_USD) empeche desormais le seuil de
-        # fermeture de descendre sous ce montant absolu, quel que soit le
-        # niveau d armement choisi — la marge en % ne s applique qu au-dessus
-        # de ce plancher.
-        # v3.2 — FIX : le levier amplifie le PnL affiche mais PAS le vrai
-        # mouvement de prix necessaire pour l atteindre — sans compensation,
-        # une position a x3 a une tolerance de repli 3 fois plus etroite en
-        # termes de VRAI mouvement de prix, la rendant vulnerable a "sauter"
-        # par-dessus le seuil entre deux verifications (10s de cycle). La
-        # marge de repli est donc multipliee par le levier reel de CETTE
-        # position, pour restaurer une tolerance de prix equivalente peu
-        # importe le levier utilise.
-        position_leverage = pos.get("leverage", 1)
-        giveback_pct = min(cfg.get("QUICK_PROFIT_GIVEBACK_PCT", 20.0) * position_leverage, 80.0)
-        min_lock_usd = cfg.get("QUICK_PROFIT_MIN_LOCK_USD", 1.0)
-        naive_lock = quick_arm * (1 - giveback_pct / 100)
-        quick_lock = min(quick_arm, max(naive_lock, min_lock_usd))
-        # v3.2 — FIX #4 simplifie : plus de reglage TRAILING_TP_ARM_USD
-        # separe a garder synchronise manuellement avec le Quick Profit — le
-        # Trailing s arme desormais TOUJOURS a quick_arm + une marge fixe
-        # (TRAILING_TP_MARGIN_USD, defaut 0,5$). Quel que soit le niveau
-        # d armement Quick Profit choisi, l ecart entre les deux etages reste
-        # coherent automatiquement, sans jamais avoir a y penser.
-        trail_margin = cfg.get("TRAILING_TP_MARGIN_USD", 0.5)
-        trail_arm = quick_arm + trail_margin
+        # ── 3. Trailing Take Profit — entierement en % de E ─────────────────
+        arm1_pct  = cfg.get("TTP_ARM1_PCT_OF_E", 1.2)
+        lock1_pct = cfg.get("TTP_LOCK1_PCT_OF_E", 1.0)
+        arm2_pct  = cfg.get("TTP_ARM2_PCT_OF_E", 1.5)
+        gap_pct   = cfg.get("TTP_TRAIL_GAP_PCT_OF_E", 0.3)
 
-        if state.tp_stage == 0 and pnl_usd >= quick_arm:
+        arm1_usd  = E * arm1_pct / 100
+        lock1_usd = E * lock1_pct / 100
+        arm2_usd  = E * arm2_pct / 100
+        gap_usd   = E * gap_pct / 100
+
+        if state.tp_stage == 0 and pnl_usd >= arm1_usd:
             state.tp_stage = 1
-            state.trailing_tp_active = True
             state.peak_pnl_usd = pnl_usd
-            self.emit("log", {"msg": f"[{ticker}] Profit +${pnl_usd:.2f} — Quick Profit arme (sortie si retour a ${quick_lock:.2f})", "level": "signal"})
-            # v3.2 — FIX CRITIQUE : sans ce retour immediat, le code continuait
-            # vers la verification de fermeture PLUS BAS (meme cycle, meme
-            # valeur de pnl_usd) — et comme QUICK_PROFIT_ARM_USD et
-            # QUICK_PROFIT_LOCK_USD sont generalement identiques (meme champ
-            # dans l interface), la condition "pnl_usd <= quick_lock" etait
-            # DEJA vraie au moment meme de l armement, fermant la position
-            # instantanement, sans jamais laisser de vraie chance a une
-            # montee suivie d une redescente. Le stage=1 est maintenant
-            # confirme sur ce cycle, la verification de fermeture ne se fera
-            # qu a partir du PROCHAIN cycle.
+            self.emit("log", {"msg": f"[{ticker}] Profit +${pnl_usd:.2f} ({arm1_pct:.2f}% de E) — TTP arme (sortie si retour a ${lock1_usd:.2f} = {lock1_pct:.2f}% de E)", "level": "signal"})
+            # confirme sur ce cycle ; la verification de fermeture ne se fera
+            # qu a partir du PROCHAIN cycle (evite une fermeture instantanee
+            # si le seuil de sortie initial etait deja atteint ce meme cycle).
             return
 
-        if state.tp_stage == 1 and pnl_usd >= trail_arm:
-            state.tp_stage = 2
-            state.peak_pnl_usd = pnl_usd
-            self.emit("log", {"msg": f"[{ticker}] Profit +${pnl_usd:.2f} — Trailing illimite active (persiste tant que le profit progresse)", "level": "signal"})
-            return  # v3.2 — coherence avec le fix Quick Profit ci-dessus
-
-        if state.tp_stage == 2:
+        if state.tp_stage == 1:
             if state.peak_pnl_usd is None or pnl_usd > state.peak_pnl_usd:
                 state.peak_pnl_usd = pnl_usd
-                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} nouveau pic latent +${pnl_usd:.2f} — Trailing illimite poursuit", "level": "info"})
-                return
-            # v3.2 — Marge de repli PROGRESSIVE : se resserre a mesure que le
-            # pic grandit, pour proteger plus agressivement un gros gain deja
-            # acquis, tout en laissant de quoi respirer au trade sur un petit
-            # pic recent. Base sur un MULTIPLE du seuil d entree en Trailing
-            # (trail_arm) plutot qu un montant $ fixe, pour rester coherent
-            # quelle que soit la taille de position ou le levier utilise.
-            # v3.2 — Meme compensation de levier que pour le Quick Profit :
-            # la marge de repli (tous paliers) est multipliee par le levier
-            # reel de CETTE position, pour restaurer une tolerance de VRAI
-            # mouvement de prix equivalente peu importe le levier utilise.
-            base_giveback   = min(cfg.get("TRAILING_TP_GIVEBACK_PCT", 15.0) * position_leverage, 80.0)
-            tier2_mult      = cfg.get("TRAILING_TIER2_MULT", 2.0)
-            tier2_giveback  = min(cfg.get("TRAILING_TIER2_GIVEBACK_PCT", 10.0) * position_leverage, 80.0)
-            tier3_mult      = cfg.get("TRAILING_TIER3_MULT", 4.0)
-            tier3_giveback  = min(cfg.get("TRAILING_TIER3_GIVEBACK_PCT", 6.0) * position_leverage, 80.0)
-            peak_ratio = state.peak_pnl_usd / trail_arm if trail_arm > 0 else 0
-            if peak_ratio >= tier3_mult:
-                trailing_giveback_pct = tier3_giveback
-            elif peak_ratio >= tier2_mult:
-                trailing_giveback_pct = tier2_giveback
+
+            # Tant que le pic n a pas atteint le 2e seuil (arm2), le seuil de
+            # sortie reste fixe a lock1. Des que le pic atteint/depasse arm2,
+            # le TTP se resserre en continu : sortie = pic - gap, a l infini.
+            if state.peak_pnl_usd >= arm2_usd:
+                current_lock = state.peak_pnl_usd - gap_usd
             else:
-                trailing_giveback_pct = base_giveback
-            trailing_lock = state.peak_pnl_usd * (1 - trailing_giveback_pct / 100)
-            if pnl_usd <= trailing_lock:
-                # Le profit a recule de facon CONFIRMEE depuis le pic -> on prend
-                pnl, _, trade = state.close_position(price, f"TRAILING TP (pic +${state.peak_pnl_usd:.2f})")
+                current_lock = lock1_usd
+
+            if pnl_usd <= current_lock:
+                pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
                 trade["symbol"] = symbol
                 if mode == "live" and self.exchange:
                     close_order(self.exchange, ticker, pos, self.cfg)
                 self.emit("trade", trade)
                 self._register_win(ticker)
-                self.emit("log", {"msg": f"[{ticker}] TRAILING TP SORTIE @ ${price:.2f} | pic +${state.peak_pnl_usd:.2f} | marge {trailing_giveback_pct:.0f}% | PnL: +${pnl:.2f}", "level": "win"})
-                self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
+                self.emit("log", {"msg": f"[{ticker}] TTP SORTIE @ ${price:.2f} | pic +${state.peak_pnl_usd:.2f} ({state.peak_pnl_usd/E*100 if E else 0:.2f}% de E) | PnL: +${pnl:.2f}", "level": "win"})
+                self._save_open_positions()  # sauvegarde en live ET en paper
                 return
             else:
-                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Trailing illimite actif | latent +${pnl_usd:.2f} | pic +${state.peak_pnl_usd:.2f} | marge {trailing_giveback_pct:.0f}% (sortie si repli confirme a ${trailing_lock:.2f})", "level": "dim"})
-                return
-
-        elif state.tp_stage == 1:
-            # v3.2 — FIX : l etage Quick Profit suit desormais le PIC reellement
-            # atteint (comme le Trailing illimite), au lieu d un plancher fixe
-            # calcule uniquement sur le niveau d armement. Avant ce fix : profit
-            # arme a 1,1$, monte a 1,45$, puis redescend -> le bot laissait tout
-            # filer jusqu au plancher fixe (~1$) sans rien capturer entre-temps.
-            # Desormais : la marge de repli s applique au PIC observe, pas au
-            # niveau d armement — un repli confirme depuis 1,45$ ferme bien plus
-            # tot (~1,16$ avec une marge de 20%), jamais sous le plancher garanti.
-            if state.peak_pnl_usd is None or pnl_usd > state.peak_pnl_usd:
-                state.peak_pnl_usd = pnl_usd
-            dynamic_lock = max(state.peak_pnl_usd * (1 - giveback_pct / 100), min_lock_usd)
-            dynamic_lock = min(dynamic_lock, state.peak_pnl_usd)
-            if pnl_usd <= dynamic_lock:
-                pnl, _, trade = state.close_position(price, "QUICK PROFIT")
-                trade["symbol"] = symbol
-                if mode == "live" and self.exchange:
-                    close_order(self.exchange, ticker, pos, self.cfg)
-                self.emit("trade", trade)
-                self._register_win(ticker)
-                self.emit("log", {"msg": f"[{ticker}] QUICK PROFIT @ ${price:.2f} | PnL: +${pnl:.2f} (pic +${state.peak_pnl_usd:.2f})", "level": "win"})
-                self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
-                return
-            else:
-                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Quick Profit arme | latent +${pnl_usd:.2f} (pic +${state.peak_pnl_usd:.2f}, sortie si repli confirme a ${dynamic_lock:.2f})", "level": "dim"})
+                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} TTP actif | latent +${pnl_usd:.2f} ({pnl_usd/E*100 if E else 0:.2f}% de E) | pic +${state.peak_pnl_usd:.2f} (sortie si repli a ${current_lock:.2f})", "level": "dim"})
                 return
 
         # ── 4. Rien de declenche — affichage du latent ──────────────────────
@@ -2799,7 +2714,7 @@ class BotEngine:
         now_ts = time.time()
         if state._last_status_log_ts is None or (now_ts - state._last_status_log_ts) >= 30:
             state._last_status_log_ts = now_ts
-            self.emit("log", {"msg": f"[{ticker}] ${price:.2f} {pos['type'].upper()} | latent: ${pnl_usd:+.2f} | Max Loss: -${max_loss_usd:.2f} | SL secu: ${pos['sl']:.2f}", "level": "dim"})
+            self.emit("log", {"msg": f"[{ticker}] ${price:.2f} {pos['type'].upper()} | latent: ${pnl_usd:+.2f} | Stop Loss: -${-sl_usd:.2f} ({sl_pct_of_e:.2f}% de E) | SL secu: ${pos['sl']:.2f}", "level": "dim"})
 
     def _process(self, symbol, price):
         cfg   = self.cfg
@@ -3169,19 +3084,19 @@ class BotEngine:
                     "level": "dim"
                 })
                 return
-            # v3.2 — Filtre marge Resistance : bloque un LONG si la resistance
+            # v4.0 — Filtre marge Resistance : bloque un LONG si la resistance
             # recente (plus haut des 50 derniers cycles) est trop proche pour
-            # laisser assez de place a un Quick Profit avant de s y heurter.
+            # laisser assez de place au 1er seuil du TTP avant de s y heurter.
             # Estimation conservatrice (sans levier) : si la marge suffit pour
-            # x1, elle suffit d autant plus pour un levier plus eleve.
+            # x1, elle suffit d autant plus pour un levier plus eleve. Le seuil
+            # TTP etant deja exprime en % de E (mouvement de prix a x1), on
+            # l utilise directement, sans conversion via CAPITAL/POSITION_PCT.
             if resistance is not None and price <= resistance and cfg.get("SR_MIN_ROOM_FILTER", True):
-                qp_arm_usd = cfg.get("QUICK_PROFIT_ARM_USD", 1.0)
-                est_size = cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100
-                min_room_pct = (qp_arm_usd / est_size * 100) if est_size > 0 else 0
+                min_room_pct = cfg.get("TTP_ARM1_PCT_OF_E", 1.2)
                 room_pct = (resistance - price) / price * 100
                 if room_pct < min_room_pct:
                     self.emit("log", {
-                        "msg": f"[{ticker}] ${price:.2f} LONG bloque — resistance ${resistance:.2f} trop proche ({room_pct:.2f}% < {min_room_pct:.2f}% necessaire pour Quick Profit)",
+                        "msg": f"[{ticker}] ${price:.2f} LONG bloque — resistance ${resistance:.2f} trop proche ({room_pct:.2f}% < {min_room_pct:.2f}% necessaire pour le TTP)",
                         "level": "dim"
                     })
                     return
@@ -3284,17 +3199,15 @@ class BotEngine:
                     "level": "dim"
                 })
                 return
-            # v3.2 — Filtre marge Support : bloque un SHORT si le support
+            # v4.0 — Filtre marge Support : bloque un SHORT si le support
             # recent (plus bas des 50 derniers cycles) est trop proche pour
-            # laisser assez de place a un Quick Profit avant de s y heurter.
+            # laisser assez de place au 1er seuil du TTP avant de s y heurter.
             if support is not None and price >= support and cfg.get("SR_MIN_ROOM_FILTER", True):
-                qp_arm_usd = cfg.get("QUICK_PROFIT_ARM_USD", 1.0)
-                est_size = cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100
-                min_room_pct = (qp_arm_usd / est_size * 100) if est_size > 0 else 0
+                min_room_pct = cfg.get("TTP_ARM1_PCT_OF_E", 1.2)
                 room_pct = (price - support) / price * 100
                 if room_pct < min_room_pct:
                     self.emit("log", {
-                        "msg": f"[{ticker}] ${price:.2f} SHORT bloque — support ${support:.2f} trop proche ({room_pct:.2f}% < {min_room_pct:.2f}% necessaire pour Quick Profit)",
+                        "msg": f"[{ticker}] ${price:.2f} SHORT bloque — support ${support:.2f} trop proche ({room_pct:.2f}% < {min_room_pct:.2f}% necessaire pour le TTP)",
                         "level": "dim"
                     })
                     return
@@ -3368,16 +3281,14 @@ class BotEngine:
         leverage = self._compute_prudent_leverage(ticker, confidence, rsi_mode)
         notional = size * leverage
 
-        # ── v3.2 — FIX : le SL Hyperliquid est desormais ancre DIRECTEMENT
-        # en dollars (EXCHANGE_SAFETY_SL_USD, defaut 1,5$ — le double du Max
-        # Loss de 0,75$), plutot qu en % fixe. Un % fixe (ex: 2.0%) pouvait
-        # correspondre a MOINS de 0,75$ sur une petite position (ex: 29$ :
-        # 2% = 0,58$ < 0,75$), faisant declencher le filet de secours AVANT
-        # le Max Loss intelligent du bot. En ancrant directement le seuil en
-        # $, le SL de sécurité reste toujours a une marge fixe et previsible
-        # au-dela du Max Loss, quelle que soit la taille ou le levier reels
-        # de CETTE position precise.
-        safety_sl_usd = cfg.get("EXCHANGE_SAFETY_SL_USD", 1.5)
+        # ── v4.0 — le SL Hyperliquid (filet de securite) est un MULTIPLE du
+        # Stop Loss du bot (EXCHANGE_SAFETY_SL_MULT, defaut x2), lui-meme en
+        # % de E. Comme les deux sont exprimes en % de E (donc de CETTE
+        # position precise), le filet de securite reste toujours proportionnel
+        # au Stop Loss reel, quelle que soit la taille ou le levier utilises —
+        # plus besoin d ancrer un montant $ fixe globalement.
+        sl_pct_of_e   = cfg.get("SL_PCT_OF_E", 1.5)
+        safety_sl_usd = size * sl_pct_of_e / 100 * cfg.get("EXCHANGE_SAFETY_SL_MULT", 2.0)
         safety_sl_pct = (safety_sl_usd / notional * 100) if notional > 0 else 2.0
         sl_p = price * (1 - safety_sl_pct/100) if signal == "long" else price * (1 + safety_sl_pct/100)
         # tp_p conserve uniquement a titre informatif / pour le bouton manuel TP
@@ -3391,7 +3302,8 @@ class BotEngine:
         atr_str = f"ATR {atr_at_entry:.3f}%" if atr_at_entry else "ATR ?"
         lev_str = f"x{leverage}" if leverage > 1 else "x1"
 
-        self.emit("log", {"msg": f"[{ticker}] {label} @ ${price:.2f} | RSI:{rsi:.1f}({rsi_mode}) | {atr_str} | {' | '.join(reasons)} | ${size:.2f} {lev_str} | MaxLoss -${cfg.get('MAX_LOSS_USD', 0.75):.2f} | SL secu {safety_sl_pct:.2f}% [PERP]", "level": "signal"})
+        stop_loss_usd_here = size * sl_pct_of_e / 100
+        self.emit("log", {"msg": f"[{ticker}] {label} @ ${price:.2f} | RSI:{rsi:.1f}({rsi_mode}) | {atr_str} | {' | '.join(reasons)} | ${size:.2f} {lev_str} | Stop Loss -${stop_loss_usd_here:.2f} ({sl_pct_of_e:.2f}% de E) | SL secu {safety_sl_pct:.2f}% [PERP]", "level": "signal"})
 
         if cfg["MODE"] == "live" and self.exchange:
             # v3.2 — applique le levier PRUDENT specifique a ce trade sur
@@ -3412,15 +3324,16 @@ class BotEngine:
         state.open_position(signal, price, sl_p, tp_p, size, confidence=confidence, leverage=leverage)
         self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
 
-        # ── v3.2 web : evenement structure pour l API (table trades / signaux) ──
-        # tp1/tp2 sont deduits des seuils $ (Quick Profit / Trailing) — notre
-        # bot ne raisonne pas en % fixe comme un TP1/TP2 classique, ceci est
-        # une conversion informative en prix equivalent au moment de l entree.
-        # v3.2 — le notionnel reel est size x leverage : la conversion $ -> %
-        # de mouvement de prix doit en tenir compte pour rester exacte.
-        max_loss_usd  = cfg.get("MAX_LOSS_USD", 0.75)
-        qp_arm_usd    = cfg.get("QUICK_PROFIT_ARM_USD", 1.0)
-        trail_arm_usd = qp_arm_usd + cfg.get("TRAILING_TP_MARGIN_USD", 0.5)
+        # ── v4.0 web : evenement structure pour l API (table trades / signaux) ──
+        # tp1/tp2 sont deduits des seuils du TTP (arm1/arm2, en % de E) — notre
+        # bot ne raisonne pas en % de PRIX fixe comme un TP1/TP2 classique,
+        # ceci est une conversion informative en prix equivalent au moment de
+        # l entree. Le notionnel reel est size x leverage : la conversion
+        # %E -> % de mouvement de prix doit en tenir compte pour rester exacte.
+        arm1_pct_of_e = cfg.get("TTP_ARM1_PCT_OF_E", 1.2)
+        arm2_pct_of_e = cfg.get("TTP_ARM2_PCT_OF_E", 1.5)
+        qp_arm_usd    = size * arm1_pct_of_e / 100
+        trail_arm_usd = size * arm2_pct_of_e / 100
         if notional > 0:
             pct1 = qp_arm_usd / notional * 100
             pct2 = trail_arm_usd / notional * 100
@@ -3434,7 +3347,7 @@ class BotEngine:
             "confidence": round(confidence, 1),
             "leverage": leverage,
             "position_size_pct": cfg["POSITION_SIZE_PCT"],
-            "risk_reward": round(qp_arm_usd / max_loss_usd, 2) if max_loss_usd else None,
+            "risk_reward": round(arm1_pct_of_e / sl_pct_of_e, 2) if sl_pct_of_e else None,
             "timeframe": cfg.get("PROFILE", "swing"),
             "entry": price,
             "stop_loss": sl_p,
