@@ -1827,9 +1827,14 @@ class BotEngine:
         Sans cet appel, une reinitialisation depuis l interface (base de
         donnees + memoire vidées) ne servait a rien : au prochain
         demarrage, le bot relisait ces fichiers restes intacts et
-        restaurait les anciennes positions comme si de rien n etait."""
+        restaurait les anciennes positions comme si de rien n etait.
+        v4.1 — supprime aussi le fichier de capital et le fichier de E fige
+        par lot : sans ca, un capital/E perime restait sur disque et etait
+        recharge tel quel au prochain demarrage, meme apres une remise a
+        zero explicite depuis l interface."""
         import os
-        for f in (self.POSITIONS_FILE, self.CONFIDENCE_FILE, self.INDICATOR_STATE_FILE):
+        for f in (self.POSITIONS_FILE, self.CONFIDENCE_FILE, self.INDICATOR_STATE_FILE,
+                  CAPITAL_FILE, BATCH_FILE):
             try:
                 if os.path.exists(f):
                     os.remove(f)
@@ -1838,7 +1843,7 @@ class BotEngine:
                 print(f"[RESET] Erreur suppression {f} : {e}")
         self.confidence_thresholds = {}
         self.confidence_threshold_set_at = {}
-        self.emit("log", {"msg": "🔄 Fichiers de sauvegarde (positions, confiance, indicateurs) purges suite a une reinitialisation.", "level": "warn"})
+        self.emit("log", {"msg": "🔄 Fichiers de sauvegarde (positions, confiance, indicateurs, capital, lot) purges suite a une reinitialisation.", "level": "warn"})
 
     def emit(self, etype, data=None):
         self.q.put({"type": etype, "data": data or {}})
