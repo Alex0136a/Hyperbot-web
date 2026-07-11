@@ -1027,7 +1027,7 @@ def _day_key(iso_str: str) -> str:
     return datetime.fromisoformat(iso_str).astimezone(timezone.utc).strftime("%d/%m")
 
 
-def _aggregate(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _aggregate(rows: List[Dict[str, Any]], base: float = None) -> Dict[str, Any]:
     total = len(rows)
     wins = [r for r in rows if (r["pnl"] or 0) > 0]
     losses = [r for r in rows if (r["pnl"] or 0) <= 0]
@@ -1035,13 +1035,18 @@ def _aggregate(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     pertes = round(sum(r["pnl"] for r in losses), 2)
     net = round(gains + pertes, 2)
     win_rate = round(len(wins) / total * 100, 1) if total else 0
+    # v4.2 — % du net par rapport au capital initial (base), quand fourni.
+    # Permet d afficher la performance en % en plus du montant $, pour le
+    # jour courant, le total et chaque jour de l historique (onglet Bilan).
+    net_pct = round(net / base * 100, 2) if base else None
     return {
         "total": total, "wins": len(wins), "losses": len(losses),
         "gains": gains, "pertes": pertes, "net": net, "win_rate": win_rate,
+        "net_pct": net_pct,
     }
 
 
-def _compute_daily(rows: List[Dict[str, Any]], days: int = 7) -> List[Dict[str, Any]]:
+def _compute_daily(rows: List[Dict[str, Any]], days: int = 7, base: float = None) -> List[Dict[str, Any]]:
     """v3.2 — Jour calendaire UTC fixe (00h00-23h59:59) : chaque trade est
     attribue au jour ou il a ete OUVERT (created_at), pas ferme (closed_at).
     Un trade ouvert juste avant minuit et ferme apres compte donc pour la
@@ -1064,7 +1069,7 @@ def _compute_daily(rows: List[Dict[str, Any]], days: int = 7) -> List[Dict[str, 
             buckets[key].append(r)
     out = []
     for day, day_rows in buckets.items():
-        agg = _aggregate(day_rows)
+        agg = _aggregate(day_rows, base)
         out.append({"day": day, **agg})
     return out
 
@@ -1158,9 +1163,9 @@ def get_bilan(email: str = Depends(require_user)):
         "open_count": len(open_positions),
         "reset_at": db.get_meta("reset_at"),
         "running_seconds": round(_get_running_seconds()),
-        "today": _aggregate(today_rows),
-        "total": _aggregate(closed),
-        "daily": _compute_daily(closed, days=7),
+        "today": _aggregate(today_rows, initial_balance),
+        "total": _aggregate(closed, initial_balance),
+        "daily": _compute_daily(closed, days=7, base=initial_balance),
         "by_coin": _compute_by_coin(closed),
     }
 
