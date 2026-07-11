@@ -77,18 +77,18 @@ function generateBilan(bilan, paper) {
   t += `  Gains        : ${bilan.today.wins} trades | +${bilan.today.gains} USDC\n`;
   t += `  Pertes       : ${bilan.today.losses} trades | ${bilan.today.pertes} USDC\n`;
   t += `  Win rate     : ${bilan.today.win_rate}%\n`;
-  t += `  NET DU JOUR  : ${bilan.today.net>=0?"+":""}${bilan.today.net} USDC\n\n`;
+  t += `  NET DU JOUR  : ${bilan.today.net>=0?"+":""}${bilan.today.net} USDC${bilan.today.net_pct!=null?` (${bilan.today.net_pct>=0?"+":""}${bilan.today.net_pct}%)`:""}\n\n`;
   
   t += `[ TOTAL DEPUIS LE DÉBUT ]\n${thin}\n`;
   t += `  Trades total : ${bilan.total.total}\n`;
   t += `  Gains        : ${bilan.total.wins} trades | +${bilan.total.gains} USDC\n`;
   t += `  Pertes       : ${bilan.total.losses} trades | ${bilan.total.pertes} USDC\n`;
   t += `  Win rate     : ${bilan.total.win_rate}%\n`;
-  t += `  NET TOTAL    : ${bilan.total.net>=0?"+":""}${bilan.total.net} USDC\n\n`;
+  t += `  NET TOTAL    : ${bilan.total.net>=0?"+":""}${bilan.total.net} USDC${bilan.total.net_pct!=null?` (${bilan.total.net_pct>=0?"+":""}${bilan.total.net_pct}%)`:""}\n\n`;
   
   t += `[ 7 DERNIERS JOURS ]\n${thin}\n`;
   (bilan.daily||[]).forEach(d=>{
-    t += `  ${d.day} | ✅${d.wins} ❌${d.losses} | ${d.net>=0?"+":""}${Math.round(d.net*100)/100} USDC\n`;
+    t += `  ${d.day} | ✅${d.wins} ❌${d.losses} | ${d.net>=0?"+":""}${Math.round(d.net*100)/100} USDC${d.net_pct!=null?` (${d.net_pct>=0?"+":""}${d.net_pct}%)`:""}\n`;
   });
   
   if(paper) {
@@ -1565,7 +1565,7 @@ Confirmer ?`
             <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderTop:"1px solid #0f1629"}}>
               <span style={{fontSize:11,color:"#94a3b8"}}>{bilan.today.total} trades · Win rate {bilan.today.win_rate}%</span>
               <span style={{fontSize:13,fontWeight:800,color:bilan.today.net>=0?"#34d399":"#f87171"}}>
-                {bilan.today.net>=0?"+":""}{bilan.today.net} $ NET
+                {bilan.today.net>=0?"+":""}{bilan.today.net} $ NET {bilan.today.net_pct!=null && `(${bilan.today.net_pct>=0?"+":""}${bilan.today.net_pct}%)`}
               </span>
             </div>
           </div>
@@ -1586,7 +1586,7 @@ Confirmer ?`
             <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderTop:"1px solid #0f1629"}}>
               <span style={{fontSize:11,color:"#94a3b8"}}>{bilan.total.total} trades · Win rate {bilan.total.win_rate}%</span>
               <span style={{fontSize:13,fontWeight:800,color:bilan.total.net>=0?"#34d399":"#f87171"}}>
-                {bilan.total.net>=0?"+":""}{bilan.total.net} $ NET
+                {bilan.total.net>=0?"+":""}{bilan.total.net} $ NET {bilan.total.net_pct!=null && `(${bilan.total.net_pct>=0?"+":""}${bilan.total.net_pct}%)`}
               </span>
             </div>
           </div>
@@ -1601,7 +1601,7 @@ Confirmer ?`
                 <span style={{color:"#f87171"}}>❌ {d.losses}</span>
                 <span style={{color:"#94a3b8"}}>{d.total} trades</span>
                 <span style={{fontWeight:700,color:d.net>=0?"#34d399":"#f87171"}}>
-                  {d.net>=0?"+":""}{Math.round(d.net*100)/100} $
+                  {d.net>=0?"+":""}{Math.round(d.net*100)/100} $ {d.net_pct!=null && `(${d.net_pct>=0?"+":""}${d.net_pct}%)`}
                 </span>
               </div>
             ))}
