@@ -520,7 +520,7 @@ Cela va reinitialiser :
 - Tous les signaux
 - Tous les trades paper
 - L'historique complet
-- Le portefeuille (1000 USDC)
+- Le portefeuille (100 USDC)
 
 Confirmer ?`
     );
@@ -1091,8 +1091,12 @@ Confirmer ?`
               🎯 Réinitialiser les pénalités de confiance
             </button>
             <button onClick={async()=>{
-              if(!window.confirm("REINITIALISATION COMPLETE\n\nCela va effacer :\n- Tous les signaux\n- Tous les trades paper\n- L'historique\n- Le portefeuille (repart a 1000 USDC)\n\nVotre cle API et wallet Hyperliquid NE seront PAS effaces.\n\nEtes-vous sur ?")) return;
+              if(!window.confirm("REINITIALISATION COMPLETE\n\nCela va effacer :\n- Tous les signaux\n- Tous les trades paper\n- L'historique\n- Le portefeuille (repart a 100 USDC)\n\nVotre cle API et wallet Hyperliquid NE seront PAS effaces.\n\nEtes-vous sur ?")) return;
               try{
+                if (config?.running || config?.is_running) {
+                  await apiCall("/api/bot/stop","POST",null,token);
+                  addLog("⏹ Bot arrêté (requis avant réinitialisation)", "system");
+                }
                 const r = await apiCall("/api/reset-all","POST",null,token);
                 alert(r.message);
                 loadData();
@@ -1242,12 +1246,22 @@ Confirmer ?`
             </div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
               <div style={{fontSize:10,color:"#94a3b8"}}>
-                Solde initial: 1000 USDC · Le bot trade seul 24h/24
+                Solde initial: 100 USDC · Le bot trade seul 24h/24
               </div>
               <button onClick={async()=>{
-                if(!confirm("Reinitialiser le portefeuille a 1000 USDC ?"))return;
-                await apiCall("/api/paper/reset","POST",null,token);
-                loadData();
+                if(!confirm("Réinitialiser le portefeuille à 100 USDC ?\n\nSi le bot est en cours d'exécution, il sera arrêté automatiquement avant la réinitialisation."))return;
+                try {
+                  if (config?.running || config?.is_running) {
+                    await apiCall("/api/bot/stop","POST",null,token);
+                    addLog("⏹ Bot arrêté (requis avant réinitialisation)", "system");
+                  }
+                  await apiCall("/api/paper/reset","POST",null,token);
+                  addLog("🔄 Portefeuille réinitialisé à 100 USDC", "system");
+                  loadData();
+                } catch(e) {
+                  addLog(`❌ Échec de la réinitialisation : ${e.message}`, "error");
+                  alert(`Échec de la réinitialisation : ${e.message}`);
+                }
               }} style={{background:"transparent",border:"1px solid #334155",borderRadius:5,padding:"5px 10px",color:"#94a3b8",fontSize:10}}>
                 Reinitialiser
               </button>
