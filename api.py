@@ -367,8 +367,17 @@ def _public_config() -> Dict[str, Any]:
         "trading_mode": cfg.get("MODE", "paper"),
         "profile": cfg.get("PROFILE", "swing"),
         "position_pct": cfg.get("POSITION_SIZE_PCT"),
-        "max_loss_usd": cfg.get("MAX_LOSS_USD"),
-        "quick_profit_usd": cfg.get("QUICK_PROFIT_ARM_USD"),
+        # v4.0 — champs $ legacy, recalcules a titre INFORMATIF a partir des
+        # nouveaux reglages en % de E et du capital courant (E estime =
+        # CAPITAL_USD x POSITION_SIZE_PCT/100). Utiliser sl_pct_of_e /
+        # ttp_arm1_pct_of_e pour la valeur reelle, stable, appliquee par le bot.
+        "max_loss_usd": round(cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100 * cfg.get("SL_PCT_OF_E", 1.5) / 100, 4),
+        "quick_profit_usd": round(cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100 * cfg.get("TTP_ARM1_PCT_OF_E", 1.2) / 100, 4),
+        "sl_pct_of_e": cfg.get("SL_PCT_OF_E", 1.5),
+        "ttp_arm1_pct_of_e": cfg.get("TTP_ARM1_PCT_OF_E", 1.2),
+        "ttp_lock1_pct_of_e": cfg.get("TTP_LOCK1_PCT_OF_E", 1.0),
+        "ttp_arm2_pct_of_e": cfg.get("TTP_ARM2_PCT_OF_E", 1.5),
+        "ttp_trail_gap_pct_of_e": cfg.get("TTP_TRAIL_GAP_PCT_OF_E", 0.3),
         "max_open_trades": cfg.get("MAX_OPEN_TRADES", 15),
         "auto_activate_confidence_pct": cfg.get("AUTO_ACTIVATE_CONFIDENCE_PCT", 80.0),
         "active_coins": cfg.get("ACTIVE_COINS") or SUPPORTED_TICKERS,
@@ -496,8 +505,16 @@ def _trade_row_to_signal(row: Dict[str, Any]) -> Dict[str, Any]:
 class ConfigBody(BaseModel):
     trading_mode: Optional[str] = None
     position_pct: Optional[float] = None
+    # v4.0 — champs legacy en $, encore acceptes pour compat avec l interface
+    # actuelle : convertis a la volee en % de E (voir put_config ci-dessous).
     max_loss_usd: Optional[float] = None
     quick_profit_usd: Optional[float] = None
+    # v4.0 — nouveaux champs natifs, en % de E (a privilegier cote interface)
+    sl_pct_of_e: Optional[float] = None
+    ttp_arm1_pct_of_e: Optional[float] = None
+    ttp_lock1_pct_of_e: Optional[float] = None
+    ttp_arm2_pct_of_e: Optional[float] = None
+    ttp_trail_gap_pct_of_e: Optional[float] = None
     max_open_trades: Optional[int] = None
     auto_activate_confidence_pct: Optional[float] = None
     wallet: Optional[str] = None
@@ -530,15 +547,12 @@ ADVANCED_SETTINGS = {
     "ADX_PERIOD":              {"label": "ADX - periode",                    "default": 14},
     "ADX_TREND_THRESHOLD":     {"label": "ADX - seuil Trend/Reversal",       "default": 25.0},
     "SR_PERIOD":               {"label": "Support/Resistance - periode (cycles)", "default": 50},
-    "QUICK_PROFIT_GIVEBACK_PCT": {"label": "Quick Profit - marge de repli (%)", "default": 20.0},
-    "QUICK_PROFIT_MIN_LOCK_USD": {"label": "Quick Profit - plancher garanti ($)", "default": 1.0},
-    "TRAILING_TP_MARGIN_USD":    {"label": "Trailing - marge au-dessus du Quick Profit ($)", "default": 0.5},
-    "TRAILING_TP_GIVEBACK_PCT":  {"label": "Trailing - marge de repli palier 1 (%)", "default": 15.0},
-    "TRAILING_TIER2_MULT":       {"label": "Trailing - palier 2 des x fois le seuil", "default": 2.0},
-    "TRAILING_TIER2_GIVEBACK_PCT": {"label": "Trailing - marge de repli palier 2 (%)", "default": 10.0},
-    "TRAILING_TIER3_MULT":       {"label": "Trailing - palier 3 des x fois le seuil", "default": 4.0},
-    "TRAILING_TIER3_GIVEBACK_PCT": {"label": "Trailing - marge de repli palier 3 (%)", "default": 6.0},
-    "EXCHANGE_SAFETY_SL_USD":  {"label": "SL Hyperliquid - montant $ (filet de securite)", "default": 1.5},
+    "SL_PCT_OF_E":                {"label": "Stop Loss (% de E)", "default": 1.5},
+    "EXCHANGE_SAFETY_SL_MULT":    {"label": "SL Hyperliquid - multiple du Stop Loss bot", "default": 2.0},
+    "TTP_ARM1_PCT_OF_E":          {"label": "TTP - 1er seuil d'armement (% de E)", "default": 1.2},
+    "TTP_LOCK1_PCT_OF_E":         {"label": "TTP - seuil de sortie initial (% de E)", "default": 1.0},
+    "TTP_ARM2_PCT_OF_E":          {"label": "TTP - 2e seuil, active le trailing continu (% de E)", "default": 1.5},
+    "TTP_TRAIL_GAP_PCT_OF_E":     {"label": "TTP - marge de repli continue sous le pic (% de E)", "default": 0.3},
     "VOLUME_MIN_RATIO":        {"label": "Volume - ratio minimum vs moyenne","default": 1.2},
     "MOMENTUM_PERIOD":         {"label": "Momentum - periode (cycles)",      "default": 4},
     "MOMENTUM_THRESHOLD_PCT":  {"label": "Momentum - seuil %",               "default": 0.20},
@@ -595,11 +609,39 @@ def put_config(body: ConfigBody, email: str = Depends(require_user)):
     if body.position_pct is not None:
         _apply_and_persist("POSITION_SIZE_PCT", body.position_pct)
 
+    # v4.0 — le moteur de risque raisonne desormais en % de E (taille d
+    # entree), pas en $ fixe. Les champs $ legacy (max_loss_usd,
+    # quick_profit_usd) restent acceptes pour compat avec l interface
+    # actuelle : on les convertit a la volee en % de E, a partir d une
+    # estimation de E au capital/POSITION_SIZE_PCT courants.
+    e_estimate = cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100
+
     if body.max_loss_usd is not None:
-        _apply_and_persist("MAX_LOSS_USD", body.max_loss_usd)
+        if e_estimate > 0:
+            _apply_and_persist("SL_PCT_OF_E", body.max_loss_usd / e_estimate * 100)
+        else:
+            raise HTTPException(400, "Capital/position_pct invalides pour convertir max_loss_usd en %")
 
     if body.quick_profit_usd is not None:
-        _apply_and_persist("QUICK_PROFIT_ARM_USD", body.quick_profit_usd)
+        if e_estimate > 0:
+            _apply_and_persist("TTP_ARM1_PCT_OF_E", body.quick_profit_usd / e_estimate * 100)
+        else:
+            raise HTTPException(400, "Capital/position_pct invalides pour convertir quick_profit_usd en %")
+
+    if body.sl_pct_of_e is not None:
+        _apply_and_persist("SL_PCT_OF_E", body.sl_pct_of_e)
+
+    if body.ttp_arm1_pct_of_e is not None:
+        _apply_and_persist("TTP_ARM1_PCT_OF_E", body.ttp_arm1_pct_of_e)
+
+    if body.ttp_lock1_pct_of_e is not None:
+        _apply_and_persist("TTP_LOCK1_PCT_OF_E", body.ttp_lock1_pct_of_e)
+
+    if body.ttp_arm2_pct_of_e is not None:
+        _apply_and_persist("TTP_ARM2_PCT_OF_E", body.ttp_arm2_pct_of_e)
+
+    if body.ttp_trail_gap_pct_of_e is not None:
+        _apply_and_persist("TTP_TRAIL_GAP_PCT_OF_E", body.ttp_trail_gap_pct_of_e)
 
     if body.max_open_trades is not None:
         clamped = max(1, min(body.max_open_trades, len(SUPPORTED_TICKERS)))
