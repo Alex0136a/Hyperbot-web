@@ -119,7 +119,7 @@ CONFIG = {
                            "WIF", "JUP", "PENDLE", "EIGEN", "RENDER", "SUI",
                            "APT", "SEI", "DOGE", "XRP", "NEAR", "FTM", "AAVE",
                            "UNI", "CRV", "SUSHI", "GMX"],
-    "MAX_OPEN_TRADES":    15,
+    "MAX_OPEN_TRADES":    5,
 
     # Tous les symboles sont des perpétuels — SPOT_SYMBOLS vide
     # PAXG remplace XAUT spot : index 187 sur Hyperliquid, levier max x10
@@ -147,7 +147,7 @@ CONFIG = {
     "SYMBOL_REQUIRE_EMA200": [],
 
     "CAPITAL_USD":        100,
-    "POSITION_SIZE_PCT":  5,               # 5% du capital par trade — coherent avec Max Loss -0.75$
+    "POSITION_SIZE_PCT":  20,              # 20% du capital par trade — E fige par lot (voir MAX_OPEN_TRADES)
     "LEVERAGE":           1,
 
     # RSI — seuils elargis pour signaux plus forts et moins de faux positifs
@@ -1536,6 +1536,44 @@ def save_capital(capital, sessions, total_pnl):
             return
 
 
+BATCH_FILE = f"hyperbot_batch_{_PROFILE_SUFFIX}.json"
+
+def load_batch_entry_size():
+    """Charge la taille d entree E figee pour le lot en cours (survit a un
+    redemarrage/redeploiement tant que le lot de trades n est pas termine).
+    Retourne None si aucun lot n est en cours (E sera recalcule au prochain
+    trade, des que le capital le permet)."""
+    import json, os
+    if os.path.exists(BATCH_FILE):
+        try:
+            with open(BATCH_FILE, "r") as f:
+                data = json.load(f)
+            return data.get("batch_entry_size")
+        except Exception as e:
+            print(f"[BATCH] Erreur lecture fichier: {e} — E sera recalcule")
+    return None
+
+def save_batch_entry_size(value):
+    """Sauvegarde la taille d entree E figee pour le lot en cours."""
+    import json, os, time
+    data = {"batch_entry_size": round(value, 6) if value is not None else None}
+    tmp_file = BATCH_FILE + ".tmp"
+    for attempt in range(3):
+        try:
+            with open(tmp_file, "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp_file, BATCH_FILE)
+            return
+        except PermissionError as e:
+            if attempt < 2:
+                time.sleep(0.15)
+                continue
+            print(f"[BATCH] Permission refusee apres 3 essais — ignore ({e})")
+        except Exception as e:
+            print(f"[BATCH] Erreur sauvegarde: {e}")
+            return
+
+
 # ─────────────────────────────────────────────
 class BotEngine:
     def __init__(self, cfg, event_queue):
@@ -1555,6 +1593,9 @@ class BotEngine:
         # Chargement capital persistant — interets composes
         self.capital, self.sessions, self.total_pnl_all = load_capital(cfg["CAPITAL_USD"])
         self.cfg["CAPITAL_USD"] = self.capital
+        # v4.1 — E fige par lot de trades (voir _enter_position) : None tant
+        # qu aucun lot n est en cours, recalcule au prochain trade ouvert.
+        self.batch_entry_size = load_batch_entry_size()
         self.cycle = 0
         self.info = None
         self.exchange = None
@@ -3265,15 +3306,34 @@ class BotEngine:
             cand["confidence"], cand["rsi"], cand["rsi_mode"], cand["reasons"], cand["prices"]
         )
 
-        capital_engaged = sum(s.position["size"] for s in self.states.values() if s.position)
+        # ── v4.1 — Dimensionnement par LOT (batch) ──────────────────────────
+        # E est calcule UNE SEULE FOIS au debut d un lot (des qu aucune
+        # position n est ouverte), a partir de l equite totale du moment
+        # (CAPITAL_USD + PnL realise de la session), puis reste FIGE a cette
+        # valeur pour toutes les positions ouvertes durant ce lot — jusqu a
+        # MAX_OPEN_TRADES positions simultanees (5 par defaut). Des que le lot
+        # se vide entierement (toutes les positions fermees), un nouveau lot
+        # commence et E est recalcule sur la base du capital disponible a ce
+        # moment-la : "chaque fois que le capital le permet".
+        open_count = sum(1 for s in self.states.values() if s.position)
         total_pnl = sum(s.pnl for s in self.states.values())
-        capital_available = cfg["CAPITAL_USD"] + total_pnl - capital_engaged
+        equity = cfg["CAPITAL_USD"] + total_pnl
+        capital_engaged = sum(s.position["size"] for s in self.states.values() if s.position)
+        capital_available = equity - capital_engaged
 
         if capital_available <= 0:
             self.emit("log", {"msg": f"[{ticker}] Capital insuffisant (${capital_available:.2f})", "level": "warn"})
             return
 
-        size = min(capital_available * cfg["POSITION_SIZE_PCT"] / 100, capital_available)
+        if open_count == 0 or self.batch_entry_size is None:
+            self.batch_entry_size = equity * cfg["POSITION_SIZE_PCT"] / 100
+            save_batch_entry_size(self.batch_entry_size)
+            self.emit("log", {"msg": f"Nouveau lot — E fige a ${self.batch_entry_size:.2f} ({cfg['POSITION_SIZE_PCT']:.0f}% de ${equity:.2f}) pour jusqu a {cfg.get('MAX_OPEN_TRADES', 5)} trades simultanes", "level": "info"})
+
+        size = min(self.batch_entry_size, capital_available)
+        if size <= 0:
+            self.emit("log", {"msg": f"[{ticker}] Capital insuffisant pour E=${self.batch_entry_size:.2f} (disponible ${capital_available:.2f})", "level": "warn"})
+            return
 
         # v3.2 — le levier prudent doit etre connu AVANT le calcul du SL de
         # securite, puisque le notionnel reel (taille x levier) determine le
