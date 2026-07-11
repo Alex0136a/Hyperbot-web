@@ -971,11 +971,22 @@ def paper_reset(email: str = Depends(require_user)):
         state.trades = 0
         state.wins = 0
         state.closed_trades.clear()
+    # v4.1 — FIX : repart du capital par defaut du CODE (be.CONFIG), pas de
+    # cfg["CAPITAL_USD"] qui contient la derniere valeur PERSISTEE (chargee
+    # au demarrage depuis hyperbot_capital_*.json) — sans ce fix, changer le
+    # capital par defaut dans le code n avait plus aucun effet des qu un
+    # fichier de capital existait deja sur le volume, et "reinitialiser"
+    # ne faisait que re-sauvegarder cette meme valeur perimee.
+    cfg["CAPITAL_USD"] = be.CONFIG["CAPITAL_USD"]
     bot.capital = cfg["CAPITAL_USD"]
     bot.sessions = 0
     bot.total_pnl_all = 0.0
+    # v4.1 — un capital reinitialise demarre un lot neuf : l ancien E fige
+    # (base sur l ancien capital) ne doit pas survivre a la reinitialisation.
+    bot.batch_entry_size = None
     bot.clear_all_persisted_files()
     be.save_capital(bot.capital, 0, 0.0)
+    be.save_batch_entry_size(None)
     db.set_meta("reset_at", db.now_iso())
     db.set_meta("initial_balance", str(bot.capital))
     db.set_meta("total_running_seconds", "0")
@@ -1290,8 +1301,10 @@ def reset_all(email: str = Depends(require_user)):
     bot.capital = cfg["CAPITAL_USD"]
     bot.sessions = 0
     bot.total_pnl_all = 0.0
+    bot.batch_entry_size = None
     bot.clear_all_persisted_files()
     be.save_capital(bot.capital, 0, 0.0)
+    be.save_batch_entry_size(None)
     db.set_meta("reset_at", db.now_iso())
     db.set_meta("initial_balance", str(bot.capital))
     db.set_meta("total_running_seconds", "0")
