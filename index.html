@@ -202,9 +202,9 @@ ${thin}
         const tp1=sig.action==="LONG"?cur>=sig.take_profit1:cur<=sig.take_profit1;
         const tp2=sig.action==="LONG"?cur>=sig.take_profit2:cur<=sig.take_profit2;
         const sl=sig.action==="LONG"?cur<=sig.stop_loss:cur>=sig.stop_loss;
-        // v3.2 — croise avec la position reelle (taille exacte en $) pour
+        // v4.1 — croise avec la position reelle (taille exacte en $) pour
         // afficher le PnL en $ en plus du % — plus parlant pour estimer la
-        // proximite des seuils Max Loss/Quick Profit, qui sont en $.
+        // proximite des seuils SL/TTP, qui sont en % de E.
         const matchTrade = (paper?.open_trades||[]).find(p=>p.coin===sig.coin && p.action===sig.action);
         t += `  Statut      : OUVERT
 `;
@@ -1199,36 +1199,36 @@ Confirmer ?`
               <div>
                 <div style={{fontSize:9,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>TAILLE PAR TRADE (% DU CAPITAL)</div>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <input key={`pct-${config?.position_pct}`} type="number" defaultValue={config?.position_pct||8} min="1" max="50"
+                  <input key={`pct-${config?.position_pct}`} type="number" defaultValue={config?.position_pct||20} min="1" max="50"
                     onBlur={e=>{apiCall("/api/config","PUT",{position_pct:Number(e.target.value)},token).then(()=>{loadData();flashSave("pct");});}}
                     style={{flex:1,background:savedField==="pct"?"#0a1a0a":"#0a0e1a",border:savedField==="pct"?"1px solid #34d399":"1px solid #1e2d4a",borderRadius:6,padding:"8px 10px",color:savedField==="pct"?"#34d399":"#e2e8f0",fontFamily:"inherit",fontSize:12,transition:"all 0.3s"}}/>
                   <span style={{color:"#60a5fa",fontWeight:700,fontSize:14}}>%</span>
                 </div>
-                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>≈ {Math.round((config?.position_pct||5)*10)} USDC sur 1000 USDC · Adaptatif</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>≈ {Math.round((config?.position_pct||20))}% du capital = E, figé pour tout un lot de trades simultanés (voir Trades simultanés max)</div>
               </div>
               <div>
-                <div style={{fontSize:10,color:"#f59e0b",marginBottom:6,fontWeight:700,letterSpacing:1}}>⚡ QUICK PROFIT (USDC)</div>
+                <div style={{fontSize:10,color:"#f59e0b",marginBottom:6,fontWeight:700,letterSpacing:1}}>⚡ TTP - ARMEMENT (% DE E)</div>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <input key={`qp-${config?.quick_profit_usd}`} type="number" min="0.5" max="10" step="0.5" defaultValue={config?.quick_profit_usd||1}
-                    onBlur={e=>{apiCall("/api/config","PUT",{quick_profit_usd:Number(e.target.value)},token).then(()=>{loadData();flashSave("qp");});}}
-                    style={{flex:1,background:savedField==="qp"?"#1a2e0a":"#0a0e1a",border:savedField==="qp"?"1px solid #34d399":"1px solid #f59e0b",borderRadius:6,padding:"8px 10px",color:savedField==="qp"?"#34d399":"#f59e0b",fontFamily:"inherit",fontSize:12,transition:"all 0.3s"}}/>
-                  <span style={{color:"#f59e0b",fontWeight:700,fontSize:14}}>$</span>
+                  <input key={`ttp-${config?.ttp_arm1_pct_of_e}`} type="number" min="0.1" max="10" step="0.1" defaultValue={config?.ttp_arm1_pct_of_e||1.2}
+                    onBlur={e=>{apiCall("/api/config","PUT",{ttp_arm1_pct_of_e:Number(e.target.value)},token).then(()=>{loadData();flashSave("ttp");});}}
+                    style={{flex:1,background:savedField==="ttp"?"#1a2e0a":"#0a0e1a",border:savedField==="ttp"?"1px solid #34d399":"1px solid #f59e0b",borderRadius:6,padding:"8px 10px",color:savedField==="ttp"?"#34d399":"#f59e0b",fontFamily:"inherit",fontSize:12,transition:"all 0.3s"}}/>
+                  <span style={{color:"#f59e0b",fontWeight:700,fontSize:14}}>%</span>
                 </div>
-                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>Fermeture automatique dès ce profit atteint (frais inclus)</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>Trailing Take Profit armé dès ce gain (% de la taille d'entrée E) — réglages fins (seuils suivants) dans l'onglet Paramètres</div>
               </div>
               <div>
-                <div style={{fontSize:10,color:"#f87171",marginBottom:6,fontWeight:700,letterSpacing:1}}>🛡️ MAX LOSS (USDC)</div>
+                <div style={{fontSize:10,color:"#f87171",marginBottom:6,fontWeight:700,letterSpacing:1}}>🛡️ SL (% DE E)</div>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <input key={`ml-${config?.max_loss_usd}`} type="number" min="0.25" max="5" step="0.25" defaultValue={config?.max_loss_usd||0.5}
-                    onBlur={e=>{apiCall("/api/config","PUT",{max_loss_usd:Number(e.target.value)},token).then(()=>{loadData();flashSave("ml");});}}
-                    style={{flex:1,background:savedField==="ml"?"#1a0a0a":"#0a0e1a",border:savedField==="ml"?"1px solid #34d399":"1px solid #f87171",borderRadius:6,padding:"8px 10px",color:savedField==="ml"?"#34d399":"#f87171",fontFamily:"inherit",fontSize:12,transition:"all 0.3s"}}/>
-                  <span style={{color:"#f87171",fontWeight:700,fontSize:14}}>$</span>
+                  <input key={`sl-${config?.sl_pct_of_e}`} type="number" min="0.1" max="10" step="0.1" defaultValue={config?.sl_pct_of_e||1.5}
+                    onBlur={e=>{apiCall("/api/config","PUT",{sl_pct_of_e:Number(e.target.value)},token).then(()=>{loadData();flashSave("sl");});}}
+                    style={{flex:1,background:savedField==="sl"?"#1a0a0a":"#0a0e1a",border:savedField==="sl"?"1px solid #34d399":"1px solid #f87171",borderRadius:6,padding:"8px 10px",color:savedField==="sl"?"#34d399":"#f87171",fontFamily:"inherit",fontSize:12,transition:"all 0.3s"}}/>
+                  <span style={{color:"#f87171",fontWeight:700,fontSize:14}}>%</span>
                 </div>
-                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>Fermeture automatique si perte dépasse ce montant</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>Fermeture automatique si la perte dépasse ce % de la taille d'entrée E</div>
               </div>
               <div>
                 <div style={{fontSize:9,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>TRADES SIMULTANES MAX</div>
-                <input key={`mot-${config?.max_open_trades}`} type="number" defaultValue={config?.max_open_trades||15} min="1" max="30"
+                <input key={`mot-${config?.max_open_trades}`} type="number" defaultValue={config?.max_open_trades||5} min="1" max="30"
                   onChange={e=>apiCall("/api/config","PUT",{max_open_trades:Number(e.target.value)},token).then(loadData)}
                   style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"8px 10px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12}}/>
               </div>
@@ -1421,7 +1421,7 @@ Confirmer ?`
         <div style={{padding:16,maxWidth:700}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
             <div style={{fontSize:11,color:"#94a3b8",lineHeight:1.6}}>
-              Classement en direct de la volatilité (ATR%) des 30 marchés — plus c'est haut, plus le mouvement de prix est fort en ce moment, donc plus le potentiel de capture est élevé avec tes seuils actuels (Max Loss/Quick Profit). <b>Clique sur une ligne pour activer/désactiver l'actif immédiatement</b> (sans repasser par l'onglet Marchés).
+              Classement en direct de la volatilité (ATR%) des 30 marchés — plus c'est haut, plus le mouvement de prix est fort en ce moment, donc plus le potentiel de capture est élevé avec tes seuils actuels (SL/TTP en % de E). <b>Clique sur une ligne pour activer/désactiver l'actif immédiatement</b> (sans repasser par l'onglet Marchés).
             </div>
             <button onClick={()=>apiCall("/api/volatility","GET",null,token).then(r=>setVolatility(r)).catch(e=>alert("Erreur: "+e.message))}
               style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 12px",color:"#60a5fa",fontSize:10,cursor:"pointer",whiteSpace:"nowrap",marginLeft:10}}>
@@ -1675,9 +1675,9 @@ Confirmer ?`
                   const tp1=sig.action==="LONG"?cur>=sig.take_profit1:cur<=sig.take_profit1;
                   const tp2=sig.action==="LONG"?cur>=sig.take_profit2:cur<=sig.take_profit2;
                   const sl=sig.action==="LONG"?cur<=sig.stop_loss:cur>=sig.stop_loss;
-                  // v3.2 — croise avec la position reelle (taille exacte en $)
+                  // v4.1 — croise avec la position reelle (taille exacte en $)
                   // pour afficher le PnL en $ — bien plus parlant pour estimer
-                  // la proximite des seuils Max Loss/Quick Profit (en $, pas en %).
+                  // la proximite des seuils SL/TTP (exprimes en % de E).
                   const matchPos = (positions||[]).find(p=>p.coin===sig.coin && p.action===sig.action);
                   const pnlUsd = matchPos ? matchPos.pnl : null;
                   return (
