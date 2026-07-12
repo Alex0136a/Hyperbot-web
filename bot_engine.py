@@ -21,6 +21,7 @@ NOTES :
 
 import time
 import threading
+import json
 from datetime import datetime
 from collections import deque
 import queue
@@ -251,19 +252,31 @@ CONFIG = {
     "EXCHANGE_SAFETY_SL_MULT": 2.0,  # SL pose sur Hyperliquid = ce multiple du SL bot (filet de securite uniquement)
 
     # Trailing Take Profit (TTP), entierement en % de E :
-    #   - Arme des que le gain latent atteint TTP_ARM1_PCT_OF_E (defaut 1.2%
+    #   - Arme des que le gain latent atteint TTP_ARM1_PCT_OF_E (defaut 2.0%
     #     de E). Le seuil de sortie est alors fixe a TTP_LOCK1_PCT_OF_E
-    #     (defaut 1.0% de E) tant que le pic n a pas atteint TTP_ARM2_PCT_OF_E.
-    #   - Des que le PIC atteint TTP_ARM2_PCT_OF_E (defaut 1.5% de E), le
-    #     seuil de sortie devient pic - TTP_TRAIL_GAP_PCT_OF_E (defaut 0.3%
+    #     (defaut 1.6% de E) tant que le pic n a pas atteint TTP_ARM2_PCT_OF_E.
+    #   - Des que le PIC atteint TTP_ARM2_PCT_OF_E (defaut 2.6% de E), le
+    #     seuil de sortie devient pic - TTP_TRAIL_GAP_PCT_OF_E (defaut 0.5%
     #     de E) et continue de suivre le pic a l infini (trailing pur) —
     #     note : au moment ou le pic atteint exactement TTP_ARM2_PCT_OF_E, ce
     #     seuil vaut deja TTP_ARM2_PCT_OF_E - TTP_TRAIL_GAP_PCT_OF_E, cense
-    #     etre egal a TTP_LOCK2 souhaite (1.5 - 0.3 = 1.2% de E par defaut).
-    "TTP_ARM1_PCT_OF_E":      1.2,
-    "TTP_LOCK1_PCT_OF_E":     1.0,
-    "TTP_ARM2_PCT_OF_E":      1.5,
-    "TTP_TRAIL_GAP_PCT_OF_E": 0.3,
+    #     etre egal a TTP_LOCK2 souhaite (2.6 - 0.5 = 2.1% de E par defaut).
+    #
+    # v4.2 — FIX ratio gain/perte : les seuils v4.0 (arm1=1.2%, SL=1.5%)
+    # donnaient un ratio gain/perte de 0.8, ce qui exige un taux de reussite
+    # >= 55.6% juste pour l equilibre (1/(1+0.8)). Analyse d une session
+    # reelle : taux de reussite observe ~47%, donc perte mecanique garantie
+    # malgre une logique de sortie qui fonctionnait comme prevu. Le SL est
+    # laisse inchange (c est un plafond de risque, pas un levier de gain) ;
+    # le 1er seuil du TTP est releve de 1.2% a 2.0% -> ratio gain/perte
+    # 2.0/1.5 = 1.33, seuil d equilibre 1/(1+1.33) = 42.9% — sous le taux de
+    # reussite observe, ce qui rend l esperance de gain positive avec le
+    # meme taux de reussite mesure. A retester en paper sur un nouvel
+    # echantillon de trades avant de reappliquer en live.
+    "TTP_ARM1_PCT_OF_E":      2.0,
+    "TTP_LOCK1_PCT_OF_E":     1.6,
+    "TTP_ARM2_PCT_OF_E":      2.6,
+    "TTP_TRAIL_GAP_PCT_OF_E": 0.5,
 
     # ── Score de confiance (0-100%) — filtre final avant toute entree ───────
     # Poids relatifs des confirmations optionnelles disponibles pour un signal.
@@ -1364,7 +1377,15 @@ class SymbolState:
             pnl_pct = (exit_price - p["entry"]) / p["entry"] * 100
         else:
             pnl_pct = (p["entry"] - exit_price) / p["entry"] * 100
-        pnl_usd = p["size"] * pnl_pct / 100
+        # v4.2 — FIX CRITIQUE : le levier n etait JAMAIS applique ici, alors
+        # qu il l est bien dans le calcul de declenchement (_manage_position_impl).
+        # Consequence : un trade a levier x3 se fermait au bon moment (le
+        # declenchement SL/TTP, lui, appliquait deja correctement le levier),
+        # mais le PnL $ enregistre/comptabilise ne reflétait que le levier x1
+        # — sous-evaluant le vrai gain/perte jusqu a 3x sur les trades a
+        # levier x2/x3, faussant le capital suivi par le bot ET (en mode live)
+        # le desynchronisant du solde reel Hyperliquid.
+        pnl_usd = p["size"] * p.get("leverage", 1) * pnl_pct / 100
         self.pnl    += pnl_usd
         self.trades += 1
         win = pnl_usd > 0
@@ -1958,9 +1979,17 @@ class BotEngine:
         entrent dans le score : celui-ci est ramene sur 100% du poids
         REELLEMENT disponible, pas du poids total theorique. Ainsi un actif
         sans EMA_MID configure n est pas penalise pour un indicateur absent.
+
+        v4.2 — Retourne aussi le detail brut (quel indicateur etait
+        confirme/disponible), pour permettre une calibration ulterieure des
+        poids a partir des resultats REELS des trades (voir api.py, module
+        de calibration de la confiance). Sans cette trace, impossible de
+        savoir apres coup si "MACD confirme" a effectivement correle avec
+        des trades gagnants sur CE bot, sur CES marches.
         """
         w = cfg.get("CONFIDENCE_WEIGHTS", {})
         earned, available = 0.0, 0.0
+        breakdown = {}
 
         def add(key, confirmed):
             nonlocal earned, available
@@ -1968,6 +1997,7 @@ class BotEngine:
             available += pts
             if confirmed:
                 earned += pts
+            breakdown[key] = bool(confirmed)
 
         add("macd", macd_bull if direction == "long" else macd_bear)
         add("bollinger", bb_low_ok if direction == "long" else bb_up_ok)
@@ -1994,9 +2024,8 @@ class BotEngine:
         elif direction == "short" and support is not None:
             add("breakout", price < support)
 
-        if available <= 0:
-            return 100.0  # aucun critere optionnel disponible -> ne bloque pas artificiellement
-        return earned / available * 100
+        score = 100.0 if available <= 0 else earned / available * 100
+        return score, breakdown
 
     def _get_confidence_threshold(self, ticker):
         base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
@@ -3117,7 +3146,7 @@ class BotEngine:
                 return
             # Filtre Confiance — dernier filtre, score 0-100% des confirmations
             # optionnelles disponibles. Seuil dynamique par actif (v3.1).
-            confidence = self._score_confidence(
+            confidence, conf_breakdown = self._score_confidence(
                 "long", macd_bull, macd_bear, bb_low_ok, bb_up_ok, vol_ok,
                 ema200, ema_mid, price, momentum_pct, momentum_threshold,
                 state.consec_bull, min_consec, cfg,
@@ -3232,7 +3261,7 @@ class BotEngine:
                 return
             # Filtre Confiance — dernier filtre, score 0-100% des confirmations
             # optionnelles disponibles. Seuil dynamique par actif (v3.1).
-            confidence = self._score_confidence(
+            confidence, conf_breakdown = self._score_confidence(
                 "short", macd_bull, macd_bear, bb_low_ok, bb_up_ok, vol_ok,
                 ema200, ema_mid, price, momentum_pct, momentum_threshold,
                 state.consec_bear, min_consec, cfg,
@@ -3296,7 +3325,7 @@ class BotEngine:
         self._pending_candidates.append({
             "symbol": symbol, "ticker": ticker, "state": state, "signal": signal,
             "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": rsi_mode,
-            "reasons": reasons, "prices": prices,
+            "reasons": reasons, "prices": prices, "conf_breakdown": conf_breakdown,
         })
 
     def _finalize_open(self, cand):
@@ -3306,9 +3335,10 @@ class BotEngine:
         _process — inchangee, juste deplacee pour s executer apres le
         classement par confiance de fin de cycle."""
         cfg = self.cfg
-        symbol, ticker, state, signal, price, confidence, rsi, rsi_mode, reasons, prices = (
+        symbol, ticker, state, signal, price, confidence, rsi, rsi_mode, reasons, prices, conf_breakdown = (
             cand["symbol"], cand["ticker"], cand["state"], cand["signal"], cand["price"],
-            cand["confidence"], cand["rsi"], cand["rsi_mode"], cand["reasons"], cand["prices"]
+            cand["confidence"], cand["rsi"], cand["rsi_mode"], cand["reasons"], cand["prices"],
+            cand.get("conf_breakdown", {})
         )
 
         # ── v4.1 — Dimensionnement par LOT (batch) ──────────────────────────
@@ -3420,6 +3450,7 @@ class BotEngine:
             "take_profit2": tp2_price,
             "rsi": round(rsi, 1) if rsi is not None else None,
             "entry_reasons": " | ".join(reasons),
+            "confidence_breakdown": json.dumps(conf_breakdown),
         })
 
     def _finalize_pending_candidates(self):
