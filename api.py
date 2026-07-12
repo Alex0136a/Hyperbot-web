@@ -164,6 +164,7 @@ def _consume_events():
                     entry_price=data["entry"], stop_loss=data["stop_loss"],
                     take_profit1=data["take_profit1"], take_profit2=data["take_profit2"],
                     rsi=data.get("rsi"), entry_reasons=data.get("entry_reasons"),
+                    confidence_breakdown=data.get("confidence_breakdown"),
                 )
             elif etype == "trade":
                 ticker = be.ticker_from_slot_key(data.get("symbol", ""))
@@ -403,6 +404,89 @@ def _public_config() -> Dict[str, Any]:
 def _apply_and_persist(key: str, value):
     cfg[key] = value
     db.set_config_override(key, value)
+
+
+def _analyze_confidence_calibration(min_samples: int = 15):
+    """v4.2 — Calibration du score de confiance a partir des resultats REELS
+    des trades clotures, plutot que de se fier a des poids choisis a la
+    main dans le code. Pour chaque indicateur present dans
+    confidence_breakdown (macd, bollinger, volume, ema200, ema_mid,
+    momentum, consec, breakout), compare le taux de reussite des trades ou
+    il etait confirme vs ceux ou il ne l etait pas :
+      - Si l ecart (lift) est positif et mesure sur un echantillon
+        suffisant dans les deux groupes (>= min_samples), l indicateur a
+        vraiment un pouvoir predictif sur CE bot / CES marches -> son poids
+        est augmente proportionnellement.
+      - Si l ecart est nul/negatif, l indicateur n apporte rien de mesurable
+        ici -> son poids diminue (mais ne tombe jamais a zero strict, pour
+        eviter de l exclure definitivement sur un echantillon qui pourrait
+        encore etre bruite).
+      - Si l echantillon est insuffisant dans un des deux groupes, on ne
+        touche PAS a son poids actuel (mieux vaut garder le defaut que de
+        calibrer sur trop peu de donnees) et on le signale clairement.
+    Le total de points redistribue entre indicateurs calibrables est
+    preserve, pour que les seuils de confiance en % (65%, 75%, 85%...)
+    gardent le meme ordre de grandeur apres calibration.
+    """
+    trades = db.get_all_closed_trades()
+    rows = []
+    for t in trades:
+        bd = t.get("confidence_breakdown")
+        pnl = t.get("pnl")
+        if not bd or pnl is None:
+            continue
+        try:
+            bd = json.loads(bd)
+        except Exception:
+            continue
+        rows.append({"breakdown": bd, "win": pnl > 0})
+
+    total = len(rows)
+    overall_wins = sum(1 for r in rows if r["win"])
+    overall_win_rate = round(overall_wins / total * 100, 1) if total else 0.0
+
+    current_weights = cfg.get("CONFIDENCE_WEIGHTS", {})
+    all_keys = set(current_weights.keys())
+    for r in rows:
+        all_keys |= set(r["breakdown"].keys())
+
+    per_indicator = {}
+    for key in sorted(all_keys):
+        true_rows  = [r for r in rows if r["breakdown"].get(key) is True]
+        false_rows = [r for r in rows if r["breakdown"].get(key) is False]
+        n_true, n_false = len(true_rows), len(false_rows)
+        wr_true  = round(sum(1 for r in true_rows if r["win"]) / n_true * 100, 1) if n_true else None
+        wr_false = round(sum(1 for r in false_rows if r["win"]) / n_false * 100, 1) if n_false else None
+        enough_data = n_true >= min_samples and n_false >= min_samples
+        lift = round(wr_true - wr_false, 1) if enough_data else None
+        per_indicator[key] = {
+            "current_weight": current_weights.get(key, 0),
+            "n_true": n_true, "n_false": n_false,
+            "win_rate_true": wr_true, "win_rate_false": wr_false,
+            "lift_pts": lift, "enough_data": enough_data,
+        }
+
+    calibratable = [k for k, v in per_indicator.items() if v["enough_data"]]
+    new_weights = dict(current_weights)
+    if calibratable:
+        pool = sum(current_weights.get(k, 0) for k in calibratable)
+        raw = {k: max(per_indicator[k]["lift_pts"], 0) + 0.5 for k in calibratable}
+        raw_total = sum(raw.values())
+        for k in calibratable:
+            new_weights[k] = round(raw[k] / raw_total * pool, 1) if raw_total > 0 else current_weights.get(k, 0)
+    for k, v in per_indicator.items():
+        v["suggested_weight"] = new_weights.get(k, v["current_weight"])
+
+    return {
+        "total_closed_trades": len(trades),
+        "trades_with_breakdown": total,
+        "overall_win_rate": overall_win_rate,
+        "min_samples_required": min_samples,
+        "indicators": per_indicator,
+        "current_weights": current_weights,
+        "suggested_weights": new_weights,
+        "ready_to_calibrate": len(calibratable) > 0,
+    }
 
 
 def _open_positions() -> List[Dict[str, Any]]:
@@ -789,6 +873,36 @@ def reset_confidence(email: str = Depends(require_user)):
     une reinitialisation complete destructrice."""
     bot.reset_confidence_penalties()
     return {"ok": True, "message": "Toutes les penalites de confiance ont ete reinitialisees — chaque actif repart au seuil de base."}
+
+
+@app.get("/api/confidence/calibration")
+def get_confidence_calibration(email: str = Depends(require_user)):
+    """v4.2 — Analyse (sans rien modifier) le pouvoir predictif reel de
+    chaque indicateur du score de confiance, a partir de l historique des
+    trades clotures. Permet de voir AVANT d appliquer si les poids actuels
+    sont corrects, sur-estimes ou sous-estimes par rapport aux resultats
+    reellement observes sur ce compte."""
+    return _analyze_confidence_calibration()
+
+
+@app.post("/api/confidence/calibration/apply")
+def apply_confidence_calibration(email: str = Depends(require_user)):
+    """v4.2 — Recalcule ET applique les poids de CONFIDENCE_WEIGHTS a partir
+    de l historique reel. Refuse si aucun indicateur n a assez de donnees
+    (evite de calibrer sur du bruit). Les indicateurs sans assez de donnees
+    gardent leur poids actuel inchange ; seuls ceux avec un echantillon
+    suffisant (>= min_samples dans les deux groupes) sont ajustes."""
+    print(f"[AUDIT] /api/confidence/calibration/apply appele par {email} a {datetime.now(timezone.utc).isoformat()}")
+    analysis = _analyze_confidence_calibration()
+    if not analysis["ready_to_calibrate"]:
+        raise HTTPException(
+            400,
+            f"Pas assez de donnees pour calibrer (minimum {analysis['min_samples_required']} trades "
+            f"dans chaque groupe 'confirme'/'non confirme' par indicateur). "
+            f"Trades clotures avec detail disponible : {analysis['trades_with_breakdown']}."
+        )
+    _apply_and_persist("CONFIDENCE_WEIGHTS", analysis["suggested_weights"])
+    return {"ok": True, "applied_weights": analysis["suggested_weights"], "analysis": analysis}
 
 
 @app.get("/api/bot/logs")
