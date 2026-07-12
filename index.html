@@ -342,6 +342,8 @@ function App() {
   const [finnhubKey, setFinnhubKey] = useState("");
   const [hlApiKey, setHlApiKey] = useState("");
   const [hlWallet, setHlWallet] = useState("");
+  const [confCalibration, setConfCalibration] = useState(null);
+  const [confCalibrationLoading, setConfCalibrationLoading] = useState(false);
   const walletPrefilled = useRef(false);
   // v3.2 — FIX : le champ Wallet ne se pre-remplissait jamais apres un
   // rechargement de page (uniquement mis a jour par la saisie manuelle),
@@ -1090,6 +1092,67 @@ Confirmer ?`
             }} style={{width:"100%",background:"transparent",border:"1px solid #c084fc",borderRadius:7,padding:"9px",color:"#c084fc",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer",marginBottom:8}}>
               🎯 Réinitialiser les pénalités de confiance
             </button>
+            <button onClick={async()=>{
+              setConfCalibrationLoading(true);
+              try{
+                const r = await apiCall("/api/confidence/calibration","GET",null,token);
+                setConfCalibration(r);
+              }catch(e){alert("Erreur: "+e.message);}
+              setConfCalibrationLoading(false);
+            }} style={{width:"100%",background:"transparent",border:"1px solid #34d399",borderRadius:7,padding:"9px",color:"#34d399",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer",marginBottom:8}}>
+              📊 {confCalibrationLoading?"Analyse en cours...":"Analyser la fiabilité de la confiance"}
+            </button>
+
+            {confCalibration && (
+              <div style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:12,marginBottom:8,fontSize:10}}>
+                <div style={{color:"#94a3b8",marginBottom:8}}>
+                  {confCalibration.trades_with_breakdown} trade(s) clôturé(s) analysé(s) · Taux de réussite global : <b style={{color:"#e2e8f0"}}>{confCalibration.overall_win_rate}%</b> · Minimum requis par indicateur : {confCalibration.min_samples_required} trades dans chaque groupe
+                </div>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:9}}>
+                  <thead>
+                    <tr style={{color:"#64748b",textAlign:"left"}}>
+                      <th style={{padding:"4px 6px"}}>Indicateur</th>
+                      <th style={{padding:"4px 6px"}}>Poids actuel</th>
+                      <th style={{padding:"4px 6px"}}>Poids suggéré</th>
+                      <th style={{padding:"4px 6px"}}>Réussite si confirmé</th>
+                      <th style={{padding:"4px 6px"}}>Réussite sinon</th>
+                      <th style={{padding:"4px 6px"}}>Échantillon</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(confCalibration.indicators||{}).map(([key,v])=>(
+                      <tr key={key} style={{borderTop:"1px solid #1e2d4a"}}>
+                        <td style={{padding:"4px 6px",color:"#e2e8f0",fontWeight:700}}>{key}</td>
+                        <td style={{padding:"4px 6px",color:"#94a3b8"}}>{v.current_weight}</td>
+                        <td style={{padding:"4px 6px",fontWeight:700,color:v.enough_data?(v.suggested_weight>v.current_weight?"#34d399":v.suggested_weight<v.current_weight?"#f87171":"#94a3b8"):"#64748b"}}>
+                          {v.enough_data?v.suggested_weight:"—"}
+                        </td>
+                        <td style={{padding:"4px 6px",color:"#94a3b8"}}>{v.win_rate_true!=null?`${v.win_rate_true}%`:"—"}</td>
+                        <td style={{padding:"4px 6px",color:"#94a3b8"}}>{v.win_rate_false!=null?`${v.win_rate_false}%`:"—"}</td>
+                        <td style={{padding:"4px 6px",color:v.enough_data?"#34d399":"#f59e0b"}}>
+                          {v.n_true}✓/{v.n_false}✗ {v.enough_data?"":"(insuffisant)"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <button onClick={async()=>{
+                  if(!confCalibration.ready_to_calibrate){
+                    alert("Pas encore assez de données pour calibrer un seul indicateur. Continuez à trader (paper ou live) puis relancez l'analyse plus tard.");
+                    return;
+                  }
+                  if(!window.confirm("Appliquer les poids suggérés au système de confiance ?\n\nSeuls les indicateurs avec assez de données seront modifiés ; les autres gardent leur poids actuel.")) return;
+                  try{
+                    const r = await apiCall("/api/confidence/calibration/apply","POST",null,token);
+                    alert("Poids appliqués avec succès.");
+                    setConfCalibration(r.analysis);
+                    loadData();
+                  }catch(e){alert("Erreur: "+e.message);}
+                }} style={{width:"100%",background:confCalibration.ready_to_calibrate?"#065f46":"transparent",border:"1px solid #34d399",borderRadius:7,padding:"8px",color:"#34d399",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer",marginTop:10}}>
+                  ✅ Appliquer les poids suggérés
+                </button>
+              </div>
+            )}
             <button onClick={async()=>{
               if(!window.confirm("REINITIALISATION COMPLETE\n\nCela va effacer :\n- Tous les signaux\n- Tous les trades paper\n- L'historique\n- Le portefeuille (repart a 100 USDC)\n\nVotre cle API et wallet Hyperliquid NE seront PAS effaces.\n\nEtes-vous sur ?")) return;
               try{
