@@ -1398,6 +1398,16 @@ class SymbolState:
             "ts": datetime.now().timestamp(),
         }
         self.closed_trades.append(trade)
+        # v4.3 — FIX FUITE MEMOIRE : seul un historique glissant de 24h est
+        # necessaire ici (voir trades_last_24h, seule utilisation reelle de
+        # cette liste). Sans purge, self.closed_trades grossit indefiniment
+        # pendant toute la duree de vie du process — sur un bot tournant
+        # 24h/24 pendant des jours/semaines, ca finit par declencher un
+        # "Out of memory" sur Railway. L historique COMPLET reste de toute
+        # facon persiste en base (voir db.py / get_all_closed_trades), donc
+        # rien n est perdu en purgeant cette copie en memoire.
+        cutoff_24h = datetime.now().timestamp() - 86400
+        self.closed_trades = [t for t in self.closed_trades if t.get("ts", 0) >= cutoff_24h]
         self.position = None
         self.peak_price = None
         self.trailing_tp_active = False
