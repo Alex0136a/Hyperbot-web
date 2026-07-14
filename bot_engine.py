@@ -107,7 +107,7 @@ CONFIG = {
                            "ARB", "AVAX", "LINK", "OP", "INJ", "TIA", "TAO",
                            "WIF", "JUP", "PENDLE", "EIGEN", "RENDER", "SUI",
                            "APT", "SEI", "DOGE", "XRP", "NEAR", "FTM", "AAVE",
-                           "UNI", "CRV", "SUSHI", "GMX"],
+                           "UNI", "CRV", "SUSHI", "GMX", "POL"],
 
     # v3.2 — Nouvelle approche : les 30 marches sont TOUS eligibles par
     # defaut (le bot pioche librement parmi eux selon le score de
@@ -115,11 +115,15 @@ CONFIG = {
     # reelle est desormais MAX_OPEN_TRADES (15 par defaut). L onglet
     # Marchés reste disponible pour EXCLURE manuellement un actif si
     # besoin, mais ce n est plus une liste a activer un par un.
-    "ACTIVE_COINS":       ["BTC", "PAXG", "ETH", "SOL", "BNB", "HYPE",
+    # v4.3 — PAXG desactive par defaut (reste dans SYMBOLS/ALL_COINS : simple
+    # exclusion, reactivable en un clic depuis l onglet Marches sans toucher
+    # au code). POL (ex-MATIC — Polygon a migre son ticker vers POL en 2024,
+    # "MATIC" n existe plus sur Hyperliquid) ajoute a la place.
+    "ACTIVE_COINS":       ["BTC", "ETH", "SOL", "BNB", "HYPE",
                            "ARB", "AVAX", "LINK", "OP", "INJ", "TIA", "TAO",
                            "WIF", "JUP", "PENDLE", "EIGEN", "RENDER", "SUI",
                            "APT", "SEI", "DOGE", "XRP", "NEAR", "FTM", "AAVE",
-                           "UNI", "CRV", "SUSHI", "GMX"],
+                           "UNI", "CRV", "SUSHI", "GMX", "POL"],
     "MAX_OPEN_TRADES":    5,
 
     # Tous les symboles sont des perpétuels — SPOT_SYMBOLS vide
@@ -1944,7 +1948,7 @@ class BotEngine:
             "PAXG": 4290, "XRP": 1.17, "DOGE": 0.09, "ADA": 0.17,
             "AVAX": 6.81, "LINK": 8.03, "DOT": 0.99, "UNI": 2.58,
             "NEAR": 2.24, "AAVE": 64.41, "LTC": 43.21, "BCH": 211.0,
-            "HYPE": 64.57, "TAO": 217.0, "HBAR": 0.08,
+            "HYPE": 64.57, "TAO": 217.0, "HBAR": 0.08, "POL": 0.08,
         }
         return {
             k: base.get(ticker_from_slot_key(k), 10.0) * (1 + random.uniform(-0.005, 0.005))
