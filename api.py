@@ -782,10 +782,10 @@ def put_config(body: ConfigBody, email: str = Depends(require_user)):
     # pouvoir effacer celui deja configure (defense en profondeur, en plus
     # du fix cote interface qui ne l envoie plus vide).
     if body.wallet:
-        _apply_and_persist("WALLET_ADDRESS", body.wallet)
+        _apply_and_persist("WALLET_ADDRESS", be._clean_hex_secret(body.wallet))
 
     if body.api_key and not body.api_key.startswith("****"):
-        _apply_and_persist("PRIVATE_KEY", body.api_key)
+        _apply_and_persist("PRIVATE_KEY", be._clean_hex_secret(body.api_key))
 
     if body.active_coins is not None:
         valid = [c for c in body.active_coins if c in SUPPORTED_TICKERS]
@@ -828,9 +828,9 @@ def put_hyperliquid(body: HyperliquidBody, email: str = Depends(require_user)):
     wallet = body.wallet or body.hl_wallet
     api_key = body.api_key or body.hl_api_key
     if wallet:
-        _apply_and_persist("WALLET_ADDRESS", wallet)
+        _apply_and_persist("WALLET_ADDRESS", be._clean_hex_secret(wallet))
     if api_key and not api_key.startswith("****"):
-        _apply_and_persist("PRIVATE_KEY", api_key)
+        _apply_and_persist("PRIVATE_KEY", be._clean_hex_secret(api_key))
     return {"ok": True, "note": "Prend effet au prochain demarrage du bot (arret puis demarrage)."}
 
 
