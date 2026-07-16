@@ -344,6 +344,9 @@ function App() {
   const [hlWallet, setHlWallet] = useState("");
   const [confCalibration, setConfCalibration] = useState(null);
   const [confCalibrationLoading, setConfCalibrationLoading] = useState(false);
+  const [assetProba, setAssetProba] = useState(null);
+  const [assetProbaLoading, setAssetProbaLoading] = useState(false);
+  const [assetProbaMinTrades, setAssetProbaMinTrades] = useState(5);
   const walletPrefilled = useRef(false);
   // v3.2 — FIX : le champ Wallet ne se pre-remplissait jamais apres un
   // rechargement de page (uniquement mis a jour par la saisie manuelle),
@@ -761,6 +764,83 @@ Confirmer ?`
 
       {tab==="historique" && (
         <div style={{padding:16}}>
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:assetProba?12:0}}>
+              <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                <button onClick={async()=>{
+                  setAssetProbaLoading(true);
+                  try{
+                    const r = await apiCall(`/api/confidence/by-asset?min_trades=${assetProbaMinTrades}`,"GET",null,token);
+                    setAssetProba(r);
+                  }catch(e){alert("Erreur: "+e.message);}
+                  setAssetProbaLoading(false);
+                }} style={{background:"#34d399",border:"none",borderRadius:7,padding:"10px 16px",color:"#04120c",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer"}}>
+                  📊 {assetProbaLoading?"Analyse en cours...":"Probabilité de réussite par actif"}
+                </button>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <span style={{fontSize:11,color:"#94a3b8"}}>Échantillon minimum :</span>
+                  <input type="number" min="1" max="200" value={assetProbaMinTrades}
+                    onChange={async(e)=>{
+                      const v = Math.max(1, Number(e.target.value)||1);
+                      setAssetProbaMinTrades(v);
+                      if(assetProba){
+                        // v4.4 — dynamique : si des resultats sont deja affiches,
+                        // on les recalcule automatiquement des que l utilisateur
+                        // change ce seuil, sans avoir a recliquer sur le bouton.
+                        setAssetProbaLoading(true);
+                        try{
+                          const r = await apiCall(`/api/confidence/by-asset?min_trades=${v}`,"GET",null,token);
+                          setAssetProba(r);
+                        }catch(err){}
+                        setAssetProbaLoading(false);
+                      }
+                    }}
+                    style={{width:60,background:"#0a0e1a",border:"1px solid #334155",borderRadius:6,padding:"6px 8px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12}}/>
+                  <span style={{fontSize:11,color:"#94a3b8"}}>trades</span>
+                </div>
+              </div>
+              {assetProba && (
+                <button onClick={()=>setAssetProba(null)} style={{background:"transparent",border:"1px solid #334155",borderRadius:6,padding:"5px 10px",color:"#94a3b8",fontSize:11,cursor:"pointer"}}>
+                  ✕ Fermer
+                </button>
+              )}
+            </div>
+
+            {assetProba && (
+              <div>
+                <div style={{fontSize:13,color:"#94a3b8",marginBottom:10}}>
+                  {assetProba.total_closed_trades} trade(s) clôturé(s) au total · Échantillon fiable à partir de {assetProba.min_trades_required} trades par actif
+                </div>
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse"}}>
+                    <thead>
+                      <tr style={{color:"#64748b",textAlign:"left",borderBottom:"2px solid #1e2d4a"}}>
+                        <th style={{padding:"8px 10px",fontSize:14}}>Actif</th>
+                        <th style={{padding:"8px 10px",fontSize:14}}>Trades</th>
+                        <th style={{padding:"8px 10px",fontSize:14}}>Probabilité de réussite</th>
+                        <th style={{padding:"8px 10px",fontSize:14}}>PnL net</th>
+                        <th style={{padding:"8px 10px",fontSize:14}}>Confiance moy. à l'entrée</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {assetProba.assets.map(a=>(
+                        <tr key={a.coin} style={{borderBottom:"1px solid #1e2d4a",opacity:a.enough_data?1:0.5}}>
+                          <td style={{padding:"10px",fontSize:18,fontWeight:800,color:"#f1f5f9"}}>{a.coin}</td>
+                          <td style={{padding:"10px",fontSize:16,color:"#94a3b8"}}>{a.n_trades}</td>
+                          <td style={{padding:"10px",fontSize:20,fontWeight:800,color:a.win_rate>=55?"#34d399":a.win_rate>=45?"#fbbf24":"#f87171"}}>
+                            {a.win_rate}% {!a.enough_data && <span style={{fontSize:12,fontWeight:400,color:"#f59e0b"}}>(échantillon insuffisant)</span>}
+                          </td>
+                          <td style={{padding:"10px",fontSize:16,fontWeight:700,color:a.net_pnl>=0?"#34d399":"#f87171"}}>{a.net_pnl>=0?"+":""}{a.net_pnl} USDC</td>
+                          <td style={{padding:"10px",fontSize:16,color:"#94a3b8"}}>{a.avg_confidence!=null?`${a.avg_confidence}%`:"—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+
           {signals.filter(s=>s.action!=="WAIT").length===0
             ? <div style={{textAlign:"center",padding:50,color:"#94a3b8"}}>{isRunning?"Analyse IA en cours...":"Aucun signal — démarrez le bot"}</div>
             : signals.filter(s=>s.action!=="WAIT").map(sig=>(
