@@ -382,6 +382,7 @@ def _public_config() -> Dict[str, Any]:
         "max_open_trades": cfg.get("MAX_OPEN_TRADES", 15),
         "auto_activate_confidence_pct": cfg.get("AUTO_ACTIVATE_CONFIDENCE_PCT", 80.0),
         "active_coins": cfg.get("ACTIVE_COINS") or SUPPORTED_TICKERS,
+        "manual_exclude_coins": cfg.get("MANUAL_EXCLUDE_COINS", []),
         "supported_coins": SUPPORTED_TICKERS,
         "wallet": cfg.get("WALLET_ADDRESS", ""),
         "api_key": _mask(cfg.get("PRIVATE_KEY", "")),
@@ -748,7 +749,21 @@ def put_config(body: ConfigBody, email: str = Depends(require_user)):
     if body.active_coins is not None:
         valid = [c for c in body.active_coins if c in SUPPORTED_TICKERS]
         ignored = [c for c in body.active_coins if c not in SUPPORTED_TICKERS]
+        old_active = set(cfg.get("ACTIVE_COINS") or SUPPORTED_TICKERS)
+        new_active = set(valid)
+        removed = old_active - new_active  # actifs que l utilisateur vient de desactiver
+        added    = new_active - old_active  # actifs que l utilisateur vient de reactiver
+        # v4.3 — une desactivation manuelle depuis l onglet Marches est une
+        # exclusion EXPLICITE : elle doit tenir meme si la confiance de cet
+        # actif remonte tres haut ensuite (voir _gate_active_or_auto_activate
+        # dans bot_engine.py). Une reactivation manuelle leve cette exclusion.
+        manual_exclude = set(cfg.get("MANUAL_EXCLUDE_COINS", []))
+        manual_exclude |= removed
+        manual_exclude -= added
         _apply_and_persist("ACTIVE_COINS", valid)
+        _apply_and_persist("MANUAL_EXCLUDE_COINS", sorted(manual_exclude))
+        if removed:
+            _push_log("warn", f"Actifs desactives manuellement (ne seront plus jamais auto-reactives) : {', '.join(sorted(removed))}")
         if ignored:
             _push_log("warn", f"Actifs ignores (non supportes par ce bot) : {', '.join(ignored)}")
 
