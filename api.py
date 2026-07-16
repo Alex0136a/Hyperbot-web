@@ -490,6 +490,47 @@ def _analyze_confidence_calibration(min_samples: int = 15):
     }
 
 
+def _analyze_confidence_by_asset(min_trades: int = 5):
+    """v4.4 — Probabilite de reussite REELLE par actif, calculee a partir de
+    l historique des trades clotures (pas une estimation theorique). Pour
+    chaque actif ayant deja des trades clotures : nombre de trades, taux de
+    reussite, PnL net, confiance moyenne a l entree. min_trades est
+    ajustable dynamiquement (parametre de requete) : plus il est bas, plus
+    d actifs apparaissent tot, mais avec un echantillon moins fiable."""
+    trades = db.get_all_closed_trades()
+    by_coin = {}
+    for t in trades:
+        pnl = t.get("pnl")
+        coin = t.get("coin")
+        if pnl is None or not coin:
+            continue
+        by_coin.setdefault(coin, []).append(t)
+
+    results = []
+    for coin, rows in by_coin.items():
+        n = len(rows)
+        wins = [r for r in rows if (r.get("pnl") or 0) > 0]
+        win_rate = round(len(wins) / n * 100, 1) if n else 0.0
+        net = round(sum(r.get("pnl") or 0 for r in rows), 2)
+        confs = [r.get("confidence") for r in rows if r.get("confidence") is not None]
+        avg_conf = round(sum(confs) / len(confs), 1) if confs else None
+        results.append({
+            "coin": coin,
+            "n_trades": n,
+            "win_rate": win_rate,
+            "net_pnl": net,
+            "avg_confidence": avg_conf,
+            "enough_data": n >= min_trades,
+        })
+
+    results.sort(key=lambda r: (r["enough_data"], r["win_rate"]), reverse=True)
+    return {
+        "min_trades_required": min_trades,
+        "total_closed_trades": len(trades),
+        "assets": results,
+    }
+
+
 def _open_positions() -> List[Dict[str, Any]]:
     out = []
     for slot_key, state in bot.states.items():
@@ -918,6 +959,14 @@ def apply_confidence_calibration(email: str = Depends(require_user)):
         )
     _apply_and_persist("CONFIDENCE_WEIGHTS", analysis["suggested_weights"])
     return {"ok": True, "applied_weights": analysis["suggested_weights"], "analysis": analysis}
+
+
+@app.get("/api/confidence/by-asset")
+def get_confidence_by_asset(min_trades: int = 5, email: str = Depends(require_user)):
+    """v4.4 — Probabilite de reussite reelle par actif, a partir de
+    l historique des trades clotures. min_trades ajustable dynamiquement
+    depuis l interface (bouton dans l onglet Historique)."""
+    return _analyze_confidence_by_asset(min_trades=min_trades)
 
 
 @app.get("/api/bot/logs")
