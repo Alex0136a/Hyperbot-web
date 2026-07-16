@@ -373,8 +373,22 @@ CONFIG = {
 #   export HYPERBOT_PRIVATE_KEY=0x...
 #   export HYPERBOT_WALLET_ADDRESS=0x...
 import os as _os_env
-CONFIG["PRIVATE_KEY"]    = _os_env.environ.get("HYPERBOT_PRIVATE_KEY", CONFIG["PRIVATE_KEY"])
-CONFIG["WALLET_ADDRESS"] = _os_env.environ.get("HYPERBOT_WALLET_ADDRESS", CONFIG["WALLET_ADDRESS"])
+
+def _clean_hex_secret(value):
+    """v4.4 — Nettoie une cle privee / adresse wallet collee depuis
+    l environnement ou l interface : espaces/tabulations/retours a la ligne
+    en trop (tres frequent lors d un copier-coller dans les variables
+    Railway) et guillemets englobants accidentels. Ne touche PAS au
+    contenu hexadecimal lui-meme."""
+    if not value:
+        return value
+    v = value.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+        v = v[1:-1].strip()
+    return v
+
+CONFIG["PRIVATE_KEY"]    = _clean_hex_secret(_os_env.environ.get("HYPERBOT_PRIVATE_KEY", CONFIG["PRIVATE_KEY"]))
+CONFIG["WALLET_ADDRESS"] = _clean_hex_secret(_os_env.environ.get("HYPERBOT_WALLET_ADDRESS", CONFIG["WALLET_ADDRESS"]))
 CONFIG["FINNHUB_API_KEY"] = _os_env.environ.get("HYPERBOT_FINNHUB_API_KEY", CONFIG["FINNHUB_API_KEY"])
 
 # ─────────────────────────────────────────────
@@ -669,6 +683,8 @@ def connect_hyperliquid(private_key, wallet_address):
     de succes, sinon un message texte precis (type + message de l exception)
     — evite d avaler silencieusement la vraie cause d un echec de connexion
     (mauvais format de cle, dependance manquante, probleme reseau, etc.)."""
+    private_key = _clean_hex_secret(private_key)
+    wallet_address = _clean_hex_secret(wallet_address)
     try:
         from hyperliquid.info import Info
         from hyperliquid.exchange import Exchange
@@ -684,6 +700,17 @@ def connect_hyperliquid(private_key, wallet_address):
     except Exception as e:
         import traceback
         detail = f"{type(e).__name__}: {e}"
+        if "non-hexadecimal digit" in str(e).lower():
+            # v4.4 — cause la plus frequente en pratique : un caractere
+            # invisible (espace, retour a la ligne, guillemet) reste colle
+            # a la cle malgre le nettoyage ci-dessus, ou la valeur collee
+            # n est tout simplement pas une cle privee hexadecimale valide
+            # (ex: phrase mnemonique au lieu de la cle, cle tronquee lors du
+            # copier-coller, ou variable Railway mal renseignee).
+            detail += (" — verifiez que HYPERBOT_PRIVATE_KEY contient bien la cle "
+                       "privee hexadecimale complete (64 caracteres apres le '0x' "
+                       "eventuel), sans espace ni guillemet, et pas une phrase de "
+                       "recuperation (seed phrase).")
         print(f"[connect_hyperliquid] {detail}")
         print(traceback.format_exc())
         return None, None, detail
@@ -2094,49 +2121,20 @@ class BotEngine:
         return 1
 
     def _gate_active_or_auto_activate(self, ticker, confidence, direction):
-        """Decide si un signal valide (confiance deja >= seuil normal) peut
-        reellement s executer, en fonction de la selection ACTIVE_COINS :
-        - Si l actif est deja actif -> laisse passer normalement.
-        - v4.3 — Si l actif a ete EXPLICITEMENT desactive par l utilisateur
-          (MANUAL_EXCLUDE_COINS, depuis l onglet Marches) -> bloque
-          TOUJOURS, meme si l opportunite semble excellente. Avant ce fix,
-          l auto-activation pouvait reactiver et retrader un actif que
-          l utilisateur venait pourtant de desactiver a la main (ex: un
-          actif perdant a repetition) des que la confiance depassait 80% —
-          annulant silencieusement son choix. Seule une reactivation
-          manuelle depuis l interface peut desormais lever cette exclusion.
-        - Si l actif est INACTIF (mais pas exclu manuellement) et que la
-          confiance atteint le seuil d auto-activation
-          (AUTO_ACTIVATE_CONFIDENCE_PCT, defaut 80%) -> l active
-          automatiquement (persiste via evenement pour l API web), logue
-          une alarme bien visible, et laisse le trade s executer.
-        - Sinon (inactif, confiance insuffisante pour l auto-activation) ->
-          bloque silencieusement (pas de bruit pour chaque actif inactif a
-          chaque cycle).
-        Retourne True si le trade peut s executer, False sinon.
+        """v4.4 — Auto-activation SUPPRIMEE sur demande explicite : un actif
+        non selectionne dans ACTIVE_COINS reste desormais TOUJOURS bloque,
+        quelle que soit la confiance du signal (meme 99%). Avant ce fix, le
+        bot pouvait activer tout seul un actif inactif des que la confiance
+        depassait AUTO_ACTIVATE_CONFIDENCE_PCT (80% par defaut) — ce
+        comportement n est plus souhaite : seule une activation manuelle
+        depuis l onglet Marches doit permettre a un actif de trader.
+        Retourne True si le trade peut s executer (actif deja dans
+        ACTIVE_COINS), False sinon.
         """
         active_coins = self.cfg.get("ACTIVE_COINS")
         if active_coins is None or ticker in active_coins:
             return True  # pas de restriction, ou deja actif
-
-        if ticker in self.cfg.get("MANUAL_EXCLUDE_COINS", []):
-            return False  # exclusion manuelle explicite — jamais d auto-activation
-
-        auto_threshold = self.cfg.get("AUTO_ACTIVATE_CONFIDENCE_PCT", 80.0)
-        if confidence < auto_threshold:
-            return False  # inactif et pas assez fort pour justifier une auto-activation
-
-        # ── Auto-activation : opportunite trop belle pour la laisser passer ──
-        new_list = list(active_coins) + [ticker]
-        self.cfg["ACTIVE_COINS"] = new_list
-        self.emit("log", {
-            "msg": f"🚨 OPPORTUNITE FORTE [{ticker}] {direction.upper()} a {confidence:.0f}% de confiance (seuil auto-activation {auto_threshold:.0f}%) — actif AUTO-ACTIVE et trade en cours d execution.",
-            "level": "warn"
-        })
-        # Persistance cote API web (bot_engine.py ne touche jamais directement
-        # a la base de donnees, pour rester independant/portable).
-        self.emit("active_coins_auto_added", {"ticker": ticker, "active_coins": new_list})
-        return True
+        return False  # inactif -> bloque, quelle que soit la confiance
 
     def _register_max_loss(self, ticker, entry_confidence=None):
         """Apres un Max Loss / SL securite sur un actif, on releve son seuil
