@@ -126,6 +126,14 @@ CONFIG = {
                            "UNI", "CRV", "SUSHI", "GMX", "POL"],
     "MAX_OPEN_TRADES":    5,
 
+    # v4.3 — Actifs EXPLICITEMENT desactives par l utilisateur depuis l onglet
+    # Marches (ex: un actif perdant a repetition). Contrairement a une simple
+    # absence de ACTIVE_COINS, un actif ici ne peut JAMAIS etre auto-active
+    # par l opportunite forte (_gate_active_or_auto_activate) — seule une
+    # reactivation manuelle depuis l interface peut l en retirer. PAXG n est
+    # PAS ici par defaut (simple exclusion "douce", auto-activable).
+    "MANUAL_EXCLUDE_COINS": [],
+
     # Tous les symboles sont des perpétuels — SPOT_SYMBOLS vide
     # PAXG remplace XAUT spot : index 187 sur Hyperliquid, levier max x10
     # Ticker direct "PAXG" dans l API (pas de @XXX)
@@ -1913,6 +1921,23 @@ class BotEngine:
             except Exception as e:
                 print(f"[SAVE-5S] Erreur : {e}")
 
+    def _persist_capital_snapshot(self):
+        """v4.3 — FIX RESILIENCE CRITIQUE : sauvegarde le capital courant
+        (baseline de la session + PnL realise jusqu ici) APRES CHAQUE TRADE,
+        pas seulement lors d un arret propre (stop()). Avant ce fix, un
+        redemarrage non-propre (crash, kill Railway, "Out of memory"...)
+        perdait TOUT le PnL realise de la session en cours de la
+        comptabilite persistee du capital — meme si chaque trade individuel
+        restait, lui, correctement enregistre en base (SQLite, via db.py,
+        independamment de ce mecanisme). Symptome observe concretement :
+        le capital affiche (~96$, -3.98%) ne correspondait plus a la somme
+        reelle de tous les trades enregistres (net +0.35$ depuis le debut),
+        a cause d un redemarrage force pendant la fuite memoire corrigee en
+        v4.3 (voir close_position/self.closed_trades)."""
+        total_pnl = sum(s.pnl for s in self.states.values())
+        current_capital = self.cfg["CAPITAL_USD"] + total_pnl
+        save_capital(current_capital, self.sessions, self.total_pnl_all)
+
     def stop(self):
         self.running = False
         # Sauvegarde l etat des indicateurs AVANT toute autre chose, avec un
@@ -2072,10 +2097,19 @@ class BotEngine:
         """Decide si un signal valide (confiance deja >= seuil normal) peut
         reellement s executer, en fonction de la selection ACTIVE_COINS :
         - Si l actif est deja actif -> laisse passer normalement.
-        - Si l actif est INACTIF mais que la confiance atteint le seuil
-          d auto-activation (AUTO_ACTIVATE_CONFIDENCE_PCT, defaut 80%) ->
-          l active automatiquement (persiste via evenement pour l API web),
-          logue une alarme bien visible, et laisse le trade s executer.
+        - v4.3 — Si l actif a ete EXPLICITEMENT desactive par l utilisateur
+          (MANUAL_EXCLUDE_COINS, depuis l onglet Marches) -> bloque
+          TOUJOURS, meme si l opportunite semble excellente. Avant ce fix,
+          l auto-activation pouvait reactiver et retrader un actif que
+          l utilisateur venait pourtant de desactiver a la main (ex: un
+          actif perdant a repetition) des que la confiance depassait 80% —
+          annulant silencieusement son choix. Seule une reactivation
+          manuelle depuis l interface peut desormais lever cette exclusion.
+        - Si l actif est INACTIF (mais pas exclu manuellement) et que la
+          confiance atteint le seuil d auto-activation
+          (AUTO_ACTIVATE_CONFIDENCE_PCT, defaut 80%) -> l active
+          automatiquement (persiste via evenement pour l API web), logue
+          une alarme bien visible, et laisse le trade s executer.
         - Sinon (inactif, confiance insuffisante pour l auto-activation) ->
           bloque silencieusement (pas de bruit pour chaque actif inactif a
           chaque cycle).
@@ -2084,6 +2118,9 @@ class BotEngine:
         active_coins = self.cfg.get("ACTIVE_COINS")
         if active_coins is None or ticker in active_coins:
             return True  # pas de restriction, ou deja actif
+
+        if ticker in self.cfg.get("MANUAL_EXCLUDE_COINS", []):
+            return False  # exclusion manuelle explicite — jamais d auto-activation
 
         auto_threshold = self.cfg.get("AUTO_ACTIVATE_CONFIDENCE_PCT", 80.0)
         if confidence < auto_threshold:
@@ -2127,17 +2164,34 @@ class BotEngine:
             self._save_confidence_thresholds()
 
     def _register_win(self, ticker):
-        """Apres une sortie positive (Quick Profit ou Trailing TP), on rend
-        IMMEDIATEMENT et INTEGRALEMENT la confiance de base a cet actif
-        (reset complet, pas une simple decroissance de -5%) — un gain efface
-        entierement la mefiance accumulee suite a d eventuelles pertes
-        precedentes."""
+        """v4.3 — Apres une sortie positive (TTP), la confiance minimum
+        requise redescend D UN PAS (CONFIDENCE_STEP_PCT) vers la base, PAS
+        d un coup jusqu a la base. Avant ce fix, un unique petit gain (meme
+        de quelques centimes) effacait INTEGRALEMENT toute la mefiance
+        accumulee suite a plusieurs pertes — sur un marche agite/en range,
+        ca cree un cycle perte-perte-perte-petit gain(reset total)-perte...
+        qui empeche la protection de vraiment s accumuler et laisse le bot
+        retrader activement un actif difficile toute une journee (observe
+        concretement le 15/07 : 78 trades, 30.8% de reussite, pire journee).
+        Desormais il faut autant de gains que de pertes essuyees pour
+        redescendre completement a la base — une seule bonne surprise ne
+        suffit plus a effacer un historique de pertes recentes."""
         base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
+        step = self.cfg.get("CONFIDENCE_STEP_PCT", 5.0)
         current = self.confidence_thresholds.get(ticker, base)
         if current > base:
-            self.confidence_thresholds[ticker] = base
-            self.confidence_threshold_set_at.pop(ticker, None)
-            self.emit("log", {"msg": f"[{ticker}] Confiance minimale requise reinitialisee a {base:.0f}% (apres gain Quick Profit/Trailing TP)", "level": "ok"})
+            from datetime import timezone
+            new_threshold = max(current - step, base)
+            if new_threshold <= base:
+                self.confidence_thresholds[ticker] = base
+                self.confidence_threshold_set_at.pop(ticker, None)
+            else:
+                self.confidence_thresholds[ticker] = new_threshold
+                # on rafraichit l horodatage : le decay (v3.2) continue de
+                # s appliquer normalement depuis ce nouveau palier, pas
+                # depuis l ancien plus eleve.
+                self.confidence_threshold_set_at[ticker] = datetime.now(timezone.utc)
+            self.emit("log", {"msg": f"[{ticker}] Confiance minimale requise abaissee a {self.confidence_thresholds.get(ticker, base):.0f}% (apres gain Quick Profit/Trailing TP — descente progressive, pas totale)", "level": "ok"})
             self._save_confidence_thresholds()
 
     def _decay_confidence_thresholds(self):
@@ -2732,6 +2786,7 @@ class BotEngine:
             self.emit("log", {"msg": f"[{ticker}] STOP LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (seuil -{sl_pct_of_e:.2f}% de E=${E:.2f} = -${-sl_usd:.2f})", "level": "loss"})
             self._register_max_loss(ticker, pos.get("confidence"))
             self._save_open_positions()  # sauvegarde en live ET en paper
+            self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
             return
 
         # ── 2. SL Hyperliquid — filet de securite (ne devrait presque jamais
@@ -2747,6 +2802,7 @@ class BotEngine:
             self.emit("log", {"msg": f"[{ticker}] SL SECURITE @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
             self._register_max_loss(ticker, pos.get("confidence"))
             self._save_open_positions()  # sauvegarde en live ET en paper
+            self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
             return
 
         # ── 3. Trailing Take Profit — entierement en % de E ─────────────────
@@ -2790,6 +2846,7 @@ class BotEngine:
                 self._register_win(ticker)
                 self.emit("log", {"msg": f"[{ticker}] TTP SORTIE @ ${price:.2f} | pic +${state.peak_pnl_usd:.2f} ({state.peak_pnl_usd/E*100 if E else 0:.2f}% de E) | PnL: +${pnl:.2f}", "level": "win"})
                 self._save_open_positions()  # sauvegarde en live ET en paper
+                self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
                 return
             else:
                 self.emit("log", {"msg": f"[{ticker}] ${price:.2f} TTP actif | latent +${pnl_usd:.2f} ({pnl_usd/E*100 if E else 0:.2f}% de E) | pic +${state.peak_pnl_usd:.2f} (sortie si repli a ${current_lock:.2f})", "level": "dim"})
