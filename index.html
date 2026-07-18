@@ -31,7 +31,23 @@ async function apiCall(path, method="GET", body=null, token=null) {
     method, headers, body: body ? JSON.stringify(body) : null
   });
   const data = await r.json();
-  if (!r.ok) throw new Error(data.detail || "Erreur serveur");
+  if (!r.ok) {
+    // v4.4 — FIX : un token invalide/expire (401) faisait rester l app
+    // bloquee sur "Chargement..." indefiniment — Promise.all (voir loadData)
+    // rejetait a la premiere erreur, donc setConfig() n etait jamais appele
+    // et l ecran de connexion ne revenait jamais tout seul. On detecte
+    // desormais ce cas precis : on efface le token perime et on recharge la
+    // page, ce qui ramene automatiquement a l ecran de connexion.
+    if (r.status === 401) {
+      localStorage.removeItem("hb_token");
+      localStorage.removeItem("hb_email");
+      if (!window.__hbRedirectingToLogin) {
+        window.__hbRedirectingToLogin = true;
+        window.location.reload();
+      }
+    }
+    throw new Error(data.detail || "Erreur serveur");
+  }
   return data;
 }
 
