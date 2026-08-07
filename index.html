@@ -363,6 +363,8 @@ function App() {
   const [assetProba, setAssetProba] = useState(null);
   const [assetProbaLoading, setAssetProbaLoading] = useState(false);
   const [assetProbaMinTrades, setAssetProbaMinTrades] = useState(5);
+  const [wsEvents, setWsEvents] = useState(null);
+  const [wsEventsOpen, setWsEventsOpen] = useState(false);
   const walletPrefilled = useRef(false);
   // v3.2 — FIX : le champ Wallet ne se pre-remplissait jamais apres un
   // rechargement de page (uniquement mis a jour par la saisie manuelle),
@@ -650,6 +652,45 @@ Confirmer ?`
         </div>
         <div style={{background:clock.marketColor+"22",border:`1px solid ${clock.marketColor}`,borderRadius:20,padding:"4px 12px"}}>
           <span style={{fontSize:11,fontWeight:700,color:clock.marketColor}}>{clock.market}</span>
+        </div>
+        <div style={{position:"relative"}}>
+          <div onClick={async()=>{
+              const willOpen = !wsEventsOpen;
+              setWsEventsOpen(willOpen);
+              if(willOpen){
+                try{ const r = await apiCall("/api/ws/events","GET",null,token); setWsEvents(r); }
+                catch(e){ /* silencieux — badge reste sur l etat connu via config */ }
+              }
+            }}
+            style={{cursor:"pointer",background:(config?.ws_healthy?"#34d399":config?.ws_connected?"#fbbf24":"#f87171")+"22",border:`1px solid ${config?.ws_healthy?"#34d399":config?.ws_connected?"#fbbf24":"#f87171"}`,borderRadius:20,padding:"4px 12px"}}>
+            <span style={{fontSize:11,fontWeight:700,color:config?.ws_healthy?"#34d399":config?.ws_connected?"#fbbf24":"#f87171"}}>
+              {config?.ws_healthy?"🟢 WEBSOCKET OK":config?.ws_connected?"🟡 WEBSOCKET INSTABLE":"🔴 WEBSOCKET DÉCONNECTÉ"}
+            </span>
+          </div>
+          {wsEventsOpen && (
+            <div style={{position:"absolute",top:"110%",right:0,zIndex:50,width:420,maxHeight:400,overflowY:"auto",background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,boxShadow:"0 8px 24px rgba(0,0,0,0.5)"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <span style={{fontSize:12,fontWeight:700,color:"#60a5fa"}}>Journal WebSocket — 7 derniers jours</span>
+                <span onClick={()=>setWsEventsOpen(false)} style={{cursor:"pointer",color:"#94a3b8",fontSize:14}}>✕</span>
+              </div>
+              {!wsEvents ? (
+                <div style={{color:"#94a3b8",fontSize:12,textAlign:"center",padding:20}}>Chargement...</div>
+              ) : wsEvents.events.length===0 ? (
+                <div style={{color:"#34d399",fontSize:12,textAlign:"center",padding:20}}>✅ Aucune coupure WebSocket sur les 7 derniers jours.</div>
+              ) : (
+                wsEvents.events.map(ev=>{
+                  const color = ev.kind==="disconnected"||ev.kind==="connect_failed"||ev.kind==="reconnect_failed" ? "#f87171"
+                              : ev.kind==="restored"||ev.kind==="connected"||ev.kind==="reconnect_success" ? "#34d399" : "#94a3b8";
+                  return (
+                    <div key={ev.id} style={{borderLeft:`2px solid ${color}`,paddingLeft:8,marginBottom:8}}>
+                      <div style={{fontSize:10,color:"#64748b"}}>{new Date(ev.created_at).toLocaleString("fr-FR")}</div>
+                      <div style={{fontSize:12,color}}>{ev.message}</div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
         </div>
       </div>
 
