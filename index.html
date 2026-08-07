@@ -380,6 +380,8 @@ function App() {
   }, [config]);
   const [filterWeekend, setFilterWeekend] = useState(true);
   const [filterMacro, setFilterMacro] = useState(false);
+  const [accumulationEnabled, setAccumulationEnabled] = useState(false);
+  const [accumulationRequireTrend, setAccumulationRequireTrend] = useState(false);
   const [dailyStats, setDailyStats] = useState(null);
   const [advancedSettings, setAdvancedSettings] = useState(null);
   const [advancedEdits, setAdvancedEdits] = useState({});
@@ -446,6 +448,8 @@ function App() {
       setFilterHours(!!cfg?.filter_hours);
       setFilterWeekend(!!cfg?.filter_weekend);
       setFilterMacro(!!cfg?.filter_macro);
+      setAccumulationEnabled(!!cfg?.accumulation_enabled);
+      setAccumulationRequireTrend(!!cfg?.accumulation_require_trend_confirm);
       // v3.2 — FIX : le champ s appelle finnhub_key (masque), pas finnhub_key_preview
       if(cfg?.finnhub_key) setFinnhubKey(cfg.finnhub_key);
       setBotLogs(botLogsRes?.logs||[]);
@@ -780,6 +784,7 @@ Confirmer ?`
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
                   <div style={{display:"flex",gap:8,alignItems:"center"}}>
                     <span style={{background:sig.action==="LONG"?"#052e16":"#2d0a0a",color:sig.action==="LONG"?"#34d399":"#f87171",padding:"3px 9px",borderRadius:5,fontSize:12,fontWeight:700}}>{sig.action}</span>
+                    {sig.strategy==="accumulation" && <span style={{background:"#1a0a2e",color:"#c084fc",padding:"3px 9px",borderRadius:5,fontSize:11,fontWeight:700}}>🎯 ACCUMULATION</span>}
                     <span style={{fontSize:15,fontWeight:700,color:"#f1f5f9"}}>{sig.coin}/USDC</span>
                     <span style={{background:"#1e2d4a",color:"#60a5fa",padding:"1px 7px",borderRadius:4,fontSize:10}}>x{sig.leverage}</span>
                   </div>
@@ -905,6 +910,7 @@ Confirmer ?`
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
                   <div style={{display:"flex",gap:8,alignItems:"center"}}>
                     <span style={{background:sig.action==="LONG"?"#052e16":"#2d0a0a",color:sig.action==="LONG"?"#34d399":"#f87171",padding:"3px 9px",borderRadius:5,fontSize:12,fontWeight:700}}>{sig.action}</span>
+                    {sig.strategy==="accumulation" && <span style={{background:"#1a0a2e",color:"#c084fc",padding:"3px 9px",borderRadius:5,fontSize:11,fontWeight:700}}>🎯 ACCUMULATION</span>}
                     <span style={{fontSize:15,fontWeight:700,color:"#f1f5f9"}}>{sig.coin}/USDC</span>
                     <span style={{background:"#1e2d4a",color:"#60a5fa",padding:"1px 7px",borderRadius:4,fontSize:10}}>x{sig.leverage}</span>
                   </div>
@@ -1152,6 +1158,42 @@ Confirmer ?`
               }} style={{background:filterMacro?"#2d0a0a":"#0f1629",border:filterMacro?"1px solid #f87171":"1px solid #1e2d4a",borderRadius:6,padding:"6px 14px",color:filterMacro?"#f87171":"#475569",fontSize:10,cursor:"pointer",fontWeight:700}}>
                 {filterMacro?"🔴 ACTIF":"⭕ OFF"}
               </button>
+            </div>
+          </div>
+
+          <div style={{background:"#0f1629",border:"1px solid #7c3aed",borderRadius:10,padding:16,marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#c084fc",marginBottom:4}}>🎯 Mode Accumulation</div>
+            <div style={{fontSize:10,color:"#94a3b8",marginBottom:14}}>
+              Stratégie indépendante : LONG près du support, SHORT près de la résistance — en plus des signaux normaux, avec son propre plafond de trades. Même SL/TP/TTP et calcul de levier que le bot normal.
+            </div>
+
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #1e2d4a"}}>
+              <div>
+                <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700}}>Activer le mode Accumulation</div>
+                <div style={{fontSize:10,color:"#94a3b8"}}>Génère des trades en plus des signaux RSI/tendance habituels</div>
+              </div>
+              <button onClick={()=>{
+                const v=!accumulationEnabled; setAccumulationEnabled(v);
+                apiCall("/api/config/filters","PUT",{"accumulation_enabled":v},token).then(loadData);
+              }} style={{background:accumulationEnabled?"#1a0a2e":"#0a0e1a",border:accumulationEnabled?"1px solid #c084fc":"1px solid #1e2d4a",borderRadius:6,padding:"6px 14px",color:accumulationEnabled?"#c084fc":"#475569",fontSize:10,cursor:"pointer",fontWeight:700}}>
+                {accumulationEnabled?"✅ ACTIF":"⭕ OFF"}
+              </button>
+            </div>
+
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0"}}>
+              <div>
+                <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700}}>Exiger la confirmation de tendance</div>
+                <div style={{fontSize:10,color:"#94a3b8"}}>LONG près du support accepté seulement si tendance EMA200 haussière (et inversement pour SHORT) — sinon logique de rebond pure, indépendante de la tendance</div>
+              </div>
+              <button onClick={()=>{
+                const v=!accumulationRequireTrend; setAccumulationRequireTrend(v);
+                apiCall("/api/config/filters","PUT",{"accumulation_require_trend_confirm":v},token).then(loadData);
+              }} style={{background:accumulationRequireTrend?"#1a0a2e":"#0a0e1a",border:accumulationRequireTrend?"1px solid #c084fc":"1px solid #1e2d4a",borderRadius:6,padding:"6px 14px",color:accumulationRequireTrend?"#c084fc":"#475569",fontSize:10,cursor:"pointer",fontWeight:700}}>
+                {accumulationRequireTrend?"✅ ACTIF":"⭕ OFF"}
+              </button>
+            </div>
+            <div style={{fontSize:9,color:"#94a3b8",marginTop:10}}>
+              Réglages fins (trades simultanés max, proximité support/résistance) dans l'onglet Paramètres.
             </div>
           </div>
 
