@@ -945,21 +945,37 @@ Confirmer ?`
       {tab==="marches" && (
         <div style={{padding:16,maxWidth:700}}>
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16}}>
-            <div style={{fontSize:13,fontWeight:700,color:"#60a5fa",marginBottom:12}}>Gestion des marchés</div>
+            <div style={{fontSize:13,fontWeight:700,color:"#60a5fa",marginBottom:4}}>Gestion des marchés</div>
+            <div style={{fontSize:10,color:"#94a3b8",marginBottom:12}}>Un clic sur une carte active/désactive l'actif immédiatement — pas besoin de sauvegarder.</div>
             <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
               {[{l:"Tout activer",v:ALL_COINS},{l:"BTC + ETH",v:["BTC","ETH"]},{l:"Top 5",v:["BTC","ETH","SOL","BNB","HYPE"]}].map((x,i)=>(
-                <button key={i} onClick={()=>setActiveCoins(x.v)}
+                <button key={i} onClick={async()=>{
+                  setActiveCoins(x.v);
+                  try{ await apiCall("/api/config","PUT",{active_coins:x.v},token); loadData(); }
+                  catch(e){ alert("Erreur: "+e.message); }
+                }}
                   style={{background:"transparent",border:"1px solid #1e2d4a",borderRadius:6,padding:"5px 12px",color:"#60a5fa",fontSize:11}}>
                   {x.l}
                 </button>
               ))}
-              <button onClick={()=>setActiveCoins([])} style={{background:"transparent",border:"1px solid #1e2d4a",borderRadius:6,padding:"5px 12px",color:"#94a3b8",fontSize:11}}>Tout désactiver</button>
+              <button onClick={async()=>{
+                setActiveCoins([]);
+                try{ await apiCall("/api/config","PUT",{active_coins:[]},token); loadData(); }
+                catch(e){ alert("Erreur: "+e.message); }
+              }} style={{background:"transparent",border:"1px solid #1e2d4a",borderRadius:6,padding:"5px 12px",color:"#94a3b8",fontSize:11}}>Tout désactiver</button>
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:16}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
               {ALL_COINS.map(coin=>{
                 const on=activeCoins.includes(coin);
                 return (
-                  <div key={coin} onClick={()=>setActiveCoins(p=>on?p.filter(c=>c!==coin):[...p,coin])}
+                  <div key={coin} onClick={async()=>{
+                      const newList = on ? activeCoins.filter(c=>c!==coin) : [...activeCoins, coin];
+                      setActiveCoins(newList);
+                      try{
+                        await apiCall("/api/config","PUT",{active_coins:newList},token);
+                        loadData();
+                      }catch(e){ alert("Erreur: "+e.message); }
+                    }}
                     style={{background:on?"linear-gradient(135deg,#0f2352,#1a1440)":"#0a0e1a",border:`2px solid ${on?"#3b82f6":"#1e2d4a"}`,borderRadius:8,padding:"10px 12px",cursor:"pointer",opacity:on?1:0.45,boxShadow:on?"0 0 12px rgba(59,130,246,0.45)":"none",transition:"all 0.15s"}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                       <span style={{fontWeight:800,color:on?"#93c5fd":"#64748b"}}>{on?"● ":""}{coin}</span>
@@ -972,9 +988,6 @@ Confirmer ?`
                 );
               })}
             </div>
-            <button onClick={saveConfig} style={{width:"100%",background:"linear-gradient(135deg,#1d4ed8,#7c3aed)",border:"none",borderRadius:8,padding:"10px",color:"#fff",fontWeight:700,fontSize:12}}>
-              💾 Sauvegarder la sélection
-            </button>
           </div>
         </div>
       )}
