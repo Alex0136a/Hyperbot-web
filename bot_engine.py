@@ -143,6 +143,29 @@ CONFIG = {
     # PAS ici par defaut (simple exclusion "douce", auto-activable).
     "MANUAL_EXCLUDE_COINS": [],
 
+    # ── Mode ACCUMULATION (v4.8) ─────────────────────────────────────────
+    # Strategie INDEPENDANTE de la logique RSI/tendance habituelle : entre
+    # un LONG quand le prix est proche du SUPPORT recent, un SHORT quand il
+    # est proche de la RESISTANCE recente — logique de rebond/rejet, plutot
+    # que de suivi de tendance. Fonctionne EN PLUS des signaux normaux (pas
+    # a leur place), avec son propre plafond de trades simultanes
+    # (ACCUMULATION_MAX_TRADES, separe de MAX_OPEN_TRADES). Meme moteur de
+    # sortie que le bot normal : SL/TP/TTP et calcul du levier prudent
+    # identiques (voir _manage_position_impl, _compute_prudent_leverage).
+    # Chaque trade issu de ce mode est marque "strategy": "accumulation"
+    # (logs, evenements, historique) pour rester bien distinct des trades
+    # normaux.
+    "ACCUMULATION_ENABLED":              False,
+    "ACCUMULATION_MAX_TRADES":           3,     # plafond de trades Accumulation simultanes, independant de MAX_OPEN_TRADES
+    "ACCUMULATION_PROXIMITY_PCT":        1.0,   # "proche" du support/resistance = a moins de ce % de distance
+    # Confirmation de tendance optionnelle : si activee, un LONG pres du
+    # support n est accepte QUE si la tendance de fond (EMA200) est deja
+    # haussiere (achat du repli dans une tendance, pas un pari de
+    # retournement pur) — et inversement pour un SHORT pres de la
+    # resistance. Desactivee par defaut : logique de rebond/rejet pure,
+    # independante de la tendance de fond.
+    "ACCUMULATION_REQUIRE_TREND_CONFIRM": False,
+
     # Tous les symboles sont des perpétuels — SPOT_SYMBOLS vide
     # PAXG remplace XAUT spot : index 187 sur Hyperliquid, levier max x10
     # Ticker direct "PAXG" dans l API (pas de @XXX)
@@ -287,10 +310,10 @@ CONFIG = {
     #     1.5%), le seuil de sortie devient pic - TTP_TRAIL_GAP_PRICE_PCT
     #     (defaut 0.3%) et continue de suivre le pic a l infini (trailing
     #     pur, sans plafond).
-    "TTP_ARM1_PRICE_PCT":      1.5,
-    "TTP_LOCK1_PRICE_PCT":     1.2,
-    "TTP_ARM2_PRICE_PCT":      2.0,
-    "TTP_TRAIL_GAP_PRICE_PCT": 0.4,
+    "TTP_ARM1_PRICE_PCT":      1.0,
+    "TTP_LOCK1_PRICE_PCT":     0.8,
+    "TTP_ARM2_PRICE_PCT":      1.3,
+    "TTP_TRAIL_GAP_PRICE_PCT": 0.3,
 
     # ── Score de confiance (0-100%) — filtre final avant toute entree ───────
     # Poids relatifs des confirmations optionnelles disponibles pour un signal.
@@ -1400,11 +1423,12 @@ class SymbolState:
         self.consec_bull     = 0
         self.consec_bear     = 0
 
-    def open_position(self, ptype, entry, sl, tp, size, confidence=None, leverage=1):
+    def open_position(self, ptype, entry, sl, tp, size, confidence=None, leverage=1, strategy="normal"):
         self.position = {
             "type": ptype, "entry": entry, "sl": sl, "tp": tp,
             "size": size, "opened_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
             "confidence": confidence, "leverage": leverage,
+            "strategy": strategy,  # v4.8 — "normal" ou "accumulation", pour differencier partout en aval
         }
         self.peak_price = entry
         self.trailing_tp_active = False
@@ -1463,6 +1487,7 @@ class SymbolState:
             "type": p["type"], "entry": p["entry"], "exit": exit_price,
             "pnl": pnl_usd, "reason": reason, "win": win,
             "ts": datetime.now().timestamp(),
+            "strategy": p.get("strategy", "normal"),  # v4.8
         }
         self.closed_trades.append(trade)
         # v4.3 — FIX FUITE MEMOIRE : seul un historique glissant de 24h est
@@ -1715,6 +1740,10 @@ class BotEngine:
         # classes par confiance decroissante puis executes en priorite dans
         # cet ordre jusqu a MAX_OPEN_TRADES (voir _finalize_pending_candidates).
         self._pending_candidates = []
+        # v4.8 — File d attente separee pour les candidats du mode
+        # Accumulation (independante des candidats normaux, plafond propre
+        # ACCUMULATION_MAX_TRADES — voir _finalize_pending_accumulation_candidates).
+        self._pending_accumulation_candidates = []
         # Cache du calendrier CPI Finnhub (evite d appeler l API a chaque cycle)
         self._cpi_events = []
         self._cpi_last_fetch = None
@@ -2137,6 +2166,9 @@ class BotEngine:
         (plus une valeur fixe globale). Trois garde-fous cumulatifs :
         1. JAMAIS de levier en mode "reversal" — un pari a contre-courant
            est deja plus risque par nature, pas besoin d en rajouter.
+           v4.8 — le mode Accumulation (rsi_mode="accumulation") est
+           desormais traite comme "trend" ici, sur demande explicite : meme
+           calcul de levier que le bot normal, pas de restriction propre.
         2. JAMAIS de levier sur un actif actuellement en "penalite" (son
            seuil de confiance dynamique est deja releve suite a une perte
            recente) — pas de raison de prendre plus de risque sur un actif
@@ -2144,7 +2176,7 @@ class BotEngine:
         3. Sinon, levier croissant avec la force du signal, plafonne a x3 :
            65-74% confiance -> x1 | 75-84% -> x2 | 85%+ -> x3.
         """
-        if rsi_mode != "trend":
+        if rsi_mode not in ("trend", "accumulation"):
             return 1
         base_threshold = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
         if self.confidence_thresholds.get(ticker, base_threshold) > base_threshold:
@@ -2762,10 +2794,12 @@ class BotEngine:
                     continue
 
                 self._pending_candidates = []
+                self._pending_accumulation_candidates = []
                 for sym in cfg["SYMBOLS"]:
                     if sym in prices:
                         self._process_with_timeout(sym, prices[sym])
                 self._finalize_pending_candidates()
+                self._finalize_pending_accumulation_candidates()
 
                 self._save_open_positions()
                 self._save_confidence_thresholds()
@@ -2835,6 +2869,7 @@ class BotEngine:
         # E = taille de l entree (avant levier) — base du SL uniquement (le
         # TP, lui, raisonne desormais en % de mouvement de prix, voir plus bas)
         E = pos["size"]
+        strat_tag = "🎯 " if pos.get("strategy") == "accumulation" else ""  # v4.8 — visible dans les logs de sortie
 
         # ── PnL latent en $ ───────────────────────────────────────────────
         if pos["type"] == "long":
@@ -2855,7 +2890,7 @@ class BotEngine:
             if mode == "live" and self.exchange:
                 close_order(self.exchange, ticker, pos, self.cfg)
             self.emit("trade", trade)
-            self.emit("log", {"msg": f"[{ticker}] STOP LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (seuil -{sl_pct_of_e:.2f}% de E=${E:.2f} = -${-sl_usd:.2f})", "level": "loss"})
+            self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (seuil -{sl_pct_of_e:.2f}% de E=${E:.2f} = -${-sl_usd:.2f})", "level": "loss"})
             self._register_max_loss(ticker, pos.get("confidence"))
             self._save_open_positions()  # sauvegarde en live ET en paper
             self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
@@ -2871,7 +2906,7 @@ class BotEngine:
             if mode == "live" and self.exchange:
                 close_order(self.exchange, ticker, pos, self.cfg)
             self.emit("trade", trade)
-            self.emit("log", {"msg": f"[{ticker}] SL SECURITE @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
+            self.emit("log", {"msg": f"[{ticker}] {strat_tag}SL SECURITE @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
             self._register_max_loss(ticker, pos.get("confidence"))
             self._save_open_positions()  # sauvegarde en live ET en paper
             self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
@@ -2883,9 +2918,9 @@ class BotEngine:
         # levier : ces seuils sont de vrais % de mouvement de PRIX, et c est
         # le levier qui amplifie librement le $ gagne pour ce meme mouvement.
         leverage = pos.get("leverage", 1)
-        arm1_price_pct  = cfg.get("TTP_ARM1_PRICE_PCT", 1.2)
-        lock1_price_pct = cfg.get("TTP_LOCK1_PRICE_PCT", 1.0)
-        arm2_price_pct  = cfg.get("TTP_ARM2_PRICE_PCT", 1.5)
+        arm1_price_pct  = cfg.get("TTP_ARM1_PRICE_PCT", 1.0)
+        lock1_price_pct = cfg.get("TTP_LOCK1_PRICE_PCT", 0.8)
+        arm2_price_pct  = cfg.get("TTP_ARM2_PRICE_PCT", 1.3)
         gap_price_pct   = cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3)
 
         if state.tp_stage == 0 and pnl_pct >= arm1_price_pct:
@@ -2919,7 +2954,7 @@ class BotEngine:
                     close_order(self.exchange, ticker, pos, self.cfg)
                 self.emit("trade", trade)
                 self._register_win(ticker)
-                self.emit("log", {"msg": f"[{ticker}] TTP SORTIE @ ${price:.2f} | pic +{peak_price_pct:.2f}% de mouvement (+${state.peak_pnl_usd:.2f} a x{leverage}) | PnL: +${pnl:.2f}", "level": "win"})
+                self.emit("log", {"msg": f"[{ticker}] {strat_tag}TTP SORTIE @ ${price:.2f} | pic +{peak_price_pct:.2f}% de mouvement (+${state.peak_pnl_usd:.2f} a x{leverage}) | PnL: +${pnl:.2f}", "level": "win"})
                 self._save_open_positions()  # sauvegarde en live ET en paper
                 self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
                 return
@@ -3313,7 +3348,7 @@ class BotEngine:
             # TTP etant deja exprime en % de E (mouvement de prix a x1), on
             # l utilise directement, sans conversion via CAPITAL/POSITION_PCT.
             if resistance is not None and price <= resistance and cfg.get("SR_MIN_ROOM_FILTER", True):
-                min_room_pct = cfg.get("TTP_ARM1_PRICE_PCT", 1.2)
+                min_room_pct = cfg.get("TTP_ARM1_PRICE_PCT", 1.0)
                 room_pct = (resistance - price) / price * 100
                 if room_pct < min_room_pct:
                     self.emit("log", {
@@ -3424,7 +3459,7 @@ class BotEngine:
             # recent (plus bas des 50 derniers cycles) est trop proche pour
             # laisser assez de place au 1er seuil du TTP avant de s y heurter.
             if support is not None and price >= support and cfg.get("SR_MIN_ROOM_FILTER", True):
-                min_room_pct = cfg.get("TTP_ARM1_PRICE_PCT", 1.2)
+                min_room_pct = cfg.get("TTP_ARM1_PRICE_PCT", 1.0)
                 room_pct = (price - support) / price * 100
                 if room_pct < min_room_pct:
                     self.emit("log", {
@@ -3453,6 +3488,13 @@ class BotEngine:
                 reasons.append(f"momentum {momentum_pct:+.2f}%")
         else:
             self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} ATTENDRE", "level": "dim"})
+            # v4.8 — La logique normale n a rien trouve ce cycle : le mode
+            # Accumulation (independant, s il est active) a sa chance sur ce
+            # meme symbole/cycle avant d abandonner completement.
+            self._check_accumulation_signal(
+                symbol, ticker, price, support, resistance, rsi, momentum_pct,
+                ema200, trend_up, trend_down, prices, state
+            )
             return
 
         if not vol_ok and cfg["VOLUME_MIN_RATIO"] > 1.0:
@@ -3474,6 +3516,92 @@ class BotEngine:
             "reasons": reasons, "prices": prices, "conf_breakdown": conf_breakdown,
         })
 
+    def _check_accumulation_signal(self, symbol, ticker, price, support, resistance,
+                                    rsi, momentum_pct, ema200, trend_up, trend_down,
+                                    prices, state):
+        """v4.8 — Mode ACCUMULATION : strategie independante de la logique
+        RSI/tendance habituelle. LONG si le prix est proche du SUPPORT
+        recent, SHORT si proche de la RESISTANCE recente — logique de
+        rebond/rejet sur un niveau cle, pas de suivi de tendance. Appelee
+        uniquement quand la logique normale n a PAS genere de signal ce
+        cycle (un slot ne peut de toute facon accueillir qu une position a
+        la fois). Alimente self._pending_accumulation_candidates, plafond
+        et execution geres separement (voir _finalize_pending_accumulation_candidates).
+        """
+        cfg = self.cfg
+        if not cfg.get("ACCUMULATION_ENABLED", False):
+            return
+        if support is None or resistance is None or support <= 0:
+            return
+        if not self._gate_active_or_auto_activate(ticker, 100, "accumulation"):
+            return  # actif desactive (Marches) ou exclu manuellement — jamais de trade, quel que soit le mode
+
+        proximity_pct = cfg.get("ACCUMULATION_PROXIMITY_PCT", 1.0)
+        momentum_threshold = cfg.get("MOMENTUM_THRESHOLD_PCT", 0.15)
+        require_trend = cfg.get("ACCUMULATION_REQUIRE_TREND_CONFIRM", False)
+
+        dist_to_support    = (price - support) / support * 100
+        dist_to_resistance = (resistance - price) / price * 100
+
+        direction = None
+        if 0 <= dist_to_support <= proximity_pct:
+            # Sens coherent : le mouvement tres recent ne doit pas s effondrer
+            # a travers le support (sinon ce n est plus un rebond, c est une
+            # cassure en cours) — reutilise le meme filtre momentum que la
+            # logique normale.
+            if momentum_pct is None or momentum_pct >= -momentum_threshold:
+                if not require_trend or trend_up:
+                    direction = "long"
+        elif 0 <= dist_to_resistance <= proximity_pct:
+            if momentum_pct is None or momentum_pct <= momentum_threshold:
+                if not require_trend or trend_down:
+                    direction = "short"
+
+        if direction is None:
+            return
+
+        # ── Score de confiance dedie (proximite + position RSI + momentum) ──
+        # Plus le prix est proche du niveau, plus le RSI confirme (survente
+        # pres du support, surachat pres de la resistance), plus le momentum
+        # va franchement dans le sens du rebond attendu -> plus de confiance.
+        # Alimente le meme calcul de levier prudent que le bot normal.
+        dist = dist_to_support if direction == "long" else dist_to_resistance
+        confidence = 65.0
+        if dist <= proximity_pct / 2:
+            confidence += 10.0
+        if direction == "long" and rsi is not None and rsi <= 40:
+            confidence += 10.0
+        elif direction == "short" and rsi is not None and rsi >= 60:
+            confidence += 10.0
+        if momentum_pct is not None:
+            if direction == "long" and momentum_pct > 0:
+                confidence += 5.0
+            elif direction == "short" and momentum_pct < 0:
+                confidence += 5.0
+        confidence = min(confidence, 90.0)
+
+        threshold = self._get_confidence_threshold(ticker)
+        if confidence < threshold:
+            return
+
+        level_label = "support" if direction == "long" else "resistance"
+        level_price = support if direction == "long" else resistance
+        reasons = [
+            f"🎯 Accumulation : prix a {dist:.2f}% du {level_label} (${level_price:.2f})",
+            f"RSI {rsi:.1f}" if rsi is not None else "RSI ?",
+        ]
+        if momentum_pct is not None:
+            reasons.append(f"momentum {momentum_pct:+.2f}%")
+        if require_trend:
+            reasons.append("tendance EMA200 confirmee")
+
+        self._pending_accumulation_candidates.append({
+            "symbol": symbol, "ticker": ticker, "state": state, "signal": direction,
+            "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": "accumulation",
+            "reasons": reasons, "prices": prices, "conf_breakdown": {},
+            "strategy": "accumulation",
+        })
+
     def _finalize_open(self, cand):
         """v3.2 — Execution reelle d un candidat retenu (voir _process et la
         file d attente _pending_candidates). Contient exactement la logique
@@ -3486,6 +3614,7 @@ class BotEngine:
             cand["confidence"], cand["rsi"], cand["rsi_mode"], cand["reasons"], cand["prices"],
             cand.get("conf_breakdown", {})
         )
+        strategy = cand.get("strategy", "normal")  # v4.8 — "normal" ou "accumulation"
 
         # ── v4.1 — Dimensionnement par LOT (batch) ──────────────────────────
         # E est calcule UNE SEULE FOIS au debut d un lot (des qu aucune
@@ -3538,13 +3667,19 @@ class BotEngine:
         tp_pct = cfg.get("SYMBOL_TP_PCT", {}).get(ticker, cfg["TAKE_PROFIT_PCT"])
         tp_p = price * (1 + tp_pct/100) if signal == "long" else price * (1 - tp_pct/100)
 
+        # v4.8 — FIX : "label"/"action" DOIT rester exactement "LONG"/"SHORT"
+        # (sans prefixe) car c est la valeur utilisee pour retrouver le trade
+        # a sa fermeture (db.get_open_trade_id_by_coin_action, correspondance
+        # EXACTE coin+action). Le tag Accumulation est affiche separement
+        # dans les logs (strat_tag_log) et transmis via le champ "strategy".
         label = "LONG" if signal == "long" else "SHORT"
+        strat_tag_log = "🎯 ACCUMULATION " if strategy == "accumulation" else ""
         _, atr_at_entry = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
         atr_str = f"ATR {atr_at_entry:.3f}%" if atr_at_entry else "ATR ?"
         lev_str = f"x{leverage}" if leverage > 1 else "x1"
 
         stop_loss_usd_here = size * sl_pct_of_e / 100
-        self.emit("log", {"msg": f"[{ticker}] {label} @ ${price:.2f} | RSI:{rsi:.1f}({rsi_mode}) | {atr_str} | {' | '.join(reasons)} | ${size:.2f} {lev_str} | Stop Loss -${stop_loss_usd_here:.2f} ({sl_pct_of_e:.2f}% de E) | SL secu {safety_sl_pct:.2f}% [PERP]", "level": "signal"})
+        self.emit("log", {"msg": f"[{ticker}] {strat_tag_log}{label} @ ${price:.2f} | RSI:{rsi:.1f}({rsi_mode}) | {atr_str} | {' | '.join(reasons)} | ${size:.2f} {lev_str} | Stop Loss -${stop_loss_usd_here:.2f} ({sl_pct_of_e:.2f}% de E) | SL secu {safety_sl_pct:.2f}% [PERP]", "level": "signal"})
 
         if cfg["MODE"] == "live" and self.exchange:
             # v3.2 — applique le levier PRUDENT specifique a ce trade sur
@@ -3562,15 +3697,15 @@ class BotEngine:
                 self.emit("log", {"msg": f"[{ticker}] Ordre non execute", "level": "warn"})
                 return
 
-        state.open_position(signal, price, sl_p, tp_p, size, confidence=confidence, leverage=leverage)
+        state.open_position(signal, price, sl_p, tp_p, size, confidence=confidence, leverage=leverage, strategy=strategy)
         self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
 
         # ── v4.7 web : evenement structure pour l API (table trades / signaux) ──
         # tp1/tp2 sont deduits des seuils du TTP (arm1/arm2), DESORMAIS de
         # vrais % de mouvement de prix (v4.7) — plus besoin de les convertir
         # via le notionnel/levier comme avant, ce sont deja des % de prix.
-        arm1_price_pct = cfg.get("TTP_ARM1_PRICE_PCT", 1.2)
-        arm2_price_pct = cfg.get("TTP_ARM2_PRICE_PCT", 1.5)
+        arm1_price_pct = cfg.get("TTP_ARM1_PRICE_PCT", 1.0)
+        arm2_price_pct = cfg.get("TTP_ARM2_PRICE_PCT", 1.3)
         tp1_price = price * (1 + arm1_price_pct/100) if signal == "long" else price * (1 - arm1_price_pct/100)
         tp2_price = price * (1 + arm2_price_pct/100) if signal == "long" else price * (1 - arm2_price_pct/100)
         self.emit("trade_opened", {
@@ -3579,6 +3714,7 @@ class BotEngine:
             "confidence": round(confidence, 1),
             "leverage": leverage,
             "position_size_pct": cfg["POSITION_SIZE_PCT"],
+            "strategy": strategy,  # v4.8 — "normal" ou "accumulation"
             # v4.7 — ratio informatif "mouvement de prix TP / % de E du SL" :
             # a levier x1 c est le vrai ratio gain/risque $. Au-dela, le gain
             # $ reel est amplifie par le levier (voir TTP), donc ce chiffre
@@ -3600,14 +3736,18 @@ class BotEngine:
         et remplit les slots disponibles (MAX_OPEN_TRADES) en priorite avec
         les meilleurs scores. Les candidats laisses de cote ce cycle (faute
         de place) resteront candidats aux cycles suivants si leur signal
-        persiste toujours."""
+        persiste toujours.
+        v4.8 — MAX_OPEN_TRADES ne compte desormais que les positions de
+        strategie "normal" : le mode Accumulation a son propre plafond
+        independant (voir _finalize_pending_accumulation_candidates),
+        les deux pools de slots ne se disputent plus la meme limite."""
         if not self._pending_candidates:
             return
         cfg = self.cfg
         self._pending_candidates.sort(key=lambda c: c["confidence"], reverse=True)
         max_open = cfg.get("MAX_OPEN_TRADES")
         for cand in self._pending_candidates:
-            open_count = sum(1 for st in self.states.values() if st.position)
+            open_count = sum(1 for st in self.states.values() if st.position and st.position.get("strategy", "normal") == "normal")
             if max_open is not None and open_count >= max_open:
                 self.emit("log", {
                     "msg": f"[{cand['ticker']}] Slot plein ({open_count}/{max_open}) — candidat a {cand['confidence']:.0f}% laisse de cote ce cycle (meilleurs scores prioritaires).",
@@ -3616,6 +3756,27 @@ class BotEngine:
                 continue
             self._finalize_open(cand)
         self._pending_candidates = []
+
+    def _finalize_pending_accumulation_candidates(self):
+        """v4.8 — Equivalent de _finalize_pending_candidates, mais pour les
+        candidats du mode Accumulation : plafond independant
+        (ACCUMULATION_MAX_TRADES), classes eux aussi par confiance
+        decroissante."""
+        if not self._pending_accumulation_candidates:
+            return
+        cfg = self.cfg
+        self._pending_accumulation_candidates.sort(key=lambda c: c["confidence"], reverse=True)
+        max_acc = cfg.get("ACCUMULATION_MAX_TRADES", 3)
+        for cand in self._pending_accumulation_candidates:
+            open_count = sum(1 for st in self.states.values() if st.position and st.position.get("strategy") == "accumulation")
+            if open_count >= max_acc:
+                self.emit("log", {
+                    "msg": f"[{cand['ticker']}] 🎯 Slot Accumulation plein ({open_count}/{max_acc}) — candidat a {cand['confidence']:.0f}% laisse de cote ce cycle.",
+                    "level": "dim"
+                })
+                continue
+            self._finalize_open(cand)
+        self._pending_accumulation_candidates = []
 
 
 # ─────────────────────────────────────────────
