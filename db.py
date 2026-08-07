@@ -13,7 +13,7 @@ import sqlite3
 import os
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 DB_PATH = os.environ.get("HYPERBOT_DB_PATH", "hyperbot.db")
 
@@ -84,6 +84,20 @@ def init_db():
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            )
+        """)
+        # v4.6 — Journal persistant des evenements WebSocket (connexion,
+        # deconnexion, echec de reconnexion, retablissement). Independant du
+        # log en memoire (limite a 3000 lignes, perdu au redemarrage) : ici
+        # on garde specifiquement l historique de la connexion temps reel,
+        # conserve 7 jours, pour pouvoir diagnostiquer des coupures passees
+        # meme apres un redemarrage du serveur.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ws_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL
             )
         """)
         conn.commit()
@@ -253,6 +267,34 @@ def cleanup_signals(stale_hours=24, protected_ids=None):
         conn.commit()
         print(f"[AUDIT] cleanup_signals() a {now_iso()} — doublons supprimes: {dup_ids} | orphelins supprimes: {stale_ids} | ids proteges: {sorted(protected)}")
         return len(dup_ids), len(stale_ids)
+
+
+# ── Journal WebSocket (v4.6) ─────────────────────────────────────────────
+def insert_ws_event(kind, message):
+    """Enregistre un evenement WebSocket (deconnexion, reconnexion...) et
+    purge au passage tout ce qui date de plus de 7 jours — pas besoin d une
+    tache de nettoyage separee, la purge se fait naturellement a chaque
+    nouvel evenement (les coupures WS sont rares, l overhead est nul)."""
+    with _lock, _connect() as conn:
+        conn.execute(
+            "INSERT INTO ws_events (kind, message, created_at) VALUES (?, ?, ?)",
+            (kind, message, now_iso())
+        )
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        conn.execute("DELETE FROM ws_events WHERE created_at < ?", (cutoff,))
+        conn.commit()
+
+
+def get_ws_events(days=7):
+    """Retourne les evenements WebSocket des N derniers jours, du plus
+    recent au plus ancien."""
+    with _lock, _connect() as conn:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        rows = conn.execute(
+            "SELECT * FROM ws_events WHERE created_at >= ? ORDER BY created_at DESC",
+            (cutoff,)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def clear_all_trades():
