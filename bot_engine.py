@@ -1735,13 +1735,20 @@ class BotEngine:
         self._last_ws_tick = None   # timestamp (time.time()) du dernier tick allMids recu
         self._ws_was_healthy = None  # None = pas encore evalue ; sert a detecter les transitions
         self._last_ws_reconnect_attempt = None  # limite la frequence des tentatives de reconnexion
+        # v4.7 — une coupure WebSocket PROLONGEE (>5 min en continu) doit etre
+        # traitee comme un "arret" pour la fiabilite des indicateurs, au meme
+        # titre qu un redemarrage complet du process : au-dela de ce delai on
+        # ne peut plus faire confiance a la fraicheur des donnees collectees
+        # (voir _check_ws_health_alert).
+        self._ws_unhealthy_since = None      # timestamp (time.time()) du DEBUT de la coupure en cours
+        self._ws_fresh_collection_forced = False  # evite de redeclencher en boucle pour la meme coupure
         self.all_mids = {}  # v3.2 : cache brut de tous les prix Hyperliquid (affichage marche complet)
 
     # ── Sauvegarde des positions ouvertes pour reconciliation au redemarrage ──
     POSITIONS_FILE = "hyperbot_positions.json"
     CONFIDENCE_FILE = "hyperbot_confidence.json"
     INDICATOR_STATE_FILE = "hyperbot_indicators.json"
-    INDICATOR_RESUME_MAX_GAP_SEC = 600  # 10 min — au-dela, on repart en collecte fraiche
+    INDICATOR_RESUME_MAX_GAP_SEC = 300  # 5 min — au-dela, on repart en collecte fraiche
 
     def _save_open_positions(self):
         """Sauvegarde les positions ouvertes (live ET paper depuis v3.2, pour
@@ -2380,8 +2387,31 @@ class BotEngine:
             return  # pas de connexion Hyperliquid du tout (paper simule sans cle)
         healthy = self._is_ws_healthy()
 
+        # v4.7 — Une coupure WebSocket CONTINUE de plus de 5 min est traitee
+        # comme un "arret" pour la fiabilite des indicateurs : au-dela de ce
+        # delai, on ne peut plus faire confiance aux donnees accumulees
+        # pendant la panne (le flux temps reel etant la source principale de
+        # verite des prix), donc on force une collecte entierement fraiche
+        # pour tous les actifs — exactement comme au redemarrage du process
+        # apres un arret de plus de INDICATOR_RESUME_MAX_GAP_SEC.
+        now_ts = time.time()
         if not healthy:
-            now_ts = time.time()
+            if self._ws_unhealthy_since is None:
+                self._ws_unhealthy_since = now_ts
+                self._ws_fresh_collection_forced = False
+            elif not self._ws_fresh_collection_forced:
+                downtime = now_ts - self._ws_unhealthy_since
+                if downtime >= self.INDICATOR_RESUME_MAX_GAP_SEC:
+                    self.force_fresh_collection()
+                    self._ws_fresh_collection_forced = True
+                    msg = f"🔄 Coupure WebSocket de {downtime:.0f}s (> {self.INDICATOR_RESUME_MAX_GAP_SEC}s) — collecte des indicateurs relancee entierement a zero par securite."
+                    self.emit("log", {"msg": msg, "level": "warn"})
+                    self.emit("ws_event", {"kind": "fresh_collection_forced", "message": msg})
+        else:
+            self._ws_unhealthy_since = None
+            self._ws_fresh_collection_forced = False
+
+        if not healthy:
             if self._last_ws_reconnect_attempt is None or (now_ts - self._last_ws_reconnect_attempt) >= 60:
                 self._last_ws_reconnect_attempt = now_ts
                 try:
@@ -2400,9 +2430,13 @@ class BotEngine:
                     self.info.subscribe({"type": "allMids"}, self._on_ws_allmids)
                     self._ws_subscribed = True
                     self._last_ws_tick = time.time()  # evite un "faux mort" immediat le temps du 1er tick
-                    self.emit("log", {"msg": "🔄 Reconnexion WebSocket effectuee (nouvelle connexion etablie).", "level": "warn"})
+                    msg = "🔄 Reconnexion WebSocket effectuee (nouvelle connexion etablie)."
+                    self.emit("log", {"msg": msg, "level": "warn"})
+                    self.emit("ws_event", {"kind": "reconnect_success", "message": msg})
                 except Exception as e:
-                    self.emit("log", {"msg": f"🔄 Echec de la reconnexion WebSocket : {e} — nouvelle tentative dans 60s.", "level": "warn"})
+                    msg = f"🔄 Echec de la reconnexion WebSocket : {e} — nouvelle tentative dans 60s."
+                    self.emit("log", {"msg": msg, "level": "warn"})
+                    self.emit("ws_event", {"kind": "reconnect_failed", "message": msg})
 
         if self._ws_was_healthy is None:
             self._ws_was_healthy = healthy
@@ -2410,13 +2444,14 @@ class BotEngine:
         if healthy == self._ws_was_healthy:
             return
         if healthy:
-            self.emit("log", {"msg": "✅ WebSocket retabli — surveillance temps reel des positions active", "level": "ok"})
+            msg = "✅ WebSocket retabli — surveillance temps reel des positions active"
+            self.emit("log", {"msg": msg, "level": "ok"})
+            self.emit("ws_event", {"kind": "restored", "message": msg})
         else:
             stale_after = self.cfg.get("WS_STALE_AFTER_SEC", 20)
-            self.emit("log", {
-                "msg": f"🔴 ALARME — WebSocket hors service (aucun tick depuis {stale_after}s) — bascule sur surveillance par cycle ({self.cfg.get('CYCLE_INTERVAL')}s)",
-                "level": "error"
-            })
+            msg = f"🔴 ALARME — WebSocket hors service (aucun tick depuis {stale_after}s) — bascule sur surveillance par cycle ({self.cfg.get('CYCLE_INTERVAL')}s)"
+            self.emit("log", {"msg": msg, "level": "error"})
+            self.emit("ws_event", {"kind": "disconnected", "message": msg})
         self._ws_was_healthy = healthy
 
     def _maybe_manage_position_via_cycle(self, symbol, price, state):
@@ -2534,12 +2569,15 @@ class BotEngine:
 
         self.info, self.exchange, conn_error = connect_hyperliquid(cfg["PRIVATE_KEY"], cfg["WALLET_ADDRESS"])
         if self.info is None:
-            self.emit("log", {"msg": f"Connexion Hyperliquid echouee — {conn_error}", "level": "error"})
+            msg = f"Connexion Hyperliquid echouee — {conn_error}"
+            self.emit("log", {"msg": msg, "level": "error"})
+            self.emit("ws_event", {"kind": "connect_failed", "message": msg})
             self.running = False
             self._started = False
             self.emit("stopped", {})
             return
         self.emit("log", {"msg": "Connexion etablie.", "level": "ok"})
+        self.emit("ws_event", {"kind": "connected", "message": "Connexion Hyperliquid etablie avec succes."})
 
         # ── v3.1 : abonnement WebSocket temps reel (flux allMids) ─────────
         # Objectif : verifier Max Loss / SL securite / Trailing TP a CHAQUE
