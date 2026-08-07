@@ -167,6 +167,7 @@ def _consume_events():
                     take_profit1=data["take_profit1"], take_profit2=data["take_profit2"],
                     rsi=data.get("rsi"), entry_reasons=data.get("entry_reasons"),
                     confidence_breakdown=data.get("confidence_breakdown"),
+                    strategy=data.get("strategy", "normal"),
                 )
             elif etype == "trade":
                 ticker = be.ticker_from_slot_key(data.get("symbol", ""))
@@ -375,12 +376,12 @@ def _public_config() -> Dict[str, Any]:
         # CAPITAL_USD x POSITION_SIZE_PCT/100). Utiliser sl_pct_of_e /
         # ttp_arm1_price_pct pour la valeur reelle, stable, appliquee par le bot.
         "max_loss_usd": round(cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100 * cfg.get("SL_PCT_OF_E", 1.0) / 100, 4),
-        "quick_profit_usd": round(cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100 * cfg.get("TTP_ARM1_PRICE_PCT", 1.5) / 100, 4),
+        "quick_profit_usd": round(cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100 * cfg.get("TTP_ARM1_PRICE_PCT", 1.0) / 100, 4),
         "sl_pct_of_e": cfg.get("SL_PCT_OF_E", 1.0),
-        "ttp_arm1_price_pct": cfg.get("TTP_ARM1_PRICE_PCT", 1.5),
-        "ttp_lock1_price_pct": cfg.get("TTP_LOCK1_PRICE_PCT", 1.2),
-        "ttp_arm2_price_pct": cfg.get("TTP_ARM2_PRICE_PCT", 2.0),
-        "ttp_trail_gap_price_pct": cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.4),
+        "ttp_arm1_price_pct": cfg.get("TTP_ARM1_PRICE_PCT", 1.0),
+        "ttp_lock1_price_pct": cfg.get("TTP_LOCK1_PRICE_PCT", 0.8),
+        "ttp_arm2_price_pct": cfg.get("TTP_ARM2_PRICE_PCT", 1.3),
+        "ttp_trail_gap_price_pct": cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3),
         "max_open_trades": cfg.get("MAX_OPEN_TRADES", 15),
         "auto_activate_confidence_pct": cfg.get("AUTO_ACTIVATE_CONFIDENCE_PCT", 80.0),
         "active_coins": cfg.get("ACTIVE_COINS") or SUPPORTED_TICKERS,
@@ -392,6 +393,10 @@ def _public_config() -> Dict[str, Any]:
         "filter_hours": cfg.get("CRYPTO_OFFPEAK_ENABLED", True),
         "filter_weekend": bool(cfg.get("FOREX_SYMBOLS")),
         "filter_macro": cfg.get("CPI_BLACKOUT_ENABLED", True),
+        "accumulation_enabled": cfg.get("ACCUMULATION_ENABLED", False),
+        "accumulation_require_trend_confirm": cfg.get("ACCUMULATION_REQUIRE_TREND_CONFIRM", False),
+        "accumulation_max_trades": cfg.get("ACCUMULATION_MAX_TRADES", 3),
+        "accumulation_proximity_pct": cfg.get("ACCUMULATION_PROXIMITY_PCT", 1.0),
         "ai_continuous": db.get_config_override("ai_continuous", False),
         "running": bot.running,
         "is_running": bot.running,
@@ -625,6 +630,7 @@ def _trade_row_to_signal(row: Dict[str, Any]) -> Dict[str, Any]:
         "exit_price": row["exit_price"],
         "pnl": row["pnl"],
         "reason": row["reason"],
+        "strategy": row["strategy"] if "strategy" in row.keys() else "normal",
     }
 
 
@@ -678,10 +684,12 @@ ADVANCED_SETTINGS = {
     "SR_PERIOD":               {"label": "Support/Resistance - periode (cycles)", "default": 50},
     "SL_PCT_OF_E":                {"label": "Stop Loss (% de E)", "default": 1.0},
     "EXCHANGE_SAFETY_SL_MULT":    {"label": "SL Hyperliquid - multiple du Stop Loss bot", "default": 2.0},
-    "TTP_ARM1_PRICE_PCT":          {"label": "TTP - 1er seuil d'armement (% de mouvement de prix)", "default": 1.5},
-    "TTP_LOCK1_PRICE_PCT":         {"label": "TTP - seuil de sortie initial (% de mouvement de prix)", "default": 1.2},
-    "TTP_ARM2_PRICE_PCT":          {"label": "TTP - 2e seuil, active le trailing continu (% de mouvement de prix)", "default": 2.0},
-    "TTP_TRAIL_GAP_PRICE_PCT":     {"label": "TTP - marge de repli continue sous le pic (% de mouvement de prix)", "default": 0.4},
+    "TTP_ARM1_PRICE_PCT":          {"label": "TTP - 1er seuil d'armement (% de mouvement de prix)", "default": 1.0},
+    "TTP_LOCK1_PRICE_PCT":         {"label": "TTP - seuil de sortie initial (% de mouvement de prix)", "default": 0.8},
+    "TTP_ARM2_PRICE_PCT":          {"label": "TTP - 2e seuil, active le trailing continu (% de mouvement de prix)", "default": 1.3},
+    "TTP_TRAIL_GAP_PRICE_PCT":     {"label": "TTP - marge de repli continue sous le pic (% de mouvement de prix)", "default": 0.3},
+    "ACCUMULATION_MAX_TRADES":     {"label": "Accumulation - trades simultanes max", "default": 3},
+    "ACCUMULATION_PROXIMITY_PCT":  {"label": "Accumulation - proximite support/resistance (%)", "default": 1.0},
     "VOLUME_MIN_RATIO":        {"label": "Volume - ratio minimum vs moyenne","default": 1.2},
     "MOMENTUM_PERIOD":         {"label": "Momentum - periode (cycles)",      "default": 4},
     "MOMENTUM_THRESHOLD_PCT":  {"label": "Momentum - seuil %",               "default": 0.20},
@@ -851,6 +859,8 @@ class FiltersBody(BaseModel):
     filter_hours: Optional[bool] = None
     filter_weekend: Optional[bool] = None
     filter_macro: Optional[bool] = None
+    accumulation_enabled: Optional[bool] = None
+    accumulation_require_trend_confirm: Optional[bool] = None
 
 
 @app.put("/api/config/filters")
@@ -864,6 +874,12 @@ def put_filters(body: FiltersBody, email: str = Depends(require_user)):
         _apply_and_persist("FOREX_SYMBOLS", ["PAXG"] if body.filter_weekend else [])
     if body.filter_macro is not None:
         _apply_and_persist("CPI_BLACKOUT_ENABLED", body.filter_macro)
+    # v4.8 — mode Accumulation (LONG pres du support / SHORT pres de la
+    # resistance, independant de la logique RSI/tendance normale)
+    if body.accumulation_enabled is not None:
+        _apply_and_persist("ACCUMULATION_ENABLED", body.accumulation_enabled)
+    if body.accumulation_require_trend_confirm is not None:
+        _apply_and_persist("ACCUMULATION_REQUIRE_TREND_CONFIRM", body.accumulation_require_trend_confirm)
     return {"ok": True}
 
 
