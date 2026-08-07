@@ -926,13 +926,26 @@ def is_spot(symbol, cfg):
     # symbol peut etre une slot_key "BTC_0" — extraire le vrai ticker
     return ticker_from_slot_key(symbol) in cfg.get("SPOT_SYMBOLS", [])
 
-def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, tp_price=None):
+def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, tp_price=None, leverage=1):
     """Passe un ordre market d entree avec SL et TP sur Hyperliquid.
     symbol peut etre une slot_key "BTC_0" — le vrai ticker est extrait automatiquement.
+
+    v4.5 — FIX CRITIQUE : size_usd est la MARGE (E), pas le notionnel. Sur
+    Hyperliquid (et tout exchange a marge), le levier reduit la marge
+    REQUISE pour un notionnel donne — il n augmente PAS automatiquement la
+    quantite d un ordre dimensionne sur la marge seule. Avant ce fix,
+    l ordre reel envoye ne representait toujours qu un notionnel de 1x
+    (size_usd / price), quel que soit le levier applique via
+    update_leverage() juste avant : un trade "x3" n ouvrait en realite
+    qu une position de la meme taille qu un trade "x1", desynchronisant
+    completement le PnL reel du compte Hyperliquid par rapport a la
+    logique interne du bot (SL/TTP, calcules eux sur E x levier). Le
+    notionnel reel doit etre size_usd x leverage.
     """
     ticker = ticker_from_slot_key(symbol)
     try:
         if is_spot(symbol, cfg):
+            # Spot n a pas de notion de levier — inchange.
             sz = max(round(size_usd / price, 6), 0.0001)
             api_ticker = cfg.get("SPOT_TICKER_MAP", {}).get(ticker, ticker)
             result = exchange.market_open(api_ticker, is_buy, sz)
@@ -965,9 +978,15 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
             return entry_ok
 
         # ── PERP : entree + SL + TP en groupe atomique normalTpsl ──
-        sz = max(round(size_usd / price, 4), 0.001)
+        notional_usd = size_usd * max(leverage, 1)
+        sz = max(round(notional_usd / price, 4), 0.001)
         close_side = not is_buy
-        pos_mock = {"type": "long" if is_buy else "short", "entry": price, "size": size_usd}
+        # v4.5 — pos_mock["size"] doit etre le NOTIONNEL reel (deja leverage)
+        # pour que _build_sl_order/_build_tp_order calculent la meme
+        # quantite sz que l ordre d entree ci-dessus — sinon les ordres
+        # protecteurs ne couvriraient qu une fraction (1/levier) de la
+        # position reellement ouverte.
+        pos_mock = {"type": "long" if is_buy else "short", "entry": price, "size": notional_usd}
 
         entry_order = {
             "coin":        ticker,
@@ -1187,7 +1206,14 @@ def ensure_sl_on_hyperliquid(exchange, info, wallet_address, symbol, position, c
             return
 
         # Aucun SL detecte — reposer un SL de secours immediatement
-        rescue_sl = _build_sl_order(symbol, position, position["sl"], cfg)
+        # v4.5 — FIX : position["size"] est la MARGE (E), pas le notionnel.
+        # _build_sl_order calcule sz = size/entry — sans le levier, le SL de
+        # secours ne couvrirait qu une fraction (1/levier) de la position
+        # reellement ouverte sur Hyperliquid, laissant le reste sans
+        # protection. On reconstruit un pos_mock avec le notionnel reel.
+        notional_position = dict(position)
+        notional_position["size"] = position.get("size", 0) * max(position.get("leverage", 1), 1)
+        rescue_sl = _build_sl_order(symbol, notional_position, position["sl"], cfg)
         if rescue_sl is None:
             print(f"[GUARD] {symbol} : impossible de construire le SL de secours")
             return
@@ -3480,7 +3506,7 @@ class BotEngine:
                 self.emit("log", {"msg": f"[{ticker}] Echec application levier prudent x{leverage} : {e} — poursuite avec le levier deja en place.", "level": "warn"})
             # tp_price=None : plus d ordre TP fixe sur Hyperliquid, la prise de
             # profit est entierement geree par le bot (Quick Profit / Trailing)
-            ok = place_order(self.exchange, ticker, signal == "long", size, price, cfg, sl_price=sl_p, tp_price=None)
+            ok = place_order(self.exchange, ticker, signal == "long", size, price, cfg, sl_price=sl_p, tp_price=None, leverage=leverage)
             if not ok:
                 self.emit("log", {"msg": f"[{ticker}] Ordre non execute", "level": "warn"})
                 return
