@@ -1424,24 +1424,24 @@ Confirmer ?`
                 <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>≈ {Math.round((config?.position_pct||20))}% du capital = E, figé pour tout un lot de trades simultanés (voir Trades simultanés max)</div>
               </div>
               <div>
-                <div style={{fontSize:10,color:"#f59e0b",marginBottom:6,fontWeight:700,letterSpacing:1}}>⚡ TTP - ARMEMENT (% DE E)</div>
+                <div style={{fontSize:10,color:"#f59e0b",marginBottom:6,fontWeight:700,letterSpacing:1}}>⚡ TTP - ARMEMENT (% DE MOUVEMENT DE PRIX)</div>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <input key={`ttp-${config?.ttp_arm1_pct_of_e}`} type="number" min="0.1" max="10" step="0.1" defaultValue={config?.ttp_arm1_pct_of_e||1.2}
-                    onBlur={e=>{apiCall("/api/config","PUT",{ttp_arm1_pct_of_e:Number(e.target.value)},token).then(()=>{loadData();flashSave("ttp");});}}
+                  <input key={`ttp-${config?.ttp_arm1_price_pct}`} type="number" min="0.1" max="10" step="0.1" defaultValue={config?.ttp_arm1_price_pct||1.5}
+                    onBlur={e=>{apiCall("/api/config","PUT",{ttp_arm1_price_pct:Number(e.target.value)},token).then(()=>{loadData();flashSave("ttp");});}}
                     style={{flex:1,background:savedField==="ttp"?"#1a2e0a":"#0a0e1a",border:savedField==="ttp"?"1px solid #34d399":"1px solid #f59e0b",borderRadius:6,padding:"8px 10px",color:savedField==="ttp"?"#34d399":"#f59e0b",fontFamily:"inherit",fontSize:12,transition:"all 0.3s"}}/>
                   <span style={{color:"#f59e0b",fontWeight:700,fontSize:14}}>%</span>
                 </div>
-                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>Trailing Take Profit armé dès ce gain (% de la taille d'entrée E) — réglages fins (seuils suivants) dans l'onglet Paramètres</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>Trailing Take Profit armé dès ce mouvement de PRIX (identique quel que soit le levier — le levier amplifie le $ gagné, pas le seuil) — réglages fins dans l'onglet Paramètres</div>
               </div>
               <div>
                 <div style={{fontSize:10,color:"#f87171",marginBottom:6,fontWeight:700,letterSpacing:1}}>🛡️ SL (% DE E)</div>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <input key={`sl-${config?.sl_pct_of_e}`} type="number" min="0.1" max="10" step="0.1" defaultValue={config?.sl_pct_of_e||1.5}
+                  <input key={`sl-${config?.sl_pct_of_e}`} type="number" min="0.1" max="10" step="0.1" defaultValue={config?.sl_pct_of_e||1.0}
                     onBlur={e=>{apiCall("/api/config","PUT",{sl_pct_of_e:Number(e.target.value)},token).then(()=>{loadData();flashSave("sl");});}}
                     style={{flex:1,background:savedField==="sl"?"#1a0a0a":"#0a0e1a",border:savedField==="sl"?"1px solid #34d399":"1px solid #f87171",borderRadius:6,padding:"8px 10px",color:savedField==="sl"?"#34d399":"#f87171",fontFamily:"inherit",fontSize:12,transition:"all 0.3s"}}/>
                   <span style={{color:"#f87171",fontWeight:700,fontSize:14}}>%</span>
                 </div>
-                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>Fermeture automatique si la perte dépasse ce % de la taille d'entrée E</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>Perte plafonnée à ce % de E, quel que soit le levier (le levier réduit le mouvement de prix nécessaire, pas le $ perdu)</div>
               </div>
               <div>
                 <div style={{fontSize:9,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>TRADES SIMULTANES MAX</div>
