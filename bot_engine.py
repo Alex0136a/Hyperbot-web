@@ -269,35 +269,28 @@ CONFIG = {
     # UNIQUEMENT a poser un ordre de securite fixe sur Hyperliquid (filet de
     # secours si le bot est deconnecte / en retard). La gestion normale se
     # fait entierement en % de E :
-    "SL_PCT_OF_E":            1.5,   # Stop Loss = -1.5% de E -> fermeture immediate geree par le bot
+    "SL_PCT_OF_E":            1.0,   # Stop Loss = -1.0% de E -> fermeture immediate geree par le bot (reste plafonne $ par le levier)
     "EXCHANGE_SAFETY_SL_MULT": 2.0,  # SL pose sur Hyperliquid = ce multiple du SL bot (filet de securite uniquement)
 
-    # Trailing Take Profit (TTP), entierement en % de E :
-    #   - Arme des que le gain latent atteint TTP_ARM1_PCT_OF_E (defaut 2.0%
-    #     de E). Le seuil de sortie est alors fixe a TTP_LOCK1_PCT_OF_E
-    #     (defaut 1.6% de E) tant que le pic n a pas atteint TTP_ARM2_PCT_OF_E.
-    #   - Des que le PIC atteint TTP_ARM2_PCT_OF_E (defaut 2.6% de E), le
-    #     seuil de sortie devient pic - TTP_TRAIL_GAP_PCT_OF_E (defaut 0.5%
-    #     de E) et continue de suivre le pic a l infini (trailing pur) —
-    #     note : au moment ou le pic atteint exactement TTP_ARM2_PCT_OF_E, ce
-    #     seuil vaut deja TTP_ARM2_PCT_OF_E - TTP_TRAIL_GAP_PCT_OF_E, cense
-    #     etre egal a TTP_LOCK2 souhaite (2.6 - 0.5 = 2.1% de E par defaut).
-    #
-    # v4.2 — FIX ratio gain/perte : les seuils v4.0 (arm1=1.2%, SL=1.5%)
-    # donnaient un ratio gain/perte de 0.8, ce qui exige un taux de reussite
-    # >= 55.6% juste pour l equilibre (1/(1+0.8)). Analyse d une session
-    # reelle : taux de reussite observe ~47%, donc perte mecanique garantie
-    # malgre une logique de sortie qui fonctionnait comme prevu. Le SL est
-    # laisse inchange (c est un plafond de risque, pas un levier de gain) ;
-    # le 1er seuil du TTP est releve de 1.2% a 2.0% -> ratio gain/perte
-    # 2.0/1.5 = 1.33, seuil d equilibre 1/(1+1.33) = 42.9% — sous le taux de
-    # reussite observe, ce qui rend l esperance de gain positive avec le
-    # meme taux de reussite mesure. A retester en paper sur un nouvel
-    # echantillon de trades avant de reappliquer en live.
-    "TTP_ARM1_PCT_OF_E":      2.0,
-    "TTP_LOCK1_PCT_OF_E":     1.6,
-    "TTP_ARM2_PCT_OF_E":      2.6,
-    "TTP_TRAIL_GAP_PCT_OF_E": 0.5,
+    # Trailing Take Profit (TTP), en % de MOUVEMENT DE PRIX REEL (v4.7) :
+    #   - v4.7 — SUR DEMANDE EXPLICITE : contrairement au SL (reste en % de
+    #     E, le levier y reduit le mouvement de prix necessaire donc plafonne
+    #     la perte $), le TP ne doit PAS etre plafonne par le levier — le
+    #     levier doit au contraire pouvoir AMPLIFIER librement le gain
+    #     obtenu. Ces seuils sont donc de vrais % de mouvement de PRIX,
+    #     identiques quel que soit le levier applique sur ce trade.
+    #   - Arme des que le prix bouge de TTP_ARM1_PRICE_PCT (defaut 1.2%)
+    #     dans le sens du trade. Seuil de sortie fixe a TTP_LOCK1_PRICE_PCT
+    #     (defaut 1.0%) tant que le PIC de mouvement n a pas rejoint
+    #     TTP_ARM2_PRICE_PCT.
+    #   - Des que le pic de mouvement atteint TTP_ARM2_PRICE_PCT (defaut
+    #     1.5%), le seuil de sortie devient pic - TTP_TRAIL_GAP_PRICE_PCT
+    #     (defaut 0.3%) et continue de suivre le pic a l infini (trailing
+    #     pur, sans plafond).
+    "TTP_ARM1_PRICE_PCT":      1.5,
+    "TTP_LOCK1_PRICE_PCT":     1.2,
+    "TTP_ARM2_PRICE_PCT":      2.0,
+    "TTP_TRAIL_GAP_PRICE_PCT": 0.4,
 
     # ── Score de confiance (0-100%) — filtre final avant toute entree ───────
     # Poids relatifs des confirmations optionnelles disponibles pour un signal.
@@ -2814,16 +2807,23 @@ class BotEngine:
         2) SL Hyperliquid : filet de securite uniquement (cas ou le bot
            serait en retard/deconnecte) — ne devrait quasiment jamais se
            declencher avant le Stop Loss ci-dessus en usage normal.
-        3) Trailing Take Profit (TTP), en % de E :
-           - Arme des que le gain latent atteint TTP_ARM1_PCT_OF_E (defaut
-             1.2% de E). Seuil de sortie fixe a TTP_LOCK1_PCT_OF_E (defaut
-             1.0% de E) tant que le PIC atteint n a pas rejoint
-             TTP_ARM2_PCT_OF_E.
-           - Des que le pic atteint TTP_ARM2_PCT_OF_E (defaut 1.5% de E), le
-             seuil de sortie devient pic - TTP_TRAIL_GAP_PCT_OF_E (defaut
-             0.3% de E) et continue de suivre le pic a l infini (trailing
+        3) Trailing Take Profit (TTP), en % de MOUVEMENT DE PRIX REEL (v4.7,
+           different du SL) :
+           - Arme des que le PRIX bouge de TTP_ARM1_PRICE_PCT (defaut 1.2%)
+             dans le sens du trade. Seuil de sortie fixe a
+             TTP_LOCK1_PRICE_PCT (defaut 1.0%) tant que le PIC de mouvement
+             n a pas rejoint TTP_ARM2_PRICE_PCT.
+           - Des que le pic de mouvement atteint TTP_ARM2_PRICE_PCT (defaut
+             1.5%), le seuil de sortie devient pic - TTP_TRAIL_GAP_PRICE_PCT
+             (defaut 0.3%) et continue de suivre le pic a l infini (trailing
              pur, sans plafond) — capture le maximum atteint des que le
              profit cesse de progresser.
+           v4.7 — SUR DEMANDE EXPLICITE : contrairement au SL (% de E, le
+           levier y reduit le mouvement de prix necessaire donc plafonne la
+           perte $), le TP n est PLUS plafonne par le levier — le levier
+           amplifie desormais librement le $ gagne pour un meme mouvement de
+           prix, cense recompenser un signal de forte confiance sans
+           plafond artificiel sur le gain.
         """
         cfg    = self.cfg
         ticker = ticker_from_slot_key(symbol)
@@ -2832,7 +2832,8 @@ class BotEngine:
             return
         mode = cfg["MODE"]
 
-        # E = taille de l entree (avant levier) — base de tous les % ci-dessous
+        # E = taille de l entree (avant levier) — base du SL uniquement (le
+        # TP, lui, raisonne desormais en % de mouvement de prix, voir plus bas)
         E = pos["size"]
 
         # ── PnL latent en $ ───────────────────────────────────────────────
@@ -2876,21 +2877,21 @@ class BotEngine:
             self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
             return
 
-        # ── 3. Trailing Take Profit — entierement en % de E ─────────────────
-        arm1_pct  = cfg.get("TTP_ARM1_PCT_OF_E", 1.2)
-        lock1_pct = cfg.get("TTP_LOCK1_PCT_OF_E", 1.0)
-        arm2_pct  = cfg.get("TTP_ARM2_PCT_OF_E", 1.5)
-        gap_pct   = cfg.get("TTP_TRAIL_GAP_PCT_OF_E", 0.3)
+        # ── 3. Trailing Take Profit — % de MOUVEMENT DE PRIX REEL (v4.7) ────
+        # A la difference du SL (qui reste en % de E, plafonnant le $ perdu
+        # quel que soit le levier), le TP ne doit PAS etre reduit par le
+        # levier : ces seuils sont de vrais % de mouvement de PRIX, et c est
+        # le levier qui amplifie librement le $ gagne pour ce meme mouvement.
+        leverage = pos.get("leverage", 1)
+        arm1_price_pct  = cfg.get("TTP_ARM1_PRICE_PCT", 1.2)
+        lock1_price_pct = cfg.get("TTP_LOCK1_PRICE_PCT", 1.0)
+        arm2_price_pct  = cfg.get("TTP_ARM2_PRICE_PCT", 1.5)
+        gap_price_pct   = cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3)
 
-        arm1_usd  = E * arm1_pct / 100
-        lock1_usd = E * lock1_pct / 100
-        arm2_usd  = E * arm2_pct / 100
-        gap_usd   = E * gap_pct / 100
-
-        if state.tp_stage == 0 and pnl_usd >= arm1_usd:
+        if state.tp_stage == 0 and pnl_pct >= arm1_price_pct:
             state.tp_stage = 1
             state.peak_pnl_usd = pnl_usd
-            self.emit("log", {"msg": f"[{ticker}] Profit +${pnl_usd:.2f} ({arm1_pct:.2f}% de E) — TTP arme (sortie si retour a ${lock1_usd:.2f} = {lock1_pct:.2f}% de E)", "level": "signal"})
+            self.emit("log", {"msg": f"[{ticker}] Prix +{pnl_pct:.2f}% (+${pnl_usd:.2f} a x{leverage}) — TTP arme (sortie si repli a +{lock1_price_pct:.2f}% de mouvement de prix)", "level": "signal"})
             # confirme sur ce cycle ; la verification de fermeture ne se fera
             # qu a partir du PROCHAIN cycle (evite une fermeture instantanee
             # si le seuil de sortie initial etait deja atteint ce meme cycle).
@@ -2899,28 +2900,31 @@ class BotEngine:
         if state.tp_stage == 1:
             if state.peak_pnl_usd is None or pnl_usd > state.peak_pnl_usd:
                 state.peak_pnl_usd = pnl_usd
+            # Pic reconverti en % de mouvement de prix (le levier est fixe
+            # pour la duree du trade, cette reconversion est donc exacte).
+            peak_price_pct = (state.peak_pnl_usd / (E * leverage) * 100) if E and leverage else 0
 
             # Tant que le pic n a pas atteint le 2e seuil (arm2), le seuil de
             # sortie reste fixe a lock1. Des que le pic atteint/depasse arm2,
             # le TTP se resserre en continu : sortie = pic - gap, a l infini.
-            if state.peak_pnl_usd >= arm2_usd:
-                current_lock = state.peak_pnl_usd - gap_usd
+            if peak_price_pct >= arm2_price_pct:
+                current_lock_pct = peak_price_pct - gap_price_pct
             else:
-                current_lock = lock1_usd
+                current_lock_pct = lock1_price_pct
 
-            if pnl_usd <= current_lock:
+            if pnl_pct <= current_lock_pct:
                 pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
                 trade["symbol"] = symbol
                 if mode == "live" and self.exchange:
                     close_order(self.exchange, ticker, pos, self.cfg)
                 self.emit("trade", trade)
                 self._register_win(ticker)
-                self.emit("log", {"msg": f"[{ticker}] TTP SORTIE @ ${price:.2f} | pic +${state.peak_pnl_usd:.2f} ({state.peak_pnl_usd/E*100 if E else 0:.2f}% de E) | PnL: +${pnl:.2f}", "level": "win"})
+                self.emit("log", {"msg": f"[{ticker}] TTP SORTIE @ ${price:.2f} | pic +{peak_price_pct:.2f}% de mouvement (+${state.peak_pnl_usd:.2f} a x{leverage}) | PnL: +${pnl:.2f}", "level": "win"})
                 self._save_open_positions()  # sauvegarde en live ET en paper
                 self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
                 return
             else:
-                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} TTP actif | latent +${pnl_usd:.2f} ({pnl_usd/E*100 if E else 0:.2f}% de E) | pic +${state.peak_pnl_usd:.2f} (sortie si repli a ${current_lock:.2f})", "level": "dim"})
+                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} TTP actif | mouvement +{pnl_pct:.2f}% (+${pnl_usd:.2f} a x{leverage}) | pic +{peak_price_pct:.2f}% (sortie si repli a +{current_lock_pct:.2f}%)", "level": "dim"})
                 return
 
         # ── 4. Rien de declenche — affichage du latent ──────────────────────
@@ -3309,7 +3313,7 @@ class BotEngine:
             # TTP etant deja exprime en % de E (mouvement de prix a x1), on
             # l utilise directement, sans conversion via CAPITAL/POSITION_PCT.
             if resistance is not None and price <= resistance and cfg.get("SR_MIN_ROOM_FILTER", True):
-                min_room_pct = cfg.get("TTP_ARM1_PCT_OF_E", 1.2)
+                min_room_pct = cfg.get("TTP_ARM1_PRICE_PCT", 1.2)
                 room_pct = (resistance - price) / price * 100
                 if room_pct < min_room_pct:
                     self.emit("log", {
@@ -3420,7 +3424,7 @@ class BotEngine:
             # recent (plus bas des 50 derniers cycles) est trop proche pour
             # laisser assez de place au 1er seuil du TTP avant de s y heurter.
             if support is not None and price >= support and cfg.get("SR_MIN_ROOM_FILTER", True):
-                min_room_pct = cfg.get("TTP_ARM1_PCT_OF_E", 1.2)
+                min_room_pct = cfg.get("TTP_ARM1_PRICE_PCT", 1.2)
                 room_pct = (price - support) / price * 100
                 if room_pct < min_room_pct:
                     self.emit("log", {
@@ -3561,30 +3565,25 @@ class BotEngine:
         state.open_position(signal, price, sl_p, tp_p, size, confidence=confidence, leverage=leverage)
         self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
 
-        # ── v4.0 web : evenement structure pour l API (table trades / signaux) ──
-        # tp1/tp2 sont deduits des seuils du TTP (arm1/arm2, en % de E) — notre
-        # bot ne raisonne pas en % de PRIX fixe comme un TP1/TP2 classique,
-        # ceci est une conversion informative en prix equivalent au moment de
-        # l entree. Le notionnel reel est size x leverage : la conversion
-        # %E -> % de mouvement de prix doit en tenir compte pour rester exacte.
-        arm1_pct_of_e = cfg.get("TTP_ARM1_PCT_OF_E", 1.2)
-        arm2_pct_of_e = cfg.get("TTP_ARM2_PCT_OF_E", 1.5)
-        qp_arm_usd    = size * arm1_pct_of_e / 100
-        trail_arm_usd = size * arm2_pct_of_e / 100
-        if notional > 0:
-            pct1 = qp_arm_usd / notional * 100
-            pct2 = trail_arm_usd / notional * 100
-            tp1_price = price * (1 + pct1/100) if signal == "long" else price * (1 - pct1/100)
-            tp2_price = price * (1 + pct2/100) if signal == "long" else price * (1 - pct2/100)
-        else:
-            tp1_price = tp2_price = None
+        # ── v4.7 web : evenement structure pour l API (table trades / signaux) ──
+        # tp1/tp2 sont deduits des seuils du TTP (arm1/arm2), DESORMAIS de
+        # vrais % de mouvement de prix (v4.7) — plus besoin de les convertir
+        # via le notionnel/levier comme avant, ce sont deja des % de prix.
+        arm1_price_pct = cfg.get("TTP_ARM1_PRICE_PCT", 1.2)
+        arm2_price_pct = cfg.get("TTP_ARM2_PRICE_PCT", 1.5)
+        tp1_price = price * (1 + arm1_price_pct/100) if signal == "long" else price * (1 - arm1_price_pct/100)
+        tp2_price = price * (1 + arm2_price_pct/100) if signal == "long" else price * (1 - arm2_price_pct/100)
         self.emit("trade_opened", {
             "coin": ticker,
             "action": label,
             "confidence": round(confidence, 1),
             "leverage": leverage,
             "position_size_pct": cfg["POSITION_SIZE_PCT"],
-            "risk_reward": round(arm1_pct_of_e / sl_pct_of_e, 2) if sl_pct_of_e else None,
+            # v4.7 — ratio informatif "mouvement de prix TP / % de E du SL" :
+            # a levier x1 c est le vrai ratio gain/risque $. Au-dela, le gain
+            # $ reel est amplifie par le levier (voir TTP), donc ce chiffre
+            # sous-estime le ratio $ reel pour un trade a levier > x1.
+            "risk_reward": round(arm1_price_pct / sl_pct_of_e, 2) if sl_pct_of_e else None,
             "timeframe": cfg.get("PROFILE", "swing"),
             "entry": price,
             "stop_loss": sl_p,
