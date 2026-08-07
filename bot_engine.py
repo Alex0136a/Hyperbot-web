@@ -119,9 +119,18 @@ CONFIG = {
     # exclusion, reactivable en un clic depuis l onglet Marches sans toucher
     # au code). POL (ex-MATIC — Polygon a migre son ticker vers POL en 2024,
     # "MATIC" n existe plus sur Hyperliquid) ajoute a la place.
+    # v4.6 — TAO, TIA, SUI desactives par defaut : analyse sur 1048 trades
+    # reels (07/08/2026) montrant un deficit statistiquement significatif et
+    # robuste sur un large echantillon par actif :
+    #   TAO  : 77 trades, 28.6% de reussite, -4.63$ net
+    #   TIA  : 105 trades, 37.1% de reussite, -4.09$ net
+    #   SUI  : 53 trades, 32.1% de reussite, -3.55$ net
+    # A eux trois : -12.27$, plus de la moitie de la perte nette totale
+    # (-24.04$) sur cette periode. Reactivables en un clic depuis l onglet
+    # Marches si une analyse ulterieure montre une amelioration.
     "ACTIVE_COINS":       ["BTC", "ETH", "SOL", "BNB", "HYPE",
-                           "ARB", "AVAX", "LINK", "OP", "INJ", "TIA", "TAO",
-                           "WIF", "JUP", "PENDLE", "EIGEN", "RENDER", "SUI",
+                           "ARB", "AVAX", "LINK", "OP", "INJ",
+                           "WIF", "JUP", "PENDLE", "EIGEN", "RENDER",
                            "APT", "SEI", "DOGE", "XRP", "NEAR", "FTM", "AAVE",
                            "UNI", "CRV", "SUSHI", "GMX", "POL"],
     "MAX_OPEN_TRADES":    5,
