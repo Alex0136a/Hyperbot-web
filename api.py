@@ -156,6 +156,8 @@ def _consume_events():
         try:
             if etype == "log":
                 _push_log(data.get("level", "info"), data.get("msg", ""))
+            elif etype == "ws_event":
+                db.insert_ws_event(data.get("kind", "unknown"), data.get("message", ""))
             elif etype == "trade_opened":
                 db.insert_open_trade(
                     coin=data["coin"], action=data["action"], confidence=data["confidence"],
@@ -395,6 +397,7 @@ def _public_config() -> Dict[str, Any]:
         "is_running": bot.running,
         "started_at": db.get_meta("running_since") or None,
         "last_scan": max(last_times).isoformat() if last_times else None,
+        "ws_connected": bot.info is not None,
         "ws_healthy": bot._is_ws_healthy() if bot.info is not None else False,
         "offpeak_hour_start": cfg.get("CRYPTO_OFFPEAK_HOUR_START_UTC", 21),
         "offpeak_hour_end": cfg.get("CRYPTO_OFFPEAK_HOUR_END_UTC", 23),
@@ -967,6 +970,19 @@ def get_confidence_by_asset(min_trades: int = 5, email: str = Depends(require_us
     l historique des trades clotures. min_trades ajustable dynamiquement
     depuis l interface (bouton dans l onglet Historique)."""
     return _analyze_confidence_by_asset(min_trades=min_trades)
+
+
+@app.get("/api/ws/events")
+def get_ws_events(email: str = Depends(require_user)):
+    """v4.6 — Journal des evenements WebSocket (connexion, deconnexion,
+    echec/succes de reconnexion) des 7 derniers jours, persiste en base
+    (survit aux redemarrages, contrairement au log en memoire)."""
+    events = db.get_ws_events(days=7)
+    return {
+        "events": events,
+        "currently_healthy": bot._is_ws_healthy() if bot.info is not None else False,
+        "currently_connected": bot.info is not None,
+    }
 
 
 @app.get("/api/bot/logs")
