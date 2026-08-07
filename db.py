@@ -57,7 +57,8 @@ def init_db():
                 closed_at TEXT,
                 rsi REAL,
                 entry_reasons TEXT,
-                confidence_breakdown TEXT
+                confidence_breakdown TEXT,
+                strategy TEXT
             )
         """)
         # Migration : ajoute la colonne rsi si la table trades existait deja
@@ -74,6 +75,11 @@ def init_db():
             # les poids de CONFIDENCE_WEIGHTS a partir des resultats reels
             # (voir api.py, module de calibration de la confiance).
             conn.execute("ALTER TABLE trades ADD COLUMN confidence_breakdown TEXT")
+        if "strategy" not in existing_cols:
+            # v4.8 — "normal" ou "accumulation", pour differencier les trades
+            # du mode Accumulation (achat pres du support / vente pres de la
+            # resistance) des trades normaux (RSI/tendance) dans l historique.
+            conn.execute("ALTER TABLE trades ADD COLUMN strategy TEXT")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS config_overrides (
                 key TEXT PRIMARY KEY,
@@ -132,17 +138,17 @@ def user_count():
 def insert_open_trade(coin, action, confidence, leverage, position_size_pct,
                        risk_reward, timeframe, entry_price, stop_loss,
                        take_profit1, take_profit2, rsi=None, entry_reasons=None,
-                       confidence_breakdown=None):
+                       confidence_breakdown=None, strategy=None):
     with _lock, _connect() as conn:
         cur = conn.execute("""
             INSERT INTO trades (coin, action, confidence, leverage, position_size_pct,
                                  risk_reward, timeframe, entry_price, stop_loss,
                                  take_profit1, take_profit2, rsi, entry_reasons,
-                                 confidence_breakdown, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 confidence_breakdown, strategy, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (coin, action, confidence, leverage, position_size_pct, risk_reward,
               timeframe, entry_price, stop_loss, take_profit1, take_profit2, rsi,
-              entry_reasons, confidence_breakdown, now_iso()))
+              entry_reasons, confidence_breakdown, strategy, now_iso()))
         conn.commit()
         return cur.lastrowid
 
