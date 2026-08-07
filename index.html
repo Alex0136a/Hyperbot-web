@@ -1657,7 +1657,7 @@ Confirmer ?`
                 <span style={{color:"#34d399",fontWeight:700}}>{t.action} {t.coin}</span>
                 <span style={{color:"#94a3b8"}}>{t.close_reason}</span>
                 <span style={{color:"#34d399",fontWeight:700}}>+{t.pnl?.toFixed(2)} USDC</span>
-                <span style={{color:"#94a3b8"}}>{t.closed_at?.slice(11,16)}</span>
+                <span style={{color:"#94a3b8"}}>{t.closed_at?new Date(t.closed_at).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"}):""}</span>
               </div>
             ))}
           </div>
@@ -1670,7 +1670,7 @@ Confirmer ?`
                 <span style={{color:"#f87171",fontWeight:700}}>{t.action} {t.coin}</span>
                 <span style={{color:"#94a3b8"}}>{t.close_reason}</span>
                 <span style={{color:"#f87171",fontWeight:700}}>{t.pnl?.toFixed(2)} USDC</span>
-                <span style={{color:"#94a3b8"}}>{t.closed_at?.slice(11,16)}</span>
+                <span style={{color:"#94a3b8"}}>{t.closed_at?new Date(t.closed_at).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"}):""}</span>
               </div>
             ))}
           </div>
