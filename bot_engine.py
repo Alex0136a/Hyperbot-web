@@ -135,6 +135,14 @@ CONFIG = {
                            "UNI", "CRV", "SUSHI", "GMX", "POL"],
     "MAX_OPEN_TRADES":    5,
 
+    # v4.9 — Cooldown de reentree DANS LE MEME SENS apres la fermeture d un
+    # trade sur un actif : hypothese que repartir tout de suite dans la
+    # meme direction (apres un SL notamment) capture souvent du bruit plutot
+    # qu un vrai signal frais. Un signal dans le sens OPPOSE (retournement)
+    # n est jamais concerne — seule la repetition immediate du meme pari est
+    # freinee. S applique aux deux strategies (normal et Accumulation).
+    "REENTRY_COOLDOWN_SEC": 900,  # 15 minutes
+
     # v4.3 — Actifs EXPLICITEMENT desactives par l utilisateur depuis l onglet
     # Marches (ex: un actif perdant a repetition). Contrairement a une simple
     # absence de ACTIVE_COINS, un actif ici ne peut JAMAIS etre auto-active
@@ -1401,6 +1409,10 @@ class SymbolState:
         self.prev_ema_l      = None   # EMA longue du cycle precedent (detection pivot)
         self.consec_bull     = 0      # Nombre de cycles consecutifs haussiers (EMA bull)
         self.consec_bear     = 0      # Nombre de cycles consecutifs baissiers (EMA bear)
+        # v4.9 — Cooldown de reentree dans le MEME sens apres une fermeture
+        # (voir close_position / _check_reentry_cooldown)
+        self.last_closed_direction = None
+        self.last_closed_at        = None
 
     def reset_indicators(self):
         """Reinitialise les donnees de prix et indicateurs techniques.
@@ -1500,6 +1512,12 @@ class SymbolState:
         # rien n est perdu en purgeant cette copie en memoire.
         cutoff_24h = datetime.now().timestamp() - 86400
         self.closed_trades = [t for t in self.closed_trades if t.get("ts", 0) >= cutoff_24h]
+        # v4.9 — Cooldown de reentree : on retient la direction et l heure de
+        # CETTE fermeture, pour empecher une reouverture dans le MEME sens
+        # avant un delai minimum (voir _check_reentry_cooldown). Un signal
+        # dans le sens OPPOSE (retournement) n est pas concerne.
+        self.last_closed_direction = p["type"]
+        self.last_closed_at = time.time()
         self.position = None
         self.peak_price = None
         self.trailing_tp_active = False
@@ -3615,6 +3633,23 @@ class BotEngine:
             cand.get("conf_breakdown", {})
         )
         strategy = cand.get("strategy", "normal")  # v4.8 — "normal" ou "accumulation"
+
+        # v4.9 — Cooldown de reentree dans le MEME sens : si le dernier trade
+        # ferme sur cet actif allait deja dans cette direction et que le
+        # delai minimum n est pas ecoule, on abandonne ce candidat (silence,
+        # il pourra retenter au prochain cycle si le signal persiste apres
+        # le cooldown). Un signal OPPOSE (retournement) n est jamais bloque.
+        cooldown_sec = cfg.get("REENTRY_COOLDOWN_SEC", 900)
+        if (cooldown_sec and state.last_closed_at is not None
+                and state.last_closed_direction == signal):
+            elapsed = time.time() - state.last_closed_at
+            if elapsed < cooldown_sec:
+                remaining = int(cooldown_sec - elapsed)
+                self.emit("log", {
+                    "msg": f"[{ticker}] {signal.upper()} ignore — cooldown de reentree dans le meme sens ({remaining}s restantes sur {cooldown_sec}s)",
+                    "level": "dim"
+                })
+                return
 
         # ── v4.1 — Dimensionnement par LOT (batch) ──────────────────────────
         # E est calcule UNE SEULE FOIS au debut d un lot (des qu aucune
