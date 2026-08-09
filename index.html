@@ -970,6 +970,7 @@ Confirmer ?`
                   <div style={{textAlign:"right"}}>
                     <div style={{fontSize:15,fontWeight:700,color:pnl>=0?"#34d399":"#f87171"}}>{pnl>=0?"+":""}{pnl.toFixed(2)} USDC</div>
                     <div style={{fontSize:9,color:"#94a3b8"}}>{p.pnl_pct>=0?"+":""}{p.pnl_pct}%</div>
+                    {p.peak_pnl!=null && <div style={{fontSize:9,color:"#c084fc"}}>🏔️ pic +{p.peak_pnl.toFixed(2)} USDC</div>}
                   </div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7,marginBottom:7}}>
@@ -1597,6 +1598,7 @@ Confirmer ?`
                       </div>
                       <div style={{display:"flex",gap:14,alignItems:"center"}}>
                         <span style={{color:"#94a3b8",fontSize:9}}>{new Date(trade.closed_at).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</span>
+                        {trade.peak_pnl!=null && <span style={{color:"#c084fc",fontSize:9}}>🏔️ +{trade.peak_pnl.toFixed(2)}</span>}
                         <span style={{color:(trade.pnl||0)>=0?"#34d399":"#f87171",fontWeight:700,fontSize:13}}>
                           {(trade.pnl||0)>=0?"+":""}{trade.pnl?.toFixed(2)} USDC
                         </span>
