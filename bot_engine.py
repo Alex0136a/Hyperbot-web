@@ -1756,7 +1756,15 @@ class BotEngine:
     def __init__(self, cfg, event_queue):
         self.cfg = cfg
         self.q = event_queue
+        # v4.14 — SUR DEMANDE EXPLICITE : separation entre le MOTEUR (collecte
+        # de prix, indicateurs, WebSocket, gestion des positions ouvertes —
+        # doit tourner en continu, sauf vraie panne) et le TRADING (ouverture
+        # de NOUVELLES positions — seul ce qui est controle par le bouton
+        # Demarrer/Arreter). self.running = moteur actif ; self.trading_enabled
+        # = nouvelles entrees autorisees. Les positions deja ouvertes
+        # continuent TOUJOURS d etre gerees (SL/TP), meme trading_enabled=False.
         self.running = False
+        self.trading_enabled = False
         # Sauvegarder les noms originaux (vrais tickers sans suffixe)
         # Normaliser : si cfg["SYMBOLS"] contient deja des slot_keys, les extraire
         raw_symbols = [ticker_from_slot_key(s) for s in cfg["SYMBOLS"]]
@@ -2041,21 +2049,39 @@ class BotEngine:
         if etype == "log" and data and "msg" in data:
             write_log(data["msg"], data.get("level", "info"))
 
-    def start(self):
+    def start_engine(self):
+        """v4.14 — Demarre le MOTEUR (connexion Hyperliquid, WebSocket,
+        boucle de collecte/gestion) — independamment du trading. Idempotent :
+        ne fait rien si deja demarre. A appeler UNE SEULE FOIS, au demarrage
+        du process (voir api.py), pas a chaque clic sur Demarrer. Une fois
+        lance, tourne en continu (avec reconnexion automatique, voir _run)
+        jusqu a l arret du process lui-meme — le bouton Demarrer/Arreter
+        n a plus aucune prise dessus, seul self.trading_enabled en depend."""
+        if self.running:
+            return
         self.running = True
-        self._started = True
-        # Marquer le debut de session dans le fichier log
-        from datetime import datetime as _dt
-        write_log(f"{'='*60}", "info")
-        write_log(f"DEMARRAGE SESSION — v{BOT_VERSION} (build {BOT_BUILD}) | mode={self.cfg.get('MODE')} | profil={self.cfg.get('PROFILE')}", "info")
-        write_log(f"Actifs : {[s for s in self.cfg.get('SYMBOLS', [])]}", "info")
-        write_log(f"{'='*60}", "info")
         threading.Thread(target=self._run, daemon=True).start()
         # v3.2 : sauvegarde dediee toutes les 5s, decouplee du cycle de trading
         # (15s) — reduit la fenetre de "fraicheur perdue" en cas de coupure
         # brutale (redeploiement, crash) sans avoir a acce le rythme du cycle
         # de trading lui-meme. Cout negligeable (petit fichier JSON local).
         threading.Thread(target=self._periodic_save_loop, daemon=True).start()
+
+    def start(self):
+        """v4.14 — Bouton "Demarrer" : autorise desormais UNIQUEMENT
+        l ouverture de nouveaux trades (self.trading_enabled). Le moteur
+        (WebSocket, indicateurs, gestion des positions deja ouvertes) tourne
+        deja en continu depuis le demarrage du process — ce bouton ne le
+        redemarre pas, il n a plus besoin de l etre."""
+        if not self.running:
+            self.start_engine()  # filet de securite si jamais pas encore lance
+        self.trading_enabled = True
+        self._started = True
+        # Marquer le debut de session dans le fichier log
+        write_log(f"{'='*60}", "info")
+        write_log(f"TRADING ACTIVE — v{BOT_VERSION} (build {BOT_BUILD}) | mode={self.cfg.get('MODE')} | profil={self.cfg.get('PROFILE')}", "info")
+        write_log(f"Actifs : {[s for s in self.cfg.get('SYMBOLS', [])]}", "info")
+        write_log(f"{'='*60}", "info")
 
     def _periodic_save_loop(self):
         while self.running:
@@ -2086,22 +2112,15 @@ class BotEngine:
         save_capital(current_capital, self.sessions, self.total_pnl_all)
 
     def stop(self):
-        self.running = False
-        # Sauvegarde l etat des indicateurs AVANT toute autre chose, avec un
-        # horodatage precis a l instant de l arret — sert de reference pour
-        # la reprise rapide (< 10 min cumulees) au prochain demarrage.
-        self._save_indicator_state()
-        # Fermer proprement le WebSocket si actif, pour eviter d accumuler des
-        # connexions/threads orphelins entre deux demarrages successifs.
-        if self._ws_subscribed and self.info is not None:
-            try:
-                self.info.disconnect_websocket()
-            except Exception as e:
-                print(f"[WS] Deconnexion websocket : {e}")
-            self._ws_subscribed = False
+        """v4.14 — Bouton "Arreter" : bloque UNIQUEMENT l ouverture de
+        nouveaux trades (self.trading_enabled = False). Les positions deja
+        ouvertes continuent d etre gerees normalement (SL/TP actifs) — le
+        moteur (WebSocket, indicateurs) continue de tourner sans
+        interruption, ne se deconnecte plus a l arret."""
+        self.trading_enabled = False
         if not self._started:
-            # Jamais demarre (ex: fermeture de l app avant tout DEMARRER) —
-            # rien a sauvegarder, evite de gonfler le compteur de sessions.
+            # Jamais demarre (ex: le trading n a jamais ete active) — rien a
+            # sauvegarder, evite de gonfler le compteur de sessions.
             return
         self._started = False
         # Sauvegarde du capital pour interets composes
@@ -2644,19 +2663,26 @@ class BotEngine:
                 "level": "error"
             })
             self.running = False
-            self._started = False
             self.emit("stopped", {})
             return
 
-        self.info, self.exchange, conn_error = connect_hyperliquid(cfg["PRIVATE_KEY"], cfg["WALLET_ADDRESS"])
-        if self.info is None:
-            msg = f"Connexion Hyperliquid echouee — {conn_error}"
+        # v4.14 — SUR DEMANDE EXPLICITE : le moteur de collecte (WS + prix +
+        # indicateurs + gestion des positions ouvertes) doit tourner en
+        # continu, independamment du bouton Demarrer/Arreter du trading —
+        # seule une VRAIE panne doit l interrompre, avec reconnexion
+        # automatique. Avant ce fix, un echec de connexion initial faisait
+        # abandonner _run() DEFINITIVEMENT (self.running=False, return) sans
+        # aucune tentative de reconnexion — desormais on reessaie
+        # indefiniment, toutes les 30s, jusqu a ce que la connexion aboutisse.
+        retry_delay = 30
+        while True:
+            self.info, self.exchange, conn_error = connect_hyperliquid(cfg["PRIVATE_KEY"], cfg["WALLET_ADDRESS"])
+            if self.info is not None:
+                break
+            msg = f"Connexion Hyperliquid echouee — {conn_error} — nouvelle tentative dans {retry_delay}s."
             self.emit("log", {"msg": msg, "level": "error"})
             self.emit("ws_event", {"kind": "connect_failed", "message": msg})
-            self.running = False
-            self._started = False
-            self.emit("stopped", {})
-            return
+            time.sleep(retry_delay)
         self.emit("log", {"msg": "Connexion etablie.", "level": "ok"})
         self.emit("ws_event", {"kind": "connected", "message": "Connexion Hyperliquid etablie avec succes."})
 
@@ -3128,9 +3154,19 @@ class BotEngine:
         macd, sig = calc_macd(prices, cfg["MACD_FAST"], cfg["MACD_SLOW"], cfg["MACD_SIGNAL"])
         bb_up, bb_mid, bb_low = calc_bollinger(prices, cfg["BB_PERIOD"], cfg["BB_STD"])
 
-        # EMA 200 multi-timeframe — 1 point toutes les 4 cycles (30s x 4 = 2 min par bougie)
-        # Couvre 200 x 2min = 6h40 de tendance longue
-        MTF_STEP = 4  # nombre de cycles entre chaque point EMA200
+        # EMA 200 multi-timeframe — 1 point tous les MTF_CANDLE_SEC (2 min par
+        # defaut), pour couvrir 200 x 2min = 6h40 de tendance longue, QUEL
+        # QUE SOIT le CYCLE_INTERVAL utilise pour le reste du bot (verifs
+        # rapides toutes les 10s, mais la fenetre de tendance de fond doit
+        # rester longue terme, independamment de cette frequence).
+        # v4.13 — FIX : l ancien MTF_STEP=4 etait code en dur en supposant un
+        # CYCLE_INTERVAL de 30s (4x30s=2min/point, 200x2min=6h40) — avec le
+        # CYCLE_INTERVAL reel de 10s, ca ne donnait qu un point toutes les
+        # 40s, soit une fenetre reelle de ~2h13 seulement (3x plus courte que
+        # prevu). MTF_STEP est desormais calcule pour toujours viser
+        # MTF_CANDLE_SEC secondes par point, peu importe le CYCLE_INTERVAL.
+        MTF_CANDLE_SEC = 120  # 2 minutes par point -> 200 x 2min = 6h40 au total
+        MTF_STEP = max(1, round(MTF_CANDLE_SEC / cfg["CYCLE_INTERVAL"]))
         if len(prices) % MTF_STEP == 0:
             state.mtf_prices.append(price)
         ema200 = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
@@ -3735,6 +3771,12 @@ class BotEngine:
         _process — inchangee, juste deplacee pour s executer apres le
         classement par confiance de fin de cycle."""
         cfg = self.cfg
+        # v4.14 — SUR DEMANDE EXPLICITE : bloque UNIQUEMENT l ouverture de
+        # NOUVEAUX trades quand le trading est desactive (bouton Arreter) —
+        # les positions deja ouvertes continuent d etre gerees normalement
+        # ailleurs (_manage_position_impl, jamais gate par trading_enabled).
+        if not self.trading_enabled:
+            return
         symbol, ticker, state, signal, price, confidence, rsi, rsi_mode, reasons, prices, conf_breakdown = (
             cand["symbol"], cand["ticker"], cand["state"], cand["signal"], cand["price"],
             cand["confidence"], cand["rsi"], cand["rsi_mode"], cand["reasons"], cand["prices"],
