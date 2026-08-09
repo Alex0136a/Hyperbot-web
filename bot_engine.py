@@ -3134,8 +3134,17 @@ class BotEngine:
         if len(prices) % MTF_STEP == 0:
             state.mtf_prices.append(price)
         ema200 = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
-        trend_up   = ema200 is None or price > ema200   # au dessus EMA200 = tendance haussiere
-        trend_down = ema200 is None or price < ema200   # en dessous EMA200 = tendance baissiere
+        # v4.12 — FIX FAILLE : quand l EMA200 n est pas encore calculable
+        # (donnees insuffisantes, ex: juste apres un redemarrage), l ancien
+        # code mettait trend_up ET trend_down a True SIMULTANEMENT — la
+        # protection contre les trades a contre-tendance etait alors
+        # entierement contournee (les deux sens autorises sans aucun filtre).
+        # Desormais, si l EMA200 est indisponible, AUCUN des deux sens n est
+        # autorise tant que la donnee n est pas fiable — plus prudent qu un
+        # bypass complet, au prix d attendre la collecte plutot que de
+        # trader a l aveugle sur la tendance de fond.
+        trend_up   = ema200 is not None and price > ema200   # au dessus EMA200 = tendance haussiere
+        trend_down = ema200 is not None and price < ema200   # en dessous EMA200 = tendance baissiere
 
         # Sauvegarde du MACD du cycle precedent pour detection crossover (Trailing TP)
         state.prev_macd = state.current_macd
