@@ -3409,6 +3409,18 @@ class BotEngine:
             if ref_price > 0:
                 momentum_pct = (price - ref_price) / ref_price * 100
 
+        # v4.16 — SUR DEMANDE EXPLICITE : le mode Accumulation tourne EN
+        # PARALLELE de la logique normale ci-dessous, evalue independamment
+        # a CHAQUE cycle — plus seulement en repli quand la logique normale
+        # ne trouve rien. Les deux systemes peuvent donc chacun proposer un
+        # candidat sur le meme actif au meme cycle (garde-fou anti-double-
+        # ouverture dans _finalize_open : un seul slot par actif, le premier
+        # candidat finalise gagne).
+        self._check_accumulation_signal(
+            symbol, ticker, price, support, resistance, rsi, momentum_pct,
+            ema200, trend_up, trend_down, prices, state
+        )
+
         # Seuils RSI specifiques au symbole
         rsi_oversold   = cfg.get("SYMBOL_RSI_OVERSOLD",  {}).get(ticker, cfg["RSI_OVERSOLD"])
         rsi_overbought = cfg.get("SYMBOL_RSI_OVERBOUGHT", {}).get(ticker, cfg["RSI_OVERBOUGHT"])
@@ -3693,13 +3705,6 @@ class BotEngine:
                 reasons.append(f"momentum {momentum_pct:+.2f}%")
         else:
             self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} ATTENDRE", "level": "dim"})
-            # v4.8 — La logique normale n a rien trouve ce cycle : le mode
-            # Accumulation (independant, s il est active) a sa chance sur ce
-            # meme symbole/cycle avant d abandonner completement.
-            self._check_accumulation_signal(
-                symbol, ticker, price, support, resistance, rsi, momentum_pct,
-                ema200, trend_up, trend_down, prices, state
-            )
             return
 
         if not vol_ok and cfg["VOLUME_MIN_RATIO"] > 1.0:
@@ -3724,14 +3729,18 @@ class BotEngine:
     def _check_accumulation_signal(self, symbol, ticker, price, support, resistance,
                                     rsi, momentum_pct, ema200, trend_up, trend_down,
                                     prices, state):
-        """v4.8 — Mode ACCUMULATION : strategie independante de la logique
+        """v4.16 — Mode ACCUMULATION : strategie independante de la logique
         RSI/tendance habituelle. LONG si le prix est proche du SUPPORT
         recent, SHORT si proche de la RESISTANCE recente — logique de
-        rebond/rejet sur un niveau cle, pas de suivi de tendance. Appelee
-        uniquement quand la logique normale n a PAS genere de signal ce
-        cycle (un slot ne peut de toute facon accueillir qu une position a
-        la fois). Alimente self._pending_accumulation_candidates, plafond
-        et execution geres separement (voir _finalize_pending_accumulation_candidates).
+        rebond/rejet sur un niveau cle, pas de suivi de tendance. Tourne EN
+        PARALLELE de la logique normale, evaluee independamment a CHAQUE
+        cycle (plus seulement en repli quand la logique normale ne trouve
+        rien) — sur demande explicite. Alimente
+        self._pending_accumulation_candidates, plafond et execution geres
+        separement (voir _finalize_pending_accumulation_candidates). Comme
+        un seul slot existe par actif, un garde-fou dans _finalize_open
+        evite qu un candidat normal et un candidat Accumulation sur le meme
+        actif n ouvrent tous les deux le meme cycle.
         """
         cfg = self.cfg
         if not cfg.get("ACCUMULATION_ENABLED", False):
@@ -3826,6 +3835,17 @@ class BotEngine:
             cand.get("conf_breakdown", {})
         )
         strategy = cand.get("strategy", "normal")  # v4.8 — "normal" ou "accumulation"
+
+        # v4.16 — SUR DEMANDE EXPLICITE : le mode Accumulation tourne
+        # desormais en PARALLELE de la logique normale, evaluee independamment
+        # chaque cycle (plus seulement en repli quand la logique normale ne
+        # trouve rien). Consequence : les deux systemes peuvent proposer un
+        # candidat sur le MEME actif au MEME cycle — un seul slot par actif
+        # existant, le premier a etre finalise (normal, traite en premier)
+        # gagne ; l autre est simplement abandonne ce cycle, sans erreur.
+        if state.position:
+            self.emit("log", {"msg": f"[{ticker}] Candidat {strategy} abandonne — slot deja pris ce cycle par l autre strategie.", "level": "dim"})
+            return
 
         # v4.9 — Cooldown de reentree dans le MEME sens : si le dernier trade
         # ferme sur cet actif allait deja dans cette direction et que le
