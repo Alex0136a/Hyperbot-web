@@ -371,10 +371,11 @@ def _public_config() -> Dict[str, Any]:
         "trading_mode": cfg.get("MODE", "paper"),
         "profile": cfg.get("PROFILE", "swing"),
         "position_pct": cfg.get("POSITION_SIZE_PCT"),
-        # v4.0 — champs $ legacy, recalcules a titre INFORMATIF a partir des
-        # nouveaux reglages en % de E et du capital courant (E estime =
-        # CAPITAL_USD x POSITION_SIZE_PCT/100). Utiliser sl_pct_of_e /
-        # ttp_arm1_price_pct pour la valeur reelle, stable, appliquee par le bot.
+        # v4.10 — moteur ASYMETRIQUE : SL en % de E (perte $ plafonnee,
+        # independante du levier), TP en % de mouvement de prix (gain $
+        # amplifie par le levier). max_loss_usd/quick_profit_usd = valeurs $
+        # informatives a titre indicatif (capital courant, levier x1 pour le TP).
+        # Utiliser sl_pct_of_e / ttp_arm1_price_pct pour les valeurs reelles.
         "max_loss_usd": round(cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100 * cfg.get("SL_PCT_OF_E", 1.0) / 100, 4),
         "quick_profit_usd": round(cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100 * cfg.get("TTP_ARM1_PRICE_PCT", 1.0) / 100, 4),
         "sl_pct_of_e": cfg.get("SL_PCT_OF_E", 1.0),
@@ -641,10 +642,10 @@ class ConfigBody(BaseModel):
     trading_mode: Optional[str] = None
     position_pct: Optional[float] = None
     # v4.0 — champs legacy en $, encore acceptes pour compat avec l interface
-    # actuelle : convertis a la volee en % de E (voir put_config ci-dessous).
+    # actuelle : convertis a la volee en % de mouvement de prix (voir put_config).
     max_loss_usd: Optional[float] = None
     quick_profit_usd: Optional[float] = None
-    # v4.0 — nouveaux champs natifs, en % de E (a privilegier cote interface)
+    # v4.9 — nouveaux champs natifs, en % de MOUVEMENT DE PRIX (a privilegier)
     sl_pct_of_e: Optional[float] = None
     ttp_arm1_price_pct: Optional[float] = None
     ttp_lock1_price_pct: Optional[float] = None
@@ -746,11 +747,11 @@ def put_config(body: ConfigBody, email: str = Depends(require_user)):
     if body.position_pct is not None:
         _apply_and_persist("POSITION_SIZE_PCT", body.position_pct)
 
-    # v4.0 — le moteur de risque raisonne desormais en % de E (taille d
-    # entree), pas en $ fixe. Les champs $ legacy (max_loss_usd,
-    # quick_profit_usd) restent acceptes pour compat avec l interface
-    # actuelle : on les convertit a la volee en % de E, a partir d une
-    # estimation de E au capital/POSITION_SIZE_PCT courants.
+    # v4.10 — moteur ASYMETRIQUE : SL en % de E (perte $ plafonnee), TP en %
+    # de mouvement de prix (gain $ amplifie par le levier). Les champs $
+    # legacy (max_loss_usd, quick_profit_usd) restent acceptes pour compat
+    # avec l interface actuelle : convertis a la volee via une estimation de
+    # E a levier x1 (capital/POSITION_SIZE_PCT courants).
     e_estimate = cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100
 
     if body.max_loss_usd is not None:
