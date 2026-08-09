@@ -331,6 +331,23 @@ CONFIG = {
     "TTP_ARM2_PRICE_PCT":      1.3,
     "TTP_TRAIL_GAP_PRICE_PCT": 0.3,
 
+    # v4.11 — Protection anticipee ("tier 0"), sur demande explicite : les
+    # trades n atteignant JAMAIS TTP_ARM1_PRICE_PCT (1.0% par defaut)
+    # n avaient jusqu ici AUCUNE protection — un trade monte a +0.99% pouvait
+    # rendre tout son gain (et plus, jusqu au SL) sans jamais rien capturer.
+    # Des que le prix atteint TTP_TIER0_ARM_PRICE_PCT (0.5%), un trailing
+    # s arme avec une marge plus large (TTP_TIER0_GAP_PRICE_PCT, 0.42%) —
+    # ex: pic a 0.99% -> sortie a 0.57%, capture plus de la moitie du pic
+    # au lieu de zero. Ce tier 0 se desactive des que le prix atteint le
+    # seuil d armement principal (arm1, 1.0%) — le trailing principal, plus
+    # fin, prend alors le relai. Il peut en theorie se reactiver si le prix
+    # repasse sous ce seuil de 0.5% pendant que tier 1 est actif — dans les
+    # faits, avec TTP_LOCK1_PRICE_PCT (0.8%) superieur a ce seuil, tier 1
+    # ferme toujours le trade avant que ca puisse arriver (protection
+    # simplement redondante avec les reglages actuels, utile si reconfigures).
+    "TTP_TIER0_ARM_PRICE_PCT": 0.5,
+    "TTP_TIER0_GAP_PRICE_PCT": 0.42,
+
     # ── Score de confiance (0-100%) — filtre final avant toute entree ───────
     # Poids relatifs des confirmations optionnelles disponibles pour un signal.
     # Le score est ramene sur 100% du poids REELLEMENT disponible pour ce
@@ -1409,6 +1426,13 @@ class SymbolState:
         self.trailing_tp_active = False
         self.peak_pnl_usd  = None   # Pic de PnL latent en $ (etage 2 du Trailing TP)
         self.tp_stage      = 0      # 0=inactif, 1=Quick Profit arme, 2=Trailing illimite
+        # v4.11 — Protection anticipee ("tier 0") : trailing intermediaire
+        # entre 0 et l armement principal (arm1), pour eviter qu un trade qui
+        # monte pres du seuil (ex: +0.99%) sans jamais l atteindre ne rende
+        # tout son gain en cas de retournement (aucune protection actuelle
+        # tant que tp_stage reste a 0).
+        self.tier0_armed        = False
+        self.tier0_peak_pnl_usd = None
         self.mtf_prices    = deque(maxlen=200)
         self.forex_was_open  = None
         self.forex_reopen_time = None
@@ -1454,6 +1478,8 @@ class SymbolState:
         self.trailing_tp_active = False
         self.peak_pnl_usd = None
         self.tp_stage = 0
+        self.tier0_armed = False
+        self.tier0_peak_pnl_usd = None
 
     def trades_last_24h(self):
         cutoff = datetime.now().timestamp() - 86400
@@ -1531,6 +1557,8 @@ class SymbolState:
         self.trailing_tp_active = False
         self.peak_pnl_usd = None
         self.tp_stage = 0
+        self.tier0_armed = False
+        self.tier0_peak_pnl_usd = None
         return pnl_usd, win, trade
 
     def win_rate(self):
@@ -1816,6 +1844,8 @@ class BotEngine:
                 snapshot["_peak_pnl_usd"] = st.peak_pnl_usd
                 snapshot["_tp_stage"] = st.tp_stage
                 snapshot["_trailing_tp_active"] = st.trailing_tp_active
+                snapshot["_tier0_armed"] = st.tier0_armed  # v4.11
+                snapshot["_tier0_peak_pnl_usd"] = st.tier0_peak_pnl_usd  # v4.11
                 positions[sym] = snapshot
         try:
             with open(self.POSITIONS_FILE, "w") as f:
@@ -2716,6 +2746,8 @@ class BotEngine:
                             self.states[slot_key].peak_pnl_usd = saved.get("_peak_pnl_usd")
                             self.states[slot_key].tp_stage = saved.get("_tp_stage", 0)
                             self.states[slot_key].trailing_tp_active = saved.get("_trailing_tp_active", False)
+                            self.states[slot_key].tier0_armed = saved.get("_tier0_armed", False)  # v4.11
+                            self.states[slot_key].tier0_peak_pnl_usd = saved.get("_tier0_peak_pnl_usd")  # v4.11
                         self.emit("log", {"msg": f"[{ticker_sym}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} reintegree | SL ${pos['sl']:.2f} | TP ${pos['tp']:.2f}", "level": "warn"})
                         ensure_sl_on_hyperliquid(self.exchange, self.info, cfg["WALLET_ADDRESS"], ticker_sym, pos, cfg)
                         self.emit("log", {"msg": f"[{ticker_sym}] Verification SL Hyperliquid effectuee", "level": "ok"})
@@ -2745,10 +2777,14 @@ class BotEngine:
                     peak_pnl_usd = pos.pop("_peak_pnl_usd", None)
                     tp_stage = pos.pop("_tp_stage", 0)
                     trailing_tp_active = pos.pop("_trailing_tp_active", False)
+                    tier0_armed = pos.pop("_tier0_armed", False)  # v4.11
+                    tier0_peak_pnl_usd = pos.pop("_tier0_peak_pnl_usd", None)  # v4.11
                     state.position = pos
                     state.peak_pnl_usd = peak_pnl_usd
                     state.tp_stage = tp_stage
                     state.trailing_tp_active = trailing_tp_active
+                    state.tier0_armed = tier0_armed
+                    state.tier0_peak_pnl_usd = tier0_peak_pnl_usd
                     restored += 1
                     stage_info = f" | Trailing etage {tp_stage}, pic +${peak_pnl_usd:.2f}" if peak_pnl_usd is not None else ""
                     self.emit("log", {"msg": f"[{ticker}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} restauree (paper, apres redemarrage){stage_info}", "level": "warn"})
@@ -2951,17 +2987,69 @@ class BotEngine:
         lock1_price_pct = cfg.get("TTP_LOCK1_PRICE_PCT", 0.8)
         arm2_price_pct  = cfg.get("TTP_ARM2_PRICE_PCT", 1.3)
         gap_price_pct   = cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3)
+        tier0_arm_pct   = cfg.get("TTP_TIER0_ARM_PRICE_PCT", 0.5)
+        tier0_gap_pct   = cfg.get("TTP_TIER0_GAP_PRICE_PCT", 0.42)
 
-        if state.tp_stage == 0 and pnl_pct >= arm1_price_pct:
-            state.tp_stage = 1
-            state.peak_pnl_usd = pnl_usd
-            self.emit("log", {"msg": f"[{ticker}] Prix +{pnl_pct:.2f}% (+${pnl_usd:.2f} a x{leverage}) — TTP arme (sortie si repli a +{lock1_price_pct:.2f}% de mouvement de prix)", "level": "signal"})
-            # confirme sur ce cycle ; la verification de fermeture ne se fera
-            # qu a partir du PROCHAIN cycle (evite une fermeture instantanee
-            # si le seuil de sortie initial etait deja atteint ce meme cycle).
-            return
+        if state.tp_stage == 0:
+            # ── Promotion directe vers le tier 1 (arm1 atteint) — desactive
+            # le tier 0 au passage, le trailing principal prend le relai.
+            if pnl_pct >= arm1_price_pct:
+                state.tp_stage = 1
+                state.peak_pnl_usd = pnl_usd
+                state.tier0_armed = False
+                self.emit("log", {"msg": f"[{ticker}] Prix +{pnl_pct:.2f}% (+${pnl_usd:.2f} a x{leverage}) — TTP arme (sortie si repli a +{lock1_price_pct:.2f}% de mouvement de prix)", "level": "signal"})
+                # confirme sur ce cycle ; la verification de fermeture ne se
+                # fera qu a partir du PROCHAIN cycle (evite une fermeture
+                # instantanee si le seuil de sortie initial etait deja atteint
+                # ce meme cycle).
+                return
+
+            # ── v4.11 — Tier 0 : protection anticipee pour les trades qui
+            # n atteignent jamais arm1. S arme des que le prix atteint
+            # tier0_arm_pct, puis trail avec une marge plus large (tier0_gap_pct).
+            if not state.tier0_armed and pnl_pct >= tier0_arm_pct:
+                state.tier0_armed = True
+                state.tier0_peak_pnl_usd = pnl_usd
+                self.emit("log", {"msg": f"[{ticker}] Prix +{pnl_pct:.2f}% (+${pnl_usd:.2f} a x{leverage}) — protection anticipee armee (sortie si repli a plus de {tier0_gap_pct:.2f}% sous le pic)", "level": "signal"})
+                return
+
+            if state.tier0_armed:
+                if state.tier0_peak_pnl_usd is None or pnl_usd > state.tier0_peak_pnl_usd:
+                    state.tier0_peak_pnl_usd = pnl_usd
+                tier0_peak_pct = (state.tier0_peak_pnl_usd / (E * leverage) * 100) if E and leverage else 0
+                tier0_lock_pct = tier0_peak_pct - tier0_gap_pct
+
+                if pnl_pct <= tier0_lock_pct:
+                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
+                    trade["symbol"] = symbol
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, ticker, pos, self.cfg)
+                    self.emit("trade", trade)
+                    self._register_win(ticker)
+                    self.emit("log", {"msg": f"[{ticker}] {strat_tag}TTP SORTIE (protection anticipee) @ ${price:.2f} | pic +{tier0_peak_pct:.2f}% de mouvement (+${state.tier0_peak_pnl_usd:.2f} a x{leverage}) | PnL: +${pnl:.2f}", "level": "win"})
+                    self._save_open_positions()  # sauvegarde en live ET en paper
+                    self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
+                    return
+                else:
+                    self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Protection anticipee active | mouvement +{pnl_pct:.2f}% (+${pnl_usd:.2f} a x{leverage}) | pic +{tier0_peak_pct:.2f}% (sortie si repli a +{tier0_lock_pct:.2f}%)", "level": "dim"})
+                    return
+
+            # ni tier0 ni arm1 atteints : rien a faire, la fonction continue
+            # (log "rien de declenche" gere plus bas dans la fonction).
 
         if state.tp_stage == 1:
+            # v4.11 — Reactivation defensive du tier 0 si le prix retombe
+            # jusqu a son seuil d armement pendant que tier 1 est actif — ne
+            # devrait normalement jamais arriver tant que lock1_price_pct
+            # reste superieur a tier0_arm_pct (tier 1 fermerait deja le trade
+            # avant), mais protege si les seuils sont reconfigures autrement.
+            if pnl_pct <= tier0_arm_pct:
+                state.tp_stage = 0
+                state.tier0_armed = True
+                state.tier0_peak_pnl_usd = state.peak_pnl_usd
+                self.emit("log", {"msg": f"[{ticker}] Repli sous {tier0_arm_pct:.2f}% — retour a la protection anticipee (tier 1 desarme)", "level": "warn"})
+                return
+
             if state.peak_pnl_usd is None or pnl_usd > state.peak_pnl_usd:
                 state.peak_pnl_usd = pnl_usd
             # Pic reconverti en % de mouvement de prix (le levier est fixe
