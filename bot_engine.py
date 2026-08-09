@@ -1,3 +1,4 @@
+
 """
 ╔═══════════════════════════════════════════════════════╗
 ║       HyperBot — Pro Edition                          ║
@@ -1543,6 +1544,17 @@ class SymbolState:
         # anticipee (tier0_peak_pnl_usd) si le trade n a jamais depasse
         # arm1. None si le trade n a jamais ete en profit (ex: SL direct).
         peak_pnl_usd_at_close = self.peak_pnl_usd if self.peak_pnl_usd is not None else self.tier0_peak_pnl_usd
+        # v4.17 — pic aussi en % de mouvement de prix (prefere par l utilisateur
+        # a l affichage en $) : reconverti ici, ou E et le levier de CE trade
+        # precis sont connus avec certitude (size/leverage stockes sur la
+        # position au moment de son ouverture).
+        E_at_close = p.get("size", 0)
+        leverage_at_close = p.get("leverage", 1)
+        peak_pnl_pct_at_close = (
+            round(peak_pnl_usd_at_close / (E_at_close * leverage_at_close) * 100, 3)
+            if peak_pnl_usd_at_close is not None and E_at_close and leverage_at_close
+            else None
+        )
         trade = {
             "time": datetime.now().strftime("%H:%M:%S"), "symbol": "",
             "type": p["type"], "entry": p["entry"], "exit": exit_price,
@@ -1550,6 +1562,7 @@ class SymbolState:
             "ts": datetime.now().timestamp(),
             "strategy": p.get("strategy", "normal"),  # v4.8
             "peak_pnl_usd": peak_pnl_usd_at_close,  # v4.15
+            "peak_pnl_pct": peak_pnl_pct_at_close,  # v4.17
         }
         self.closed_trades.append(trade)
         # v4.3 — FIX FUITE MEMOIRE : seul un historique glissant de 24h est
