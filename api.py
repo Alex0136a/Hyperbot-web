@@ -174,7 +174,7 @@ def _consume_events():
                 action = "LONG" if data.get("type") == "long" else "SHORT"
                 trade_id = db.get_open_trade_id_by_coin_action(ticker, action)
                 if trade_id:
-                    db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"), peak_pnl=data.get("peak_pnl_usd"))
+                    db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"), peak_pnl=data.get("peak_pnl_usd"), peak_pnl_pct=data.get("peak_pnl_pct"))
                 else:
                     # v3.2 — diagnostic : auparavant, si aucune ligne ouverte
                     # ne correspondait (coin/action), la fermeture etait
@@ -603,6 +603,17 @@ def _open_positions() -> List[Dict[str, Any]]:
             # trade (trailing principal ou protection anticipee, selon
             # lequel est actif) — visible dans le panneau "Trades ouverts".
             peak_pnl_usd = state.peak_pnl_usd if state.peak_pnl_usd is not None else state.tier0_peak_pnl_usd
+            # v4.17 — pic en % de mouvement de prix, calcule avec le E et le
+            # levier REELS de CETTE position (pos["size"]/pos["leverage"]),
+            # plus fiables ici que la variable "leverage" ci-dessus (qui peut
+            # provenir d un repli config si l enrichissement DB a echoue).
+            pos_size = pos.get("size", 0)
+            pos_leverage = pos.get("leverage", 1)
+            peak_pnl_pct = (
+                round(peak_pnl_usd / (pos_size * pos_leverage) * 100, 3)
+                if peak_pnl_usd is not None and pos_size and pos_leverage
+                else None
+            )
 
             out.append({
                 "id": slot_key,
@@ -620,6 +631,7 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "pnl": round(pnl, 4),
                 "pnl_pct": round(pnl_pct, 3),
                 "peak_pnl": round(peak_pnl_usd, 4) if peak_pnl_usd is not None else None,
+                "peak_pnl_pct": peak_pnl_pct,
             })
         except Exception as e:
             print(f"[_open_positions] Erreur sur la position {slot_key}, ignoree pour cette reponse: {e}")
@@ -651,6 +663,7 @@ def _trade_row_to_signal(row: Dict[str, Any]) -> Dict[str, Any]:
         "reason": row["reason"],
         "strategy": row["strategy"] if "strategy" in row.keys() else "normal",
         "peak_pnl": row["peak_pnl"] if "peak_pnl" in row.keys() else None,
+        "peak_pnl_pct": row["peak_pnl_pct"] if "peak_pnl_pct" in row.keys() else None,
     }
 
 
