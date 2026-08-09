@@ -58,7 +58,8 @@ def init_db():
                 rsi REAL,
                 entry_reasons TEXT,
                 confidence_breakdown TEXT,
-                strategy TEXT
+                strategy TEXT,
+                peak_pnl REAL
             )
         """)
         # Migration : ajoute la colonne rsi si la table trades existait deja
@@ -80,6 +81,11 @@ def init_db():
             # du mode Accumulation (achat pres du support / vente pres de la
             # resistance) des trades normaux (RSI/tendance) dans l historique.
             conn.execute("ALTER TABLE trades ADD COLUMN strategy TEXT")
+        if "peak_pnl" not in existing_cols:
+            # v4.15 — Pic de PnL latent ($) atteint pendant la vie du trade,
+            # avant sa fermeture — permet de voir combien de gain a ete
+            # "rendu" entre le sommet et la sortie reelle (SL ou TTP).
+            conn.execute("ALTER TABLE trades ADD COLUMN peak_pnl REAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS config_overrides (
                 key TEXT PRIMARY KEY,
@@ -153,11 +159,11 @@ def insert_open_trade(coin, action, confidence, leverage, position_size_pct,
         return cur.lastrowid
 
 
-def close_trade(trade_id, exit_price, pnl, reason):
+def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None):
     with _lock, _connect() as conn:
         conn.execute(
-            "UPDATE trades SET exit_price=?, pnl=?, reason=?, closed_at=? WHERE id=?",
-            (exit_price, pnl, reason, now_iso(), trade_id)
+            "UPDATE trades SET exit_price=?, pnl=?, reason=?, closed_at=?, peak_pnl=? WHERE id=?",
+            (exit_price, pnl, reason, now_iso(), peak_pnl, trade_id)
         )
         conn.commit()
 
