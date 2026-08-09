@@ -234,7 +234,10 @@ def _on_shutdown():
     # derniere fraction de temps depuis "running_since" ne sera comptee
     # qu au prochain calcul via _get_running_seconds si "running_since"
     # est encore renseigne (le calcul inclut deja la session en cours).
-    if bot.running:
+    # v4.14 — trading_enabled (pas running, qui reste toujours actif tant
+    # que le process tourne desormais) : ce compteur mesure le temps de
+    # TRADING actif, pas la duree de vie du process/moteur.
+    if bot.trading_enabled:
         _mark_running_stop_and_accumulate()
 
 
@@ -293,16 +296,24 @@ def _get_running_seconds() -> float:
 #   - "stopped" (l utilisateur a explicitement clique ARRETER) -> reste
 #     arrete tant qu il ne clique pas DEMARRER, meme apres un redeploiement.
 def _auto_start_if_desired():
+    # v4.14 — SUR DEMANDE EXPLICITE : le MOTEUR (collecte de prix,
+    # indicateurs, WebSocket, gestion des positions ouvertes) doit tourner
+    # en continu des que le process demarre, INDEPENDAMMENT du dernier etat
+    # "running"/"stopped" choisi par l utilisateur — cet etat persiste ne
+    # controle desormais plus que l ouverture de NOUVEAUX trades.
+    if not cfg.get("PRIVATE_KEY") or not cfg.get("WALLET_ADDRESS"):
+        _push_log("warn", "Moteur non demarre : cle API / wallet Hyperliquid non configures. Configurez-les puis redemarrez le service.")
+        return
+    bot.start_engine()
+    _push_log("ok", "Moteur demarre (collecte de prix/indicateurs, WebSocket) — actif en continu.")
+
     desired = db.get_meta("bot_desired_state", "running")
     if desired != "running":
-        _push_log("info", "Demarrage automatique desactive (dernier etat : ARRETE manuellement).")
-        return
-    if not cfg.get("PRIVATE_KEY") or not cfg.get("WALLET_ADDRESS"):
-        _push_log("warn", "Demarrage automatique impossible : cle API / wallet Hyperliquid non configures. Configurez-les puis demarrez manuellement.")
+        _push_log("info", "Trading non active automatiquement (dernier etat : ARRETE manuellement). Le moteur tourne, mais aucun nouveau trade ne s ouvrira tant que DEMARRER n est pas reclique.")
         return
     bot.start()
     _mark_running_start()
-    _push_log("ok", "Demarrage automatique du bot (etat persistant : en cours d execution).")
+    _push_log("ok", "Trading active automatiquement (etat persistant : en cours d execution).")
 
 
 _auto_start_if_desired()
@@ -399,8 +410,9 @@ def _public_config() -> Dict[str, Any]:
         "accumulation_max_trades": cfg.get("ACCUMULATION_MAX_TRADES", 3),
         "accumulation_proximity_pct": cfg.get("ACCUMULATION_PROXIMITY_PCT", 1.0),
         "ai_continuous": db.get_config_override("ai_continuous", False),
-        "running": bot.running,
-        "is_running": bot.running,
+        "running": bot.trading_enabled,
+        "is_running": bot.trading_enabled,
+        "engine_running": bot.running,  # v4.14 — moteur (collecte/WS), toujours actif independamment du trading
         "started_at": db.get_meta("running_since") or None,
         "last_scan": max(last_times).isoformat() if last_times else None,
         "ws_connected": bot.info is not None,
@@ -738,7 +750,7 @@ def get_config(email: str = Depends(require_user)):
 @app.put("/api/config")
 def put_config(body: ConfigBody, email: str = Depends(require_user)):
     if body.trading_mode is not None:
-        if bot.running:
+        if bot.trading_enabled:
             raise HTTPException(400, "Arretez le bot avant de changer de mode (paper/live)")
         if body.trading_mode not in ("paper", "live"):
             raise HTTPException(400, "trading_mode doit etre 'paper' ou 'live'")
@@ -901,8 +913,8 @@ def put_ai_continuous(body: AiContinuousBody, email: str = Depends(require_user)
 # ─────────────────────────────────────────────────────────────────────────
 @app.post("/api/bot/start")
 def bot_start(email: str = Depends(require_user)):
-    if bot.running:
-        raise HTTPException(400, "Le bot tourne deja")
+    if bot.trading_enabled:
+        raise HTTPException(400, "Le trading tourne deja")
     # v3.2 : la cle API + le wallet Hyperliquid sont obligatoires (paper ET
     # live) — on le verifie ici pour repondre immediatement plutot que de
     # laisser le thread du bot echouer silencieusement en arriere-plan.
@@ -923,9 +935,12 @@ def bot_start(email: str = Depends(require_user)):
 def bot_stop(email: str = Depends(require_user)):
     bot.stop()
     _mark_running_stop_and_accumulate()
-    # Persiste explicitement l intention d arret : le bot ne redemarrera pas
-    # tout seul apres un redeploiement/redemarrage Railway tant que quelqu un
-    # n aura pas reclique sur DEMARRER (voir _auto_start_if_desired).
+    # Persiste explicitement l intention d arret : le TRADING ne redemarrera
+    # pas tout seul apres un redeploiement/redemarrage Railway tant que
+    # quelqu un n aura pas reclique sur DEMARRER (voir _auto_start_if_desired).
+    # v4.14 — le MOTEUR (collecte/WebSocket), lui, redemarre toujours
+    # automatiquement des que le process reboote, meme si le trading reste
+    # arrete — seule la persistance de nouveaux trades depend de cet etat.
     db.set_meta("bot_desired_state", "stopped")
     return {"ok": True}
 
@@ -1173,15 +1188,21 @@ def paper_portfolio(email: str = Depends(require_user)):
 @app.post("/api/paper/reset")
 def paper_reset(email: str = Depends(require_user)):
     print(f"[AUDIT] /api/paper/reset appele par {email} a {datetime.now(timezone.utc).isoformat()}")
-    if bot.running:
+    if bot.trading_enabled:
         raise HTTPException(400, "Arretez le bot avant de reinitialiser")
     db.clear_all_trades()
-    for state in bot.states.values():
-        state.position = None
-        state.pnl = 0.0
-        state.trades = 0
-        state.wins = 0
-        state.closed_trades.clear()
+    # v4.14 — le moteur (cycle de gestion des positions) tourne desormais en
+    # continu, y compris pendant un reset (seul trading_enabled est verifie
+    # ci-dessus, pas l arret du moteur) : on protege cette mutation directe
+    # de l etat avec le meme verrou que _manage_position, pour eviter toute
+    # collision avec un cycle en cours au meme instant.
+    with bot.lock:
+        for state in bot.states.values():
+            state.position = None
+            state.pnl = 0.0
+            state.trades = 0
+            state.wins = 0
+            state.closed_trades.clear()
     # v4.1 — FIX : repart du capital par defaut du CODE (be.CONFIG), pas de
     # cfg["CAPITAL_USD"] qui contient la derniere valeur PERSISTEE (chargee
     # au demarrage depuis hyperbot_capital_*.json) — sans ce fix, changer le
@@ -1477,7 +1498,7 @@ def cleanup(email: str = Depends(require_user)):
 @app.post("/api/reset-all")
 def reset_all(email: str = Depends(require_user)):
     print(f"[AUDIT] /api/reset-all appele par {email} a {datetime.now(timezone.utc).isoformat()}")
-    if bot.running:
+    if bot.trading_enabled:
         raise HTTPException(400, "Arretez le bot avant une reinitialisation complete")
     # v3.2 — FIX : preserve les identifiants Hyperliquid/Finnhub (wallet, cle
     # privee, cle Finnhub) avant de tout effacer, puis les restaure apres —
@@ -1545,7 +1566,8 @@ def index():
 def health():
     return {
         "ok": True,
-        "bot_running": bot.running,
+        "bot_running": bot.running,  # v4.14 — moteur (collecte/WS), toujours actif independamment du trading
+        "trading_enabled": bot.trading_enabled,
         "version": be.BOT_VERSION,
         "build": be.BOT_BUILD,
         "data_dir": _DATA_DIR,
