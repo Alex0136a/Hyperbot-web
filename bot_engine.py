@@ -300,7 +300,15 @@ CONFIG = {
     # UNIQUEMENT a poser un ordre de securite fixe sur Hyperliquid (filet de
     # secours si le bot est deconnecte / en retard). La gestion normale se
     # fait entierement en % de E :
-    "SL_PCT_OF_E":            1.0,   # Stop Loss = -1.0% de E -> fermeture immediate geree par le bot (reste plafonne $ par le levier)
+    # v4.10 — RETOUR au SL en % de E (perte $ PLAFONNEE, independante du
+    # levier) — sur clarification explicite : "ce qui change avec le levier
+    # ce n est pas le montant de la perte, c est la distance de prix
+    # necessaire pour l atteindre". Le levier reduit le mouvement de prix
+    # requis pour toucher le SL (E=20$, SL=1% -> perte 0.20$ a x1 COMME a x3,
+    # mais il faut un mouvement de 1% a x1 contre seulement 0.33% a x3). Le
+    # TP, lui, reste en % de mouvement de prix pur (inchange, amplifie par
+    # le levier) — SEUL le SL est plafonne en $ ainsi, sur demande explicite.
+    "SL_PCT_OF_E":            1.0,   # Stop Loss = -1.0% de E -> perte $ plafonnee, quel que soit le levier
     "EXCHANGE_SAFETY_SL_MULT": 2.0,  # SL pose sur Hyperliquid = ce multiple du SL bot (filet de securite uniquement)
 
     # Trailing Take Profit (TTP), en % de MOUVEMENT DE PRIX REEL (v4.7) :
@@ -2852,15 +2860,20 @@ class BotEngine:
             self._manage_position_impl(symbol, price, state)
 
     def _manage_position_impl(self, symbol, price, state):
-        """v4.0 — Moteur de risque entierement en % de E (taille d entree,
-        avant levier). E = pos["size"].
-        1) Stop Loss (-SL_PCT_OF_E % de E, defaut -1.5%) : sortie immediate
-           geree par le bot.
+        """v4.10 — Moteur de risque ASYMETRIQUE, sur demande explicite :
+        - Le SL reste en % de E (perte $ PLAFONNEE, independante du levier) :
+          E=20$, SL=1% -> perte de 0.20$ a x1 COMME a x3. Ce qui change avec
+          le levier, c est UNIQUEMENT la distance de prix necessaire pour
+          l atteindre (1% a x1, 0.33% a x3 — de plus en plus proche a mesure
+          que le levier monte), jamais le montant $ perdu.
+        - Le TP reste en % de MOUVEMENT DE PRIX REEL (inchange) : le levier
+          y amplifie librement le gain $, sans plafond.
+        1) Stop Loss (-SL_PCT_OF_E % de E, defaut -1.0%) : sortie immediate
+           geree par le bot, perte $ plafonnee quel que soit le levier.
         2) SL Hyperliquid : filet de securite uniquement (cas ou le bot
            serait en retard/deconnecte) — ne devrait quasiment jamais se
            declencher avant le Stop Loss ci-dessus en usage normal.
-        3) Trailing Take Profit (TTP), en % de MOUVEMENT DE PRIX REEL (v4.7,
-           different du SL) :
+        3) Trailing Take Profit (TTP), en % de MOUVEMENT DE PRIX REEL :
            - Arme des que le PRIX bouge de TTP_ARM1_PRICE_PCT (defaut 1.2%)
              dans le sens du trade. Seuil de sortie fixe a
              TTP_LOCK1_PRICE_PCT (defaut 1.0%) tant que le PIC de mouvement
@@ -2870,12 +2883,6 @@ class BotEngine:
              (defaut 0.3%) et continue de suivre le pic a l infini (trailing
              pur, sans plafond) — capture le maximum atteint des que le
              profit cesse de progresser.
-           v4.7 — SUR DEMANDE EXPLICITE : contrairement au SL (% de E, le
-           levier y reduit le mouvement de prix necessaire donc plafonne la
-           perte $), le TP n est PLUS plafonne par le levier — le levier
-           amplifie desormais librement le $ gagne pour un meme mouvement de
-           prix, cense recompenser un signal de forte confiance sans
-           plafond artificiel sur le gain.
         """
         cfg    = self.cfg
         ticker = ticker_from_slot_key(symbol)
@@ -2884,8 +2891,8 @@ class BotEngine:
             return
         mode = cfg["MODE"]
 
-        # E = taille de l entree (avant levier) — base du SL uniquement (le
-        # TP, lui, raisonne desormais en % de mouvement de prix, voir plus bas)
+        # E = taille de l entree (avant levier) — base du SL (v4.10, perte $
+        # plafonnee) ; le TP, lui, raisonne en % de mouvement de prix pur.
         E = pos["size"]
         strat_tag = "🎯 " if pos.get("strategy") == "accumulation" else ""  # v4.8 — visible dans les logs de sortie
 
@@ -2899,8 +2906,12 @@ class BotEngine:
         # applique par trade (voir _compute_prudent_leverage).
         pnl_usd = E * pos.get("leverage", 1) * pnl_pct / 100
 
-        # ── 1. STOP LOSS — % de E, priorite absolue, gere par le bot ────────
-        sl_pct_of_e = cfg.get("SL_PCT_OF_E", 1.5)
+        # ── 1. STOP LOSS — % de E, perte $ PLAFONNEE quel que soit le levier ──
+        # v4.10 — compare pnl_usd (deja amplifie par le levier via la formule
+        # ci-dessus) au plafond E*sl_pct/100 (LUI independant du levier) :
+        # le mouvement de prix necessaire pour toucher ce plafond $ diminue
+        # donc mecaniquement quand le levier monte, mais le $ perdu reste fixe.
+        sl_pct_of_e = cfg.get("SL_PCT_OF_E", 1.0)
         sl_usd = -E * sl_pct_of_e / 100
         if pnl_usd <= sl_usd:
             pnl, _, trade = state.close_position(price, "STOP LOSS")
@@ -2908,7 +2919,7 @@ class BotEngine:
             if mode == "live" and self.exchange:
                 close_order(self.exchange, ticker, pos, self.cfg)
             self.emit("trade", trade)
-            self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (seuil -{sl_pct_of_e:.2f}% de E=${E:.2f} = -${-sl_usd:.2f})", "level": "loss"})
+            self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (plafond -${-sl_usd:.2f} = {sl_pct_of_e:.2f}% de E, mouvement de prix requis a x{pos.get('leverage',1)} : {sl_pct_of_e/max(pos.get('leverage',1),1):.2f}%)", "level": "loss"})
             self._register_max_loss(ticker, pos.get("confidence"))
             self._save_open_positions()  # sauvegarde en live ET en paper
             self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
@@ -2988,7 +2999,7 @@ class BotEngine:
         now_ts = time.time()
         if state._last_status_log_ts is None or (now_ts - state._last_status_log_ts) >= 30:
             state._last_status_log_ts = now_ts
-            self.emit("log", {"msg": f"[{ticker}] ${price:.2f} {pos['type'].upper()} | latent: ${pnl_usd:+.2f} | Stop Loss: -${-sl_usd:.2f} ({sl_pct_of_e:.2f}% de E) | SL secu: ${pos['sl']:.2f}", "level": "dim"})
+            self.emit("log", {"msg": f"[{ticker}] ${price:.2f} {pos['type'].upper()} | latent: ${pnl_usd:+.2f} ({pnl_pct:+.2f}% de prix) | Stop Loss: -${-sl_usd:.2f} ({sl_pct_of_e:.2f}% de E) | SL secu: ${pos['sl']:.2f}", "level": "dim"})
 
     def _process(self, symbol, price):
         cfg   = self.cfg
@@ -3686,13 +3697,14 @@ class BotEngine:
         leverage = self._compute_prudent_leverage(ticker, confidence, rsi_mode)
         notional = size * leverage
 
-        # ── v4.0 — le SL Hyperliquid (filet de securite) est un MULTIPLE du
+        # ── v4.10 — le SL Hyperliquid (filet de securite) est un MULTIPLE du
         # Stop Loss du bot (EXCHANGE_SAFETY_SL_MULT, defaut x2), lui-meme en
-        # % de E. Comme les deux sont exprimes en % de E (donc de CETTE
-        # position precise), le filet de securite reste toujours proportionnel
-        # au Stop Loss reel, quelle que soit la taille ou le levier utilises —
-        # plus besoin d ancrer un montant $ fixe globalement.
-        sl_pct_of_e   = cfg.get("SL_PCT_OF_E", 1.5)
+        # % de E (perte $ plafonnee). Comme les deux sont exprimes en % de E
+        # (donc de CETTE position precise), le filet de securite reste
+        # toujours proportionnel au Stop Loss reel, quelle que soit la
+        # taille ou le levier utilises — d ou la conversion via le notionnel
+        # (taille x levier) pour obtenir le % de mouvement de prix correct.
+        sl_pct_of_e   = cfg.get("SL_PCT_OF_E", 1.0)
         safety_sl_usd = size * sl_pct_of_e / 100 * cfg.get("EXCHANGE_SAFETY_SL_MULT", 2.0)
         safety_sl_pct = (safety_sl_usd / notional * 100) if notional > 0 else 2.0
         sl_p = price * (1 - safety_sl_pct/100) if signal == "long" else price * (1 + safety_sl_pct/100)
@@ -3750,10 +3762,12 @@ class BotEngine:
             "leverage": leverage,
             "position_size_pct": cfg["POSITION_SIZE_PCT"],
             "strategy": strategy,  # v4.8 — "normal" ou "accumulation"
-            # v4.7 — ratio informatif "mouvement de prix TP / % de E du SL" :
+            # v4.10 — ratio informatif "mouvement de prix TP / % de E du SL" :
             # a levier x1 c est le vrai ratio gain/risque $. Au-dela, le gain
-            # $ reel est amplifie par le levier (voir TTP), donc ce chiffre
-            # sous-estime le ratio $ reel pour un trade a levier > x1.
+            # $ est amplifie par le levier (TP en % de prix) alors que la
+            # perte $ reste plafonnee (SL en % de E) — ce chiffre SOUS-ESTIME
+            # donc le vrai ratio $ reel des que le levier depasse x1 (le
+            # ratio reel s ameliore avec le levier, puisque seul le gain grossit).
             "risk_reward": round(arm1_price_pct / sl_pct_of_e, 2) if sl_pct_of_e else None,
             "timeframe": cfg.get("PROFILE", "swing"),
             "entry": price,
