@@ -174,7 +174,7 @@ def _consume_events():
                 action = "LONG" if data.get("type") == "long" else "SHORT"
                 trade_id = db.get_open_trade_id_by_coin_action(ticker, action)
                 if trade_id:
-                    db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"))
+                    db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"), peak_pnl=data.get("peak_pnl_usd"))
                 else:
                     # v3.2 — diagnostic : auparavant, si aucune ligne ouverte
                     # ne correspondait (coin/action), la fermeture etait
@@ -599,6 +599,11 @@ def _open_positions() -> List[Dict[str, Any]]:
             except Exception as e:
                 print(f"[_open_positions] Erreur enrichissement DB pour {ticker}: {e}")
 
+            # v4.15 — Pic de PnL latent atteint jusqu ici pendant la vie du
+            # trade (trailing principal ou protection anticipee, selon
+            # lequel est actif) — visible dans le panneau "Trades ouverts".
+            peak_pnl_usd = state.peak_pnl_usd if state.peak_pnl_usd is not None else state.tier0_peak_pnl_usd
+
             out.append({
                 "id": slot_key,
                 "coin": ticker,
@@ -614,6 +619,7 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "opened_at": opened_at_iso,
                 "pnl": round(pnl, 4),
                 "pnl_pct": round(pnl_pct, 3),
+                "peak_pnl": round(peak_pnl_usd, 4) if peak_pnl_usd is not None else None,
             })
         except Exception as e:
             print(f"[_open_positions] Erreur sur la position {slot_key}, ignoree pour cette reponse: {e}")
@@ -644,6 +650,7 @@ def _trade_row_to_signal(row: Dict[str, Any]) -> Dict[str, Any]:
         "pnl": row["pnl"],
         "reason": row["reason"],
         "strategy": row["strategy"] if "strategy" in row.keys() else "normal",
+        "peak_pnl": row["peak_pnl"] if "peak_pnl" in row.keys() else None,
     }
 
 
