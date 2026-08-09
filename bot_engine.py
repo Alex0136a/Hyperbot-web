@@ -1433,6 +1433,15 @@ class SymbolState:
         # tant que tp_stage reste a 0).
         self.tier0_armed        = False
         self.tier0_peak_pnl_usd = None
+        # v4.15 — SUR DEMANDE EXPLICITE : apres la fermeture d un trade, exige
+        # que le croisement EMA (ema_bull/ema_bear) soit RETOMBE puis se soit
+        # RECROISE avant d autoriser une reouverture dans le MEME sens — pas
+        # juste "le cooldown de 15 min a expire alors que le signal n a
+        # jamais bouge". Garantit que chaque reouverture est justifiee par un
+        # evenement technique frais et distinct, pas la continuation muette
+        # du meme signal qui a deja donne le trade precedent.
+        self.long_signal_stale  = False  # True juste apres une fermeture LONG, tant que ema_bull n est pas retombe au moins une fois
+        self.short_signal_stale = False  # True juste apres une fermeture SHORT, tant que ema_bear n est pas retombe au moins une fois
         self.mtf_prices    = deque(maxlen=200)
         self.forex_was_open  = None
         self.forex_reopen_time = None
@@ -1528,12 +1537,19 @@ class SymbolState:
         win = pnl_usd > 0
         if win:
             self.wins += 1
+        # v4.15 — Pic de PnL latent atteint pendant la vie du trade, visible
+        # dans le log/l historique de fermeture — que ce soit le pic du
+        # trailing principal (peak_pnl_usd) ou celui de la protection
+        # anticipee (tier0_peak_pnl_usd) si le trade n a jamais depasse
+        # arm1. None si le trade n a jamais ete en profit (ex: SL direct).
+        peak_pnl_usd_at_close = self.peak_pnl_usd if self.peak_pnl_usd is not None else self.tier0_peak_pnl_usd
         trade = {
             "time": datetime.now().strftime("%H:%M:%S"), "symbol": "",
             "type": p["type"], "entry": p["entry"], "exit": exit_price,
             "pnl": pnl_usd, "reason": reason, "win": win,
             "ts": datetime.now().timestamp(),
             "strategy": p.get("strategy", "normal"),  # v4.8
+            "peak_pnl_usd": peak_pnl_usd_at_close,  # v4.15
         }
         self.closed_trades.append(trade)
         # v4.3 — FIX FUITE MEMOIRE : seul un historique glissant de 24h est
@@ -1552,6 +1568,13 @@ class SymbolState:
         # dans le sens OPPOSE (retournement) n est pas concerne.
         self.last_closed_direction = p["type"]
         self.last_closed_at = time.time()
+        # v4.15 — Exige un croisement EMA frais et distinct avant d autoriser
+        # une reouverture dans le MEME sens (voir _process, ou ce flag est
+        # leve des que la condition retombe au moins une fois).
+        if p["type"] == "long":
+            self.long_signal_stale = True
+        else:
+            self.short_signal_stale = True
         self.position = None
         self.peak_price = None
         self.trailing_tp_active = False
@@ -2981,7 +3004,8 @@ class BotEngine:
             if mode == "live" and self.exchange:
                 close_order(self.exchange, ticker, pos, self.cfg)
             self.emit("trade", trade)
-            self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (plafond -${-sl_usd:.2f} = {sl_pct_of_e:.2f}% de E, mouvement de prix requis a x{pos.get('leverage',1)} : {sl_pct_of_e/max(pos.get('leverage',1),1):.2f}%)", "level": "loss"})
+            peak_str = f" | pic atteint avant la chute : +${trade['peak_pnl_usd']:.2f}" if trade.get("peak_pnl_usd") else ""
+            self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (plafond -${-sl_usd:.2f} = {sl_pct_of_e:.2f}% de E, mouvement de prix requis a x{pos.get('leverage',1)} : {sl_pct_of_e/max(pos.get('leverage',1),1):.2f}%){peak_str}", "level": "loss"})
             self._register_max_loss(ticker, pos.get("confidence"))
             self._save_open_positions()  # sauvegarde en live ET en paper
             self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
@@ -2997,7 +3021,8 @@ class BotEngine:
             if mode == "live" and self.exchange:
                 close_order(self.exchange, ticker, pos, self.cfg)
             self.emit("trade", trade)
-            self.emit("log", {"msg": f"[{ticker}] {strat_tag}SL SECURITE @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
+            peak_str = f" | pic atteint avant la chute : +${trade['peak_pnl_usd']:.2f}" if trade.get("peak_pnl_usd") else ""
+            self.emit("log", {"msg": f"[{ticker}] {strat_tag}SL SECURITE @ ${price:.2f} | PnL: ${pnl:.2f}{peak_str}", "level": "loss"})
             self._register_max_loss(ticker, pos.get("confidence"))
             self._save_open_positions()  # sauvegarde en live ET en paper
             self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
@@ -3313,6 +3338,15 @@ class BotEngine:
         ema_bull = ema_s > ema_l
         ema_bear = ema_s < ema_l
 
+        # v4.15 — Des que la condition retombe (ema_bull/ema_bear devient
+        # faux) apres une fermeture dans ce sens, on considere qu un futur
+        # retour a True sera un VRAI nouveau croisement, pas la continuation
+        # du signal deja traite — le flag "perime" est leve.
+        if state.long_signal_stale and not ema_bull:
+            state.long_signal_stale = False
+        if state.short_signal_stale and not ema_bear:
+            state.short_signal_stale = False
+
         # Filtre pivot — detection du croisement EMA frais (cycle N-1 → cycle N)
         # Pour un LONG : EMA courte vient de passer AU-DESSUS de EMA longue
         # Pour un SHORT : EMA courte vient de passer EN-DESSOUS de EMA longue
@@ -3421,7 +3455,16 @@ class BotEngine:
         signal = None
         reasons = []
 
-        if rsi_buy and ema_bull and trend_up:
+        # v4.15 — diagnostics (hors chaine if/elif principale, pour ne pas la
+        # perturber) : signale quand un signal qualifierait sur tous les
+        # autres criteres, seule la fraicheur (croisement pas encore
+        # renouvele depuis la derniere fermeture dans ce sens) le bloque.
+        if rsi_buy and ema_bull and trend_up and state.long_signal_stale:
+            self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG qualifie mais signal pas encore renouvele depuis la derniere fermeture — attente d une retombee puis d un nouveau croisement EMA", "level": "dim"})
+        if rsi_sell and ema_bear and trend_down and state.short_signal_stale:
+            self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT qualifie mais signal pas encore renouvele depuis la derniere fermeture — attente d une retombee puis d un nouveau croisement EMA", "level": "dim"})
+
+        if rsi_buy and ema_bull and trend_up and not state.long_signal_stale:
             # v3.2 — FIX : ce filtre ne s applique qu en mode "reversal". En
             # mode "trend" (suivi de tendance), un RSI eleve (85-97) est
             # justement la MEILLEURE confirmation du signal — pas un danger a
@@ -3537,7 +3580,7 @@ class BotEngine:
                 reasons.append(f"breakout R ${resistance:.2f}")
             if momentum_pct is not None:
                 reasons.append(f"momentum {momentum_pct:+.2f}%")
-        elif rsi_sell and ema_bear and trend_down:
+        elif rsi_sell and ema_bear and trend_down and not state.short_signal_stale:
             # v3.2 — FIX : meme correction que pour LONG — ce filtre ne
             # s applique qu en mode "reversal". En mode "trend", un RSI tres
             # bas (5-20) est la meilleure confirmation de la continuation
