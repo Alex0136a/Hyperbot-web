@@ -817,6 +817,10 @@ Confirmer ?`
                   {prices[sig.coin]&&<span style={{marginLeft:8,color:((prices[sig.coin]-sig.entry)/sig.entry*100*(sig.action==="LONG"?1:-1))>=0?"#34d399":"#f87171"}}>
                     · PnL latent : {((prices[sig.coin]-sig.entry)/sig.entry*100*(sig.action==="LONG"?1:-1)).toFixed(2)}%
                   </span>}
+                  {(() => {
+                    const mt = (paper?.open_trades||[]).find(p=>p.coin===sig.coin && p.action===sig.action);
+                    return mt?.peak_pnl_pct!=null ? <span style={{marginLeft:8,color:"#c084fc"}}>· 🏔️ pic +{mt.peak_pnl_pct.toFixed(2)}%</span> : null;
+                  })()}
                 </div>
               </div>
             ))
@@ -970,7 +974,7 @@ Confirmer ?`
                   <div style={{textAlign:"right"}}>
                     <div style={{fontSize:15,fontWeight:700,color:pnl>=0?"#34d399":"#f87171"}}>{pnl>=0?"+":""}{pnl.toFixed(2)} USDC</div>
                     <div style={{fontSize:9,color:"#94a3b8"}}>{p.pnl_pct>=0?"+":""}{p.pnl_pct}%</div>
-                    {p.peak_pnl!=null && <div style={{fontSize:9,color:"#c084fc"}}>🏔️ pic +{p.peak_pnl.toFixed(2)} USDC</div>}
+                    {p.peak_pnl_pct!=null && <div style={{fontSize:9,color:"#c084fc"}}>🏔️ pic +{p.peak_pnl_pct.toFixed(2)}%</div>}
                   </div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7,marginBottom:7}}>
@@ -1598,7 +1602,7 @@ Confirmer ?`
                       </div>
                       <div style={{display:"flex",gap:14,alignItems:"center"}}>
                         <span style={{color:"#94a3b8",fontSize:9}}>{new Date(trade.closed_at).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</span>
-                        {trade.peak_pnl!=null && <span style={{color:"#c084fc",fontSize:9}}>🏔️ +{trade.peak_pnl.toFixed(2)}</span>}
+                        {trade.peak_pnl_pct!=null && <span style={{color:"#c084fc",fontSize:9}}>🏔️ +{trade.peak_pnl_pct.toFixed(2)}%</span>}
                         <span style={{color:(trade.pnl||0)>=0?"#34d399":"#f87171",fontWeight:700,fontSize:13}}>
                           {(trade.pnl||0)>=0?"+":""}{trade.pnl?.toFixed(2)} USDC
                         </span>
@@ -1951,6 +1955,7 @@ Confirmer ?`
                   // la proximite des seuils SL/TTP (exprimes en % de E).
                   const matchPos = (positions||[]).find(p=>p.coin===sig.coin && p.action===sig.action);
                   const pnlUsd = matchPos ? matchPos.pnl : null;
+                  const peakPct = matchPos ? matchPos.peak_pnl_pct : null;
                   return (
                     <div key={sig.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid #0f1629"}}>
                       <div style={{display:"flex",gap:7,alignItems:"center"}}>
@@ -1963,6 +1968,7 @@ Confirmer ?`
                           <span style={{color:pnlUsd>=0?"#34d399":"#f87171",fontWeight:800}}>{pnlUsd>=0?"+":""}{pnlUsd.toFixed(2)}$</span>
                         )}
                         <span style={{color:parseFloat(pnl)>=0?"#34d399":"#f87171",fontWeight:700}}>({pnl>0?"+":""}{pnl}%)</span>
+                        {peakPct!=null && <span style={{color:"#c084fc"}}>🏔️+{peakPct.toFixed(2)}%</span>}
                         <span style={{color:tp1?"#34d399":"#334155"}}>TP1{tp1?"✓":"○"}</span>
                         <span style={{color:tp2?"#34d399":"#334155"}}>TP2{tp2?"✓":"○"}</span>
                         <span style={{color:sl?"#f87171":"#334155"}}>SL{sl?"✗":"○"}</span>
