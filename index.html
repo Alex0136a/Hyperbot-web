@@ -1748,10 +1748,16 @@ Confirmer ?`
                 <div style={{maxHeight:400,overflowY:"auto"}}>
                   {closedTrades.map(trade=>(
                     <div key={trade.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 4px",borderBottom:"1px solid #0a0e1a"}}>
-                      <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
                         <span style={{background:trade.action==="LONG"?"#052e16":"#2d0a0a",color:trade.action==="LONG"?"#34d399":"#f87171",padding:"2px 7px",borderRadius:4,fontSize:10,fontWeight:700}}>{trade.action}</span>
                         <span style={{color:"#f1f5f9",fontWeight:700,fontSize:12}}>{trade.coin}/USDC</span>
                         <span style={{color:"#94a3b8",fontSize:9}}>{trade.reason||"?"}</span>
+                        <span style={{color:"#64748b",fontSize:9}}>
+                          {trade.entry!=null?`Entrée $${trade.entry<1?trade.entry.toFixed(6):trade.entry.toFixed(2)}`:""}
+                          {trade.exit_price!=null?` → Sortie $${trade.exit_price<1?trade.exit_price.toFixed(6):trade.exit_price.toFixed(2)}`:""}
+                        </span>
+                        {trade.size_usd!=null && <span style={{color:"#64748b",fontSize:9}}>· ${trade.size_usd.toFixed(2)}</span>}
+                        {trade.leverage!=null && <span style={{background:"#1e2d4a",color:"#60a5fa",padding:"1px 6px",borderRadius:3,fontSize:9}}>x{trade.leverage}</span>}
                       </div>
                       <div style={{display:"flex",gap:14,alignItems:"center"}}>
                         <span style={{color:"#94a3b8",fontSize:9}}>{new Date(trade.closed_at).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</span>
