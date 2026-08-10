@@ -570,18 +570,30 @@ function App() {
       // Statut marché
       const day = now.getUTCDay(); // 0=dim, 6=sam
       const isWeekend = day === 0 || day === 6;
-      const isQuiet = utcH >= 21 && utcH < 23;
+      // v4.29 — FIX : utilise la VRAIE plage configuree (config.offpeak_hour_start/end),
+      // plus une plage codee en dur (21h-23h) deconnectee du reglage reel.
+      // Gere aussi le cas ou la plage traverse minuit (ex: 21h-6h).
+      const qStart = config?.offpeak_hour_start ?? 21;
+      const qEnd   = config?.offpeak_hour_end ?? 23;
+      const isQuiet = qStart <= qEnd
+        ? (utcH >= qStart && utcH < qEnd)
+        : (utcH >= qStart || utcH < qEnd);
       let market = "🟢 MARCHÉ OUVERT";
       let marketColor = "#34d399";
       if(filterMacro) { market = "🔴 PAUSE MACRO"; marketColor = "#f87171"; }
       else if(isWeekend) { market = "🟢 WEEK-END CRYPTO"; marketColor = "#34d399"; }
-      else if(isQuiet) { market = "🌙 SESSION CREUSE"; marketColor = "#94a3b8"; }
+      // v4.29 — FIX : ce badge ne s affiche desormais que si le filtre
+      // "Heures creuses" est REELLEMENT actif (filterHours=true) — avant,
+      // il s affichait/disparaissait uniquement selon l heure, sans jamais
+      // tenir compte du bouton ON/OFF, donc le bouton semblait "ne rien faire".
+      else if(isQuiet && filterHours) { market = "🌙 SESSION CREUSE"; marketColor = "#94a3b8"; }
+      else if(isQuiet && !filterHours) { market = "🟢 MARCHÉ OUVERT (creuse ignorée)"; marketColor = "#34d399"; }
       setClock({utc: utcStr, local: localStr, market, marketColor});
     };
     updateClock();
     const id = setInterval(updateClock, 1000);
     return () => clearInterval(id);
-  }, [filterMacro]);
+  }, [filterMacro, filterHours, config?.offpeak_hour_start, config?.offpeak_hour_end]);
 
   const startBot = async () => {
     setLoading(true);
