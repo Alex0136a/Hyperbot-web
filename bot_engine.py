@@ -198,6 +198,21 @@ CONFIG = {
     "MIN_AMPLITUDE_TO_SL_RATIO":   0.5,   # ATR minimum = 50% du SL configure
     "MAX_AMPLITUDE_TO_SL_RATIO":   2.5,   # ATR maximum = 250% du SL configure
 
+    # v4.25 — Confirmation renforcee apres un gain (voir _process) : nombre
+    # de cycles CONSECUTIFS ou toutes les conditions d entree doivent rester
+    # vraies avant d autoriser une reouverture dans le MEME sens qu un trade
+    # qui vient de gagner. Chaque cycle dure CYCLE_INTERVAL secondes (10s
+    # par defaut) — 18 cycles = ~3 minutes de confirmation soutenue,
+    # suffisant pour filtrer un simple recroisement furtif sans pour autant
+    # rater une vraie continuation.
+    "POST_WIN_CONFIRM_CYCLES": 18,
+    # v4.26 — Delai maximum d attente (en cycles) avant de basculer sur un
+    # second indicateur (Bollinger) plutot que de rester bloque
+    # indefiniment si le signal n est jamais soutenu 18 cycles d affilee.
+    # 180 cycles = ~30 min a 10s/cycle — au-dela, l actif retrouve la main
+    # (avec ou sans confirmation Bollinger), jamais bloque plus longtemps.
+    "POST_WIN_MAX_WAIT_CYCLES": 180,
+
     # v4.24 — SL/TTP ADAPTATIFS a l ATR reel (optionnel, DESACTIVE par
     # defaut — activation explicite requise). Au lieu de seuils fixes,
     # chaque trade calcule son propre SL a partir de l ATR au moment de
@@ -1489,6 +1504,26 @@ class SymbolState:
         # du meme signal qui a deja donne le trade precedent.
         self.long_signal_stale  = False  # True juste apres une fermeture LONG, tant que ema_bull n est pas retombe au moins une fois
         self.short_signal_stale = False  # True juste apres une fermeture SHORT, tant que ema_bear n est pas retombe au moins une fois
+        # v4.25 — SUR DEMANDE EXPLICITE : apres un GAIN (TTP) dans un sens
+        # donne, la reouverture dans ce MEME sens exige que toutes les
+        # conditions d entree soient reunies sur PLUSIEURS cycles CONSECUTIFS
+        # (pas un seul) — un signal qui hesite (vrai un cycle, faux le
+        # suivant) fait repartir le compteur a zero. Empeche un actif choppy
+        # de re-declencher "techniquement frais" (EMA repasse vite) mais pas
+        # reellement nouveau, toutes les 40-70 minutes, comme observe sur ARB.
+        self.post_win_confirm_long  = False
+        self.post_win_confirm_short = False
+        self.confirm_count_long  = 0
+        self.confirm_count_short = 0
+        # v4.26 — SUR DEMANDE EXPLICITE : evite qu un signal jamais soutenu
+        # 18 cycles d affilee ne bloque l actif INDEFINIMENT dans ce sens.
+        # Compte le temps d ATTENTE total (pas remis a zero par un flicker,
+        # contrairement a confirm_count) — au-dela de POST_WIN_MAX_WAIT_CYCLES,
+        # bascule sur un second indicateur independant (Bollinger) pour
+        # decider, puis leve la contrainte dans tous les cas (succes ou non)
+        # pour ne jamais rester bloque plus longtemps que ce delai.
+        self.post_win_wait_long  = 0
+        self.post_win_wait_short = 0
         self.mtf_prices    = deque(maxlen=200)
         # v4.21 — Historique des valeurs d indicateurs calculees (RSI, MACD,
         # EMA200, ATR, support/resistance) a chaque cycle, pour affichage en
@@ -3215,6 +3250,14 @@ class BotEngine:
                         close_order(self.exchange, ticker, pos, self.cfg)
                     self.emit("trade", trade)
                     self._register_win(ticker)
+                    # v4.25 — apres un gain, exige une confirmation renforcee
+                    # (plusieurs cycles consecutifs) avant de rouvrir dans le MEME sens.
+                    if pos["type"] == "long":
+                        state.post_win_confirm_long = True
+                        state.confirm_count_long = 0
+                    else:
+                        state.post_win_confirm_short = True
+                        state.confirm_count_short = 0
                     self.emit("log", {"msg": f"[{ticker}] {strat_tag}TTP SORTIE (protection anticipee) @ ${price:.2f} | pic +{tier0_peak_pct:.2f}% de mouvement (+${state.tier0_peak_pnl_usd:.2f} a x{leverage}) | PnL: +${pnl:.2f}", "level": "win"})
                     self._save_open_positions()  # sauvegarde en live ET en paper
                     self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
@@ -3260,6 +3303,14 @@ class BotEngine:
                     close_order(self.exchange, ticker, pos, self.cfg)
                 self.emit("trade", trade)
                 self._register_win(ticker)
+                # v4.25 — apres un gain, exige une confirmation renforcee
+                # (plusieurs cycles consecutifs) avant de rouvrir dans le MEME sens.
+                if pos["type"] == "long":
+                    state.post_win_confirm_long = True
+                    state.confirm_count_long = 0
+                else:
+                    state.post_win_confirm_short = True
+                    state.confirm_count_short = 0
                 self.emit("log", {"msg": f"[{ticker}] {strat_tag}TTP SORTIE @ ${price:.2f} | pic +{peak_price_pct:.2f}% de mouvement (+${state.peak_pnl_usd:.2f} a x{leverage}) | PnL: +${pnl:.2f}", "level": "win"})
                 self._save_open_positions()  # sauvegarde en live ET en paper
                 self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
@@ -3669,6 +3720,84 @@ class BotEngine:
 
         long_level_ok  = long_level_ok and direction_confirmed_long and amplitude_coherent
         short_level_ok = short_level_ok and direction_confirmed_short and amplitude_coherent
+
+        # v4.25/v4.26 — SUR DEMANDE EXPLICITE, suite a une repetition observee
+        # de trades LONG sur un actif choppy (ARB : re-declenchement "frais"
+        # techniquement toutes les 40-70 min, mais pas un vrai signal nouveau
+        # en substance) : apres un GAIN dans un sens donne, la reouverture
+        # dans ce MEME sens exige que TOUTES les conditions d entree soient
+        # reunies sur PLUSIEURS CYCLES CONSECUTIFS (pas juste 1) — un signal
+        # qui hesite (vrai un cycle, faux le suivant) fait repartir le
+        # compteur a zero, forcant une vraie confirmation soutenue.
+        # v4.26 — FIX : un signal jamais soutenu 18 cycles d affilee ne doit
+        # PAS bloquer l actif indefiniment (risque reel : l actif ne trade
+        # plus jamais dans ce sens). Passe un delai maximum d attente
+        # (POST_WIN_MAX_WAIT_CYCLES), on consulte un second indicateur
+        # independant (Bollinger — prix a un extreme de bande, confirmation
+        # statistique alternative) pour trancher, puis la contrainte est
+        # levee dans tous les cas — jamais bloque plus longtemps que ce delai.
+        confirm_cycles_needed = cfg.get("POST_WIN_CONFIRM_CYCLES", 18)
+        max_wait_cycles       = cfg.get("POST_WIN_MAX_WAIT_CYCLES", 90)
+
+        if state.post_win_confirm_long:
+            state.post_win_wait_long += 1
+            if long_level_ok:
+                state.confirm_count_long += 1
+            else:
+                state.confirm_count_long = 0
+
+            if state.confirm_count_long >= confirm_cycles_needed:
+                # Confirmation soutenue atteinte normalement — voie principale
+                state.post_win_confirm_long = False
+                state.confirm_count_long = 0
+                state.post_win_wait_long = 0
+            elif state.post_win_wait_long >= max_wait_cycles:
+                # v4.27 — FIX : Bollinger devient reellement DECISIF, pas un
+                # simple filtre de plus — s il confirme, il TRANCHE et
+                # autorise directement (sans exiger en plus les autres
+                # conditions ce cycle precis), c est justement le but de
+                # "consulter un autre indicateur pour decider".
+                fallback_ok = bb_low_ok  # prix a/sous la bande basse = extreme statistique favorable a un LONG
+                state.post_win_confirm_long = False
+                state.confirm_count_long = 0
+                state.post_win_wait_long = 0
+                if fallback_ok:
+                    self.emit("log", {"msg": f"[{ticker}] LONG — confirmation post-gain jamais soutenue apres {max_wait_cycles} cycles, Bollinger favorable — TRANCHE, trade autorise", "level": "warn"})
+                    long_level_ok = True
+                else:
+                    self.emit("log", {"msg": f"[{ticker}] LONG — confirmation post-gain jamais soutenue apres {max_wait_cycles} cycles, Bollinger pas plus favorable — pas de trade ce cycle, contrainte levee pour la suite", "level": "warn"})
+                    long_level_ok = False
+            else:
+                if long_level_ok:
+                    self.emit("log", {"msg": f"[{ticker}] LONG qualifie mais en attente de confirmation post-gain ({state.confirm_count_long}/{confirm_cycles_needed} cycles consecutifs, {state.post_win_wait_long}/{max_wait_cycles} max)", "level": "dim"})
+                long_level_ok = False
+
+        if state.post_win_confirm_short:
+            state.post_win_wait_short += 1
+            if short_level_ok:
+                state.confirm_count_short += 1
+            else:
+                state.confirm_count_short = 0
+
+            if state.confirm_count_short >= confirm_cycles_needed:
+                state.post_win_confirm_short = False
+                state.confirm_count_short = 0
+                state.post_win_wait_short = 0
+            elif state.post_win_wait_short >= max_wait_cycles:
+                fallback_ok = bb_up_ok  # prix a/sur la bande haute = extreme statistique favorable a un SHORT
+                state.post_win_confirm_short = False
+                state.confirm_count_short = 0
+                state.post_win_wait_short = 0
+                if fallback_ok:
+                    self.emit("log", {"msg": f"[{ticker}] SHORT — confirmation post-gain jamais soutenue apres {max_wait_cycles} cycles, Bollinger favorable — TRANCHE, trade autorise", "level": "warn"})
+                    short_level_ok = True
+                else:
+                    self.emit("log", {"msg": f"[{ticker}] SHORT — confirmation post-gain jamais soutenue apres {max_wait_cycles} cycles, Bollinger pas plus favorable — pas de trade ce cycle, contrainte levee pour la suite", "level": "warn"})
+                    short_level_ok = False
+            else:
+                if short_level_ok:
+                    self.emit("log", {"msg": f"[{ticker}] SHORT qualifie mais en attente de confirmation post-gain ({state.confirm_count_short}/{confirm_cycles_needed} cycles consecutifs, {state.post_win_wait_short}/{max_wait_cycles} max)", "level": "dim"})
+                short_level_ok = False
 
         # Pour certains symboles (SOL), MACD + BB sont OBLIGATOIRES pour entrer
         require_macd_bb  = ticker in cfg.get("SYMBOL_REQUIRE_MACD_BB", [])
