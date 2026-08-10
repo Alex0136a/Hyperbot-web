@@ -18,6 +18,7 @@ button { cursor: pointer; font-family: inherit; }
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script type="text/babel">
 const { useState, useEffect, useRef, useCallback } = React;
 
@@ -342,6 +343,44 @@ function LoginPage({ onLogin }) {
 }
 
 // ── MAIN APP ─────────────────────────────────────────────────
+function MiniChart({ title, labels, datasets, color, height }) {
+  const canvasRef = useRef(null);
+  const chartRef = useRef(null);
+
+  useEffect(() => {
+    if (!canvasRef.current || typeof Chart === "undefined") return;
+    if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; }
+    chartRef.current = new Chart(canvasRef.current, {
+      type: "line",
+      data: { labels, datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: datasets.length > 1, labels: { color: "#94a3b8", boxWidth: 10, font: { size: 9 } } },
+          tooltip: { mode: "index", intersect: false },
+        },
+        scales: {
+          x: { ticks: { color: "#475569", maxTicksLimit: 6, font: { size: 8 } }, grid: { color: "#1e2d4a" } },
+          y: { ticks: { color: "#475569", font: { size: 9 } }, grid: { color: "#1e2d4a" } },
+        },
+      },
+    });
+    return () => { if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; } };
+  }, [JSON.stringify(labels), JSON.stringify(datasets)]);
+
+  return (
+    <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:12,marginBottom:14}}>
+      <div style={{fontSize:11,fontWeight:700,color:"#60a5fa",marginBottom:8}}>{title}</div>
+      <div style={{height:height||160}}>
+        <canvas ref={canvasRef}></canvas>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [token, setToken] = useState(()=>localStorage.getItem("hb_token")||"");
   const [email, setEmail] = useState(()=>localStorage.getItem("hb_email")||"");
@@ -364,6 +403,9 @@ function App() {
   const [assetProbaLoading, setAssetProbaLoading] = useState(false);
   const [assetProbaMinTrades, setAssetProbaMinTrades] = useState(5);
   const [wsEvents, setWsEvents] = useState(null);
+  const [indicatorCoin, setIndicatorCoin] = useState("BTC");
+  const [indicatorData, setIndicatorData] = useState(null);
+  const [indicatorLoading, setIndicatorLoading] = useState(false);
   const [wsEventsOpen, setWsEventsOpen] = useState(false);
   const walletPrefilled = useRef(false);
   // v3.2 — FIX : le champ Wallet ne se pre-remplissait jamais apres un
@@ -462,6 +504,26 @@ function App() {
       setLastUpdate(new Date());
     } catch(e) { console.error(e); }
   }, [token]);
+
+  const loadIndicatorHistory = useCallback(async (coin) => {
+    if (!token || !coin) return;
+    setIndicatorLoading(true);
+    try {
+      const r = await apiCall(`/api/indicators/${coin}`, "GET", null, token);
+      setIndicatorData(r);
+    } catch(e) {
+      setIndicatorData(null);
+    }
+    setIndicatorLoading(false);
+  }, [token]);
+
+  useEffect(() => {
+    if (tab === "indicateurs" && token) {
+      loadIndicatorHistory(indicatorCoin);
+      const iv = setInterval(() => loadIndicatorHistory(indicatorCoin), 15000);
+      return () => clearInterval(iv);
+    }
+  }, [tab, indicatorCoin, token, loadIndicatorHistory]);
 
   useEffect(() => {
     if(token) {
@@ -587,6 +649,7 @@ Confirmer ?`
     {id:"historique",label:`📜 Historique (${stats.total||0})`},
     {id:"positions",label:`📈 Positions (${positions.length})`},
     {id:"marches",label:`🎯 Marchés (${activeCoins.length}/${ALL_COINS.length})`},
+    {id:"indicateurs",label:"📈 Indicateurs"},
     {id:"parametres",label:"⚙️ Paramètres"},
     {id:"logs",label:"📋 Logs"},
     {id:"paper",label:config?.trading_mode==="live"?`🔴 Live Trading`:`🎮 Paper Trading`},
@@ -1044,6 +1107,67 @@ Confirmer ?`
               })}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* INDICATEURS (graphes) */}
+      {tab==="indicateurs" && (
+        <div style={{padding:16,maxWidth:900}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
+            <span style={{fontSize:12,color:"#94a3b8"}}>Actif :</span>
+            <select value={indicatorCoin} onChange={e=>setIndicatorCoin(e.target.value)}
+              style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"7px 12px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12}}>
+              {ALL_COINS.map(c=><option key={c} value={c}>{c}</option>)}
+            </select>
+            {indicatorLoading && <span style={{fontSize:11,color:"#94a3b8"}}>Chargement...</span>}
+            {indicatorData && <span style={{fontSize:10,color:"#475569"}}>{indicatorData.history.length} points · actualisé toutes les 15s</span>}
+          </div>
+
+          {(!indicatorData || indicatorData.history.length===0) ? (
+            <div style={{color:"#94a3b8",fontSize:12,textAlign:"center",padding:40,background:"#0f1629",borderRadius:10,border:"1px solid #1e2d4a"}}>
+              {indicatorLoading ? "Chargement..." : "Pas encore de données pour cet actif — laissez le bot tourner quelques cycles."}
+            </div>
+          ) : (() => {
+            const h = indicatorData.history;
+            const labels = h.map(p => new Date(p.ts*1000).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"}));
+            return (
+              <>
+                <MiniChart
+                  title={`💰 Prix vs EMA200 / Support / Résistance — ${indicatorCoin}`}
+                  labels={labels}
+                  height={200}
+                  datasets={[
+                    { label:"Prix", data:h.map(p=>p.price), borderColor:"#60a5fa", borderWidth:2, pointRadius:0, tension:0.15 },
+                    { label:"EMA200", data:h.map(p=>p.ema200), borderColor:"#c084fc", borderWidth:1.5, pointRadius:0, tension:0.15 },
+                    { label:"Résistance", data:h.map(p=>p.resistance), borderColor:"#f87171", borderWidth:1, borderDash:[4,3], pointRadius:0, tension:0 },
+                    { label:"Support", data:h.map(p=>p.support), borderColor:"#34d399", borderWidth:1, borderDash:[4,3], pointRadius:0, tension:0 },
+                  ]}
+                />
+                <MiniChart
+                  title={`📊 RSI — ${indicatorCoin}`}
+                  labels={labels}
+                  datasets={[
+                    { label:"RSI", data:h.map(p=>p.rsi), borderColor:"#fbbf24", borderWidth:2, pointRadius:0, tension:0.15 },
+                  ]}
+                />
+                <MiniChart
+                  title={`📉 MACD — ${indicatorCoin}`}
+                  labels={labels}
+                  datasets={[
+                    { label:"MACD", data:h.map(p=>p.macd), borderColor:"#60a5fa", borderWidth:1.5, pointRadius:0, tension:0.15 },
+                    { label:"Signal", data:h.map(p=>p.macd_signal), borderColor:"#f59e0b", borderWidth:1.5, pointRadius:0, tension:0.15 },
+                  ]}
+                />
+                <MiniChart
+                  title={`📈 ATR % (volatilité) — ${indicatorCoin}`}
+                  labels={labels}
+                  datasets={[
+                    { label:"ATR %", data:h.map(p=>p.atr_pct), borderColor:"#34d399", borderWidth:2, pointRadius:0, tension:0.15, fill:true, backgroundColor:"rgba(52,211,153,0.08)" },
+                  ]}
+                />
+              </>
+            );
+          })()}
         </div>
       )}
 
