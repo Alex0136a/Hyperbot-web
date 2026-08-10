@@ -409,6 +409,7 @@ def _public_config() -> Dict[str, Any]:
         "accumulation_require_trend_confirm": cfg.get("ACCUMULATION_REQUIRE_TREND_CONFIRM", False),
         "accumulation_max_trades": cfg.get("ACCUMULATION_MAX_TRADES", 3),
         "accumulation_proximity_pct": cfg.get("ACCUMULATION_PROXIMITY_PCT", 1.0),
+        "sl_ttp_adaptive_enabled": cfg.get("SL_TTP_ADAPTIVE_ENABLED", False),
         "ai_continuous": db.get_config_override("ai_continuous", False),
         "running": bot.trading_enabled,
         "is_running": bot.trading_enabled,
@@ -729,6 +730,9 @@ ADVANCED_SETTINGS = {
     "TTP_TRAIL_GAP_PRICE_PCT":     {"label": "TTP - marge de repli continue sous le pic (% de mouvement de prix)", "default": 0.3},
     "ACCUMULATION_MAX_TRADES":     {"label": "Accumulation - trades simultanes max", "default": 3},
     "ACCUMULATION_PROXIMITY_PCT":  {"label": "Accumulation - proximite support/resistance (%)", "default": 1.0},
+    "SL_ATR_MULTIPLIER":       {"label": "SL/TTP adaptatif - multiplicateur ATR", "default": 1.0},
+    "SL_PCT_MIN":              {"label": "SL/TTP adaptatif - plancher de securite (%)", "default": 0.3},
+    "SL_PCT_MAX":              {"label": "SL/TTP adaptatif - plafond de securite (%)", "default": 3.0},
     "VOLUME_MIN_RATIO":        {"label": "Volume - ratio minimum vs moyenne","default": 1.2},
     "MOMENTUM_PERIOD":         {"label": "Momentum - periode (cycles)",      "default": 4},
     "MOMENTUM_THRESHOLD_PCT":  {"label": "Momentum - seuil %",               "default": 0.20},
@@ -900,6 +904,7 @@ class FiltersBody(BaseModel):
     filter_macro: Optional[bool] = None
     accumulation_enabled: Optional[bool] = None
     accumulation_require_trend_confirm: Optional[bool] = None
+    sl_ttp_adaptive_enabled: Optional[bool] = None
 
 
 @app.put("/api/config/filters")
@@ -919,6 +924,12 @@ def put_filters(body: FiltersBody, email: str = Depends(require_user)):
         _apply_and_persist("ACCUMULATION_ENABLED", body.accumulation_enabled)
     if body.accumulation_require_trend_confirm is not None:
         _apply_and_persist("ACCUMULATION_REQUIRE_TREND_CONFIRM", body.accumulation_require_trend_confirm)
+    # v4.24 — SL/TTP adaptatifs a l ATR reel (unique/global : un seul
+    # multiplicateur pour tous les actifs, mais le resultat differe par
+    # actif car chacun a sa propre ATR au moment de l entree — voir
+    # SL_ATR_MULTIPLIER/SL_PCT_MIN/SL_PCT_MAX dans Parametres avances).
+    if body.sl_ttp_adaptive_enabled is not None:
+        _apply_and_persist("SL_TTP_ADAPTIVE_ENABLED", body.sl_ttp_adaptive_enabled)
     return {"ok": True}
 
 
