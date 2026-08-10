@@ -1675,6 +1675,8 @@ Confirmer ?`
                       <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:11}}>
                         ({trade.pnl_pct>=0?"+":""}{trade.pnl_pct?.toFixed(2)}%)
                       </span>
+                      {trade.peak_pnl_pct!=null ? <span style={{color:"#c084fc",fontSize:11}}>🏔️ pic +{trade.peak_pnl_pct.toFixed(2)}%</span>
+                        : trade.peak_pnl!=null && <span style={{color:"#c084fc",fontSize:11}}>🏔️ pic +{trade.peak_pnl.toFixed(2)}$</span>}
                       <button onClick={async()=>{
                         await apiCall("/api/paper/close","POST",{trade_id:trade.id,reason:"MANUEL"},token);
                         loadData();
