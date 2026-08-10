@@ -185,6 +185,19 @@ CONFIG = {
     "REQUIRE_LEVEL_RESPECT":      True,
     "ENTRY_LEVEL_PROXIMITY_PCT":  1.0,   # "proche" du support/resistance = a moins de ce % de distance (rebond)
 
+    # v4.20 — SUR DEMANDE EXPLICITE, suite a un lot de trades fouettes par le
+    # bruit apres la fusion du respect des niveaux (pics minuscules 0.01% a
+    # 0.66% avant SL) : deux gardes-fous supplementaires, cumulatifs.
+    # 1) Confirmation de direction : le MACD doit confirmer RSI+EMA pour
+    #    TOUS les actifs (generalise SYMBOL_REQUIRE_MACD_BB a tout le monde).
+    "REQUIRE_DIRECTION_CONFIRM":   True,
+    # 2) Coherence d amplitude : l ATR recent doit rester dans une fourchette
+    #    coherente avec le SL configure — ni trop calme (TTP inatteignable),
+    #    ni trop agite (le bruit seul suffit a toucher le SL).
+    "REQUIRE_AMPLITUDE_COHERENCE": True,
+    "MIN_AMPLITUDE_TO_SL_RATIO":   0.5,   # ATR minimum = 50% du SL configure
+    "MAX_AMPLITUDE_TO_SL_RATIO":   2.5,   # ATR maximum = 250% du SL configure
+
     # Tous les symboles sont des perpétuels — SPOT_SYMBOLS vide
     # PAXG remplace XAUT spot : index 187 sur Hyperliquid, levier max x10
     # Ticker direct "PAXG" dans l API (pas de @XXX)
@@ -3527,6 +3540,44 @@ class BotEngine:
         macd_bear = macd < sig
         bb_low_ok = price <= bb_low
         bb_up_ok  = price >= bb_up
+
+        # v4.20 — SUR DEMANDE EXPLICITE, suite a un lot de trades fouettes
+        # par le bruit (pics de 0.01% a 0.66% avant SL) : deux gardes-fous
+        # supplementaires, cumulatifs avec le respect des niveaux (v4.19).
+        #
+        # 1) CONFIRMATION DE DIRECTION : le MACD doit desormais confirmer la
+        #    direction pour TOUS les actifs (pas seulement ceux listes dans
+        #    SYMBOL_REQUIRE_MACD_BB) — un second indicateur independant qui
+        #    doit etre d accord avec RSI+EMA, pas juste eux seuls.
+        direction_confirmed_long  = True
+        direction_confirmed_short = True
+        if cfg.get("REQUIRE_DIRECTION_CONFIRM", True):
+            direction_confirmed_long  = macd_bull
+            direction_confirmed_short = macd_bear
+
+        # 2) COHERENCE D AMPLITUDE : le mouvement de prix recent (ATR) doit
+        #    etre d un ordre de grandeur coherent avec le SL/TTP configures.
+        #    Trop CALME (< MIN_RATIO x SL) -> le marche n a probablement pas
+        #    assez d amplitude pour atteindre le TTP, le trade stagne. Trop
+        #    AGITE (> MAX_RATIO x SL) -> le bruit normal suffit a lui seul a
+        #    toucher le SL avant qu un vrai mouvement ne se developpe —
+        #    exactement le symptome observe (pics minuscules puis SL rapide).
+        amplitude_coherent = True
+        if cfg.get("REQUIRE_AMPLITUDE_COHERENCE", True):
+            _, atr_pct_now = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+            sl_pct_ref = cfg.get("SL_PCT_OF_E", 1.0)
+            min_ratio  = cfg.get("MIN_AMPLITUDE_TO_SL_RATIO", 0.5)
+            max_ratio  = cfg.get("MAX_AMPLITUDE_TO_SL_RATIO", 2.5)
+            if atr_pct_now is not None:
+                amplitude_coherent = (sl_pct_ref * min_ratio) <= atr_pct_now <= (sl_pct_ref * max_ratio)
+            # Si l ATR n est pas encore calculable, on reste prudent et on
+            # bloque (coherent avec la posture adoptee pour EMA200/support-
+            # resistance : mieux vaut attendre une donnee fiable).
+            else:
+                amplitude_coherent = False
+
+        long_level_ok  = long_level_ok and direction_confirmed_long and amplitude_coherent
+        short_level_ok = short_level_ok and direction_confirmed_short and amplitude_coherent
 
         # Pour certains symboles (SOL), MACD + BB sont OBLIGATOIRES pour entrer
         require_macd_bb  = ticker in cfg.get("SYMBOL_REQUIRE_MACD_BB", [])
