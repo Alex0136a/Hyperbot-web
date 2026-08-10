@@ -1,4 +1,3 @@
-
 """
 ╔═══════════════════════════════════════════════════════╗
 ║       HyperBot — Pro Edition                          ║
@@ -1434,6 +1433,14 @@ class SymbolState:
         # tant que tp_stage reste a 0).
         self.tier0_armed        = False
         self.tier0_peak_pnl_usd = None
+        # v4.18 — SUR DEMANDE EXPLICITE : suit le pic de PnL latent DES
+        # L OUVERTURE, independamment des seuils de trailing (tier0_arm=0.5%,
+        # arm1=1.0%). Avant ce fix, un trade qui montait a +0.3% sans jamais
+        # atteindre 0.5% (seuil du tier0) puis repartait en perte n affichait
+        # AUCUN pic dans l historique — alors qu il y en avait bien un. Ce
+        # champ est purement informatif/diagnostic : il n influence AUCUNE
+        # decision de sortie, contrairement a peak_pnl_usd/tier0_peak_pnl_usd.
+        self.absolute_peak_pnl_usd = None
         # v4.15 — SUR DEMANDE EXPLICITE : apres la fermeture d un trade, exige
         # que le croisement EMA (ema_bull/ema_bear) soit RETOMBE puis se soit
         # RECROISE avant d autoriser une reouverture dans le MEME sens — pas
@@ -1490,6 +1497,7 @@ class SymbolState:
         self.tp_stage = 0
         self.tier0_armed = False
         self.tier0_peak_pnl_usd = None
+        self.absolute_peak_pnl_usd = None
 
     def trades_last_24h(self):
         cutoff = datetime.now().timestamp() - 86400
@@ -1543,7 +1551,15 @@ class SymbolState:
         # trailing principal (peak_pnl_usd) ou celui de la protection
         # anticipee (tier0_peak_pnl_usd) si le trade n a jamais depasse
         # arm1. None si le trade n a jamais ete en profit (ex: SL direct).
-        peak_pnl_usd_at_close = self.peak_pnl_usd if self.peak_pnl_usd is not None else self.tier0_peak_pnl_usd
+        # v4.18 — priorite : pic tier1 (le plus fin) > pic tier0 > pic absolu
+        # (des le 1er cycle en profit, couvre les trades qui n ont jamais
+        # atteint 0.5% mais ont quand meme ete brievement en profit avant
+        # de partir en perte — auparavant invisibles dans l historique).
+        peak_pnl_usd_at_close = (
+            self.peak_pnl_usd if self.peak_pnl_usd is not None
+            else self.tier0_peak_pnl_usd if self.tier0_peak_pnl_usd is not None
+            else self.absolute_peak_pnl_usd
+        )
         # v4.17 — pic aussi en % de mouvement de prix (prefere par l utilisateur
         # a l affichage en $) : reconverti ici, ou E et le levier de CE trade
         # precis sont connus avec certitude (size/leverage stockes sur la
@@ -1595,6 +1611,7 @@ class SymbolState:
         self.tp_stage = 0
         self.tier0_armed = False
         self.tier0_peak_pnl_usd = None
+        self.absolute_peak_pnl_usd = None
         return pnl_usd, win, trade
 
     def win_rate(self):
@@ -1890,6 +1907,7 @@ class BotEngine:
                 snapshot["_trailing_tp_active"] = st.trailing_tp_active
                 snapshot["_tier0_armed"] = st.tier0_armed  # v4.11
                 snapshot["_tier0_peak_pnl_usd"] = st.tier0_peak_pnl_usd  # v4.11
+                snapshot["_absolute_peak_pnl_usd"] = st.absolute_peak_pnl_usd  # v4.18
                 positions[sym] = snapshot
         try:
             with open(self.POSITIONS_FILE, "w") as f:
@@ -2810,6 +2828,7 @@ class BotEngine:
                             self.states[slot_key].trailing_tp_active = saved.get("_trailing_tp_active", False)
                             self.states[slot_key].tier0_armed = saved.get("_tier0_armed", False)  # v4.11
                             self.states[slot_key].tier0_peak_pnl_usd = saved.get("_tier0_peak_pnl_usd")  # v4.11
+                            self.states[slot_key].absolute_peak_pnl_usd = saved.get("_absolute_peak_pnl_usd")  # v4.18
                         self.emit("log", {"msg": f"[{ticker_sym}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} reintegree | SL ${pos['sl']:.2f} | TP ${pos['tp']:.2f}", "level": "warn"})
                         ensure_sl_on_hyperliquid(self.exchange, self.info, cfg["WALLET_ADDRESS"], ticker_sym, pos, cfg)
                         self.emit("log", {"msg": f"[{ticker_sym}] Verification SL Hyperliquid effectuee", "level": "ok"})
@@ -2841,12 +2860,14 @@ class BotEngine:
                     trailing_tp_active = pos.pop("_trailing_tp_active", False)
                     tier0_armed = pos.pop("_tier0_armed", False)  # v4.11
                     tier0_peak_pnl_usd = pos.pop("_tier0_peak_pnl_usd", None)  # v4.11
+                    absolute_peak_pnl_usd = pos.pop("_absolute_peak_pnl_usd", None)  # v4.18
                     state.position = pos
                     state.peak_pnl_usd = peak_pnl_usd
                     state.tp_stage = tp_stage
                     state.trailing_tp_active = trailing_tp_active
                     state.tier0_armed = tier0_armed
                     state.tier0_peak_pnl_usd = tier0_peak_pnl_usd
+                    state.absolute_peak_pnl_usd = absolute_peak_pnl_usd
                     restored += 1
                     stage_info = f" | Trailing etage {tp_stage}, pic +${peak_pnl_usd:.2f}" if peak_pnl_usd is not None else ""
                     self.emit("log", {"msg": f"[{ticker}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} restauree (paper, apres redemarrage){stage_info}", "level": "warn"})
@@ -3003,6 +3024,12 @@ class BotEngine:
         # pour que Stop Loss/TTP restent coherents avec le levier prudent
         # applique par trade (voir _compute_prudent_leverage).
         pnl_usd = E * pos.get("leverage", 1) * pnl_pct / 100
+
+        # v4.18 — Suivi du pic ABSOLU, des le premier cycle en profit, quel
+        # que soit le seuil de trailing atteint (ou pas) — purement
+        # informatif, n influence aucune decision de sortie ci-dessous.
+        if pnl_usd > 0 and (state.absolute_peak_pnl_usd is None or pnl_usd > state.absolute_peak_pnl_usd):
+            state.absolute_peak_pnl_usd = pnl_usd
 
         # ── 1. STOP LOSS — % de E, perte $ PLAFONNEE quel que soit le levier ──
         # v4.10 — compare pnl_usd (deja amplifie par le levier via la formule
