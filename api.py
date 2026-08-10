@@ -602,7 +602,13 @@ def _open_positions() -> List[Dict[str, Any]]:
             # v4.15 — Pic de PnL latent atteint jusqu ici pendant la vie du
             # trade (trailing principal ou protection anticipee, selon
             # lequel est actif) — visible dans le panneau "Trades ouverts".
-            peak_pnl_usd = state.peak_pnl_usd if state.peak_pnl_usd is not None else state.tier0_peak_pnl_usd
+            # v4.18 — priorite tier1 > tier0 > pic absolu (des le 1er cycle en
+            # profit, meme sous 0.5%) — voir close_position pour la meme logique.
+            peak_pnl_usd = (
+                state.peak_pnl_usd if state.peak_pnl_usd is not None
+                else state.tier0_peak_pnl_usd if state.tier0_peak_pnl_usd is not None
+                else state.absolute_peak_pnl_usd
+            )
             # v4.17 — pic en % de mouvement de prix, calcule avec le E et le
             # levier REELS de CETTE position (pos["size"]/pos["leverage"]),
             # plus fiables ici que la variable "leverage" ci-dessus (qui peut
