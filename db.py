@@ -60,7 +60,8 @@ def init_db():
                 confidence_breakdown TEXT,
                 strategy TEXT,
                 peak_pnl REAL,
-                peak_pnl_pct REAL
+                peak_pnl_pct REAL,
+                size_usd REAL
             )
         """)
         # Migration : ajoute la colonne rsi si la table trades existait deja
@@ -92,6 +93,11 @@ def init_db():
             # affichage en $, plus comparable d un trade a l autre quel que
             # soit la taille ou le levier utilises).
             conn.execute("ALTER TABLE trades ADD COLUMN peak_pnl_pct REAL")
+        if "size_usd" not in existing_cols:
+            # v4.28 — taille reelle en $ (E) de CE trade precis, pour
+            # affichage dans l historique (varie d un lot a l autre selon
+            # le capital courant au moment de l ouverture).
+            conn.execute("ALTER TABLE trades ADD COLUMN size_usd REAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS config_overrides (
                 key TEXT PRIMARY KEY,
@@ -150,17 +156,17 @@ def user_count():
 def insert_open_trade(coin, action, confidence, leverage, position_size_pct,
                        risk_reward, timeframe, entry_price, stop_loss,
                        take_profit1, take_profit2, rsi=None, entry_reasons=None,
-                       confidence_breakdown=None, strategy=None):
+                       confidence_breakdown=None, strategy=None, size_usd=None):
     with _lock, _connect() as conn:
         cur = conn.execute("""
             INSERT INTO trades (coin, action, confidence, leverage, position_size_pct,
                                  risk_reward, timeframe, entry_price, stop_loss,
                                  take_profit1, take_profit2, rsi, entry_reasons,
-                                 confidence_breakdown, strategy, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 confidence_breakdown, strategy, size_usd, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (coin, action, confidence, leverage, position_size_pct, risk_reward,
               timeframe, entry_price, stop_loss, take_profit1, take_profit2, rsi,
-              entry_reasons, confidence_breakdown, strategy, now_iso()))
+              entry_reasons, confidence_breakdown, strategy, size_usd, now_iso()))
         conn.commit()
         return cur.lastrowid
 
