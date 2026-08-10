@@ -4348,6 +4348,7 @@ class BotEngine:
             "confidence": round(confidence, 1),
             "leverage": leverage,
             "position_size_pct": cfg["POSITION_SIZE_PCT"],
+            "size_usd": round(size, 4),  # v4.28 — taille reelle en $ de CE trade (E)
             "strategy": strategy,  # v4.8 — "normal" ou "accumulation"
             # v4.10 — ratio informatif "mouvement de prix TP / % de E du SL" :
             # a levier x1 c est le vrai ratio gain/risque $. Au-dela, le gain
