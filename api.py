@@ -1158,6 +1158,26 @@ def get_positions(email: str = Depends(require_user)):
     return {"positions": _open_positions()}
 
 
+@app.get("/api/indicators/{ticker}")
+def get_indicator_history(ticker: str, email: str = Depends(require_user)):
+    """v4.21 — Historique des indicateurs (RSI, MACD, EMA200, ATR,
+    support/resistance) d un actif, pour affichage en graphe cote
+    interface. Cherche parmi TOUS les slots (BTC_0, BTC_1...) portant ce
+    ticker et retourne celui qui a le plus de donnees (le plus actif)."""
+    ticker = ticker.upper()
+    best_state = None
+    best_len = -1
+    for slot_key, state in bot.states.items():
+        if be.ticker_from_slot_key(slot_key) == ticker:
+            n = len(state.indicator_history)
+            if n > best_len:
+                best_len = n
+                best_state = state
+    if best_state is None:
+        raise HTTPException(404, f"Actif inconnu ou non suivi : {ticker}")
+    return {"ticker": ticker, "history": list(best_state.indicator_history)}
+
+
 @app.get("/api/signals")
 def get_signals(limit: int = Query(50), email: str = Depends(require_user)):
     return {"signals": [_trade_row_to_signal(r) for r in db.get_trades(limit=limit)]}
