@@ -424,6 +424,7 @@ function App() {
   const [filterMacro, setFilterMacro] = useState(false);
   const [accumulationEnabled, setAccumulationEnabled] = useState(false);
   const [accumulationRequireTrend, setAccumulationRequireTrend] = useState(false);
+  const [slTtpAdaptive, setSlTtpAdaptive] = useState(false);
   const [dailyStats, setDailyStats] = useState(null);
   const [advancedSettings, setAdvancedSettings] = useState(null);
   const [advancedEdits, setAdvancedEdits] = useState({});
@@ -492,6 +493,7 @@ function App() {
       setFilterMacro(!!cfg?.filter_macro);
       setAccumulationEnabled(!!cfg?.accumulation_enabled);
       setAccumulationRequireTrend(!!cfg?.accumulation_require_trend_confirm);
+      setSlTtpAdaptive(!!cfg?.sl_ttp_adaptive_enabled);
       // v3.2 — FIX : le champ s appelle finnhub_key (masque), pas finnhub_key_preview
       if(cfg?.finnhub_key) setFinnhubKey(cfg.finnhub_key);
       setBotLogs(botLogsRes?.logs||[]);
@@ -1326,6 +1328,28 @@ Confirmer ?`
             </div>
             <div style={{fontSize:9,color:"#94a3b8",marginTop:10}}>
               Réglages fins (trades simultanés max, proximité support/résistance) dans l'onglet Paramètres.
+            </div>
+          </div>
+
+          <div style={{background:"#0f1629",border:"1px solid #34d399",borderRadius:10,padding:16,marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#34d399",marginBottom:4}}>🎚️ SL/TTP adaptatif à l'ATR</div>
+            <div style={{fontSize:10,color:"#94a3b8",marginBottom:14}}>
+              Réglage unique (global), mais résultat propre à chaque actif : chacun a sa propre volatilité (ATR) au moment de l'entrée. SL = ATR × multiplicateur (borné entre le plancher et le plafond). Le TTP garde les mêmes proportions que vos réglages fixes actuels, juste mis à l'échelle. Toujours en %.
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0"}}>
+              <div>
+                <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700}}>Activer le SL/TTP adaptatif</div>
+                <div style={{fontSize:10,color:"#94a3b8"}}>Désactivé = seuils fixes habituels (SL/TTP réglés dans Réglages avancés)</div>
+              </div>
+              <button onClick={()=>{
+                const v=!slTtpAdaptive; setSlTtpAdaptive(v);
+                apiCall("/api/config/filters","PUT",{"sl_ttp_adaptive_enabled":v},token).then(loadData);
+              }} style={{background:slTtpAdaptive?"#052e16":"#0a0e1a",border:slTtpAdaptive?"1px solid #34d399":"1px solid #1e2d4a",borderRadius:6,padding:"6px 14px",color:slTtpAdaptive?"#34d399":"#475569",fontSize:10,cursor:"pointer",fontWeight:700}}>
+                {slTtpAdaptive?"✅ ACTIF":"⭕ OFF"}
+              </button>
+            </div>
+            <div style={{fontSize:9,color:"#94a3b8",marginTop:10}}>
+              Réglages fins (multiplicateur ATR, plancher, plafond) dans l'onglet Paramètres.
             </div>
           </div>
 
