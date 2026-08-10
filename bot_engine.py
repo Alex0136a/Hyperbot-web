@@ -174,6 +174,17 @@ CONFIG = {
     # independante de la tendance de fond.
     "ACCUMULATION_REQUIRE_TREND_CONFIRM": False,
 
+    # v4.19 — SUR DEMANDE EXPLICITE : "respect des niveaux" FUSIONNE dans la
+    # logique d entree PRINCIPALE (pas seulement le mode Accumulation, qui
+    # reste une strategie a part). Un trade normal ne se declenche desormais
+    # QUE s il a une vraie raison structurelle d exister : soit un rebond
+    # pres d un support/resistance recent, soit une cassure nette de ce
+    # niveau — jamais plus "RSI+EMA d accord au milieu de la fourchette,
+    # sans aucun rapport avec la structure du marche". Reduit mecaniquement
+    # le nombre de trades, chacun restant structurellement justifie.
+    "REQUIRE_LEVEL_RESPECT":      True,
+    "ENTRY_LEVEL_PROXIMITY_PCT":  1.0,   # "proche" du support/resistance = a moins de ce % de distance (rebond)
+
     # Tous les symboles sont des perpétuels — SPOT_SYMBOLS vide
     # PAXG remplace XAUT spot : index 187 sur Hyperliquid, levier max x10
     # Ticker direct "PAXG" dans l API (pas de @XXX)
@@ -3461,6 +3472,26 @@ class BotEngine:
             ema200, trend_up, trend_down, prices, state
         )
 
+        # v4.19 — Respect des niveaux, FUSIONNE dans la logique principale
+        # (pas juste Accumulation) : un LONG a besoin d un rebond pres du
+        # support OU d une cassure nette de la resistance ; un SHORT
+        # l inverse. Si REQUIRE_LEVEL_RESPECT est desactive, les deux
+        # variables restent True (aucune restriction ajoutee — comportement
+        # d avant ce changement).
+        if cfg.get("REQUIRE_LEVEL_RESPECT", True):
+            level_proximity_pct = cfg.get("ENTRY_LEVEL_PROXIMITY_PCT", 1.0)
+            long_level_ok = (
+                (support is not None and 0 <= (price - support) / support * 100 <= level_proximity_pct)
+                or (resistance is not None and price > resistance)
+            )
+            short_level_ok = (
+                (resistance is not None and 0 <= (resistance - price) / price * 100 <= level_proximity_pct)
+                or (support is not None and price < support)
+            )
+        else:
+            long_level_ok = True
+            short_level_ok = True
+
         # Seuils RSI specifiques au symbole
         rsi_oversold   = cfg.get("SYMBOL_RSI_OVERSOLD",  {}).get(ticker, cfg["RSI_OVERSOLD"])
         rsi_overbought = cfg.get("SYMBOL_RSI_OVERBOUGHT", {}).get(ticker, cfg["RSI_OVERBOUGHT"])
@@ -3515,8 +3546,12 @@ class BotEngine:
             self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG qualifie mais signal pas encore renouvele depuis la derniere fermeture — attente d une retombee puis d un nouveau croisement EMA", "level": "dim"})
         if rsi_sell and ema_bear and trend_down and state.short_signal_stale:
             self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT qualifie mais signal pas encore renouvele depuis la derniere fermeture — attente d une retombee puis d un nouveau croisement EMA", "level": "dim"})
+        if rsi_buy and ema_bull and trend_up and not state.long_signal_stale and not long_level_ok:
+            self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG qualifie mais ni rebond sur support ni cassure de resistance — pas de raison structurelle, signal ignore", "level": "dim"})
+        if rsi_sell and ema_bear and trend_down and not state.short_signal_stale and not short_level_ok:
+            self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT qualifie mais ni rebond sur resistance ni cassure de support — pas de raison structurelle, signal ignore", "level": "dim"})
 
-        if rsi_buy and ema_bull and trend_up and not state.long_signal_stale:
+        if rsi_buy and ema_bull and trend_up and not state.long_signal_stale and long_level_ok:
             # v3.2 — FIX : ce filtre ne s applique qu en mode "reversal". En
             # mode "trend" (suivi de tendance), un RSI eleve (85-97) est
             # justement la MEILLEURE confirmation du signal — pas un danger a
@@ -3632,7 +3667,7 @@ class BotEngine:
                 reasons.append(f"breakout R ${resistance:.2f}")
             if momentum_pct is not None:
                 reasons.append(f"momentum {momentum_pct:+.2f}%")
-        elif rsi_sell and ema_bear and trend_down and not state.short_signal_stale:
+        elif rsi_sell and ema_bear and trend_down and not state.short_signal_stale and short_level_ok:
             # v3.2 — FIX : meme correction que pour LONG — ce filtre ne
             # s applique qu en mode "reversal". En mode "trend", un RSI tres
             # bas (5-20) est la meilleure confirmation de la continuation
