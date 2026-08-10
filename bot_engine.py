@@ -1475,6 +1475,11 @@ class SymbolState:
         self.long_signal_stale  = False  # True juste apres une fermeture LONG, tant que ema_bull n est pas retombe au moins une fois
         self.short_signal_stale = False  # True juste apres une fermeture SHORT, tant que ema_bear n est pas retombe au moins une fois
         self.mtf_prices    = deque(maxlen=200)
+        # v4.21 — Historique des valeurs d indicateurs calculees (RSI, MACD,
+        # EMA200, ATR, support/resistance) a chaque cycle, pour affichage en
+        # graphe cote interface (diagnostic/surveillance). Purement
+        # informatif — n influence aucune decision de trading.
+        self.indicator_history = deque(maxlen=300)
         self.forex_was_open  = None
         self.forex_reopen_time = None
         self.last_price_time = None   # Horodatage du dernier prix enregistre
@@ -1495,6 +1500,7 @@ class SymbolState:
         self.price_history  = deque(maxlen=500)
         self.vol_history    = deque(maxlen=50)
         self.mtf_prices     = deque(maxlen=200)
+        self.indicator_history = deque(maxlen=300)
         self.current_rsi    = None
         self.current_macd   = None
         self.current_sig    = None
@@ -1909,6 +1915,14 @@ class BotEngine:
     POSITIONS_FILE = "hyperbot_positions.json"
     CONFIDENCE_FILE = "hyperbot_confidence.json"
     INDICATOR_STATE_FILE = "hyperbot_indicators.json"
+    # v4.22 — SUR DEMANDE EXPLICITE : fichier SEPARE pour l historique de
+    # diagnostic (graphes RSI/MACD/EMA200/ATR/S-R, voir indicator_history).
+    # Contrairement a INDICATOR_STATE_FILE (regle des 5 min, pour la
+    # FIABILITE des indicateurs de TRADING), celui-ci est toujours restaure
+    # a l identique quelle que soit la duree de la coupure — c est un
+    # historique de consultation, pas une donnee de decision, une coupure
+    # longue n invalide pas l interet de regarder ce qui s est passe avant.
+    INDICATOR_HISTORY_FILE = "hyperbot_indicator_history.json"
     INDICATOR_RESUME_MAX_GAP_SEC = 300  # 5 min — au-dela, on repart en collecte fraiche
 
     def _save_open_positions(self):
@@ -2070,6 +2084,43 @@ class BotEngine:
         except Exception as e:
             print(f"[INDICATEURS] Erreur lecture, collecte fraiche par securite : {e}")
 
+    def _save_indicator_history(self):
+        """v4.22 — Sauvegarde l historique de diagnostic (indicator_history :
+        RSI/MACD/EMA200/ATR/support-resistance dates, pour les graphes cote
+        interface). Fichier SEPARE de _save_indicator_state : celui-ci est
+        toujours restaure integralement au demarrage, quelle que soit la
+        duree de la coupure — c est un historique de consultation pour
+        comprendre a posteriori ce que le bot a fait, pas une donnee dont la
+        fraicheur conditionne une decision de trading."""
+        import json
+        try:
+            snapshot = {sym: list(st.indicator_history) for sym, st in self.states.items()}
+            with open(self.INDICATOR_HISTORY_FILE, "w") as f:
+                json.dump(snapshot, f)
+        except Exception as e:
+            print(f"[INDICATEURS] Erreur sauvegarde historique diagnostic : {e}")
+
+    def _load_indicator_history(self):
+        """v4.22 — Restaure l historique de diagnostic SANS condition de
+        delai (contrairement a _load_indicator_state_if_recent) — a appeler
+        une seule fois au demarrage."""
+        import json, os
+        if not os.path.exists(self.INDICATOR_HISTORY_FILE):
+            return
+        try:
+            with open(self.INDICATOR_HISTORY_FILE, "r") as f:
+                snapshot = json.load(f)
+            restored = 0
+            for sym, points in snapshot.items():
+                st = self.states.get(sym)
+                if not st:
+                    continue
+                st.indicator_history = deque(points, maxlen=300)
+                restored += 1
+            print(f"[INDICATEURS] Historique diagnostic restaure : {restored} actif(s).")
+        except Exception as e:
+            print(f"[INDICATEURS] Erreur lecture historique diagnostic : {e}")
+
     def force_fresh_collection(self):
         """Force une collecte entierement fraiche pour tous les actifs,
         meme si un etat recent aurait pu etre restaure — utile si on
@@ -2110,7 +2161,7 @@ class BotEngine:
         zero explicite depuis l interface."""
         import os
         for f in (self.POSITIONS_FILE, self.CONFIDENCE_FILE, self.INDICATOR_STATE_FILE,
-                  CAPITAL_FILE, BATCH_FILE):
+                  CAPITAL_FILE, BATCH_FILE, self.INDICATOR_HISTORY_FILE):
             try:
                 if os.path.exists(f):
                     os.remove(f)
@@ -2169,6 +2220,7 @@ class BotEngine:
             try:
                 self._save_open_positions()
                 self._save_confidence_thresholds()
+                self._save_indicator_history()  # v4.22 — historique diagnostic, sans condition de delai
             except Exception as e:
                 print(f"[SAVE-5S] Erreur : {e}")
 
@@ -2907,6 +2959,7 @@ class BotEngine:
         # INDICATOR_RESUME_MAX_GAP_SEC) : au-dela, collecte fraiche par
         # securite (un trou de donnees trop long fausserait les indicateurs).
         self._load_indicator_state_if_recent()
+        self._load_indicator_history()  # v4.22 — sans condition de delai
         # (session de trading 24h retiree — voir jour calendaire UTC fixe,
         # gere cote API pour les statistiques uniquement, sans blocage)
 
@@ -3452,6 +3505,23 @@ class BotEngine:
         is_scalp = cfg.get("PROFILE") == "scalp"
         sr_period = cfg.get("SR_PERIOD", 50)
         support, resistance = calc_support_resistance(prices, sr_period)
+
+        # v4.21 — SUR DEMANDE EXPLICITE : trace des indicateurs pour affichage
+        # en graphe (RSI, MACD, EMA200, ATR, support/resistance). Purement
+        # informatif, n influence aucune decision — voir _process pour le
+        # detail des memes calculs utilises pour trader.
+        _, atr_pct_snapshot = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+        state.indicator_history.append({
+            "ts": time.time(),
+            "price": price,
+            "rsi": round(rsi, 2) if rsi is not None else None,
+            "macd": round(macd, 6) if macd is not None else None,
+            "macd_signal": round(sig, 6) if sig is not None else None,
+            "ema200": round(ema200, 6) if ema200 is not None else None,
+            "atr_pct": round(atr_pct_snapshot, 4) if atr_pct_snapshot is not None else None,
+            "support": round(support, 6) if support is not None else None,
+            "resistance": round(resistance, 6) if resistance is not None else None,
+        })
 
         # Sauvegarder les EMA pour le prochain cycle
         state.prev_ema_s = ema_s
