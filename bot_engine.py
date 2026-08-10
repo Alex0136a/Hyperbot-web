@@ -198,6 +198,21 @@ CONFIG = {
     "MIN_AMPLITUDE_TO_SL_RATIO":   0.5,   # ATR minimum = 50% du SL configure
     "MAX_AMPLITUDE_TO_SL_RATIO":   2.5,   # ATR maximum = 250% du SL configure
 
+    # v4.24 — SL/TTP ADAPTATIFS a l ATR reel (optionnel, DESACTIVE par
+    # defaut — activation explicite requise). Au lieu de seuils fixes,
+    # chaque trade calcule son propre SL a partir de l ATR au moment de
+    # l entree (SL = ATR% x SL_ATR_MULTIPLIER, borne entre SL_PCT_MIN et
+    # SL_PCT_MAX pour eviter les cas extremes). Les seuils TTP (arm1, lock1,
+    # arm2, gap) sont ensuite recalcules pour CONSERVER LES MEMES
+    # PROPORTIONS que les reglages fixes actuels (TTP_ARM1_PRICE_PCT etc.),
+    # juste mis a l echelle du SL adaptatif. Toujours en % — un marche
+    # volatil obtient des seuils plus larges, un marche calme des seuils
+    # plus serres, mais toujours proportionnellement coherents entre eux.
+    "SL_TTP_ADAPTIVE_ENABLED": False,
+    "SL_ATR_MULTIPLIER":       1.0,   # SL = ATR% x ce multiplicateur
+    "SL_PCT_MIN":              0.3,   # plancher de securite (evite un SL quasi nul si ATR tres faible)
+    "SL_PCT_MAX":              3.0,   # plafond de securite (evite un SL demesure si ATR tres eleve)
+
     # Tous les symboles sont des perpétuels — SPOT_SYMBOLS vide
     # PAXG remplace XAUT spot : index 187 sur Hyperliquid, levier max x10
     # Ticker direct "PAXG" dans l API (pas de @XXX)
@@ -3113,7 +3128,10 @@ class BotEngine:
         # ci-dessus) au plafond E*sl_pct/100 (LUI independant du levier) :
         # le mouvement de prix necessaire pour toucher ce plafond $ diminue
         # donc mecaniquement quand le levier monte, mais le $ perdu reste fixe.
-        sl_pct_of_e = cfg.get("SL_PCT_OF_E", 1.0)
+        # v4.24 — priorite au seuil MEMORISE sur la position (adaptatif ou
+        # fixe, fige au moment de l ouverture) — repli sur la config globale
+        # actuelle pour les positions ouvertes avant ce fix (champ absent).
+        sl_pct_of_e = pos.get("sl_pct_of_e", cfg.get("SL_PCT_OF_E", 1.0))
         sl_usd = -E * sl_pct_of_e / 100
         if pnl_usd <= sl_usd:
             pnl, _, trade = state.close_position(price, "STOP LOSS")
@@ -3151,10 +3169,13 @@ class BotEngine:
         # levier : ces seuils sont de vrais % de mouvement de PRIX, et c est
         # le levier qui amplifie librement le $ gagne pour ce meme mouvement.
         leverage = pos.get("leverage", 1)
-        arm1_price_pct  = cfg.get("TTP_ARM1_PRICE_PCT", 1.0)
-        lock1_price_pct = cfg.get("TTP_LOCK1_PRICE_PCT", 0.8)
-        arm2_price_pct  = cfg.get("TTP_ARM2_PRICE_PCT", 1.3)
-        gap_price_pct   = cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3)
+        # v4.24 — priorite aux seuils MEMORISES sur la position (adaptatifs
+        # ou fixes, figes a l ouverture) — repli sur la config globale pour
+        # les positions ouvertes avant ce fix.
+        arm1_price_pct  = pos.get("ttp_arm1_pct",  cfg.get("TTP_ARM1_PRICE_PCT", 1.0))
+        lock1_price_pct = pos.get("ttp_lock1_pct", cfg.get("TTP_LOCK1_PRICE_PCT", 0.8))
+        arm2_price_pct  = pos.get("ttp_arm2_pct",  cfg.get("TTP_ARM2_PRICE_PCT", 1.3))
+        gap_price_pct   = pos.get("ttp_gap_pct",   cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3))
         tier0_arm_pct   = cfg.get("TTP_TIER0_ARM_PRICE_PCT", 0.5)
         tier0_gap_pct   = cfg.get("TTP_TIER0_GAP_PRICE_PCT", 0.42)
 
@@ -4095,6 +4116,35 @@ class BotEngine:
         leverage = self._compute_prudent_leverage(ticker, confidence, rsi_mode)
         notional = size * leverage
 
+        # ── v4.24 — SL/TTP adaptatifs a l ATR reel (optionnel) ───────────────
+        # Calcule les seuils de CE trade precis a partir de l ATR actuel,
+        # en conservant les MEMES proportions que les reglages fixes —
+        # toujours en %. Si desactive (par defaut) ou ATR indisponible,
+        # retombe integralement sur les valeurs fixes habituelles.
+        sl_pct_of_e   = cfg.get("SL_PCT_OF_E", 1.0)
+        ttp_arm1_pct  = cfg.get("TTP_ARM1_PRICE_PCT", 1.0)
+        ttp_lock1_pct = cfg.get("TTP_LOCK1_PRICE_PCT", 0.8)
+        ttp_arm2_pct  = cfg.get("TTP_ARM2_PRICE_PCT", 1.3)
+        ttp_gap_pct   = cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3)
+        adaptive_used = False
+        if cfg.get("SL_TTP_ADAPTIVE_ENABLED", False):
+            _, atr_pct_entry = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+            if atr_pct_entry is not None and atr_pct_entry > 0:
+                sl_min = cfg.get("SL_PCT_MIN", 0.3)
+                sl_max = cfg.get("SL_PCT_MAX", 3.0)
+                sl_dynamic = max(sl_min, min(sl_max, atr_pct_entry * cfg.get("SL_ATR_MULTIPLIER", 1.0)))
+                # Proportions conservees telles que definies par les reglages fixes actuels
+                ratio_arm1  = (ttp_arm1_pct  / sl_pct_of_e) if sl_pct_of_e else 1.0
+                ratio_lock1 = (ttp_lock1_pct / sl_pct_of_e) if sl_pct_of_e else 0.8
+                ratio_arm2  = (ttp_arm2_pct  / sl_pct_of_e) if sl_pct_of_e else 1.3
+                ratio_gap   = (ttp_gap_pct   / sl_pct_of_e) if sl_pct_of_e else 0.3
+                sl_pct_of_e   = round(sl_dynamic, 4)
+                ttp_arm1_pct  = round(sl_dynamic * ratio_arm1, 4)
+                ttp_lock1_pct = round(sl_dynamic * ratio_lock1, 4)
+                ttp_arm2_pct  = round(sl_dynamic * ratio_arm2, 4)
+                ttp_gap_pct   = round(sl_dynamic * ratio_gap, 4)
+                adaptive_used = True
+
         # ── v4.10 — le SL Hyperliquid (filet de securite) est un MULTIPLE du
         # Stop Loss du bot (EXCHANGE_SAFETY_SL_MULT, defaut x2), lui-meme en
         # % de E (perte $ plafonnee). Comme les deux sont exprimes en % de E
@@ -4102,7 +4152,6 @@ class BotEngine:
         # toujours proportionnel au Stop Loss reel, quelle que soit la
         # taille ou le levier utilises — d ou la conversion via le notionnel
         # (taille x levier) pour obtenir le % de mouvement de prix correct.
-        sl_pct_of_e   = cfg.get("SL_PCT_OF_E", 1.0)
         safety_sl_usd = size * sl_pct_of_e / 100 * cfg.get("EXCHANGE_SAFETY_SL_MULT", 2.0)
         safety_sl_pct = (safety_sl_usd / notional * 100) if notional > 0 else 2.0
         sl_p = price * (1 - safety_sl_pct/100) if signal == "long" else price * (1 + safety_sl_pct/100)
@@ -4124,7 +4173,8 @@ class BotEngine:
         lev_str = f"x{leverage}" if leverage > 1 else "x1"
 
         stop_loss_usd_here = size * sl_pct_of_e / 100
-        self.emit("log", {"msg": f"[{ticker}] {strat_tag_log}{label} @ ${price:.2f} | RSI:{rsi:.1f}({rsi_mode}) | {atr_str} | {' | '.join(reasons)} | ${size:.2f} {lev_str} | Stop Loss -${stop_loss_usd_here:.2f} ({sl_pct_of_e:.2f}% de E) | SL secu {safety_sl_pct:.2f}% [PERP]", "level": "signal"})
+        adaptive_tag = " 🎚️ADAPTATIF" if adaptive_used else ""
+        self.emit("log", {"msg": f"[{ticker}] {strat_tag_log}{label} @ ${price:.2f} | RSI:{rsi:.1f}({rsi_mode}) | {atr_str} | {' | '.join(reasons)} | ${size:.2f} {lev_str} | Stop Loss -${stop_loss_usd_here:.2f} ({sl_pct_of_e:.2f}% de E{adaptive_tag}) | TTP arme des {ttp_arm1_pct:.2f}% | SL secu {safety_sl_pct:.2f}% [PERP]", "level": "signal"})
 
         if cfg["MODE"] == "live" and self.exchange:
             # v3.2 — applique le levier PRUDENT specifique a ce trade sur
@@ -4143,6 +4193,16 @@ class BotEngine:
                 return
 
         state.open_position(signal, price, sl_p, tp_p, size, confidence=confidence, leverage=leverage, strategy=strategy)
+        # v4.24 — memorise les seuils REELLEMENT appliques a CE trade (fixes
+        # ou adaptatifs a l ATR) — _manage_position_impl les relit ici en
+        # priorite, avec repli sur les valeurs fixes globales si absents
+        # (positions ouvertes avant ce fix, ou mode adaptatif desactive).
+        state.position["sl_pct_of_e"]   = sl_pct_of_e
+        state.position["ttp_arm1_pct"]  = ttp_arm1_pct
+        state.position["ttp_lock1_pct"] = ttp_lock1_pct
+        state.position["ttp_arm2_pct"]  = ttp_arm2_pct
+        state.position["ttp_gap_pct"]   = ttp_gap_pct
+        state.position["adaptive_sl_ttp"] = adaptive_used
         self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
 
         # ── v4.7 web : evenement structure pour l API (table trades / signaux) ──
