@@ -168,6 +168,7 @@ def _consume_events():
                     rsi=data.get("rsi"), entry_reasons=data.get("entry_reasons"),
                     confidence_breakdown=data.get("confidence_breakdown"),
                     strategy=data.get("strategy", "normal"),
+                    size_usd=data.get("size_usd"),
                 )
             elif etype == "trade":
                 ticker = be.ticker_from_slot_key(data.get("symbol", ""))
@@ -671,6 +672,7 @@ def _trade_row_to_signal(row: Dict[str, Any]) -> Dict[str, Any]:
         "strategy": row["strategy"] if "strategy" in row.keys() else "normal",
         "peak_pnl": row["peak_pnl"] if "peak_pnl" in row.keys() else None,
         "peak_pnl_pct": row["peak_pnl_pct"] if "peak_pnl_pct" in row.keys() else None,
+        "size_usd": row["size_usd"] if "size_usd" in row.keys() else None,
     }
 
 
