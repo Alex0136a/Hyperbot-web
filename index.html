@@ -1260,9 +1260,13 @@ Confirmer ?`
                 <div style={{fontSize:11,color:"#94a3b8",fontWeight:700}}>🌙 Heures creuses crypto ({config?.offpeak_hour_start??2}h-{config?.offpeak_hour_end??6}h UTC)</div>
                 <div style={{fontSize:10,color:"#94a3b8"}}>Suspend les nouvelles entrées sur cette plage (liquidité généralement plus faible). Les positions déjà ouvertes continuent d'être gérées normalement.</div>
               </div>
-              <button onClick={()=>{
-                const v=!filterHours; setFilterHours(v);
-                apiCall("/api/config/filters","PUT",{"filter_hours":v},token);
+              <button onClick={async()=>{
+                const v=!filterHours;
+                try{
+                  await apiCall("/api/config/filters","PUT",{"filter_hours":v},token);
+                  setFilterHours(v);
+                  loadData();
+                }catch(e){ alert("Erreur : "+e.message+" — le réglage n'a pas été enregistré."); }
               }} style={{background:filterHours?"#1e3a5f22":"#0f1629",border:filterHours?"1px solid #60a5fa":"1px solid #1e2d4a",borderRadius:6,padding:"6px 14px",color:filterHours?"#60a5fa":"#475569",fontSize:10,cursor:"pointer",fontWeight:700}}>
                 {filterHours?"✅ ON":"⭕ OFF"}
               </button>
@@ -1273,9 +1277,13 @@ Confirmer ?`
                 <div style={{fontSize:11,color:"#94a3b8",fontWeight:700}}>📅 Pause Week-end (Forex uniquement)</div>
                 <div style={{fontSize:10,color:"#94a3b8"}}>Crypto trade 24h/24 7j/7 — désactivé par défaut</div>
               </div>
-              <button onClick={()=>{
-                const v=!filterWeekend; setFilterWeekend(v);
-                apiCall("/api/config/filters","PUT",{"filter_weekend":v},token);
+              <button onClick={async()=>{
+                const v=!filterWeekend;
+                try{
+                  await apiCall("/api/config/filters","PUT",{"filter_weekend":v},token);
+                  setFilterWeekend(v);
+                  loadData();
+                }catch(e){ alert("Erreur : "+e.message+" — le réglage n'a pas été enregistré."); }
               }} style={{background:filterWeekend?"#1e3a5f22":"#0f1629",border:filterWeekend?"1px solid #60a5fa":"1px solid #1e2d4a",borderRadius:6,padding:"6px 14px",color:filterWeekend?"#60a5fa":"#475569",fontSize:10,cursor:"pointer",fontWeight:700}}>
                 {filterWeekend?"✅ ON":"⭕ OFF"}
               </button>
@@ -1286,9 +1294,13 @@ Confirmer ?`
                 <div style={{fontSize:11,color:"#f87171",fontWeight:700}}>⚠️ Pause macro (FOMC/CPI/NFP)</div>
                 <div style={{fontSize:10,color:"#94a3b8"}}>Override manuel — suspend tout nouveau trade immédiatement</div>
               </div>
-              <button onClick={()=>{
-                const v=!filterMacro; setFilterMacro(v);
-                apiCall("/api/config/filters","PUT",{"filter_macro":v},token);
+              <button onClick={async()=>{
+                const v=!filterMacro;
+                try{
+                  await apiCall("/api/config/filters","PUT",{"filter_macro":v},token);
+                  setFilterMacro(v);
+                  loadData();
+                }catch(e){ alert("Erreur : "+e.message+" — le réglage n'a pas été enregistré."); }
               }} style={{background:filterMacro?"#2d0a0a":"#0f1629",border:filterMacro?"1px solid #f87171":"1px solid #1e2d4a",borderRadius:6,padding:"6px 14px",color:filterMacro?"#f87171":"#475569",fontSize:10,cursor:"pointer",fontWeight:700}}>
                 {filterMacro?"🔴 ACTIF":"⭕ OFF"}
               </button>
