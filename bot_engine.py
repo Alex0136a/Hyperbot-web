@@ -4252,6 +4252,69 @@ class BotEngine:
         if direction is None:
             return
 
+        # v4.35 — SUR DEMANDE EXPLICITE : Accumulation herite desormais des
+        # memes renforcements que le mode normal (jusqu ici absents, alors
+        # que le mode normal les a tous recus suite a l enquete ARB) —
+        # confirmation MACD, coherence d amplitude ATR, et confirmation
+        # post-trade soutenue. Calcules ici localement (auto-suffisant, la
+        # fonction est appelee avant que macd/amplitude ne soient calcules
+        # plus loin dans _process pour la logique normale).
+        if cfg.get("REQUIRE_DIRECTION_CONFIRM", True):
+            macd, macd_sig = calc_macd(prices, cfg.get("MACD_FAST", 12), cfg.get("MACD_SLOW", 26), cfg.get("MACD_SIGNAL", 9))
+            if macd is not None and macd_sig is not None:
+                macd_confirmed = (macd > macd_sig) if direction == "long" else (macd < macd_sig)
+                if not macd_confirmed:
+                    return
+
+        if cfg.get("REQUIRE_AMPLITUDE_COHERENCE", True):
+            _, atr_pct_now = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+            sl_pct_ref = cfg.get("SL_PCT_OF_E", 1.0)
+            min_ratio  = cfg.get("MIN_AMPLITUDE_TO_SL_RATIO", 0.5)
+            max_ratio  = cfg.get("MAX_AMPLITUDE_TO_SL_RATIO", 2.5)
+            if atr_pct_now is None or not ((sl_pct_ref * min_ratio) <= atr_pct_now <= (sl_pct_ref * max_ratio)):
+                return
+
+        # Confirmation post-trade soutenue (18 cycles, secours Bollinger a 30
+        # min) — reutilise le MEME etat que le mode normal (post_win_confirm_*,
+        # partage par actif+sens, pas par strategie : un test rate en normal
+        # doit aussi freiner Accumulation sur le meme actif/sens, et inversement).
+        confirm_cycles_needed = cfg.get("POST_WIN_CONFIRM_CYCLES", 18)
+        max_wait_cycles = cfg.get("POST_WIN_MAX_WAIT_CYCLES", 180)
+        if direction == "long" and state.post_win_confirm_long:
+            state.post_win_wait_long += 1
+            state.confirm_count_long += 1
+            if state.confirm_count_long >= confirm_cycles_needed:
+                state.post_win_confirm_long = False
+                state.confirm_count_long = 0
+                state.post_win_wait_long = 0
+            elif state.post_win_wait_long >= max_wait_cycles:
+                bb_up, _, bb_low = calc_bollinger(prices, cfg.get("BB_PERIOD", 20), cfg.get("BB_STD", 2.0))
+                fallback_ok = bb_low is not None and price <= bb_low
+                state.post_win_confirm_long = False
+                state.confirm_count_long = 0
+                state.post_win_wait_long = 0
+                if not fallback_ok:
+                    return
+            else:
+                return
+        if direction == "short" and state.post_win_confirm_short:
+            state.post_win_wait_short += 1
+            state.confirm_count_short += 1
+            if state.confirm_count_short >= confirm_cycles_needed:
+                state.post_win_confirm_short = False
+                state.confirm_count_short = 0
+                state.post_win_wait_short = 0
+            elif state.post_win_wait_short >= max_wait_cycles:
+                bb_up, _, bb_low = calc_bollinger(prices, cfg.get("BB_PERIOD", 20), cfg.get("BB_STD", 2.0))
+                fallback_ok = bb_up is not None and price >= bb_up
+                state.post_win_confirm_short = False
+                state.confirm_count_short = 0
+                state.post_win_wait_short = 0
+                if not fallback_ok:
+                    return
+            else:
+                return
+
         # ── Score de confiance dedie (proximite + position RSI + momentum) ──
         # Plus le prix est proche du niveau, plus le RSI confirme (survente
         # pres du support, surachat pres de la resistance), plus le momentum
