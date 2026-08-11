@@ -1055,6 +1055,7 @@ Confirmer ?`
                     <div style={{fontSize:9,color:"#94a3b8"}}>{p.pnl_pct>=0?"+":""}{p.pnl_pct}%</div>
                     {p.peak_pnl_pct!=null ? <div style={{fontSize:9,color:"#c084fc"}}>🏔️ pic +{p.peak_pnl_pct.toFixed(2)}%</div>
                       : p.peak_pnl!=null && <div style={{fontSize:9,color:"#c084fc"}}>🏔️ pic +{p.peak_pnl.toFixed(2)}$</div>}
+                    {p.adaptive_sl_ttp && <div style={{fontSize:9,color:"#34d399"}}>🎚️ SL {p.sl_pct_used?.toFixed(2)}% / TTP {p.ttp_arm1_pct_used?.toFixed(2)}%</div>}
                   </div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7,marginBottom:7}}>
@@ -1782,6 +1783,7 @@ Confirmer ?`
                         </span>
                         {trade.size_usd!=null && <span style={{color:"#64748b",fontSize:9}}>· ${trade.size_usd.toFixed(2)}</span>}
                         {trade.leverage!=null && <span style={{background:"#1e2d4a",color:"#60a5fa",padding:"1px 6px",borderRadius:3,fontSize:9}}>x{trade.leverage}</span>}
+                        {trade.adaptive_sl_ttp && <span style={{background:"#052e16",color:"#34d399",padding:"1px 6px",borderRadius:3,fontSize:9}}>🎚️ SL {trade.sl_pct_used?.toFixed(2)}% / TTP {trade.ttp_arm1_pct_used?.toFixed(2)}%</span>}
                       </div>
                       <div style={{display:"flex",gap:14,alignItems:"center"}}>
                         <span style={{color:"#94a3b8",fontSize:9}}>{new Date(trade.closed_at).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</span>
