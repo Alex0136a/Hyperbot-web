@@ -1504,13 +1504,18 @@ class SymbolState:
         # du meme signal qui a deja donne le trade precedent.
         self.long_signal_stale  = False  # True juste apres une fermeture LONG, tant que ema_bull n est pas retombe au moins une fois
         self.short_signal_stale = False  # True juste apres une fermeture SHORT, tant que ema_bear n est pas retombe au moins une fois
-        # v4.25 — SUR DEMANDE EXPLICITE : apres un GAIN (TTP) dans un sens
-        # donne, la reouverture dans ce MEME sens exige que toutes les
-        # conditions d entree soient reunies sur PLUSIEURS cycles CONSECUTIFS
-        # (pas un seul) — un signal qui hesite (vrai un cycle, faux le
-        # suivant) fait repartir le compteur a zero. Empeche un actif choppy
-        # de re-declencher "techniquement frais" (EMA repasse vite) mais pas
-        # reellement nouveau, toutes les 40-70 minutes, comme observe sur ARB.
+        # v4.25/v4.31 — SUR DEMANDE EXPLICITE : apres une FERMETURE (gain OU
+        # perte, v4.31 — initialement seulement apres un gain, etendu suite
+        # a une serie de 7+ pertes consecutives observee sur ARB LONG) dans
+        # un sens donne, la reouverture dans ce MEME sens exige que toutes
+        # les conditions d entree soient reunies sur PLUSIEURS cycles
+        # CONSECUTIFS (pas un seul) — un signal qui hesite (vrai un cycle,
+        # faux le suivant) fait repartir le compteur a zero. Empeche un
+        # actif choppy de re-declencher "techniquement frais" (EMA repasse
+        # vite) mais pas reellement nouveau, toutes les 40-70 minutes.
+        # Le nom "post_win" est reste pour limiter les changements, mais le
+        # declenchement couvre desormais TOUTE fermeture (voir close_position
+        # et les blocs STOP LOSS / SL SECURITE / TTP dans _manage_position_impl).
         self.post_win_confirm_long  = False
         self.post_win_confirm_short = False
         self.confirm_count_long  = 0
@@ -3176,6 +3181,19 @@ class BotEngine:
             self.emit("trade", trade)
             peak_str = f" | pic atteint avant la chute : +${trade['peak_pnl_usd']:.2f}" if trade.get("peak_pnl_usd") else ""
             self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (plafond -${-sl_usd:.2f} = {sl_pct_of_e:.2f}% de E, mouvement de prix requis a x{pos.get('leverage',1)} : {sl_pct_of_e/max(pos.get('leverage',1),1):.2f}%){peak_str}", "level": "loss"})
+            # v4.31 — SUR DEMANDE EXPLICITE, suite a une serie de 7+ pertes
+            # consecutives dans le MEME sens observee (ARB LONG) : la
+            # confirmation renforcee (voir plus bas) se declenche desormais
+            # APRES TOUTE fermeture dans un sens donne — gain OU perte — pas
+            # seulement apres un gain. Une perte prouve que la direction
+            # etait fausse, raison de plus d exiger une reconfirmation
+            # soutenue avant de retenter le meme pari.
+            if pos["type"] == "long":
+                state.post_win_confirm_long = True
+                state.confirm_count_long = 0
+            else:
+                state.post_win_confirm_short = True
+                state.confirm_count_short = 0
             self._register_max_loss(ticker, pos.get("confidence"))
             self._save_open_positions()  # sauvegarde en live ET en paper
             self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
@@ -3193,6 +3211,13 @@ class BotEngine:
             self.emit("trade", trade)
             peak_str = f" | pic atteint avant la chute : +${trade['peak_pnl_usd']:.2f}" if trade.get("peak_pnl_usd") else ""
             self.emit("log", {"msg": f"[{ticker}] {strat_tag}SL SECURITE @ ${price:.2f} | PnL: ${pnl:.2f}{peak_str}", "level": "loss"})
+            # v4.31 — meme raisonnement que pour le STOP LOSS ci-dessus.
+            if pos["type"] == "long":
+                state.post_win_confirm_long = True
+                state.confirm_count_long = 0
+            else:
+                state.post_win_confirm_short = True
+                state.confirm_count_short = 0
             self._register_max_loss(ticker, pos.get("confidence"))
             self._save_open_positions()  # sauvegarde en live ET en paper
             self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
