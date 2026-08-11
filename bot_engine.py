@@ -2721,7 +2721,7 @@ class BotEngine:
         except Exception as e:
             print(f"[FUNDING] Erreur rafraichissement funding rate : {e} — cache precedent conserve.")
 
-
+    def _check_ws_health_alert(self):
         """ALARME WebSocket — appelee une fois par cycle depuis _run.
         Detecte les TRANSITIONS de sante (sain -> defaillant, defaillant ->
         retabli) et emet un log bien visible a chaque changement d etat
