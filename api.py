@@ -414,6 +414,8 @@ def _public_config() -> Dict[str, Any]:
         "accumulation_max_trades": cfg.get("ACCUMULATION_MAX_TRADES", 3),
         "accumulation_proximity_pct": cfg.get("ACCUMULATION_PROXIMITY_PCT", 1.0),
         "sl_ttp_adaptive_enabled": cfg.get("SL_TTP_ADAPTIVE_ENABLED", False),
+        "funding_mode_enabled": cfg.get("FUNDING_MODE_ENABLED", False),
+        "funding_mode_live_allowed": cfg.get("FUNDING_MODE_LIVE_ALLOWED", False),
         "ai_continuous": db.get_config_override("ai_continuous", False),
         "running": bot.trading_enabled,
         "is_running": bot.trading_enabled,
@@ -750,6 +752,9 @@ ADVANCED_SETTINGS = {
     "SL_ATR_MULTIPLIER":       {"label": "SL/TTP adaptatif - multiplicateur ATR", "default": 1.0},
     "SL_PCT_MIN":              {"label": "SL/TTP adaptatif - plancher de securite (%)", "default": 0.3},
     "SL_PCT_MAX":              {"label": "SL/TTP adaptatif - plafond de securite (%)", "default": 3.0},
+    "FUNDING_ANNUAL_THRESHOLD_PCT": {"label": "Funding Contrarian - seuil annualise (%)", "default": 25.0},
+    "FUNDING_MODE_MAX_TRADES":      {"label": "Funding Contrarian - trades simultanes max", "default": 3},
+    "FUNDING_REFRESH_SEC":          {"label": "Funding Contrarian - frequence de rafraichissement (s)", "default": 300},
     "VOLUME_MIN_RATIO":        {"label": "Volume - ratio minimum vs moyenne","default": 1.2},
     "MOMENTUM_PERIOD":         {"label": "Momentum - periode (cycles)",      "default": 4},
     "MOMENTUM_THRESHOLD_PCT":  {"label": "Momentum - seuil %",               "default": 0.20},
@@ -922,6 +927,8 @@ class FiltersBody(BaseModel):
     accumulation_enabled: Optional[bool] = None
     accumulation_require_trend_confirm: Optional[bool] = None
     sl_ttp_adaptive_enabled: Optional[bool] = None
+    funding_mode_enabled: Optional[bool] = None
+    funding_mode_live_allowed: Optional[bool] = None
 
 
 @app.put("/api/config/filters")
@@ -947,6 +954,16 @@ def put_filters(body: FiltersBody, email: str = Depends(require_user)):
     # SL_ATR_MULTIPLIER/SL_PCT_MIN/SL_PCT_MAX dans Parametres avances).
     if body.sl_ttp_adaptive_enabled is not None:
         _apply_and_persist("SL_TTP_ADAPTIVE_ENABLED", body.sl_ttp_adaptive_enabled)
+    # v4.33 — mode Funding Contrarian : source de signal differente
+    # (desequilibre de position via le funding rate, pas RSI/MACD/EMA).
+    # funding_mode_live_allowed reste False par defaut : meme active, ce
+    # mode simule ses trades (paper) tant que ce deuxieme interrupteur n est
+    # pas leve manuellement, quel que soit le mode global du bot — protege
+    # un capital de trading deja fragilise pendant la phase de validation.
+    if body.funding_mode_enabled is not None:
+        _apply_and_persist("FUNDING_MODE_ENABLED", body.funding_mode_enabled)
+    if body.funding_mode_live_allowed is not None:
+        _apply_and_persist("FUNDING_MODE_LIVE_ALLOWED", body.funding_mode_live_allowed)
     return {"ok": True}
 
 
