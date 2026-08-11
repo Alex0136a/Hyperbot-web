@@ -4349,6 +4349,10 @@ class BotEngine:
             "leverage": leverage,
             "position_size_pct": cfg["POSITION_SIZE_PCT"],
             "size_usd": round(size, 4),  # v4.28 — taille reelle en $ de CE trade (E)
+            # v4.30 — seuils SL/TTP REELLEMENT appliques (fixes ou adaptatifs a l ATR)
+            "sl_pct_used": sl_pct_of_e,
+            "ttp_arm1_pct_used": ttp_arm1_pct,
+            "adaptive_sl_ttp": adaptive_used,
             "strategy": strategy,  # v4.8 — "normal" ou "accumulation"
             # v4.10 — ratio informatif "mouvement de prix TP / % de E du SL" :
             # a levier x1 c est le vrai ratio gain/risque $. Au-dela, le gain
