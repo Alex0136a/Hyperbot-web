@@ -1758,6 +1758,8 @@ Confirmer ?`
                       <span style={{background:trade.action==="LONG"?"#052e16":"#2d0a0a",color:trade.action==="LONG"?"#34d399":"#f87171",padding:"2px 8px",borderRadius:4,fontSize:11,fontWeight:700}}>{trade.action}</span>
                       <span style={{color:"#f1f5f9",fontWeight:700}}>{trade.coin}/USDC</span>
                       <span style={{color:"#94a3b8",fontSize:10}}>x{trade.leverage}</span>
+                      {trade.strategy==="accumulation" && <span style={{background:"#1a0a2e",color:"#c084fc",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>🎯 ACCUMULATION</span>}
+                      {trade.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>💰 FUNDING</span>}
                     </div>
                     <div style={{display:"flex",gap:12,alignItems:"center"}}>
                       <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontWeight:700,fontSize:14}}>
