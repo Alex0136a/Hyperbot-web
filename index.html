@@ -1055,6 +1055,8 @@ Confirmer ?`
                     <span style={{background:p.action==="LONG"?"#052e16":"#2d0a0a",color:p.action==="LONG"?"#34d399":"#f87171",padding:"2px 7px",borderRadius:4,fontSize:10,fontWeight:700}}>{p.action}</span>
                     <span style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>{p.coin}/USDC</span>
                     <span style={{fontSize:9,color:"#94a3b8",background:"#0a0e1a",padding:"2px 6px",borderRadius:4}}>x{p.leverage||1}</span>
+                    {p.strategy==="accumulation" && <span style={{background:"#1a0a2e",color:"#c084fc",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>🎯 ACCUMULATION</span>}
+                    {p.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>💰 FUNDING</span>}
                   </div>
                   <div style={{textAlign:"right"}}>
                     <div style={{fontSize:15,fontWeight:700,color:pnl>=0?"#34d399":"#f87171"}}>{pnl>=0?"+":""}{pnl.toFixed(2)} USDC</div>
