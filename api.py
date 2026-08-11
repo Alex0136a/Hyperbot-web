@@ -169,6 +169,9 @@ def _consume_events():
                     confidence_breakdown=data.get("confidence_breakdown"),
                     strategy=data.get("strategy", "normal"),
                     size_usd=data.get("size_usd"),
+                    sl_pct_used=data.get("sl_pct_used"),
+                    ttp_arm1_pct_used=data.get("ttp_arm1_pct_used"),
+                    adaptive_sl_ttp=data.get("adaptive_sl_ttp"),
                 )
             elif etype == "trade":
                 ticker = be.ticker_from_slot_key(data.get("symbol", ""))
@@ -640,6 +643,15 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "pnl_pct": round(pnl_pct, 3),
                 "peak_pnl": round(peak_pnl_usd, 4) if peak_pnl_usd is not None else None,
                 "peak_pnl_pct": peak_pnl_pct,
+                # v4.30 — seuils SL/TTP REELLEMENT appliques a CE trade (fixes
+                # ou adaptatifs a l ATR, figes a l ouverture) — voir bot_engine.py
+                # _finalize_open, stockes sur la position elle-meme.
+                "sl_pct_used": pos.get("sl_pct_of_e"),
+                "ttp_arm1_pct_used": pos.get("ttp_arm1_pct"),
+                "ttp_lock1_pct_used": pos.get("ttp_lock1_pct"),
+                "ttp_arm2_pct_used": pos.get("ttp_arm2_pct"),
+                "ttp_gap_pct_used": pos.get("ttp_gap_pct"),
+                "adaptive_sl_ttp": pos.get("adaptive_sl_ttp", False),
             })
         except Exception as e:
             print(f"[_open_positions] Erreur sur la position {slot_key}, ignoree pour cette reponse: {e}")
@@ -673,6 +685,9 @@ def _trade_row_to_signal(row: Dict[str, Any]) -> Dict[str, Any]:
         "peak_pnl": row["peak_pnl"] if "peak_pnl" in row.keys() else None,
         "peak_pnl_pct": row["peak_pnl_pct"] if "peak_pnl_pct" in row.keys() else None,
         "size_usd": row["size_usd"] if "size_usd" in row.keys() else None,
+        "sl_pct_used": row["sl_pct_used"] if "sl_pct_used" in row.keys() else None,
+        "ttp_arm1_pct_used": row["ttp_arm1_pct_used"] if "ttp_arm1_pct_used" in row.keys() else None,
+        "adaptive_sl_ttp": bool(row["adaptive_sl_ttp"]) if "adaptive_sl_ttp" in row.keys() and row["adaptive_sl_ttp"] is not None else False,
     }
 
 
