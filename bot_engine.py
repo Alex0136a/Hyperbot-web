@@ -570,6 +570,12 @@ PROFILE_SWING = {
     # precis, en priorite sur cette detection automatique.
     "ADX_PERIOD":               14,
     "ADX_TREND_THRESHOLD":      25.0,
+    # v4.32 — marge d hysteresis autour du seuil ci-dessus : le mode ne
+    # bascule que si l ADX depasse clairement le seuil (+marge pour "trend",
+    # -marge pour "reversal") — dans la zone ambigue entre les deux, le
+    # dernier mode retenu est conserve, pour eviter un flip-flop trend/
+    # reversal a chaque cycle sur un actif dont l ADX oscille pres du seuil.
+    "ADX_HYSTERESIS_MARGIN":    3.0,
 
     # ── SL par paliers de gains (swing uniquement) ───────────────────────────
     "SL_LOCK_ENABLED":          True,
@@ -1471,6 +1477,10 @@ class SymbolState:
         self.current_macd  = None
         self.current_atr_pct = None   # ATR% du dernier cycle — pour affichage dashboard
         self.current_adx = None       # ADX du dernier cycle — force de tendance (mode trend/reversal)
+        # v4.32 — memorise le dernier mode trend/reversal retenu, pour
+        # hysteresis (voir _process) : evite que le mode bascule a chaque
+        # cycle si l ADX oscille juste autour du seuil.
+        self.last_rsi_mode = None
         self._last_status_log_ts = None  # limite la frequence du log "latent" (voir _manage_position_impl)
         self.current_sig   = None
         self.prev_macd     = None
@@ -3693,10 +3703,34 @@ class BotEngine:
         if manual_mode:
             rsi_mode = manual_mode
         elif adx is not None:
+            # v4.32 — SUR DEMANDE EXPLICITE, suite a une repetition de trades
+            # LONG observee sur ARB : ajoute une HYSTERESIS autour du seuil
+            # ADX pour eviter que le mode trend/reversal ne bascule a chaque
+            # cycle des que l ADX oscille juste autour de 25 (plausible sur
+            # un actif choppy) — chaque bascule change les regles d entree
+            # (RSI>50 en trend vs survente/surachat en reversal), ce qui
+            # peut lui-meme contribuer a l instabilite observee. Zone
+            # ambigue (a +/- ADX_HYSTERESIS_MARGIN du seuil) : garde le
+            # dernier mode retenu au lieu de trancher sur un seul cycle.
             adx_trend_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
-            rsi_mode = "trend" if adx >= adx_trend_threshold else "reversal"
+            hysteresis_margin = cfg.get("ADX_HYSTERESIS_MARGIN", 3.0)
+            if adx >= adx_trend_threshold + hysteresis_margin:
+                rsi_mode = "trend"
+            elif adx < adx_trend_threshold - hysteresis_margin:
+                rsi_mode = "reversal"
+            else:
+                # Zone ambigue : conserve le dernier mode retenu (par defaut
+                # le plus restrictif, "reversal", si jamais encore determine).
+                rsi_mode = state.last_rsi_mode or "reversal"
+            state.last_rsi_mode = rsi_mode
         else:
-            rsi_mode = "trend"  # ADX pas encore calculable (collecte insuffisante) — valeur de repli
+            # v4.32 — FIX FAILLE (meme type que EMA200/support-resistance
+            # deja corriges) : quand l ADX n est pas encore calculable, le
+            # repli etait "trend" — le mode le PLUS PERMISSIF des deux (RSI>50
+            # suffit, contre RSI en survente/surachat pour "reversal"). Corrige
+            # pour repartir sur le mode le plus restrictif par prudence, en
+            # attendant une donnee fiable.
+            rsi_mode = "reversal"  # ADX pas encore calculable — repli PRUDENT (etait "trend" par erreur)
         if rsi_mode == "trend":
             rsi_buy  = rsi > 50   # momentum haussier confirme
             rsi_sell = rsi < 50   # momentum baissier confirme
