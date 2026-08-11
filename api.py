@@ -654,6 +654,7 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "ttp_arm2_pct_used": pos.get("ttp_arm2_pct"),
                 "ttp_gap_pct_used": pos.get("ttp_gap_pct"),
                 "adaptive_sl_ttp": pos.get("adaptive_sl_ttp", False),
+                "strategy": pos.get("strategy", "normal"),  # v4.34 — FIX : jamais expose ici avant
             })
         except Exception as e:
             print(f"[_open_positions] Erreur sur la position {slot_key}, ignoree pour cette reponse: {e}")
