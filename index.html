@@ -425,6 +425,8 @@ function App() {
   const [accumulationEnabled, setAccumulationEnabled] = useState(false);
   const [accumulationRequireTrend, setAccumulationRequireTrend] = useState(false);
   const [slTtpAdaptive, setSlTtpAdaptive] = useState(false);
+  const [fundingModeEnabled, setFundingModeEnabled] = useState(false);
+  const [fundingModeLiveAllowed, setFundingModeLiveAllowed] = useState(false);
   const [dailyStats, setDailyStats] = useState(null);
   const [advancedSettings, setAdvancedSettings] = useState(null);
   const [advancedEdits, setAdvancedEdits] = useState({});
@@ -494,6 +496,8 @@ function App() {
       setAccumulationEnabled(!!cfg?.accumulation_enabled);
       setAccumulationRequireTrend(!!cfg?.accumulation_require_trend_confirm);
       setSlTtpAdaptive(!!cfg?.sl_ttp_adaptive_enabled);
+      setFundingModeEnabled(!!cfg?.funding_mode_enabled);
+      setFundingModeLiveAllowed(!!cfg?.funding_mode_live_allowed);
       // v3.2 — FIX : le champ s appelle finnhub_key (masque), pas finnhub_key_preview
       if(cfg?.finnhub_key) setFinnhubKey(cfg.finnhub_key);
       setBotLogs(botLogsRes?.logs||[]);
@@ -862,6 +866,7 @@ Confirmer ?`
                   <div style={{display:"flex",gap:8,alignItems:"center"}}>
                     <span style={{background:sig.action==="LONG"?"#052e16":"#2d0a0a",color:sig.action==="LONG"?"#34d399":"#f87171",padding:"3px 9px",borderRadius:5,fontSize:12,fontWeight:700}}>{sig.action}</span>
                     {sig.strategy==="accumulation" && <span style={{background:"#1a0a2e",color:"#c084fc",padding:"3px 9px",borderRadius:5,fontSize:11,fontWeight:700}}>🎯 ACCUMULATION</span>}
+                    {sig.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"3px 9px",borderRadius:5,fontSize:11,fontWeight:700}}>💰 FUNDING</span>}
                     <span style={{fontSize:15,fontWeight:700,color:"#f1f5f9"}}>{sig.coin}/USDC</span>
                     <span style={{background:"#1e2d4a",color:"#60a5fa",padding:"1px 7px",borderRadius:4,fontSize:10}}>x{sig.leverage}</span>
                   </div>
@@ -994,6 +999,7 @@ Confirmer ?`
                   <div style={{display:"flex",gap:8,alignItems:"center"}}>
                     <span style={{background:sig.action==="LONG"?"#052e16":"#2d0a0a",color:sig.action==="LONG"?"#34d399":"#f87171",padding:"3px 9px",borderRadius:5,fontSize:12,fontWeight:700}}>{sig.action}</span>
                     {sig.strategy==="accumulation" && <span style={{background:"#1a0a2e",color:"#c084fc",padding:"3px 9px",borderRadius:5,fontSize:11,fontWeight:700}}>🎯 ACCUMULATION</span>}
+                    {sig.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"3px 9px",borderRadius:5,fontSize:11,fontWeight:700}}>💰 FUNDING</span>}
                     <span style={{fontSize:15,fontWeight:700,color:"#f1f5f9"}}>{sig.coin}/USDC</span>
                     <span style={{background:"#1e2d4a",color:"#60a5fa",padding:"1px 7px",borderRadius:4,fontSize:10}}>x{sig.leverage}</span>
                   </div>
@@ -1375,6 +1381,40 @@ Confirmer ?`
             </div>
             <div style={{fontSize:9,color:"#94a3b8",marginTop:10}}>
               Réglages fins (multiplicateur ATR, plancher, plafond) dans l'onglet Paramètres.
+            </div>
+          </div>
+
+          <div style={{background:"#0f1629",border:"1px solid #fbbf24",borderRadius:10,padding:16,marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#fbbf24",marginBottom:4}}>💰 Funding Contrarian</div>
+            <div style={{fontSize:10,color:"#94a3b8",marginBottom:14}}>
+              Source de signal différente de RSI/MACD/EMA : le funding rate reflète un vrai déséquilibre de position entre traders à effet de levier. SHORT si funding très positif (trop de LONG en levier), LONG si très négatif. Aucune garantie de fonctionnement — à valider par les résultats réels, pas supposé d'avance.
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #1e2d4a"}}>
+              <div>
+                <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700}}>Activer le mode Funding Contrarian</div>
+                <div style={{fontSize:10,color:"#94a3b8"}}>Génère des trades en plus des autres modes, avec son propre plafond</div>
+              </div>
+              <button onClick={()=>{
+                const v=!fundingModeEnabled; setFundingModeEnabled(v);
+                apiCall("/api/config/filters","PUT",{"funding_mode_enabled":v},token).then(loadData);
+              }} style={{background:fundingModeEnabled?"#3d2e05":"#0a0e1a",border:fundingModeEnabled?"1px solid #fbbf24":"1px solid #1e2d4a",borderRadius:6,padding:"6px 14px",color:fundingModeEnabled?"#fbbf24":"#475569",fontSize:10,cursor:"pointer",fontWeight:700}}>
+                {fundingModeEnabled?"✅ ACTIF":"⭕ OFF"}
+              </button>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0"}}>
+              <div>
+                <div style={{fontSize:11,color:"#f87171",fontWeight:700}}>🔒 Autoriser en argent réel (mode live)</div>
+                <div style={{fontSize:10,color:"#94a3b8"}}>Tant que désactivé, ce mode reste TOUJOURS simulé (paper) — même si le bot est en live global. Sécurité explicite, à ne débloquer qu'après validation.</div>
+              </div>
+              <button onClick={()=>{
+                const v=!fundingModeLiveAllowed; setFundingModeLiveAllowed(v);
+                apiCall("/api/config/filters","PUT",{"funding_mode_live_allowed":v},token).then(loadData);
+              }} style={{background:fundingModeLiveAllowed?"#2d0a0a":"#0a0e1a",border:fundingModeLiveAllowed?"1px solid #f87171":"1px solid #1e2d4a",borderRadius:6,padding:"6px 14px",color:fundingModeLiveAllowed?"#f87171":"#475569",fontSize:10,cursor:"pointer",fontWeight:700}}>
+                {fundingModeLiveAllowed?"⚠️ DÉBLOQUÉ":"🔒 PAPER SEULEMENT"}
+              </button>
+            </div>
+            <div style={{fontSize:9,color:"#94a3b8",marginTop:10}}>
+              Réglages fins (seuil de funding, trades simultanés max, fréquence de rafraîchissement) dans l'onglet Paramètres.
             </div>
           </div>
 
@@ -1784,6 +1824,8 @@ Confirmer ?`
                         {trade.size_usd!=null && <span style={{color:"#64748b",fontSize:9}}>· ${trade.size_usd.toFixed(2)}</span>}
                         {trade.leverage!=null && <span style={{background:"#1e2d4a",color:"#60a5fa",padding:"1px 6px",borderRadius:3,fontSize:9}}>x{trade.leverage}</span>}
                         {trade.adaptive_sl_ttp && <span style={{background:"#052e16",color:"#34d399",padding:"1px 6px",borderRadius:3,fontSize:9}}>🎚️ SL {trade.sl_pct_used?.toFixed(2)}% / TTP {trade.ttp_arm1_pct_used?.toFixed(2)}%</span>}
+                        {trade.strategy==="accumulation" && <span style={{background:"#1a0a2e",color:"#c084fc",padding:"1px 6px",borderRadius:3,fontSize:9}}>🎯 ACCUMULATION</span>}
+                        {trade.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"1px 6px",borderRadius:3,fontSize:9}}>💰 FUNDING</span>}
                       </div>
                       <div style={{display:"flex",gap:14,alignItems:"center"}}>
                         <span style={{color:"#94a3b8",fontSize:9}}>{new Date(trade.closed_at).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</span>
