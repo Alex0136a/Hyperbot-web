@@ -213,6 +213,24 @@ CONFIG = {
     # (avec ou sans confirmation Bollinger), jamais bloque plus longtemps.
     "POST_WIN_MAX_WAIT_CYCLES": 180,
 
+    # v4.33 — SUR DEMANDE EXPLICITE : mode "Funding Contrarian", source de
+    # signal FONDAMENTALEMENT DIFFERENTE de RSI/MACD/EMA (des indicateurs
+    # deja integres dans les prix par des acteurs plus rapides). Le funding
+    # rate reflete un vrai desequilibre de position entre traders a effet de
+    # levier (pas un motif de prix) : quand il est extreme, ca signale un
+    # positionnement sur-leverage dans un sens — logique contrarian (SHORT
+    # si funding tres positif = trop de LONG en levier, LONG si tres negatif).
+    # AUCUNE garantie que cet avantage soit reel sur cette plateforme/ces
+    # actifs — a valider par les resultats, pas suppose. SECURITE EXPLICITE :
+    # reste cantonne au paper trading tant que FUNDING_MODE_LIVE_ALLOWED
+    # n est pas active manuellement, meme si le bot est en mode live —
+    # protege un capital de trading deja fragilise pendant la phase de test.
+    "FUNDING_MODE_ENABLED": False,
+    "FUNDING_MODE_LIVE_ALLOWED": False,  # reste paper-only tant que non deverrouille explicitement
+    "FUNDING_ANNUAL_THRESHOLD_PCT": 25.0,  # funding annualise au-dela duquel le positionnement est juge "extreme"
+    "FUNDING_MODE_MAX_TRADES": 3,          # plafond de trades simultanes, independant des autres modes
+    "FUNDING_REFRESH_SEC": 300,            # frequence de rafraichissement du funding (5 min, evite de spammer l API)
+
     # v4.24 — SL/TTP ADAPTATIFS a l ATR reel (optionnel, DESACTIVE par
     # defaut — activation explicite requise). Au lieu de seuils fixes,
     # chaque trade calcule son propre SL a partir de l ATR au moment de
@@ -1913,6 +1931,10 @@ class BotEngine:
         # continuent TOUJOURS d etre gerees (SL/TP), meme trading_enabled=False.
         self.running = False
         self.trading_enabled = False
+        # v4.33 — cache du funding rate par ticker (rafraichi periodiquement,
+        # pas a chaque cycle — voir _refresh_funding_rates_if_due).
+        self.funding_rates = {}          # ticker -> taux horaire (float)
+        self._funding_last_refresh = 0.0  # timestamp du dernier rafraichissement
         # Sauvegarder les noms originaux (vrais tickers sans suffixe)
         # Normaliser : si cfg["SYMBOLS"] contient deja des slot_keys, les extraire
         raw_symbols = [ticker_from_slot_key(s) for s in cfg["SYMBOLS"]]
@@ -1954,6 +1976,9 @@ class BotEngine:
         # Accumulation (independante des candidats normaux, plafond propre
         # ACCUMULATION_MAX_TRADES — voir _finalize_pending_accumulation_candidates).
         self._pending_accumulation_candidates = []
+        # v4.33 — File d attente separee pour les candidats du mode Funding
+        # Contrarian (independante, plafond propre FUNDING_MODE_MAX_TRADES).
+        self._pending_funding_candidates = []
         # Cache du calendrier CPI Finnhub (evite d appeler l API a chaque cycle)
         self._cpi_events = []
         self._cpi_last_fetch = None
@@ -2663,7 +2688,40 @@ class BotEngine:
             and (time.time() - self._last_ws_tick) < stale_after
         )
 
-    def _check_ws_health_alert(self):
+    def _refresh_funding_rates_if_due(self):
+        """v4.33 — Rafraichit le cache de funding rate (self.funding_rates),
+        au plus une fois toutes les FUNDING_REFRESH_SEC secondes (5 min par
+        defaut) — le funding ne bouge pas assez vite pour justifier un appel
+        a chaque cycle de 10s, et ca evite de solliciter l API inutilement.
+        Echoue silencieusement (log + conserve l ancien cache) en cas
+        d erreur reseau, pour ne jamais interrompre le reste du cycle."""
+        if not self.cfg.get("FUNDING_MODE_ENABLED", False):
+            return
+        if self.info is None:
+            return
+        now_ts = time.time()
+        refresh_sec = self.cfg.get("FUNDING_REFRESH_SEC", 300)
+        if (now_ts - self._funding_last_refresh) < refresh_sec:
+            return
+        try:
+            meta, ctxs = self.info.meta_and_asset_ctxs()
+            universe = meta.get("universe", [])
+            new_rates = {}
+            for asset, ctx in zip(universe, ctxs):
+                name = asset.get("name")
+                funding_raw = ctx.get("funding")
+                if name and funding_raw is not None:
+                    try:
+                        new_rates[name] = float(funding_raw)
+                    except (TypeError, ValueError):
+                        continue
+            if new_rates:
+                self.funding_rates = new_rates
+                self._funding_last_refresh = now_ts
+        except Exception as e:
+            print(f"[FUNDING] Erreur rafraichissement funding rate : {e} — cache precedent conserve.")
+
+
         """ALARME WebSocket — appelee une fois par cycle depuis _run.
         Detecte les TRANSITIONS de sante (sain -> defaillant, defaillant ->
         retabli) et emet un log bien visible a chaque changement d etat
@@ -3043,6 +3101,7 @@ class BotEngine:
             try:
                 self.cycle += 1
                 self._check_ws_health_alert()
+                self._refresh_funding_rates_if_due()  # v4.33
                 self._decay_confidence_thresholds()
                 prices = self._get_prices_with_timeout(cfg.get("PRICE_FETCH_TIMEOUT_SEC", 10))
                 in_hours = is_trading_hours(cfg)
@@ -3082,11 +3141,13 @@ class BotEngine:
 
                 self._pending_candidates = []
                 self._pending_accumulation_candidates = []
+                self._pending_funding_candidates = []
                 for sym in cfg["SYMBOLS"]:
                     if sym in prices:
                         self._process_with_timeout(sym, prices[sym])
                 self._finalize_pending_candidates()
                 self._finalize_pending_accumulation_candidates()
+                self._finalize_pending_funding_candidates()
 
                 self._save_open_positions()
                 self._save_confidence_thresholds()
@@ -3151,6 +3212,13 @@ class BotEngine:
         if not pos:
             return
         mode = cfg["MODE"]
+        # v4.33 — SECURITE EXPLICITE : un trade "funding_contrarian" reste
+        # simule (paper) meme si le bot tourne globalement en mode live, tant
+        # que FUNDING_MODE_LIVE_ALLOWED n est pas active manuellement — ce
+        # mode est experimental, protege un capital deja fragilise pendant
+        # sa phase de validation. Ne change RIEN pour les autres strategies.
+        if pos.get("strategy") == "funding_contrarian" and not cfg.get("FUNDING_MODE_LIVE_ALLOWED", False):
+            mode = "paper"
 
         # E = taille de l entree (avant levier) — base du SL (v4.10, perte $
         # plafonnee) ; le TP, lui, raisonne en % de mouvement de prix pur.
@@ -3661,6 +3729,11 @@ class BotEngine:
             symbol, ticker, price, support, resistance, rsi, momentum_pct,
             ema200, trend_up, trend_down, prices, state
         )
+
+        # v4.33 — Mode Funding Contrarian, lui aussi EN PARALLELE, evalue
+        # independamment chaque cycle — meme garde-fou anti-double-ouverture
+        # dans _finalize_open (un seul slot par actif).
+        self._check_funding_contrarian_signal(symbol, ticker, price, rsi, prices, state)
 
         # v4.19 — Respect des niveaux, FUSIONNE dans la logique principale
         # (pas juste Accumulation) : un LONG a besoin d un rebond pres du
@@ -4221,6 +4294,65 @@ class BotEngine:
             "strategy": "accumulation",
         })
 
+    def _check_funding_contrarian_signal(self, symbol, ticker, price, rsi, prices, state):
+        """v4.33 — Mode FUNDING CONTRARIAN : source de signal FONDAMENTALEMENT
+        DIFFERENTE de RSI/MACD/EMA (deja integres dans les prix par des
+        acteurs plus rapides que ce bot). Le funding rate reflete un vrai
+        desequilibre de position entre traders a effet de levier — quand il
+        est extreme, ca signale un positionnement sur-leverage dans un sens,
+        propice a un retour a la moyenne : SHORT si funding tres positif
+        (trop de LONG en levier paient les SHORT), LONG si tres negatif
+        (l inverse). AUCUNE garantie que cet avantage soit reel ici — a
+        valider par les resultats reels (voir strategy="funding_contrarian"
+        dans l historique), pas suppose d avance.
+        SECURITE EXPLICITE : reste cantonne au paper trading tant que
+        FUNDING_MODE_LIVE_ALLOWED n est pas active manuellement (voir
+        _finalize_open), meme si le bot tourne par ailleurs en mode live.
+        """
+        cfg = self.cfg
+        if not cfg.get("FUNDING_MODE_ENABLED", False):
+            return
+        if not self._gate_active_or_auto_activate(ticker, 100, "funding_contrarian"):
+            return  # actif desactive (Marches) ou exclu manuellement
+
+        hourly_rate = self.funding_rates.get(ticker)
+        if hourly_rate is None:
+            return  # pas encore de donnee de funding pour cet actif
+
+        annual_pct = hourly_rate * 24 * 365 * 100  # annualise, en %
+        threshold = cfg.get("FUNDING_ANNUAL_THRESHOLD_PCT", 25.0)
+
+        direction = None
+        if annual_pct >= threshold:
+            direction = "short"  # positionnement LONG sur-leverage -> contrarian SHORT
+        elif annual_pct <= -threshold:
+            direction = "long"   # positionnement SHORT sur-leverage -> contrarian LONG
+
+        if direction is None:
+            return
+
+        # ── Score de confiance dedie : plus le funding est extreme, plus la
+        # confiance est elevee (positionnement d autant plus deforme) ──────
+        excess = abs(annual_pct) - threshold
+        confidence = 65.0 + min(excess / threshold * 25.0, 25.0)  # jusqu a 90% pour un exces de 100% du seuil
+        confidence = min(confidence, 90.0)
+
+        conf_threshold = self._get_confidence_threshold(ticker)
+        if confidence < conf_threshold:
+            return
+
+        reasons = [
+            f"💰 Funding Contrarian : {annual_pct:+.1f}% annualise (seuil ±{threshold:.0f}%)",
+            f"RSI {rsi:.1f}" if rsi is not None else "RSI ?",
+        ]
+
+        self._pending_funding_candidates.append({
+            "symbol": symbol, "ticker": ticker, "state": state, "signal": direction,
+            "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": "funding_contrarian",
+            "reasons": reasons, "prices": prices, "conf_breakdown": {},
+            "strategy": "funding_contrarian",
+        })
+
     def _finalize_open(self, cand):
         """v3.2 — Execution reelle d un candidat retenu (voir _process et la
         file d attente _pending_candidates). Contient exactement la logique
@@ -4355,7 +4487,7 @@ class BotEngine:
         # EXACTE coin+action). Le tag Accumulation est affiche separement
         # dans les logs (strat_tag_log) et transmis via le champ "strategy".
         label = "LONG" if signal == "long" else "SHORT"
-        strat_tag_log = "🎯 ACCUMULATION " if strategy == "accumulation" else ""
+        strat_tag_log = "🎯 ACCUMULATION " if strategy == "accumulation" else ("💰 FUNDING " if strategy == "funding_contrarian" else "")
         _, atr_at_entry = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
         atr_str = f"ATR {atr_at_entry:.3f}%" if atr_at_entry else "ATR ?"
         lev_str = f"x{leverage}" if leverage > 1 else "x1"
@@ -4364,7 +4496,16 @@ class BotEngine:
         adaptive_tag = " 🎚️ADAPTATIF" if adaptive_used else ""
         self.emit("log", {"msg": f"[{ticker}] {strat_tag_log}{label} @ ${price:.2f} | RSI:{rsi:.1f}({rsi_mode}) | {atr_str} | {' | '.join(reasons)} | ${size:.2f} {lev_str} | Stop Loss -${stop_loss_usd_here:.2f} ({sl_pct_of_e:.2f}% de E{adaptive_tag}) | TTP arme des {ttp_arm1_pct:.2f}% | SL secu {safety_sl_pct:.2f}% [PERP]", "level": "signal"})
 
-        if cfg["MODE"] == "live" and self.exchange:
+        # v4.33 — SECURITE EXPLICITE : un candidat "funding_contrarian" ne
+        # passe JAMAIS d ordre reel tant que FUNDING_MODE_LIVE_ALLOWED n est
+        # pas active manuellement — meme si le bot tourne par ailleurs en
+        # mode live. Les autres strategies (normal, accumulation) ne sont pas
+        # affectees.
+        funding_live_blocked = strategy == "funding_contrarian" and not cfg.get("FUNDING_MODE_LIVE_ALLOWED", False)
+        if funding_live_blocked and cfg["MODE"] == "live":
+            self.emit("log", {"msg": f"[{ticker}] 💰 Trade Funding Contrarian simule (paper) malgre le mode live global — deverrouillez FUNDING_MODE_LIVE_ALLOWED pour l autoriser en reel.", "level": "warn"})
+
+        if cfg["MODE"] == "live" and self.exchange and not funding_live_blocked:
             # v3.2 — applique le levier PRUDENT specifique a ce trade sur
             # Hyperliquid (remplace/surcharge le levier uniforme applique au
             # demarrage) — chaque trade peut donc avoir un levier different
@@ -4477,6 +4618,26 @@ class BotEngine:
                 continue
             self._finalize_open(cand)
         self._pending_accumulation_candidates = []
+
+    def _finalize_pending_funding_candidates(self):
+        """v4.33 — Equivalent de _finalize_pending_candidates, pour les
+        candidats du mode Funding Contrarian : plafond independant
+        (FUNDING_MODE_MAX_TRADES)."""
+        if not self._pending_funding_candidates:
+            return
+        cfg = self.cfg
+        self._pending_funding_candidates.sort(key=lambda c: c["confidence"], reverse=True)
+        max_funding = cfg.get("FUNDING_MODE_MAX_TRADES", 3)
+        for cand in self._pending_funding_candidates:
+            open_count = sum(1 for st in self.states.values() if st.position and st.position.get("strategy") == "funding_contrarian")
+            if open_count >= max_funding:
+                self.emit("log", {
+                    "msg": f"[{cand['ticker']}] 💰 Slot Funding Contrarian plein ({open_count}/{max_funding}) — candidat a {cand['confidence']:.0f}% laisse de cote ce cycle.",
+                    "level": "dim"
+                })
+                continue
+            self._finalize_open(cand)
+        self._pending_funding_candidates = []
 
 
 # ─────────────────────────────────────────────
