@@ -61,7 +61,10 @@ def init_db():
                 strategy TEXT,
                 peak_pnl REAL,
                 peak_pnl_pct REAL,
-                size_usd REAL
+                size_usd REAL,
+                sl_pct_used REAL,
+                ttp_arm1_pct_used REAL,
+                adaptive_sl_ttp INTEGER
             )
         """)
         # Migration : ajoute la colonne rsi si la table trades existait deja
@@ -98,6 +101,15 @@ def init_db():
             # affichage dans l historique (varie d un lot a l autre selon
             # le capital courant au moment de l ouverture).
             conn.execute("ALTER TABLE trades ADD COLUMN size_usd REAL")
+        if "sl_pct_used" not in existing_cols:
+            # v4.30 — seuils SL/TTP REELLEMENT appliques a CE trade (fixes ou
+            # adaptatifs a l ATR, figes a l ouverture) — pour verifier a
+            # posteriori quelle valeur a ete utilisee, notamment en mode adaptatif.
+            conn.execute("ALTER TABLE trades ADD COLUMN sl_pct_used REAL")
+        if "ttp_arm1_pct_used" not in existing_cols:
+            conn.execute("ALTER TABLE trades ADD COLUMN ttp_arm1_pct_used REAL")
+        if "adaptive_sl_ttp" not in existing_cols:
+            conn.execute("ALTER TABLE trades ADD COLUMN adaptive_sl_ttp INTEGER")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS config_overrides (
                 key TEXT PRIMARY KEY,
@@ -156,17 +168,21 @@ def user_count():
 def insert_open_trade(coin, action, confidence, leverage, position_size_pct,
                        risk_reward, timeframe, entry_price, stop_loss,
                        take_profit1, take_profit2, rsi=None, entry_reasons=None,
-                       confidence_breakdown=None, strategy=None, size_usd=None):
+                       confidence_breakdown=None, strategy=None, size_usd=None,
+                       sl_pct_used=None, ttp_arm1_pct_used=None, adaptive_sl_ttp=None):
     with _lock, _connect() as conn:
         cur = conn.execute("""
             INSERT INTO trades (coin, action, confidence, leverage, position_size_pct,
                                  risk_reward, timeframe, entry_price, stop_loss,
                                  take_profit1, take_profit2, rsi, entry_reasons,
-                                 confidence_breakdown, strategy, size_usd, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 confidence_breakdown, strategy, size_usd,
+                                 sl_pct_used, ttp_arm1_pct_used, adaptive_sl_ttp, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (coin, action, confidence, leverage, position_size_pct, risk_reward,
               timeframe, entry_price, stop_loss, take_profit1, take_profit2, rsi,
-              entry_reasons, confidence_breakdown, strategy, size_usd, now_iso()))
+              entry_reasons, confidence_breakdown, strategy, size_usd,
+              sl_pct_used, ttp_arm1_pct_used, int(bool(adaptive_sl_ttp)) if adaptive_sl_ttp is not None else None,
+              now_iso()))
         conn.commit()
         return cur.lastrowid
 
