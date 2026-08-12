@@ -198,6 +198,16 @@ CONFIG = {
     "MIN_AMPLITUDE_TO_SL_RATIO":   0.5,   # ATR minimum = 50% du SL configure
     "MAX_AMPLITUDE_TO_SL_RATIO":   2.5,   # ATR maximum = 250% du SL configure
 
+    # v4.37 — SUR DEMANDE EXPLICITE, DESACTIVE PAR DEFAUT (switch separe,
+    # a activer volontairement une fois qu on aura des donnees sur les
+    # garde-fous Accumulation deja en place) : bloque un LONG si le support
+    # est proche ET en dessous de l EMA200 (marche sans separation nette par
+    # rapport a sa moyenne longue — signe d un range sans vraie tendance),
+    # et un SHORT si la resistance est proche ET au dessus de l EMA200.
+    # Applique au mode normal ET a Accumulation.
+    "REQUIRE_SR_EMA200_SEPARATION": False,
+    "SR_EMA200_PROXIMITY_PCT": 0.5,  # "proche" de l EMA200 = a moins de ce % d ecart
+
     # v4.25 — Confirmation renforcee apres un gain (voir _process) : nombre
     # de cycles CONSECUTIFS ou toutes les conditions d entree doivent rester
     # vraies avant d autoriser une reouverture dans le MEME sens qu un trade
@@ -3963,8 +3973,26 @@ class BotEngine:
             else:
                 amplitude_coherent = False
 
-        long_level_ok  = long_level_ok and direction_confirmed_long and amplitude_coherent
-        short_level_ok = short_level_ok and direction_confirmed_short and amplitude_coherent
+        # v4.37 — SUR DEMANDE EXPLICITE, desactive par defaut : bloque un
+        # LONG si le support est proche ET en dessous de l EMA200 (marche
+        # sans separation nette de sa moyenne longue), un SHORT si la
+        # resistance est proche ET au dessus. Vise les marches en range pur,
+        # ou support ET resistance s agglutinent autour de la moyenne.
+        sr_ema_long_ok = True
+        sr_ema_short_ok = True
+        if cfg.get("REQUIRE_SR_EMA200_SEPARATION", False) and ema200 is not None and ema200 > 0:
+            sr_proximity = cfg.get("SR_EMA200_PROXIMITY_PCT", 0.5)
+            if support is not None and support < ema200:
+                dist_support_ema200 = (ema200 - support) / ema200 * 100
+                if dist_support_ema200 <= sr_proximity:
+                    sr_ema_long_ok = False
+            if resistance is not None and resistance > ema200:
+                dist_resistance_ema200 = (resistance - ema200) / ema200 * 100
+                if dist_resistance_ema200 <= sr_proximity:
+                    sr_ema_short_ok = False
+
+        long_level_ok  = long_level_ok and direction_confirmed_long and amplitude_coherent and sr_ema_long_ok
+        short_level_ok = short_level_ok and direction_confirmed_short and amplitude_coherent and sr_ema_short_ok
 
         # v4.25/v4.26 — SUR DEMANDE EXPLICITE, suite a une repetition observee
         # de trades LONG sur un actif choppy (ARB : re-declenchement "frais"
@@ -4364,6 +4392,20 @@ class BotEngine:
 
         if direction is None:
             return
+
+        # v4.37 — SUR DEMANDE EXPLICITE, desactive par defaut (meme switch
+        # que le mode normal) : bloque un LONG si le support est proche ET
+        # en dessous de l EMA200, un SHORT si la resistance est proche ET
+        # au dessus — marche en range pur, sans separation nette de sa
+        # moyenne longue.
+        if cfg.get("REQUIRE_SR_EMA200_SEPARATION", False) and ema200 is not None and ema200 > 0:
+            sr_proximity = cfg.get("SR_EMA200_PROXIMITY_PCT", 0.5)
+            if direction == "long" and support < ema200:
+                if (ema200 - support) / ema200 * 100 <= sr_proximity:
+                    return
+            if direction == "short" and resistance > ema200:
+                if (resistance - ema200) / ema200 * 100 <= sr_proximity:
+                    return
 
         # v4.35 — SUR DEMANDE EXPLICITE : Accumulation herite desormais des
         # memes renforcements que le mode normal (jusqu ici absents, alors
