@@ -1620,6 +1620,13 @@ class SymbolState:
         # EMA200 cessent tous les deux de progresser). Remplace par un
         # compteur de cycles dedie, qui ne se fige jamais.
         self.cycle_count = 0
+        # v4.40 — SUR DEMANDE EXPLICITE : instantane de l etat de TOUTES les
+        # portes d entree (RSI, MACD, amplitude, niveaux, fraicheur,
+        # confirmation post-trade, separation EMA200...) capture a CHAQUE
+        # cycle — expose a la demande via /api/entry-diagnostics/{ticker},
+        # pour comprendre en direct pourquoi un actif ne trade pas, sans
+        # devoir chasser les bons logs dans une fenetre horaire expiree.
+        self.last_gate_snapshot = {}
         # v4.21 — Historique des valeurs d indicateurs calculees (RSI, MACD,
         # EMA200, ATR, support/resistance) a chaque cycle, pour affichage en
         # graphe cote interface (diagnostic/surveillance). Purement
@@ -1649,6 +1656,7 @@ class SymbolState:
         self.window_low  = None
         self.candle_history = deque(maxlen=200)
         self.cycle_count = 0
+        self.last_gate_snapshot = {}
         self.indicator_history = deque(maxlen=300)
         self.current_rsi    = None
         self.current_macd   = None
@@ -4099,6 +4107,41 @@ class BotEngine:
 
         signal = None
         reasons = []
+
+        # v4.40 — SUR DEMANDE EXPLICITE : instantane complet de l etat de
+        # TOUTES les portes d entree, capture a CHAQUE cycle (ecrase le
+        # precedent) — expose a la demande via /api/entry-diagnostics/{ticker},
+        # pour comprendre en direct pourquoi un actif ne trade pas, au lieu
+        # de devoir chasser les bons logs dans une fenetre horaire expiree.
+        state.last_gate_snapshot = {
+            "ts": time.time(),
+            "price": price,
+            "rsi": round(rsi, 2) if rsi is not None else None,
+            "rsi_mode": rsi_mode,
+            "rsi_buy": rsi_buy,
+            "rsi_sell": rsi_sell,
+            "ema_bull": ema_bull,
+            "ema_bear": ema_bear,
+            "trend_up": trend_up,
+            "trend_down": trend_down,
+            "long_signal_stale": state.long_signal_stale,
+            "short_signal_stale": state.short_signal_stale,
+            "direction_confirmed_long": direction_confirmed_long,
+            "direction_confirmed_short": direction_confirmed_short,
+            "amplitude_coherent": amplitude_coherent,
+            "sr_ema_long_ok": sr_ema_long_ok,
+            "sr_ema_short_ok": sr_ema_short_ok,
+            "post_win_confirm_long": state.post_win_confirm_long,
+            "post_win_confirm_short": state.post_win_confirm_short,
+            "confirm_count_long": state.confirm_count_long,
+            "confirm_count_short": state.confirm_count_short,
+            "post_win_wait_long": state.post_win_wait_long,
+            "post_win_wait_short": state.post_win_wait_short,
+            "long_level_ok_final": long_level_ok,
+            "short_level_ok_final": short_level_ok,
+            "would_enter_long": bool(rsi_buy and ema_bull and trend_up and not state.long_signal_stale and long_level_ok),
+            "would_enter_short": bool(rsi_sell and ema_bear and trend_down and not state.short_signal_stale and short_level_ok),
+        }
 
         # v4.15 — diagnostics (hors chaine if/elif principale, pour ne pas la
         # perturber) : signale quand un signal qualifierait sur tous les
