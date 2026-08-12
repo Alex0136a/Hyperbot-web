@@ -1610,6 +1610,16 @@ class SymbolState:
         self.window_high = None   # plus haut vu depuis le dernier point de bougie
         self.window_low  = None   # plus bas vu depuis le dernier point de bougie
         self.candle_history = deque(maxlen=200)  # (high, low, close) par bougie ~2min, pour l ATR reel
+        # v4.39 — FIX BUG CRITIQUE : l echantillonnage MTF (bougies + EMA200)
+        # se basait sur len(price_history) % MTF_STEP == 0 — hors
+        # price_history est une deque PLAFONNEE (maxlen=500), dont la
+        # longueur se FIGE definitivement a 500 une fois pleine (surtout
+        # apres une RESTAURATION depuis la sauvegarde, ou elle peut deja
+        # etre pleine des le premier cycle). Si ce reste fige n est jamais 0,
+        # l echantillonnage gele SILENCIEUSEMENT pour toujours (bougies et
+        # EMA200 cessent tous les deux de progresser). Remplace par un
+        # compteur de cycles dedie, qui ne se fige jamais.
+        self.cycle_count = 0
         # v4.21 — Historique des valeurs d indicateurs calculees (RSI, MACD,
         # EMA200, ATR, support/resistance) a chaque cycle, pour affichage en
         # graphe cote interface (diagnostic/surveillance). Purement
@@ -1638,6 +1648,7 @@ class SymbolState:
         self.window_high = None
         self.window_low  = None
         self.candle_history = deque(maxlen=200)
+        self.cycle_count = 0
         self.indicator_history = deque(maxlen=300)
         self.current_rsi    = None
         self.current_macd   = None
@@ -3568,7 +3579,14 @@ class BotEngine:
         # MTF_CANDLE_SEC secondes par point, peu importe le CYCLE_INTERVAL.
         MTF_CANDLE_SEC = 120  # 2 minutes par point -> 200 x 2min = 6h40 au total
         MTF_STEP = max(1, round(MTF_CANDLE_SEC / cfg["CYCLE_INTERVAL"]))
-        if len(prices) % MTF_STEP == 0:
+        # v4.39 — FIX BUG CRITIQUE : utilise desormais state.cycle_count (un
+        # compteur dedie, incremente ici) plutot que len(prices) — price_history
+        # est une deque PLAFONNEE (maxlen=500) dont la longueur se FIGE
+        # definitivement une fois pleine (surtout si restauree deja pleine
+        # depuis la sauvegarde), ce qui gelait SILENCIEUSEMENT l echantillonnage
+        # (bougies ET EMA200) des que ce reste fige n etait jamais 0.
+        state.cycle_count += 1
+        if state.cycle_count % MTF_STEP == 0:
             state.mtf_prices.append(price)
             # v4.36 — Cloture de la bougie ~2min en cours : capture le plus
             # haut/bas REELLEMENT vu depuis le dernier point (alimente en
