@@ -1263,6 +1263,101 @@ def get_atr_summary(email: str = Depends(require_user)):
     return {"atr_period": atr_period, "results": results}
 
 
+@app.get("/api/entry-diagnostics")
+def get_entry_diagnostics_all(email: str = Depends(require_user)):
+    """v4.40 — SUR DEMANDE EXPLICITE, suite a un ecart de 13h sans aucun
+    trade jamais explique faute de logs disponibles : instantane de l etat
+    de TOUTES les portes d entree (RSI, MACD, amplitude, niveaux, fraicheur,
+    confirmation post-trade, separation EMA200...) pour TOUS les actifs
+    suivis, a la demande — capture a chaque cycle cote bot_engine, donc
+    toujours a jour au moment de l appel, quelle que soit la retention des
+    logs. Vue d ensemble compacte : pour le detail complet d un actif, voir
+    /api/entry-diagnostics/{ticker}."""
+    results = []
+    for slot_key, state in bot.states.items():
+        ticker = be.ticker_from_slot_key(slot_key)
+        snap = state.last_gate_snapshot or {}
+        has_position = state.position is not None
+        # v4.40 — resume compact : identifie le PREMIER obstacle qui bloque
+        # chaque sens, pour un coup d oeil rapide sans lire les 20 champs.
+        blocker_long = None
+        if has_position:
+            blocker_long = "position deja ouverte"
+        elif not snap:
+            blocker_long = "pas encore de donnees"
+        elif not (snap.get("rsi_buy") and snap.get("ema_bull") and snap.get("trend_up")):
+            blocker_long = "signal de base non reuni (RSI/EMA/tendance)"
+        elif snap.get("long_signal_stale"):
+            blocker_long = "signal pas encore renouvele (fraicheur)"
+        elif not snap.get("long_level_ok_final"):
+            if not snap.get("direction_confirmed_long"):
+                blocker_long = "MACD ne confirme pas"
+            elif not snap.get("amplitude_coherent"):
+                blocker_long = "amplitude ATR incoherente"
+            elif not snap.get("sr_ema_long_ok"):
+                blocker_long = "support trop proche de l EMA200"
+            elif snap.get("post_win_confirm_long"):
+                blocker_long = f"confirmation post-trade en attente ({snap.get('confirm_count_long',0)}/18 cycles, {snap.get('post_win_wait_long',0)}/180 max)"
+            else:
+                blocker_long = "niveau (support/resistance) non respecte"
+        else:
+            blocker_long = None  # rien ne bloque, devrait trader au prochain signal
+        blocker_short = None
+        if has_position:
+            blocker_short = "position deja ouverte"
+        elif not snap:
+            blocker_short = "pas encore de donnees"
+        elif not (snap.get("rsi_sell") and snap.get("ema_bear") and snap.get("trend_down")):
+            blocker_short = "signal de base non reuni (RSI/EMA/tendance)"
+        elif snap.get("short_signal_stale"):
+            blocker_short = "signal pas encore renouvele (fraicheur)"
+        elif not snap.get("short_level_ok_final"):
+            if not snap.get("direction_confirmed_short"):
+                blocker_short = "MACD ne confirme pas"
+            elif not snap.get("amplitude_coherent"):
+                blocker_short = "amplitude ATR incoherente"
+            elif not snap.get("sr_ema_short_ok"):
+                blocker_short = "resistance trop proche de l EMA200"
+            elif snap.get("post_win_confirm_short"):
+                blocker_short = f"confirmation post-trade en attente ({snap.get('confirm_count_short',0)}/18 cycles, {snap.get('post_win_wait_short',0)}/180 max)"
+            else:
+                blocker_short = "niveau (support/resistance) non respecte"
+        else:
+            blocker_short = None
+        results.append({
+            "ticker": ticker,
+            "has_position": has_position,
+            "snapshot_age_sec": round(time.time() - snap["ts"], 1) if snap.get("ts") else None,
+            "blocker_long": blocker_long,
+            "blocker_short": blocker_short,
+        })
+    results.sort(key=lambda r: r["ticker"])
+    return {"results": results}
+
+
+@app.get("/api/entry-diagnostics/{ticker}")
+def get_entry_diagnostics_one(ticker: str, email: str = Depends(require_user)):
+    """v4.40 — Detail COMPLET de l instantane des portes d entree pour UN
+    actif precis (tous les champs bruts, pas juste le resume compact)."""
+    ticker = ticker.upper()
+    best_state = None
+    best_ts = -1
+    for slot_key, state in bot.states.items():
+        if be.ticker_from_slot_key(slot_key) == ticker:
+            ts = (state.last_gate_snapshot or {}).get("ts", -1)
+            if ts > best_ts:
+                best_ts = ts
+                best_state = state
+    if best_state is None:
+        raise HTTPException(404, f"Actif inconnu ou non suivi : {ticker}")
+    return {
+        "ticker": ticker,
+        "has_position": best_state.position is not None,
+        "position": best_state.position,
+        "snapshot": best_state.last_gate_snapshot,
+    }
+
+
 @app.get("/api/signals")
 def get_signals(limit: int = Query(50), email: str = Depends(require_user)):
     return {"signals": [_trade_row_to_signal(r) for r in db.get_trades(limit=limit)]}
