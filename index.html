@@ -405,6 +405,8 @@ function App() {
   const [wsEvents, setWsEvents] = useState(null);
   const [indicatorCoin, setIndicatorCoin] = useState("BTC");
   const [atrSummary, setAtrSummary] = useState(null);
+  const [entryDiag, setEntryDiag] = useState(null);
+  const [entryDiagLoading, setEntryDiagLoading] = useState(false);
   const [atrSummaryLoading, setAtrSummaryLoading] = useState(false);
   const [indicatorData, setIndicatorData] = useState(null);
   const [indicatorLoading, setIndicatorLoading] = useState(false);
@@ -537,6 +539,18 @@ function App() {
       setAtrSummary(null);
     }
     setAtrSummaryLoading(false);
+  }, [token]);
+
+  const loadEntryDiagnostics = useCallback(async () => {
+    if (!token) return;
+    setEntryDiagLoading(true);
+    try {
+      const r = await apiCall("/api/entry-diagnostics", "GET", null, token);
+      setEntryDiag(r);
+    } catch(e) {
+      setEntryDiag(null);
+    }
+    setEntryDiagLoading(false);
   }, [token]);
 
   useEffect(() => {
@@ -1169,6 +1183,29 @@ Confirmer ?`
                   `${r.ticker}${r.active?" (actif)":""} : ${r.atr_pct!=null?r.atr_pct.toFixed(4)+"%":"?"} — ${r.source||"pas assez de données"} (${r.candles_collected} bougies)`
                 ).join("\n")}
                   style={{width:"100%",height:220,background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:10,color:"#e2e8f0",fontFamily:"monospace",fontSize:11,resize:"vertical"}}
+                  onClick={e=>e.target.select()}
+                />
+              </>
+            )}
+          </div>
+
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:16}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={{fontSize:13,fontWeight:700,color:"#fbbf24"}}>🔍 Pourquoi cet actif ne trade pas ? (à la demande)</div>
+              <button onClick={loadEntryDiagnostics} disabled={entryDiagLoading}
+                style={{background:"#3d2e0522",border:"1px solid #fbbf24",borderRadius:6,padding:"7px 14px",color:"#fbbf24",fontSize:11,cursor:"pointer",fontWeight:700}}>
+                {entryDiagLoading?"Chargement...":"🔄 Diagnostiquer maintenant"}
+              </button>
+            </div>
+            {!entryDiag ? (
+              <div style={{fontSize:11,color:"#94a3b8"}}>Cliquez pour voir, pour CHAQUE actif, l'obstacle précis (s'il y en a un) qui bloque un LONG ou un SHORT en ce moment précis — capturé à chaque cycle côté bot, toujours à jour au moment du clic.</div>
+            ) : (
+              <>
+                <div style={{fontSize:10,color:"#94a3b8",marginBottom:8}}>Instantané au moment du clic — "aucun obstacle" veut dire que le signal de base n'est simplement pas encore réuni (RSI/EMA/tendance), pas qu'un trade est imminent.</div>
+                <textarea readOnly value={entryDiag.results.map(r=>
+                  `${r.ticker}${r.has_position?" [position ouverte]":""} (il y a ${r.snapshot_age_sec!=null?r.snapshot_age_sec.toFixed(0)+"s":"?"})\n  LONG  : ${r.blocker_long||"aucun obstacle particulier"}\n  SHORT : ${r.blocker_short||"aucun obstacle particulier"}`
+                ).join("\n\n")}
+                  style={{width:"100%",height:320,background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:10,color:"#e2e8f0",fontFamily:"monospace",fontSize:11,resize:"vertical"}}
                   onClick={e=>e.target.select()}
                 />
               </>
