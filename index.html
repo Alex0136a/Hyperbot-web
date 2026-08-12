@@ -427,6 +427,7 @@ function App() {
   const [slTtpAdaptive, setSlTtpAdaptive] = useState(false);
   const [fundingModeEnabled, setFundingModeEnabled] = useState(false);
   const [fundingModeLiveAllowed, setFundingModeLiveAllowed] = useState(false);
+  const [requireSrEma200Separation, setRequireSrEma200Separation] = useState(false);
   const [dailyStats, setDailyStats] = useState(null);
   const [advancedSettings, setAdvancedSettings] = useState(null);
   const [advancedEdits, setAdvancedEdits] = useState({});
@@ -498,6 +499,7 @@ function App() {
       setSlTtpAdaptive(!!cfg?.sl_ttp_adaptive_enabled);
       setFundingModeEnabled(!!cfg?.funding_mode_enabled);
       setFundingModeLiveAllowed(!!cfg?.funding_mode_live_allowed);
+      setRequireSrEma200Separation(!!cfg?.require_sr_ema200_separation);
       // v3.2 — FIX : le champ s appelle finnhub_key (masque), pas finnhub_key_preview
       if(cfg?.finnhub_key) setFinnhubKey(cfg.finnhub_key);
       setBotLogs(botLogsRes?.logs||[]);
@@ -1417,6 +1419,28 @@ Confirmer ?`
             </div>
             <div style={{fontSize:9,color:"#94a3b8",marginTop:10}}>
               Réglages fins (seuil de funding, trades simultanés max, fréquence de rafraîchissement) dans l'onglet Paramètres.
+            </div>
+          </div>
+
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#60a5fa",marginBottom:4}}>📏 Séparation Support/Résistance vs EMA200</div>
+            <div style={{fontSize:10,color:"#94a3b8",marginBottom:14}}>
+              Bloque un LONG si le support est proche ET en dessous de l'EMA200, un SHORT si la résistance est proche ET au-dessus — vise les marchés en range pur, sans séparation nette de leur moyenne longue terme. S'applique au mode normal et à Accumulation.
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0"}}>
+              <div>
+                <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700}}>Activer le filtre</div>
+                <div style={{fontSize:10,color:"#94a3b8"}}>Désactivé par défaut — à activer une fois les autres garde-fous évalués</div>
+              </div>
+              <button onClick={()=>{
+                const v=!requireSrEma200Separation; setRequireSrEma200Separation(v);
+                apiCall("/api/config/filters","PUT",{"require_sr_ema200_separation":v},token).then(loadData);
+              }} style={{background:requireSrEma200Separation?"#1e3a5f22":"#0a0e1a",border:requireSrEma200Separation?"1px solid #60a5fa":"1px solid #1e2d4a",borderRadius:6,padding:"6px 14px",color:requireSrEma200Separation?"#60a5fa":"#475569",fontSize:10,cursor:"pointer",fontWeight:700}}>
+                {requireSrEma200Separation?"✅ ACTIF":"⭕ OFF"}
+              </button>
+            </div>
+            <div style={{fontSize:9,color:"#94a3b8",marginTop:10}}>
+              Réglage fin (seuil de proximité) dans l'onglet Paramètres.
             </div>
           </div>
 
