@@ -1232,6 +1232,37 @@ def get_indicator_history(ticker: str, email: str = Depends(require_user)):
     return {"ticker": ticker, "history": list(best_state.indicator_history)}
 
 
+@app.get("/api/atr-summary")
+def get_atr_summary(email: str = Depends(require_user)):
+    """v4.38 — SUR DEMANDE EXPLICITE : resume de l ATR (vrai calcul haut/bas
+    de Wilder, avec repli sur l ancien calcul cloture-a-cloture si pas
+    encore assez de bougies accumulees) de TOUS les actifs suivis, a la
+    demande — pour recalibrer ATR_MIN_PCT sur des donnees reelles plutot
+    que de scanner des dizaines de lignes eparpillees dans les logs."""
+    cfg = bot.cfg
+    atr_period = cfg.get("ATR_PERIOD", 14)
+    results = []
+    for slot_key, state in bot.states.items():
+        ticker = be.ticker_from_slot_key(slot_key)
+        atr_pct_val = None
+        source = None
+        if len(state.candle_history) >= atr_period + 1:
+            _, atr_pct_val = be.calc_true_range_atr(list(state.candle_history), atr_period)
+            source = "haut/bas (vrai)"
+        if atr_pct_val is None and len(state.price_history) >= atr_period + 1:
+            _, atr_pct_val = be.calc_atr(list(state.price_history), atr_period)
+            source = "cloture-a-cloture (repli)"
+        results.append({
+            "ticker": ticker,
+            "atr_pct": round(atr_pct_val, 4) if atr_pct_val is not None else None,
+            "source": source,
+            "candles_collected": len(state.candle_history),
+            "active": ticker in cfg.get("ACTIVE_COINS", []),
+        })
+    results.sort(key=lambda r: (r["atr_pct"] is None, -(r["atr_pct"] or 0)))
+    return {"atr_period": atr_period, "results": results}
+
+
 @app.get("/api/signals")
 def get_signals(limit: int = Query(50), email: str = Depends(require_user)):
     return {"signals": [_trade_row_to_signal(r) for r in db.get_trades(limit=limit)]}
