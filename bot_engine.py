@@ -785,12 +785,44 @@ def calc_atr(prices, period=14):
     Un ATR% eleve = marche directionnel, bonne opportunite de scalping.
     Utilise les variations de close (pas de high/low disponibles).
     Retourne (atr_abs, atr_pct) ou (None, None) si insuffisant.
+    v4.36 — CONSERVEE pour compatibilite (utilisee sur price_history, le
+    flux brut par cycle de 10s) — voir calc_true_range_atr ci-dessous pour
+    le calcul PREFERE, base sur de vraies bougies haut/bas/cloture, plus
+    representatif de la volatilite reelle qu une simple variation cloture-a-
+    cloture sur un intervalle aussi court.
     """
     if len(prices) < period + 1:
         return None, None
     tr_list = [abs(prices[i] - prices[i-1]) for i in range(1, len(prices))]
     atr = sum(tr_list[-period:]) / period
     atr_pct = (atr / prices[-1]) * 100 if prices[-1] > 0 else 0
+    return atr, atr_pct
+
+
+def calc_true_range_atr(candles, period=14):
+    """v4.36 — SUR DEMANDE EXPLICITE : vrai calcul d ATR (methode Wilder),
+    a partir de VRAIES bougies (haut, bas, cloture) construites en direct
+    depuis le flux WebSocket (voir SymbolState.candle_history) — plus
+    representatif de la volatilite reelle que calc_atr (qui ne voit que des
+    points de prix isoles espaces de 10s, structurellement quasi-nul).
+
+    True Range = max(haut-bas, |haut-cloture_precedente|, |bas-cloture_precedente|)
+    ATR = moyenne des True Range sur la periode.
+
+    candles : liste de tuples (high, low, close), la plus recente en dernier.
+    Retourne (atr_abs, atr_pct) ou (None, None) si insuffisant.
+    """
+    if len(candles) < period + 1:
+        return None, None
+    tr_list = []
+    for i in range(1, len(candles)):
+        high, low, _ = candles[i]
+        prev_close = candles[i-1][2]
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        tr_list.append(tr)
+    atr = sum(tr_list[-period:]) / period
+    last_close = candles[-1][2]
+    atr_pct = (atr / last_close) * 100 if last_close > 0 else 0
     return atr, atr_pct
 
 
@@ -1558,6 +1590,16 @@ class SymbolState:
         self.post_win_wait_long  = 0
         self.post_win_wait_short = 0
         self.mtf_prices    = deque(maxlen=200)
+        # v4.36 — SUR DEMANDE EXPLICITE : suivi du plus HAUT/BAS reel entre
+        # deux echantillonnages (alimente en temps reel par le WebSocket, pas
+        # seulement au moment du cycle) — permet de batir de vraies bougies
+        # OHLC (open/high/low/close) au lieu d un simple point de prix tous
+        # les ~2 min, et un vrai calcul d ATR (True Range de Wilder,
+        # haut-bas-cloture) au lieu de cloture-a-cloture (qui sous-estimait
+        # fortement la volatilite reelle — voir _process/calc_atr).
+        self.window_high = None   # plus haut vu depuis le dernier point de bougie
+        self.window_low  = None   # plus bas vu depuis le dernier point de bougie
+        self.candle_history = deque(maxlen=200)  # (high, low, close) par bougie ~2min, pour l ATR reel
         # v4.21 — Historique des valeurs d indicateurs calculees (RSI, MACD,
         # EMA200, ATR, support/resistance) a chaque cycle, pour affichage en
         # graphe cote interface (diagnostic/surveillance). Purement
@@ -1583,6 +1625,9 @@ class SymbolState:
         self.price_history  = deque(maxlen=500)
         self.vol_history    = deque(maxlen=50)
         self.mtf_prices     = deque(maxlen=200)
+        self.window_high = None
+        self.window_low  = None
+        self.candle_history = deque(maxlen=200)
         self.indicator_history = deque(maxlen=300)
         self.current_rsi    = None
         self.current_macd   = None
@@ -2660,6 +2705,28 @@ class BotEngine:
             # complet (jusqu a 30 cryptos) sans avoir besoin d ouvrir une
             # position sur chacun.
             self.all_mids = mids
+            # v4.36 — SUR DEMANDE EXPLICITE : suit le plus HAUT/BAS reel de
+            # TOUS les actifs (pas seulement ceux en position) a chaque tick
+            # WebSocket — alimente de vraies bougies OHLC pour l EMA200 et un
+            # vrai calcul d ATR (Wilder), au lieu d un simple point de prix
+            # espace de 2 minutes qui ne voyait jamais les mouvements entre
+            # deux echantillonnages.
+            for slot_key, state in self.states.items():
+                ticker = ticker_from_slot_key(slot_key)
+                raw = mids.get(ticker)
+                if raw is None:
+                    continue
+                try:
+                    tick_price = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if tick_price <= 0:
+                    continue
+                if state.window_high is None or tick_price > state.window_high:
+                    state.window_high = tick_price
+                if state.window_low is None or tick_price < state.window_low:
+                    state.window_low = tick_price
+
             for slot_key, state in list(self.states.items()):
                 if not state.position:
                     continue
@@ -3448,6 +3515,13 @@ class BotEngine:
             state.current_price = price
         state.last_price_time = datetime.now()
         state.price_history.append(price)
+        # v4.36 — Secours : met aussi a jour le plus haut/bas via le prix du
+        # CYCLE (REST), pas seulement le WebSocket — garantit que le suivi
+        # haut/bas continue meme si le WS est temporairement indisponible.
+        if state.window_high is None or price > state.window_high:
+            state.window_high = price
+        if state.window_low is None or price < state.window_low:
+            state.window_low = price
 
         if len(state.price_history) >= 2:
             vol = abs(list(state.price_history)[-1] - list(state.price_history)[-2])
@@ -3486,6 +3560,20 @@ class BotEngine:
         MTF_STEP = max(1, round(MTF_CANDLE_SEC / cfg["CYCLE_INTERVAL"]))
         if len(prices) % MTF_STEP == 0:
             state.mtf_prices.append(price)
+            # v4.36 — Cloture de la bougie ~2min en cours : capture le plus
+            # haut/bas REELLEMENT vu depuis le dernier point (alimente en
+            # direct par le WebSocket entre deux echantillonnages, secours
+            # REST sinon — voir _on_ws_allmids / plus haut dans _process),
+            # pas juste ce point de prix isole. Sert a un vrai calcul d ATR
+            # (Wilder, haut-bas-cloture) — voir plus bas.
+            candle_high = state.window_high if state.window_high is not None else price
+            candle_low  = state.window_low  if state.window_low  is not None else price
+            state.candle_history.append((candle_high, candle_low, price))
+            # Nouvelle fenetre : redemarre le suivi haut/bas a partir de ce
+            # point de cloture (qui devient l ouverture approximative de la
+            # bougie suivante).
+            state.window_high = price
+            state.window_low  = price
         ema200 = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
         # v4.12 — FIX FAILLE : quand l EMA200 n est pas encore calculable
         # (donnees insuffisantes, ex: juste apres un redemarrage), l ancien
@@ -3516,7 +3604,11 @@ class BotEngine:
 
         # Stocker l ATR% courant pour affichage dashboard — calcule a chaque cycle
         # independamment de l etat (position ouverte ou non, filtre bloque ou non)
-        _, _atr_pct_now = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+        # v4.36 — vrai calcul (haut/bas/cloture), repli sur l ancien (cloture-
+        # a-cloture) tant que candle_history n a pas assez de bougies (~28 min).
+        _, _atr_pct_now = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
+        if _atr_pct_now is None:
+            _, _atr_pct_now = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
         state.current_atr_pct = _atr_pct_now
 
         if state.position:
@@ -3560,7 +3652,20 @@ class BotEngine:
             # Seuil specifique au symbole ou seuil global
             atr_min_pct = cfg.get("ATR_MIN_PCT_BY_SYMBOL", {}).get(ticker,
                           cfg.get("ATR_MIN_PCT", 0.06))
-            _, atr_pct  = calc_atr(prices, atr_period)
+            # v4.36 — FIX CALIBRAGE : l ancien calc_atr(prices,...) mesurait
+            # la variation cloture-a-cloture sur des points espaces de
+            # CYCLE_INTERVAL (10s) — structurellement quasi nulle, ce qui
+            # bloquait la quasi-totalite des actifs en permanence (confirme
+            # par les logs : "ATR X% < seuil" sur pratiquement tous les
+            # actifs au meme cycle). Utilise desormais de vraies bougies
+            # haut/bas/cloture (~2 min, alimentees en direct par le
+            # WebSocket) — repli sur l ancien calcul tant que candle_history
+            # n a pas assez de bougies (~28 min apres un demarrage/redemarrage).
+            atr_pct = None
+            if len(state.candle_history) >= atr_period + 1:
+                _, atr_pct = calc_true_range_atr(list(state.candle_history), atr_period)
+            if atr_pct is None:
+                _, atr_pct = calc_atr(prices, atr_period)
             if atr_pct is not None and atr_pct < atr_min_pct:
                 self.emit("log", {
                     "msg": f"[{ticker}] ATR {atr_pct:.3f}% < {atr_min_pct}% — marche en range, entree bloquee | RSI:{rsi:.1f}",
@@ -3685,7 +3790,11 @@ class BotEngine:
         # en graphe (RSI, MACD, EMA200, ATR, support/resistance). Purement
         # informatif, n influence aucune decision — voir _process pour le
         # detail des memes calculs utilises pour trader.
-        _, atr_pct_snapshot = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+        # v4.36 — vrai calcul (haut/bas/cloture), repli sur l ancien si pas
+        # encore assez de bougies (~28 min apres un demarrage).
+        _, atr_pct_snapshot = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
+        if atr_pct_snapshot is None:
+            _, atr_pct_snapshot = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
         state.indicator_history.append({
             "ts": time.time(),
             "price": price,
@@ -3838,7 +3947,11 @@ class BotEngine:
         #    exactement le symptome observe (pics minuscules puis SL rapide).
         amplitude_coherent = True
         if cfg.get("REQUIRE_AMPLITUDE_COHERENCE", True):
-            _, atr_pct_now = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+            # v4.36 — vrai calcul (haut/bas/cloture), repli sur l ancien si
+            # pas encore assez de bougies.
+            _, atr_pct_now = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
+            if atr_pct_now is None:
+                _, atr_pct_now = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
             sl_pct_ref = cfg.get("SL_PCT_OF_E", 1.0)
             min_ratio  = cfg.get("MIN_AMPLITUDE_TO_SL_RATIO", 0.5)
             max_ratio  = cfg.get("MAX_AMPLITUDE_TO_SL_RATIO", 2.5)
@@ -4267,7 +4380,10 @@ class BotEngine:
                     return
 
         if cfg.get("REQUIRE_AMPLITUDE_COHERENCE", True):
-            _, atr_pct_now = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+            # v4.36 — vrai calcul (haut/bas/cloture), repli sur l ancien.
+            _, atr_pct_now = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
+            if atr_pct_now is None:
+                _, atr_pct_now = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
             sl_pct_ref = cfg.get("SL_PCT_OF_E", 1.0)
             min_ratio  = cfg.get("MIN_AMPLITUDE_TO_SL_RATIO", 0.5)
             max_ratio  = cfg.get("MAX_AMPLITUDE_TO_SL_RATIO", 2.5)
@@ -4511,7 +4627,10 @@ class BotEngine:
         ttp_gap_pct   = cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3)
         adaptive_used = False
         if cfg.get("SL_TTP_ADAPTIVE_ENABLED", False):
-            _, atr_pct_entry = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+            # v4.36 — vrai calcul (haut/bas/cloture), repli sur l ancien.
+            _, atr_pct_entry = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
+            if atr_pct_entry is None:
+                _, atr_pct_entry = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
             if atr_pct_entry is not None and atr_pct_entry > 0:
                 sl_min = cfg.get("SL_PCT_MIN", 0.3)
                 sl_max = cfg.get("SL_PCT_MAX", 3.0)
@@ -4551,7 +4670,10 @@ class BotEngine:
         # dans les logs (strat_tag_log) et transmis via le champ "strategy".
         label = "LONG" if signal == "long" else "SHORT"
         strat_tag_log = "🎯 ACCUMULATION " if strategy == "accumulation" else ("💰 FUNDING " if strategy == "funding_contrarian" else "")
-        _, atr_at_entry = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+        # v4.36 — vrai calcul (haut/bas/cloture), repli sur l ancien.
+        _, atr_at_entry = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
+        if atr_at_entry is None:
+            _, atr_at_entry = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
         atr_str = f"ATR {atr_at_entry:.3f}%" if atr_at_entry else "ATR ?"
         lev_str = f"x{leverage}" if leverage > 1 else "x1"
 
