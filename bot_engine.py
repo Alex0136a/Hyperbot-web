@@ -836,6 +836,31 @@ def calc_true_range_atr(candles, period=14):
     return atr, atr_pct
 
 
+def calc_avg_candle_fluctuation(candles, period=14):
+    """v4.41 — SUR DEMANDE EXPLICITE : fluctuation moyenne A L INTERIEUR de
+    chaque bougie (haut-bas, en % de la cloture), INDEPENDAMMENT de sa
+    couleur finale (verte ou rouge) — different de l ATR, qui mesure
+    l amplitude ENTRE bougies consecutives (True Range). Sert a mesurer le
+    "bruit interne" propre a chaque actif : une tendance n est jamais
+    lineaire, une meme bougie peut osciller plusieurs fois de sens avant de
+    clore dans une direction. Purement informatif — n influence aucune
+    decision de trading, juste un outil de calibrage manuel des seuils
+    SL/TTP/ATR par actif.
+    Retourne le % moyen (haut-bas)/cloture sur les N dernieres bougies, ou
+    None si pas assez de bougies.
+    """
+    if len(candles) < period:
+        return None
+    recent = candles[-period:]
+    fluctuations = []
+    for high, low, close in recent:
+        if close > 0:
+            fluctuations.append((high - low) / close * 100)
+    if not fluctuations:
+        return None
+    return sum(fluctuations) / len(fluctuations)
+
+
 def calc_support_resistance(prices, period=50):
     """Calcule le support et la resistance recents.
     Resistance = plus haut local sur la periode (hors prix courant)
@@ -4719,15 +4744,20 @@ class BotEngine:
         notional = size * leverage
 
         # ── v4.24 — SL/TTP adaptatifs a l ATR reel (optionnel) ───────────────
+        # v4.41 — SUR DEMANDE EXPLICITE : chaque valeur peut desormais etre
+        # surchargee PAR ACTIF (ex: SL_PCT_OF_E_BY_SYMBOL={"SUSHI": 0.5}) —
+        # tous les actifs ne se comportent pas de la meme facon (fluctuation
+        # intra-bougie differente, voir calc_avg_candle_fluctuation). Repli
+        # sur la valeur globale si aucune surcharge definie pour cet actif.
+        sl_pct_of_e   = cfg.get("SL_PCT_OF_E_BY_SYMBOL", {}).get(ticker, cfg.get("SL_PCT_OF_E", 1.0))
+        ttp_arm1_pct  = cfg.get("TTP_ARM1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM1_PRICE_PCT", 1.0))
+        ttp_lock1_pct = cfg.get("TTP_LOCK1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_LOCK1_PRICE_PCT", 0.8))
+        ttp_arm2_pct  = cfg.get("TTP_ARM2_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM2_PRICE_PCT", 1.3))
+        ttp_gap_pct   = cfg.get("TTP_TRAIL_GAP_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3))
         # Calcule les seuils de CE trade precis a partir de l ATR actuel,
-        # en conservant les MEMES proportions que les reglages fixes —
-        # toujours en %. Si desactive (par defaut) ou ATR indisponible,
-        # retombe integralement sur les valeurs fixes habituelles.
-        sl_pct_of_e   = cfg.get("SL_PCT_OF_E", 1.0)
-        ttp_arm1_pct  = cfg.get("TTP_ARM1_PRICE_PCT", 1.0)
-        ttp_lock1_pct = cfg.get("TTP_LOCK1_PRICE_PCT", 0.8)
-        ttp_arm2_pct  = cfg.get("TTP_ARM2_PRICE_PCT", 1.3)
-        ttp_gap_pct   = cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3)
+        # en conservant les MEMES proportions que les reglages (fixes ou
+        # par-actif ci-dessus) — toujours en %. Si desactive (par defaut) ou
+        # ATR indisponible, retombe integralement sur les valeurs fixes.
         adaptive_used = False
         if cfg.get("SL_TTP_ADAPTIVE_ENABLED", False):
             # v4.36 — vrai calcul (haut/bas/cloture), repli sur l ancien.
@@ -4737,7 +4767,9 @@ class BotEngine:
             if atr_pct_entry is not None and atr_pct_entry > 0:
                 sl_min = cfg.get("SL_PCT_MIN", 0.3)
                 sl_max = cfg.get("SL_PCT_MAX", 3.0)
-                sl_dynamic = max(sl_min, min(sl_max, atr_pct_entry * cfg.get("SL_ATR_MULTIPLIER", 1.0)))
+                # v4.41 — multiplicateur ATR aussi surchargeable par actif.
+                sl_atr_mult = cfg.get("SL_ATR_MULTIPLIER_BY_SYMBOL", {}).get(ticker, cfg.get("SL_ATR_MULTIPLIER", 1.0))
+                sl_dynamic = max(sl_min, min(sl_max, atr_pct_entry * sl_atr_mult))
                 # Proportions conservees telles que definies par les reglages fixes actuels
                 ratio_arm1  = (ttp_arm1_pct  / sl_pct_of_e) if sl_pct_of_e else 1.0
                 ratio_lock1 = (ttp_lock1_pct / sl_pct_of_e) if sl_pct_of_e else 0.8
