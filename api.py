@@ -770,6 +770,17 @@ ADVANCED_SETTINGS = {
     "CRYPTO_OFFPEAK_HOUR_END_UTC":   {"label": "Heures creuses - fin (UTC)",   "default": 23},
     "CPI_BLACKOUT_BEFORE_MIN": {"label": "Blackout CPI - minutes avant",     "default": 15},
     "CPI_BLACKOUT_AFTER_MIN":  {"label": "Blackout CPI - minutes apres",     "default": 30},
+
+    # v4.42 — SUR DEMANDE EXPLICITE : jeu de seuils SL/TTP DEDIE au mode
+    # Accumulation (LONG et SHORT confondus). default=None : Accumulation
+    # continue de retomber sur les reglages du mode normal tant que rien
+    # n est explicitement defini ici — ne rien toucher = aucun changement.
+    "ACCUMULATION_SL_PCT_OF_E":             {"label": "Accumulation - SL (% de E)", "default": None},
+    "ACCUMULATION_TTP_ARM1_PRICE_PCT":      {"label": "Accumulation - TTP armement (% de prix)", "default": None},
+    "ACCUMULATION_TTP_LOCK1_PRICE_PCT":     {"label": "Accumulation - TTP verrou initial (% de prix)", "default": None},
+    "ACCUMULATION_TTP_ARM2_PRICE_PCT":      {"label": "Accumulation - TTP palier 2 (% de prix)", "default": None},
+    "ACCUMULATION_TTP_TRAIL_GAP_PRICE_PCT": {"label": "Accumulation - TTP marge de repli (% de prix)", "default": None},
+    "ACCUMULATION_SL_ATR_MULTIPLIER":       {"label": "Accumulation - multiplicateur ATR (mode adaptatif)", "default": None},
 }
 
 
@@ -782,7 +793,10 @@ def get_advanced_config(email: str = Depends(require_user)):
 
 
 class AdvancedConfigBody(BaseModel):
-    values: Dict[str, float]
+    # v4.42 — Optional[float] (pas juste float) : autorise l envoi explicite
+    # de None pour REINITIALISER un reglage Accumulation dedie et revenir a
+    # l heritage du mode normal (voir ACCUMULATION_SL_PCT_OF_E etc.).
+    values: Dict[str, Optional[float]]
 
 
 @app.put("/api/config/advanced")
