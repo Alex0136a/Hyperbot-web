@@ -54,6 +54,17 @@ async function apiCall(path, method="GET", body=null, token=null) {
 
 // ── CONSTANTES ───────────────────────────────────────────────
 const ALL_COINS = ["BTC","ETH","SOL","ARB","AVAX","LINK","OP","INJ","TIA","BNB","HYPE","PAXG","TAO","WIF","JUP","PENDLE","EIGEN","RENDER","SUI","APT","SEI","DOGE","XRP","NEAR","FTM","AAVE","UNI","CRV","SUSHI","GMX","POL"];
+// v4.42 — reglages SL/TTP dedies au mode Accumulation : valeur vide = null
+// = "herite du mode normal" (pas de changement de comportement tant que
+// rien n est explicitement defini) — voir le rendu special dans l onglet Paramètres.
+const ACCUM_OVERRIDE_KEYS = new Set([
+  "ACCUMULATION_SL_PCT_OF_E",
+  "ACCUMULATION_TTP_ARM1_PRICE_PCT",
+  "ACCUMULATION_TTP_LOCK1_PRICE_PCT",
+  "ACCUMULATION_TTP_ARM2_PRICE_PCT",
+  "ACCUMULATION_TTP_TRAIL_GAP_PRICE_PCT",
+  "ACCUMULATION_SL_ATR_MULTIPLIER",
+]);
 const confColor = c => c>=75?"#34d399":c>=60?"#fbbf24":"#f87171";
 const LOGCOL = { system:"#60a5fa", info:"#94a3b8", error:"#f87171", warn:"#fbbf24", ai:"#c084fc", long:"#34d399", short:"#f87171", dim:"#475569" };
 
@@ -1546,15 +1557,36 @@ Confirmer ?`
               ? <div style={{color:"#94a3b8",fontSize:11}}>Chargement...</div>
               : <>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
-                  {Object.entries(advancedSettings).map(([key,meta])=>(
+                  {Object.entries(advancedSettings).map(([key,meta])=>{
+                    // v4.42 — les 6 reglages Accumulation dedies acceptent une
+                    // valeur vide = null = "herite du mode normal" (pas de
+                    // changement de comportement) — bouton de reinitialisation
+                    // dedie pour y revenir explicitement. Tous les autres
+                    // reglages gardent EXACTEMENT le comportement d avant.
+                    const isAccumOverride = ACCUM_OVERRIDE_KEYS.has(key);
+                    return (
                     <div key={key}>
                       <div style={{fontSize:9,color:"#94a3b8",marginBottom:3}}>{meta.label}</div>
-                      <input key={`${key}-${meta.value}`} type="number" step="any"
-                        defaultValue={meta.value}
-                        onChange={e=>setAdvancedEdits(p=>({...p,[key]:Number(e.target.value)}))}
-                        style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11}}/>
+                      <div style={{display:"flex",gap:4}}>
+                        <input key={`${key}-${meta.value}`} type="number" step="any"
+                          defaultValue={meta.value==null?"":meta.value}
+                          placeholder={isAccumOverride && meta.value==null ? "Hérite du mode normal" : ""}
+                          onChange={e=>{
+                            if (isAccumOverride) {
+                              setAdvancedEdits(p=>({...p,[key]: e.target.value===""?null:Number(e.target.value)}));
+                            } else {
+                              setAdvancedEdits(p=>({...p,[key]:Number(e.target.value)}));
+                            }
+                          }}
+                          style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11}}/>
+                        {isAccumOverride && meta.value!=null && (
+                          <button type="button" title="Réinitialiser (hériter du mode normal)"
+                            onClick={()=>setAdvancedEdits(p=>({...p,[key]:null}))}
+                            style={{background:"#1e2d4a",border:"1px solid #334155",borderRadius:6,padding:"0 8px",color:"#94a3b8",fontSize:11,cursor:"pointer"}}>↺</button>
+                        )}
+                      </div>
                     </div>
-                  ))}
+                  );})}
                 </div>
                 <button onClick={async()=>{
                   if(!Object.keys(advancedEdits).length){ alert("Aucun changement a sauvegarder."); return; }
