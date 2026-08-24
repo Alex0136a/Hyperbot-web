@@ -166,6 +166,19 @@ CONFIG = {
     "ACCUMULATION_ENABLED":              False,
     "ACCUMULATION_MAX_TRADES":           3,     # plafond de trades Accumulation simultanes, independant de MAX_OPEN_TRADES
     "ACCUMULATION_PROXIMITY_PCT":        1.0,   # "proche" du support/resistance = a moins de ce % de distance
+
+    # v4.42 — SUR DEMANDE EXPLICITE : jeu de seuils SL/TTP DEDIE au mode
+    # Accumulation (LONG et SHORT confondus, un seul jeu pour les deux
+    # sens), separe du mode normal. Laisser a None = aucun changement de
+    # comportement (Accumulation continue de retomber sur les reglages du
+    # mode normal, comme avant cette fonctionnalite) — ne definir une valeur
+    # ici QUE pour ecarter deliberement Accumulation du mode normal.
+    "ACCUMULATION_SL_PCT_OF_E":            None,
+    "ACCUMULATION_TTP_ARM1_PRICE_PCT":     None,
+    "ACCUMULATION_TTP_LOCK1_PRICE_PCT":    None,
+    "ACCUMULATION_TTP_ARM2_PRICE_PCT":     None,
+    "ACCUMULATION_TTP_TRAIL_GAP_PRICE_PCT": None,
+    "ACCUMULATION_SL_ATR_MULTIPLIER":      None,  # utilise seulement si SL_TTP_ADAPTIVE_ENABLED est actif
     # Confirmation de tendance optionnelle : si activee, un LONG pres du
     # support n est accepte QUE si la tendance de fond (EMA200) est deja
     # haussiere (achat du repli dans une tendance, pas un pari de
@@ -4749,11 +4762,37 @@ class BotEngine:
         # tous les actifs ne se comportent pas de la meme facon (fluctuation
         # intra-bougie differente, voir calc_avg_candle_fluctuation). Repli
         # sur la valeur globale si aucune surcharge definie pour cet actif.
-        sl_pct_of_e   = cfg.get("SL_PCT_OF_E_BY_SYMBOL", {}).get(ticker, cfg.get("SL_PCT_OF_E", 1.0))
-        ttp_arm1_pct  = cfg.get("TTP_ARM1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM1_PRICE_PCT", 1.0))
-        ttp_lock1_pct = cfg.get("TTP_LOCK1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_LOCK1_PRICE_PCT", 0.8))
-        ttp_arm2_pct  = cfg.get("TTP_ARM2_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM2_PRICE_PCT", 1.3))
-        ttp_gap_pct   = cfg.get("TTP_TRAIL_GAP_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3))
+        # v4.42 — SUR DEMANDE EXPLICITE : le mode Accumulation peut desormais
+        # avoir son PROPRE jeu de seuils SL/TTP (LONG et SHORT confondus, un
+        # seul jeu pour les deux sens), separe du mode normal — via les cles
+        # ACCUMULATION_SL_PCT_OF_E / ACCUMULATION_TTP_*. Tant qu aucune de
+        # ces cles n est explicitement definie (valeur None par defaut),
+        # Accumulation continue de se comporter EXACTEMENT comme avant
+        # (retombe sur les memes valeurs que le mode normal, y compris ses
+        # eventuelles surcharges par actif) — aucun changement de
+        # comportement tant que vous ne reglez rien.
+        if strategy == "accumulation":
+            sl_pct_of_e   = cfg.get("ACCUMULATION_SL_PCT_OF_E")
+            if sl_pct_of_e is None:
+                sl_pct_of_e = cfg.get("SL_PCT_OF_E_BY_SYMBOL", {}).get(ticker, cfg.get("SL_PCT_OF_E", 1.0))
+            ttp_arm1_pct  = cfg.get("ACCUMULATION_TTP_ARM1_PRICE_PCT")
+            if ttp_arm1_pct is None:
+                ttp_arm1_pct = cfg.get("TTP_ARM1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM1_PRICE_PCT", 1.0))
+            ttp_lock1_pct = cfg.get("ACCUMULATION_TTP_LOCK1_PRICE_PCT")
+            if ttp_lock1_pct is None:
+                ttp_lock1_pct = cfg.get("TTP_LOCK1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_LOCK1_PRICE_PCT", 0.8))
+            ttp_arm2_pct  = cfg.get("ACCUMULATION_TTP_ARM2_PRICE_PCT")
+            if ttp_arm2_pct is None:
+                ttp_arm2_pct = cfg.get("TTP_ARM2_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM2_PRICE_PCT", 1.3))
+            ttp_gap_pct   = cfg.get("ACCUMULATION_TTP_TRAIL_GAP_PRICE_PCT")
+            if ttp_gap_pct is None:
+                ttp_gap_pct = cfg.get("TTP_TRAIL_GAP_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3))
+        else:
+            sl_pct_of_e   = cfg.get("SL_PCT_OF_E_BY_SYMBOL", {}).get(ticker, cfg.get("SL_PCT_OF_E", 1.0))
+            ttp_arm1_pct  = cfg.get("TTP_ARM1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM1_PRICE_PCT", 1.0))
+            ttp_lock1_pct = cfg.get("TTP_LOCK1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_LOCK1_PRICE_PCT", 0.8))
+            ttp_arm2_pct  = cfg.get("TTP_ARM2_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM2_PRICE_PCT", 1.3))
+            ttp_gap_pct   = cfg.get("TTP_TRAIL_GAP_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3))
         # Calcule les seuils de CE trade precis a partir de l ATR actuel,
         # en conservant les MEMES proportions que les reglages (fixes ou
         # par-actif ci-dessus) — toujours en %. Si desactive (par defaut) ou
@@ -4768,7 +4807,11 @@ class BotEngine:
                 sl_min = cfg.get("SL_PCT_MIN", 0.3)
                 sl_max = cfg.get("SL_PCT_MAX", 3.0)
                 # v4.41 — multiplicateur ATR aussi surchargeable par actif.
-                sl_atr_mult = cfg.get("SL_ATR_MULTIPLIER_BY_SYMBOL", {}).get(ticker, cfg.get("SL_ATR_MULTIPLIER", 1.0))
+                # v4.42 — et par strategie (Accumulation) si defini.
+                if strategy == "accumulation" and cfg.get("ACCUMULATION_SL_ATR_MULTIPLIER") is not None:
+                    sl_atr_mult = cfg.get("ACCUMULATION_SL_ATR_MULTIPLIER")
+                else:
+                    sl_atr_mult = cfg.get("SL_ATR_MULTIPLIER_BY_SYMBOL", {}).get(ticker, cfg.get("SL_ATR_MULTIPLIER", 1.0))
                 sl_dynamic = max(sl_min, min(sl_max, atr_pct_entry * sl_atr_mult))
                 # Proportions conservees telles que definies par les reglages fixes actuels
                 ratio_arm1  = (ttp_arm1_pct  / sl_pct_of_e) if sl_pct_of_e else 1.0
@@ -4778,6 +4821,7 @@ class BotEngine:
                 sl_pct_of_e   = round(sl_dynamic, 4)
                 ttp_arm1_pct  = round(sl_dynamic * ratio_arm1, 4)
                 ttp_lock1_pct = round(sl_dynamic * ratio_lock1, 4)
+
                 ttp_arm2_pct  = round(sl_dynamic * ratio_arm2, 4)
                 ttp_gap_pct   = round(sl_dynamic * ratio_gap, 4)
                 adaptive_used = True
