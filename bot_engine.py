@@ -254,6 +254,39 @@ CONFIG = {
     "FUNDING_MODE_MAX_TRADES": 3,          # plafond de trades simultanes, independant des autres modes
     "FUNDING_REFRESH_SEC": 300,            # frequence de rafraichissement du funding (5 min, evite de spammer l API)
 
+    # v4.43 — SUR DEMANDE EXPLICITE : mode "Spot-Accumulation" — achat
+    # d actif dans l esprit spot ("tant que l actif existe on peut esperer
+    # une hausse ou garder ses actifs"). DESACTIVE par defaut. Particularites
+    # par rapport a tous les autres modes :
+    #   - AUCUN Stop Loss par defaut (une position perdante reste ouverte
+    #     indefiniment, jamais fermee de force sur une perte) — un
+    #     interrupteur separe (SPOT_ACCUM_SL_ENABLED) permet d en ajouter un,
+    #     exprime en % du PnL (pas % de E comme les autres modes).
+    #   - Toujours LEVIER x1 (jamais de levier prudent calcule) — coherent
+    #     avec l esprit spot et l absence de SL (pas de risque de liquidation).
+    #   - Entree LONG uniquement, avec la tendance generale haussiere
+    #     (EMA200) ET a au moins SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT au-dessus
+    #     du support (pas pres du support comme Accumulation — ici on
+    #     achete une tendance deja engagee, pas un rebond).
+    #   - Sortie : TTP arme une fois le PnL >= SPOT_ACCUM_TTP_ARM_PCT (3%),
+    #     puis trailing avec une marge de SPOT_ACCUM_TTP_TOLERANCE_PCT
+    #     (0.5%) depuis le pic. Objectif complementaire : si le prix
+    #     atteint SPOT_ACCUM_TARGET_SR_PCT (80%) de la distance
+    #     support-resistance mesuree a l entree, fermeture immediate
+    #     (objectif atteint), meme si le trailing n a pas encore suivi.
+    # INTERPRETATION A CONFIRMER : la formulation "TTP a 3% avec tolerance
+    # de 0.5%" a ete comprise comme un armement a 3% puis un trailing avec
+    # 0.5% de marge de repli depuis le pic — a corriger si l intention etait
+    # differente (ex: fenetre d armement 2.5%-3.5% plutot qu un trailing).
+    "SPOT_ACCUM_ENABLED": False,
+    "SPOT_ACCUM_MAX_TRADES": 3,
+    "SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT": 2.0,   # entree seulement si prix >= support + 2%
+    "SPOT_ACCUM_TTP_ARM_PCT": 3.0,             # armement du trailing a partir de ce % de PnL
+    "SPOT_ACCUM_TTP_TOLERANCE_PCT": 0.5,       # marge de repli depuis le pic, une fois arme
+    "SPOT_ACCUM_TARGET_SR_PCT": 80.0,          # objectif = ce % de la distance support-resistance (mesuree a l entree)
+    "SPOT_ACCUM_SL_ENABLED": False,            # AUCUN SL par defaut — interrupteur explicite pour en ajouter un
+    "SPOT_ACCUM_SL_PCT_OF_PNL": 5.0,           # si active : ferme si le PnL tombe a -5% (valeur, pas negative — le signe est applique automatiquement)
+
     # v4.24 — SL/TTP ADAPTATIFS a l ATR reel (optionnel, DESACTIVE par
     # defaut — activation explicite requise). Au lieu de seuils fixes,
     # chaque trade calcule son propre SL a partir de l ATR au moment de
@@ -1665,6 +1698,11 @@ class SymbolState:
         # pour comprendre en direct pourquoi un actif ne trade pas, sans
         # devoir chasser les bons logs dans une fenetre horaire expiree.
         self.last_gate_snapshot = {}
+        # v4.43 — Suivi du trailing Spot-Accumulation (arme une fois a
+        # SPOT_ACCUM_TTP_ARM_PCT, puis trailing depuis le pic). Reinitialise
+        # a chaque ouverture/fermeture d une position de ce mode.
+        self.spot_accum_armed = False
+        self.spot_accum_peak_pnl_pct = None
         # v4.21 — Historique des valeurs d indicateurs calculees (RSI, MACD,
         # EMA200, ATR, support/resistance) a chaque cycle, pour affichage en
         # graphe cote interface (diagnostic/surveillance). Purement
@@ -2091,6 +2129,8 @@ class BotEngine:
         # v4.33 — File d attente separee pour les candidats du mode Funding
         # Contrarian (independante, plafond propre FUNDING_MODE_MAX_TRADES).
         self._pending_funding_candidates = []
+        # v4.43 — File d attente separee pour Spot-Accumulation.
+        self._pending_spot_accum_candidates = []
         # Cache du calendrier CPI Finnhub (evite d appeler l API a chaque cycle)
         self._cpi_events = []
         self._cpi_last_fetch = None
@@ -3276,12 +3316,14 @@ class BotEngine:
                 self._pending_candidates = []
                 self._pending_accumulation_candidates = []
                 self._pending_funding_candidates = []
+                self._pending_spot_accum_candidates = []
                 for sym in cfg["SYMBOLS"]:
                     if sym in prices:
                         self._process_with_timeout(sym, prices[sym])
                 self._finalize_pending_candidates()
                 self._finalize_pending_accumulation_candidates()
                 self._finalize_pending_funding_candidates()
+                self._finalize_pending_spot_accum_candidates()
 
                 self._save_open_positions()
                 self._save_confidence_thresholds()
@@ -3374,6 +3416,70 @@ class BotEngine:
         # informatif, n influence aucune decision de sortie ci-dessous.
         if pnl_usd > 0 and (state.absolute_peak_pnl_usd is None or pnl_usd > state.absolute_peak_pnl_usd):
             state.absolute_peak_pnl_usd = pnl_usd
+
+        # v4.43 — SUR DEMANDE EXPLICITE : gestion de sortie ENTIEREMENT
+        # DEDIEE pour Spot-Accumulation — different de tous les autres modes
+        # (pas de Stop Loss par defaut, objectif base sur la distance
+        # support-resistance, trailing avec ses propres seuils). Retourne
+        # immediatement apres, ne passe JAMAIS par la logique SL/TTP normale
+        # ci-dessous, qui ne s applique pas a ce mode.
+        if pos.get("strategy") == "spot_accumulation":
+            # 1) SL optionnel, en % du PnL (PAS % de E comme le reste du
+            #    bot) — desactive par defaut, une position perdante reste
+            #    ouverte indefiniment sauf si explicitement active.
+            if cfg.get("SPOT_ACCUM_SL_ENABLED", False):
+                sl_threshold_pnl = cfg.get("SPOT_ACCUM_SL_PCT_OF_PNL", 5.0)
+                if pnl_pct <= -sl_threshold_pnl:
+                    pnl, _, trade = state.close_position(price, "STOP LOSS")
+                    trade["symbol"] = symbol
+                    self.emit("trade", trade)
+                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum STOP LOSS (optionnel, {sl_threshold_pnl:.1f}% du PnL) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
+                    self._register_max_loss(ticker, pos.get("confidence"))
+                    self._save_open_positions()
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, symbol, pos, cfg)
+                    return
+
+            # 2) Objectif : SPOT_ACCUM_TARGET_SR_PCT (80% par defaut) de la
+            #    distance support-resistance MESUREE A L ENTREE — fermeture
+            #    immediate des que le prix l atteint, meme si le trailing
+            #    n a pas encore suivi jusque-la.
+            target_price = pos.get("target_price")
+            if target_price is not None and price >= target_price:
+                pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
+                trade["symbol"] = symbol
+                self.emit("trade", trade)
+                self._register_win(ticker)
+                self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum OBJECTIF ATTEINT (80% distance S/R) @ ${price:.2f} | PnL: +${pnl:.2f}", "level": "win"})
+                self._save_open_positions()
+                if mode == "live" and self.exchange:
+                    close_order(self.exchange, symbol, pos, cfg)
+                return
+
+            # 3) Trailing : arme une fois le PnL >= SPOT_ACCUM_TTP_ARM_PCT
+            #    (3% par defaut), puis suit le pic avec une marge de
+            #    SPOT_ACCUM_TTP_TOLERANCE_PCT (0.5% par defaut).
+            arm_pct = cfg.get("SPOT_ACCUM_TTP_ARM_PCT", 3.0)
+            tolerance_pct = cfg.get("SPOT_ACCUM_TTP_TOLERANCE_PCT", 0.5)
+            if not state.spot_accum_armed:
+                if pnl_pct >= arm_pct:
+                    state.spot_accum_armed = True
+                    state.spot_accum_peak_pnl_pct = pnl_pct
+            else:
+                if state.spot_accum_peak_pnl_pct is None or pnl_pct > state.spot_accum_peak_pnl_pct:
+                    state.spot_accum_peak_pnl_pct = pnl_pct
+                elif pnl_pct <= state.spot_accum_peak_pnl_pct - tolerance_pct:
+                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
+                    trade["symbol"] = symbol
+                    self.emit("trade", trade)
+                    self._register_win(ticker)
+                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum TTP @ ${price:.2f} | pic +{state.spot_accum_peak_pnl_pct:.2f}% | PnL: +${pnl:.2f}", "level": "win"})
+                    self._save_open_positions()
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, symbol, pos, cfg)
+                    return
+            self._save_open_positions()
+            return
 
         # ── 1. STOP LOSS — % de E, perte $ PLAFONNEE quel que soit le levier ──
         # v4.10 — compare pnl_usd (deja amplifie par le levier via la formule
@@ -3917,6 +4023,9 @@ class BotEngine:
         # independamment chaque cycle — meme garde-fou anti-double-ouverture
         # dans _finalize_open (un seul slot par actif).
         self._check_funding_contrarian_signal(symbol, ticker, price, rsi, prices, state)
+
+        # v4.43 — Mode Spot-Accumulation, lui aussi EN PARALLELE.
+        self._check_spot_accumulation_signal(symbol, ticker, price, support, resistance, rsi, trend_up, prices, state)
 
         # v4.19 — Respect des niveaux, FUSIONNE dans la logique principale
         # (pas juste Accumulation) : un LONG a besoin d un rebond pres du
@@ -4673,6 +4782,59 @@ class BotEngine:
             "strategy": "funding_contrarian",
         })
 
+    def _check_spot_accumulation_signal(self, symbol, ticker, price, support, resistance,
+                                          rsi, trend_up, prices, state):
+        """v4.43 — SUR DEMANDE EXPLICITE : mode SPOT-ACCUMULATION — achat
+        d actif dans l esprit spot ("tant que l actif existe on peut esperer
+        une hausse ou garder ses actifs"). LONG uniquement, avec la tendance
+        generale haussiere (EMA200) ET a au moins SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT
+        au-dessus du support — on achete une tendance deja engagee, pas un
+        rebond pres d un plancher (contrairement a Accumulation classique).
+        AUCUNE garantie de fonctionnement — a valider par les resultats.
+        """
+        cfg = self.cfg
+        if not cfg.get("SPOT_ACCUM_ENABLED", False):
+            return
+        if not self._gate_active_or_auto_activate(ticker, 100, "spot_accumulation"):
+            return
+
+        if not trend_up:
+            return  # exige la tendance generale haussiere (EMA200)
+        if support is None or resistance is None or support <= 0:
+            return
+
+        min_above_pct = cfg.get("SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT", 2.0)
+        dist_above_support_pct = (price - support) / support * 100
+        if dist_above_support_pct < min_above_pct:
+            return  # trop pres du support, pas encore l entree visee par ce mode
+        if price >= resistance:
+            return  # deja au-dessus de la resistance recente, entree trop tardive
+
+        # ── Score de confiance dedie : plus on est loin du support (dans la
+        # zone visee) sans depasser la resistance, plus la confiance est
+        # elevee — une vraie continuation de tendance, pas un exces ──────
+        sr_range = resistance - support
+        position_in_range_pct = ((price - support) / sr_range * 100) if sr_range > 0 else 50.0
+        confidence = 65.0 + min(max(position_in_range_pct - min_above_pct, 0) / 50.0 * 20.0, 20.0)
+        confidence = min(confidence, 85.0)
+
+        conf_threshold = self._get_confidence_threshold(ticker)
+        if confidence < conf_threshold:
+            return
+
+        reasons = [
+            f"🌱 Spot-Accumulation : {dist_above_support_pct:.2f}% au-dessus du support, tendance haussiere confirmee",
+            f"RSI {rsi:.1f}" if rsi is not None else "RSI ?",
+        ]
+
+        self._pending_spot_accum_candidates.append({
+            "symbol": symbol, "ticker": ticker, "state": state, "signal": "long",
+            "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": "spot_accumulation",
+            "reasons": reasons, "prices": prices, "conf_breakdown": {},
+            "strategy": "spot_accumulation",
+            "support_at_entry": support, "resistance_at_entry": resistance,
+        })
+
     def _finalize_open(self, cand):
         """v3.2 — Execution reelle d un candidat retenu (voir _process et la
         file d attente _pending_candidates). Contient exactement la logique
@@ -4753,7 +4915,13 @@ class BotEngine:
         # v3.2 — le levier prudent doit etre connu AVANT le calcul du SL de
         # securite, puisque le notionnel reel (taille x levier) determine le
         # % de mouvement correspondant a un montant $ donne.
-        leverage = self._compute_prudent_leverage(ticker, confidence, rsi_mode)
+        # v4.43 — SUR DEMANDE EXPLICITE : Spot-Accumulation force TOUJOURS le
+        # levier a x1 — coherent avec l esprit spot et l absence de SL (pas
+        # de risque de liquidation, meme sur un mouvement tres defavorable).
+        if strategy == "spot_accumulation":
+            leverage = 1
+        else:
+            leverage = self._compute_prudent_leverage(ticker, confidence, rsi_mode)
         notional = size * leverage
 
         # ── v4.24 — SL/TTP adaptatifs a l ATR reel (optionnel) ───────────────
@@ -4896,6 +5064,36 @@ class BotEngine:
         state.position["ttp_arm2_pct"]  = ttp_arm2_pct
         state.position["ttp_gap_pct"]   = ttp_gap_pct
         state.position["adaptive_sl_ttp"] = adaptive_used
+        # v4.43 — SUR DEMANDE EXPLICITE : Spot-Accumulation memorise le
+        # support/resistance mesures a l ENTREE (pas recalcules plus tard,
+        # la structure de marche a pu changer) pour calculer l objectif a
+        # SPOT_ACCUM_TARGET_SR_PCT (80% par defaut) de cette distance —
+        # reinitialise aussi le suivi du trailing pour CETTE position.
+        if strategy == "spot_accumulation":
+            support_at_entry = cand.get("support_at_entry")
+            resistance_at_entry = cand.get("resistance_at_entry")
+            target_pct = cfg.get("SPOT_ACCUM_TARGET_SR_PCT", 80.0)
+            target_price = None
+            if support_at_entry is not None and resistance_at_entry is not None:
+                # v4.43 — FIX : calcule depuis le SUPPORT, pas depuis
+                # l entree — sinon l objectif peut depasser la resistance
+                # elle-meme si l entree est deja significativement au-dessus
+                # du support (verifie numeriquement : entree=105,
+                # support=100, resistance=120 -> ancienne formule donnait
+                # 121$, au-dela de la resistance !).
+                target_price = support_at_entry + (target_pct / 100.0) * (resistance_at_entry - support_at_entry)
+                # v4.43 — Protection : si l entree est deja proche de la
+                # resistance, l objectif a 80% peut tomber SOUS le prix
+                # d entree — fermerait la position immediatement apres
+                # ouverture. Dans ce cas, pas d objectif fixe : on retombe
+                # uniquement sur le trailing (3%/0.5%) pour cette position.
+                if target_price <= price:
+                    target_price = None
+            state.position["support_at_entry"] = support_at_entry
+            state.position["resistance_at_entry"] = resistance_at_entry
+            state.position["target_price"] = target_price
+            state.spot_accum_armed = False
+            state.spot_accum_peak_pnl_pct = None
         self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
 
         # ── v4.7 web : evenement structure pour l API (table trades / signaux) ──
@@ -5002,6 +5200,25 @@ class BotEngine:
                 continue
             self._finalize_open(cand)
         self._pending_funding_candidates = []
+
+    def _finalize_pending_spot_accum_candidates(self):
+        """v4.43 — Equivalent de _finalize_pending_candidates, pour les
+        candidats Spot-Accumulation : plafond independant (SPOT_ACCUM_MAX_TRADES)."""
+        if not self._pending_spot_accum_candidates:
+            return
+        cfg = self.cfg
+        self._pending_spot_accum_candidates.sort(key=lambda c: c["confidence"], reverse=True)
+        max_spot = cfg.get("SPOT_ACCUM_MAX_TRADES", 3)
+        for cand in self._pending_spot_accum_candidates:
+            open_count = sum(1 for st in self.states.values() if st.position and st.position.get("strategy") == "spot_accumulation")
+            if open_count >= max_spot:
+                self.emit("log", {
+                    "msg": f"[{cand['ticker']}] 🌱 Slot Spot-Accumulation plein ({open_count}/{max_spot}) — candidat a {cand['confidence']:.0f}% laisse de cote ce cycle.",
+                    "level": "dim"
+                })
+                continue
+            self._finalize_open(cand)
+        self._pending_spot_accum_candidates = []
 
 
 # ─────────────────────────────────────────────
