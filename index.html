@@ -65,6 +65,14 @@ const ACCUM_OVERRIDE_KEYS = new Set([
   "ACCUMULATION_TTP_TRAIL_GAP_PRICE_PCT",
   "ACCUMULATION_SL_ATR_MULTIPLIER",
 ]);
+// v4.43 — sous-onglets Paper Trading par mode
+const PAPER_SUBTABS = [
+  {key:"all", label:"Tous", icon:"📊", color:"#60a5fa"},
+  {key:"normal", label:"Normal", icon:"⚡", color:"#e2e8f0"},
+  {key:"accumulation", label:"Accumulation", icon:"🎯", color:"#c084fc"},
+  {key:"funding_contrarian", label:"Funding", icon:"💰", color:"#fbbf24"},
+  {key:"spot_accumulation", label:"Spot-Accum", icon:"🌱", color:"#34d399"},
+];
 const confColor = c => c>=75?"#34d399":c>=60?"#fbbf24":"#f87171";
 const LOGCOL = { system:"#60a5fa", info:"#94a3b8", error:"#f87171", warn:"#fbbf24", ai:"#c084fc", long:"#34d399", short:"#f87171", dim:"#475569" };
 
@@ -418,6 +426,11 @@ function App() {
   const [atrSummary, setAtrSummary] = useState(null);
   const [entryDiag, setEntryDiag] = useState(null);
   const [entryDiagLoading, setEntryDiagLoading] = useState(false);
+  // v4.43 — sous-onglets Paper Trading par mode (Normal/Accumulation/Funding/Spot-Accum)
+  const [paperSubTab, setPaperSubTab] = useState("all");
+  const [strategyPerf, setStrategyPerf] = useState({});
+  const [strategyPerfLoading, setStrategyPerfLoading] = useState(false);
+  const [showMarketPanel, setShowMarketPanel] = useState(false);
   const [atrSummaryLoading, setAtrSummaryLoading] = useState(false);
   const [indicatorData, setIndicatorData] = useState(null);
   const [indicatorLoading, setIndicatorLoading] = useState(false);
@@ -562,6 +575,18 @@ function App() {
       setEntryDiag(null);
     }
     setEntryDiagLoading(false);
+  }, [token]);
+
+  const loadStrategyPerformance = useCallback(async (strategy) => {
+    if (!token) return;
+    setStrategyPerfLoading(true);
+    try {
+      const r = await apiCall(`/api/strategy-performance/${strategy}`, "GET", null, token);
+      setStrategyPerf(p=>({...p, [strategy]: r}));
+    } catch(e) {
+      setStrategyPerf(p=>({...p, [strategy]: null}));
+    }
+    setStrategyPerfLoading(false);
   }, [token]);
 
   useEffect(() => {
@@ -1789,6 +1814,106 @@ Confirmer ?`
                 <div style={{fontSize:9,color:"#94a3b8",marginTop:2}}>{s.l}</div>
               </div>
             ))}
+          </div>
+
+          {/* v4.43 — SOUS-ONGLETS PAR MODE (Normal/Accumulation/Funding/Spot-Accum) */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:16}}>
+            <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
+              {PAPER_SUBTABS.map(st=>(
+                <button key={st.key} onClick={()=>setPaperSubTab(st.key)}
+                  style={{background:paperSubTab===st.key?`${st.color}22`:"#0a0e1a",border:paperSubTab===st.key?`1px solid ${st.color}`:"1px solid #1e2d4a",borderRadius:6,padding:"7px 12px",color:paperSubTab===st.key?st.color:"#94a3b8",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+                  {st.icon} {st.label}
+                </button>
+              ))}
+            </div>
+
+            {paperSubTab!=="all" && (()=>{
+              const openFiltered = (paper?.open_trades||[]).filter(t=>(t.strategy||"normal")===paperSubTab);
+              const historyFiltered = (signals||[]).filter(s=>s.closed_at && (s.strategy||"normal")===paperSubTab);
+              const coinsSeen = [...new Set([...openFiltered.map(t=>t.coin), ...historyFiltered.map(s=>s.coin)])].sort();
+              const perf = strategyPerf[paperSubTab];
+              const stMeta = PAPER_SUBTABS.find(s=>s.key===paperSubTab);
+              return (
+                <div>
+                  <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
+                    <button onClick={()=>loadStrategyPerformance(paperSubTab)} disabled={strategyPerfLoading}
+                      style={{background:"#1e3a5f22",border:"1px solid #60a5fa",borderRadius:6,padding:"7px 14px",color:"#60a5fa",fontSize:11,cursor:"pointer",fontWeight:700}}>
+                      {strategyPerfLoading?"Chargement...":"🔄 Performance"}
+                    </button>
+                    <button onClick={()=>setShowMarketPanel(p=>!p)}
+                      style={{background:showMarketPanel?"#1a0a2e":"#0a0e1a",border:"1px solid #334155",borderRadius:6,padding:"7px 14px",color:"#94a3b8",fontSize:11,cursor:"pointer",fontWeight:700}}>
+                      🪙 Marché ({coinsSeen.length})
+                    </button>
+                  </div>
+
+                  {perf && (
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:14}}>
+                      {[
+                        {l:"TRADES (ouverts/total)",v:`${perf.open_trades}/${perf.total_trades}`,c:"#94a3b8"},
+                        {l:"WIN RATE",v:`${perf.win_rate}%`,c:"#fbbf24"},
+                        {l:"NET",v:`${perf.net_pnl>=0?"+":""}${perf.net_pnl.toFixed(2)} USDC`,c:perf.net_pnl>=0?"#34d399":"#f87171"},
+                        {l:"GAINS / PERTES",v:`+${perf.win_pnl.toFixed(2)} / ${perf.loss_pnl.toFixed(2)}`,c:"#94a3b8"},
+                      ].map((s,i)=>(
+                        <div key={i} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:10,textAlign:"center"}}>
+                          <div style={{fontSize:14,fontWeight:700,color:s.c}}>{s.v}</div>
+                          <div style={{fontSize:8,color:"#94a3b8",marginTop:2}}>{s.l}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {showMarketPanel && (
+                    <div style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:10,marginBottom:14,display:"flex",gap:6,flexWrap:"wrap"}}>
+                      {coinsSeen.length===0
+                        ? <span style={{fontSize:11,color:"#94a3b8"}}>Aucun trade dans ce mode pour l'instant.</span>
+                        : coinsSeen.map(c=>(
+                          <span key={c} style={{background:"#1e2d4a",color:stMeta?.color||"#e2e8f0",padding:"3px 9px",borderRadius:5,fontSize:11,fontWeight:700}}>{c}</span>
+                        ))}
+                    </div>
+                  )}
+
+                  <div style={{fontSize:10,color:"#94a3b8",marginBottom:8,fontWeight:700}}>TRADES OUVERTS ({openFiltered.length})</div>
+                  {openFiltered.length===0 ? (
+                    <div style={{fontSize:11,color:"#94a3b8",marginBottom:14}}>Aucun trade ouvert dans ce mode.</div>
+                  ) : openFiltered.map(trade=>(
+                    <div key={trade.id} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:10,marginBottom:6,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div>
+                        <span style={{background:trade.action==="LONG"?"#052e16":"#2d0a0a",color:trade.action==="LONG"?"#34d399":"#f87171",padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700}}>{trade.action}</span>
+                        <span style={{marginLeft:6,color:"#e2e8f0",fontSize:12,fontWeight:700}}>{trade.coin}/USDC</span>
+                        <span style={{marginLeft:6,color:"#94a3b8",fontSize:10}}>x{trade.leverage}</span>
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:12,fontWeight:700}}>{trade.pnl>=0?"+":""}{trade.pnl?.toFixed(2)} USDC</span>
+                        <button onClick={async()=>{
+                          if(!confirm(`Fermer ${trade.coin} manuellement ?`)) return;
+                          await apiCall("/api/paper/close","POST",{trade_id:trade.id,reason:"MANUEL"},token);
+                          loadData();
+                        }} style={{background:"#2d0a0a",border:"1px solid #f87171",borderRadius:5,padding:"4px 10px",color:"#f87171",fontSize:10,cursor:"pointer",fontWeight:700}}>
+                          ✕ Fermer
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+
+                  <div style={{fontSize:10,color:"#94a3b8",margin:"14px 0 8px",fontWeight:700}}>HISTORIQUE ({historyFiltered.length})</div>
+                  {historyFiltered.length===0 ? (
+                    <div style={{fontSize:11,color:"#94a3b8"}}>Aucun trade fermé dans ce mode pour l'instant.</div>
+                  ) : historyFiltered.slice(0,20).map(s=>(
+                    <div key={s.id} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:8,marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div>
+                        <span style={{background:s.action==="LONG"?"#052e16":"#2d0a0a",color:s.action==="LONG"?"#34d399":"#f87171",padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>{s.action}</span>
+                        <span style={{marginLeft:6,color:"#e2e8f0",fontSize:11}}>{s.coin}/USDC</span>
+                        <span style={{marginLeft:6,color:"#94a3b8",fontSize:9}}>{s.reason}</span>
+                      </div>
+                      <span style={{color:s.pnl>=0?"#34d399":"#f87171",fontSize:11,fontWeight:700}}>{s.pnl>=0?"+":""}{s.pnl?.toFixed(2)} USDC</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+            {paperSubTab==="all" && (
+              <div style={{fontSize:11,color:"#94a3b8"}}>Sélectionnez un mode ci-dessus pour voir son historique, sa performance et les actifs concernés séparément.</div>
+            )}
           </div>
 
           {/* MODE BANNER + SETTINGS */}
