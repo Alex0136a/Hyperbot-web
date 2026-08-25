@@ -1277,6 +1277,34 @@ def get_atr_summary(email: str = Depends(require_user)):
     return {"atr_period": atr_period, "results": results}
 
 
+@app.get("/api/strategy-performance/{strategy}")
+def get_strategy_performance(strategy: str, email: str = Depends(require_user)):
+    """v4.43 — SUR DEMANDE EXPLICITE : performance d un MODE precis
+    (normal/accumulation/funding_contrarian/spot_accumulation), calculee a
+    la demande depuis l historique reel en base — pour le bouton
+    "Performance" de chaque sous-onglet de l onglet Paper Trading."""
+    all_closed = db.get_all_closed_trades()
+    filtered = [t for t in all_closed if (t.get("strategy") or "normal") == strategy]
+    wins = [t for t in filtered if (t.get("pnl") or 0) > 0]
+    losses = [t for t in filtered if (t.get("pnl") or 0) <= 0]
+    total_pnl = sum((t.get("pnl") or 0) for t in filtered)
+    win_pnl = sum((t.get("pnl") or 0) for t in wins)
+    loss_pnl = sum((t.get("pnl") or 0) for t in losses)
+    open_count = sum(1 for st in bot.states.values() if st.position and (st.position.get("strategy") or "normal") == strategy)
+    return {
+        "strategy": strategy,
+        "total_trades": len(filtered),
+        "open_trades": open_count,
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": round(len(wins) / len(filtered) * 100, 1) if filtered else 0,
+        "net_pnl": round(total_pnl, 4),
+        "win_pnl": round(win_pnl, 4),
+        "loss_pnl": round(loss_pnl, 4),
+        "refreshed_at": time.time(),
+    }
+
+
 @app.get("/api/entry-diagnostics")
 def get_entry_diagnostics_all(email: str = Depends(require_user)):
     """v4.40 — SUR DEMANDE EXPLICITE, suite a un ecart de 13h sans aucun
