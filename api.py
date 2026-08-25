@@ -417,6 +417,8 @@ def _public_config() -> Dict[str, Any]:
         "funding_mode_enabled": cfg.get("FUNDING_MODE_ENABLED", False),
         "funding_mode_live_allowed": cfg.get("FUNDING_MODE_LIVE_ALLOWED", False),
         "require_sr_ema200_separation": cfg.get("REQUIRE_SR_EMA200_SEPARATION", False),
+        "spot_accum_enabled": cfg.get("SPOT_ACCUM_ENABLED", False),
+        "spot_accum_sl_enabled": cfg.get("SPOT_ACCUM_SL_ENABLED", False),
         "ai_continuous": db.get_config_override("ai_continuous", False),
         "running": bot.trading_enabled,
         "is_running": bot.trading_enabled,
@@ -758,6 +760,12 @@ ADVANCED_SETTINGS = {
     "FUNDING_MODE_MAX_TRADES":      {"label": "Funding Contrarian - trades simultanes max", "default": 3},
     "FUNDING_REFRESH_SEC":          {"label": "Funding Contrarian - frequence de rafraichissement (s)", "default": 300},
     "SR_EMA200_PROXIMITY_PCT":      {"label": "Separation S/R vs EMA200 - proximite (%)", "default": 0.5},
+    "SPOT_ACCUM_MAX_TRADES":            {"label": "Spot-Accum - trades simultanes max", "default": 3},
+    "SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT": {"label": "Spot-Accum - minimum au-dessus du support (%)", "default": 2.0},
+    "SPOT_ACCUM_TTP_ARM_PCT":           {"label": "Spot-Accum - TTP armement (% de PnL)", "default": 3.0},
+    "SPOT_ACCUM_TTP_TOLERANCE_PCT":     {"label": "Spot-Accum - TTP marge de repli depuis le pic (%)", "default": 0.5},
+    "SPOT_ACCUM_TARGET_SR_PCT":         {"label": "Spot-Accum - objectif (% distance support-resistance)", "default": 80.0},
+    "SPOT_ACCUM_SL_PCT_OF_PNL":         {"label": "Spot-Accum - SL optionnel (% du PnL, si active)", "default": 5.0},
     "VOLUME_MIN_RATIO":        {"label": "Volume - ratio minimum vs moyenne","default": 1.2},
     "MOMENTUM_PERIOD":         {"label": "Momentum - periode (cycles)",      "default": 4},
     "MOMENTUM_THRESHOLD_PCT":  {"label": "Momentum - seuil %",               "default": 0.20},
@@ -947,6 +955,8 @@ class FiltersBody(BaseModel):
     funding_mode_enabled: Optional[bool] = None
     funding_mode_live_allowed: Optional[bool] = None
     require_sr_ema200_separation: Optional[bool] = None
+    spot_accum_enabled: Optional[bool] = None
+    spot_accum_sl_enabled: Optional[bool] = None
 
 
 @app.put("/api/config/filters")
@@ -987,6 +997,13 @@ def put_filters(body: FiltersBody, email: str = Depends(require_user)):
     # de sa moyenne longue) — DESACTIVE par defaut.
     if body.require_sr_ema200_separation is not None:
         _apply_and_persist("REQUIRE_SR_EMA200_SEPARATION", body.require_sr_ema200_separation)
+    # v4.43 — mode Spot-Accumulation (achat d actif esprit spot, aucun SL
+    # par defaut, levier toujours x1). spot_accum_sl_enabled ajoute un SL
+    # optionnel en % du PnL (voir SPOT_ACCUM_SL_PCT_OF_PNL dans Parametres avances).
+    if body.spot_accum_enabled is not None:
+        _apply_and_persist("SPOT_ACCUM_ENABLED", body.spot_accum_enabled)
+    if body.spot_accum_sl_enabled is not None:
+        _apply_and_persist("SPOT_ACCUM_SL_ENABLED", body.spot_accum_sl_enabled)
     return {"ok": True}
 
 
