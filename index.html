@@ -455,6 +455,8 @@ function App() {
   const [slTtpAdaptive, setSlTtpAdaptive] = useState(false);
   const [fundingModeEnabled, setFundingModeEnabled] = useState(false);
   const [fundingModeLiveAllowed, setFundingModeLiveAllowed] = useState(false);
+  const [spotAccumEnabled, setSpotAccumEnabled] = useState(false);
+  const [spotAccumSlEnabled, setSpotAccumSlEnabled] = useState(false);
   const [requireSrEma200Separation, setRequireSrEma200Separation] = useState(false);
   const [dailyStats, setDailyStats] = useState(null);
   const [advancedSettings, setAdvancedSettings] = useState(null);
@@ -527,6 +529,8 @@ function App() {
       setSlTtpAdaptive(!!cfg?.sl_ttp_adaptive_enabled);
       setFundingModeEnabled(!!cfg?.funding_mode_enabled);
       setFundingModeLiveAllowed(!!cfg?.funding_mode_live_allowed);
+      setSpotAccumEnabled(!!cfg?.spot_accum_enabled);
+      setSpotAccumSlEnabled(!!cfg?.spot_accum_sl_enabled);
       setRequireSrEma200Separation(!!cfg?.require_sr_ema200_separation);
       // v3.2 — FIX : le champ s appelle finnhub_key (masque), pas finnhub_key_preview
       if(cfg?.finnhub_key) setFinnhubKey(cfg.finnhub_key);
@@ -1551,6 +1555,48 @@ Confirmer ?`
             </div>
             <div style={{fontSize:9,color:"#94a3b8",marginTop:10}}>
               Réglage fin (seuil de proximité) dans l'onglet Paramètres.
+            </div>
+          </div>
+
+          <div style={{background:"#0f1629",border:"1px solid #34d399",borderRadius:10,padding:16,marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#34d399",marginBottom:4}}>🌱 Spot-Accumulation</div>
+            <div style={{fontSize:10,color:"#94a3b8",marginBottom:14}}>
+              Achat d'actif dans l'esprit spot — LONG uniquement, avec la tendance générale haussière (EMA200) et au moins 2% au-dessus du support. Toujours levier x1. Objectif : atteindre 80% de la distance support-résistance mesurée à l'entrée, avec un trailing armé dès +3% de PnL (marge de repli 0.5% depuis le pic).
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #1e2d4a"}}>
+              <div>
+                <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700}}>Activer le mode Spot-Accumulation</div>
+                <div style={{fontSize:10,color:"#94a3b8"}}>Génère des trades en plus des autres modes, avec son propre plafond</div>
+              </div>
+              <button onClick={async()=>{
+                const v=!spotAccumEnabled;
+                try{
+                  await apiCall("/api/config/filters","PUT",{"spot_accum_enabled":v},token);
+                  setSpotAccumEnabled(v);
+                  loadData();
+                }catch(e){ alert("Erreur : "+e.message+" — le réglage n'a pas été enregistré."); }
+              }} style={{background:spotAccumEnabled?"#052e16":"#0a0e1a",border:spotAccumEnabled?"1px solid #34d399":"1px solid #1e2d4a",borderRadius:6,padding:"6px 14px",color:spotAccumEnabled?"#34d399":"#475569",fontSize:10,cursor:"pointer",fontWeight:700}}>
+                {spotAccumEnabled?"✅ ACTIF":"⭕ OFF"}
+              </button>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0"}}>
+              <div>
+                <div style={{fontSize:11,color:"#f87171",fontWeight:700}}>⚠️ Activer un Stop Loss (% du PnL)</div>
+                <div style={{fontSize:10,color:"#94a3b8"}}>Par défaut, AUCUN SL — une position perdante reste ouverte indéfiniment. Active ce switch pour fermer automatiquement si le PnL tombe sous le seuil réglé dans Paramètres (5% par défaut).</div>
+              </div>
+              <button onClick={async()=>{
+                const v=!spotAccumSlEnabled;
+                try{
+                  await apiCall("/api/config/filters","PUT",{"spot_accum_sl_enabled":v},token);
+                  setSpotAccumSlEnabled(v);
+                  loadData();
+                }catch(e){ alert("Erreur : "+e.message+" — le réglage n'a pas été enregistré."); }
+              }} style={{background:spotAccumSlEnabled?"#052e16":"#2d0a0a",border:spotAccumSlEnabled?"1px solid #34d399":"1px solid #f87171",borderRadius:6,padding:"6px 14px",color:spotAccumSlEnabled?"#34d399":"#f87171",fontSize:10,cursor:"pointer",fontWeight:700}}>
+                {spotAccumSlEnabled?"✅ SL ACTIF":"⚠️ AUCUN SL"}
+              </button>
+            </div>
+            <div style={{fontSize:9,color:"#94a3b8",marginTop:10}}>
+              Réglages fins (trades simultanés max, % au-dessus du support, TTP armement/tolérance, objectif %, seuil du SL optionnel) dans l'onglet Paramètres.
             </div>
           </div>
 
