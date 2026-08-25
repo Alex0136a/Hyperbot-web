@@ -278,7 +278,7 @@ CONFIG = {
     # de 0.5%" a ete comprise comme un armement a 3% puis un trailing avec
     # 0.5% de marge de repli depuis le pic — a corriger si l intention etait
     # differente (ex: fenetre d armement 2.5%-3.5% plutot qu un trailing).
-    "SPOT_ACCUM_ENABLED": False,
+    "SPOT_ACCUM_ENABLED": True,
     "SPOT_ACCUM_MAX_TRADES": 3,
     "SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT": 2.0,   # entree seulement si prix >= support + 2%
     "SPOT_ACCUM_TTP_ARM_PCT": 3.0,             # armement du trailing a partir de ce % de PnL
