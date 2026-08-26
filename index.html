@@ -439,6 +439,11 @@ function App() {
   const [strategyPerf, setStrategyPerf] = useState({});
   const [strategyPerfLoading, setStrategyPerfLoading] = useState(false);
   const [showMarketPanel, setShowMarketPanel] = useState(false);
+  // v4.44 — FIX : historique DEDIE par mode (pas le "signals" partage,
+  // plafonne a 50 TOUS modes confondus) — recupere a la demande quand un
+  // sous-onglet de mode est selectionne, via /api/signals?strategy=X.
+  const [modeHistory, setModeHistory] = useState({});
+  const [modeHistoryLoading, setModeHistoryLoading] = useState(false);
   const [atrSummaryLoading, setAtrSummaryLoading] = useState(false);
   const [indicatorData, setIndicatorData] = useState(null);
   const [indicatorLoading, setIndicatorLoading] = useState(false);
@@ -627,6 +632,24 @@ function App() {
       alert("Erreur : " + e.message);
     }
   }, [token, loadData]);
+
+  const loadModeHistory = useCallback(async (strategy) => {
+    if (!token) return;
+    setModeHistoryLoading(true);
+    try {
+      const r = await apiCall(`/api/signals?strategy=${strategy}&limit=200`, "GET", null, token);
+      setModeHistory(p=>({...p, [strategy]: r?.signals||[]}));
+    } catch(e) {
+      setModeHistory(p=>({...p, [strategy]: []}));
+    }
+    setModeHistoryLoading(false);
+  }, [token]);
+
+  useEffect(() => {
+    if (tab==="paper" && paperSubTab!=="all" && paperSubTab!=="performance" && token) {
+      loadModeHistory(paperSubTab);
+    }
+  }, [tab, paperSubTab, token, loadModeHistory]);
 
   useEffect(() => {
     if (tab === "indicateurs" && token) {
@@ -1944,7 +1967,10 @@ Confirmer ?`
 
             {paperSubTab!=="all" && paperSubTab!=="performance" && (()=>{
               const openFiltered = (paper?.open_trades||[]).filter(t=>(t.strategy||"normal")===paperSubTab);
-              const historyFiltered = (signals||[]).filter(s=>s.closed_at && (s.strategy||"normal")===paperSubTab);
+              // v4.44 — FIX : utilise l historique DEDIE recupere pour ce
+              // mode precis (deja filtre cote serveur, pool bien plus large
+              // que les 50 signaux partages tous modes confondus).
+              const historyFiltered = (modeHistory[paperSubTab]||[]).filter(s=>s.closed_at);
               const coinsSeen = [...new Set([...openFiltered.map(t=>t.coin), ...historyFiltered.map(s=>s.coin)])].sort();
               const perf = strategyPerf[paperSubTab];
               const stMeta = PAPER_SUBTABS.find(s=>s.key===paperSubTab);
@@ -2034,7 +2060,7 @@ Confirmer ?`
                   ))}
 
                   {/* v4.44 — historique COMPLET, propre a ce mode (plus de troncature a 20) */}
-                  <div style={{fontSize:10,color:"#94a3b8",margin:"14px 0 8px",fontWeight:700}}>HISTORIQUE COMPLET DE CE MODE ({historyFiltered.length})</div>
+                  <div style={{fontSize:10,color:"#94a3b8",margin:"14px 0 8px",fontWeight:700}}>HISTORIQUE COMPLET DE CE MODE ({historyFiltered.length}){modeHistoryLoading?" · chargement...":""}</div>
                   {historyFiltered.length===0 ? (
                     <div style={{fontSize:11,color:"#94a3b8"}}>Aucun trade fermé dans ce mode pour l'instant.</div>
                   ) : (
