@@ -792,6 +792,12 @@ ADVANCED_SETTINGS = {
     "ACCUMULATION_TTP_ARM2_PRICE_PCT":      {"label": "Accumulation - TTP palier 2 (% de prix)", "default": None},
     "ACCUMULATION_TTP_TRAIL_GAP_PRICE_PCT": {"label": "Accumulation - TTP marge de repli (% de prix)", "default": None},
     "ACCUMULATION_SL_ATR_MULTIPLIER":       {"label": "Accumulation - multiplicateur ATR (mode adaptatif)", "default": None},
+    "FUNDING_SL_PCT_OF_E":             {"label": "Funding - SL (% de E)", "default": None},
+    "FUNDING_TTP_ARM1_PRICE_PCT":      {"label": "Funding - TTP armement (% de prix)", "default": None},
+    "FUNDING_TTP_LOCK1_PRICE_PCT":     {"label": "Funding - TTP verrou initial (% de prix)", "default": None},
+    "FUNDING_TTP_ARM2_PRICE_PCT":      {"label": "Funding - TTP palier 2 (% de prix)", "default": None},
+    "FUNDING_TTP_TRAIL_GAP_PRICE_PCT": {"label": "Funding - TTP marge de repli (% de prix)", "default": None},
+    "FUNDING_SL_ATR_MULTIPLIER":       {"label": "Funding - multiplicateur ATR (mode adaptatif)", "default": None},
 }
 
 
