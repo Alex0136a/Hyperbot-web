@@ -179,6 +179,18 @@ CONFIG = {
     "ACCUMULATION_TTP_ARM2_PRICE_PCT":     None,
     "ACCUMULATION_TTP_TRAIL_GAP_PRICE_PCT": None,
     "ACCUMULATION_SL_ATR_MULTIPLIER":      None,  # utilise seulement si SL_TTP_ADAPTIVE_ENABLED est actif
+
+    # v4.45 — SUR DEMANDE EXPLICITE : meme mecanisme que Accumulation,
+    # applique a Funding Contrarian — pour que les 4 modes (normal,
+    # accumulation, funding, spot-accum) soient tous reglables
+    # independamment. None = herite du mode normal, aucun changement de
+    # comportement tant que rien n est personnalise.
+    "FUNDING_SL_PCT_OF_E":             None,
+    "FUNDING_TTP_ARM1_PRICE_PCT":      None,
+    "FUNDING_TTP_LOCK1_PRICE_PCT":     None,
+    "FUNDING_TTP_ARM2_PRICE_PCT":      None,
+    "FUNDING_TTP_TRAIL_GAP_PRICE_PCT": None,
+    "FUNDING_SL_ATR_MULTIPLIER":       None,
     # Confirmation de tendance optionnelle : si activee, un LONG pres du
     # support n est accepte QUE si la tendance de fond (EMA200) est deja
     # haussiere (achat du repli dans une tendance, pas un pari de
@@ -4974,6 +4986,24 @@ class BotEngine:
             ttp_gap_pct   = cfg.get("ACCUMULATION_TTP_TRAIL_GAP_PRICE_PCT")
             if ttp_gap_pct is None:
                 ttp_gap_pct = cfg.get("TTP_TRAIL_GAP_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3))
+        elif strategy == "funding_contrarian":
+            # v4.45 — SUR DEMANDE EXPLICITE : meme mecanisme que Accumulation,
+            # pour que les 4 modes soient tous reglables independamment.
+            sl_pct_of_e   = cfg.get("FUNDING_SL_PCT_OF_E")
+            if sl_pct_of_e is None:
+                sl_pct_of_e = cfg.get("SL_PCT_OF_E_BY_SYMBOL", {}).get(ticker, cfg.get("SL_PCT_OF_E", 1.0))
+            ttp_arm1_pct  = cfg.get("FUNDING_TTP_ARM1_PRICE_PCT")
+            if ttp_arm1_pct is None:
+                ttp_arm1_pct = cfg.get("TTP_ARM1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM1_PRICE_PCT", 1.0))
+            ttp_lock1_pct = cfg.get("FUNDING_TTP_LOCK1_PRICE_PCT")
+            if ttp_lock1_pct is None:
+                ttp_lock1_pct = cfg.get("TTP_LOCK1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_LOCK1_PRICE_PCT", 0.8))
+            ttp_arm2_pct  = cfg.get("FUNDING_TTP_ARM2_PRICE_PCT")
+            if ttp_arm2_pct is None:
+                ttp_arm2_pct = cfg.get("TTP_ARM2_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM2_PRICE_PCT", 1.3))
+            ttp_gap_pct   = cfg.get("FUNDING_TTP_TRAIL_GAP_PRICE_PCT")
+            if ttp_gap_pct is None:
+                ttp_gap_pct = cfg.get("TTP_TRAIL_GAP_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3))
         else:
             sl_pct_of_e   = cfg.get("SL_PCT_OF_E_BY_SYMBOL", {}).get(ticker, cfg.get("SL_PCT_OF_E", 1.0))
             ttp_arm1_pct  = cfg.get("TTP_ARM1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM1_PRICE_PCT", 1.0))
@@ -4995,8 +5025,11 @@ class BotEngine:
                 sl_max = cfg.get("SL_PCT_MAX", 3.0)
                 # v4.41 — multiplicateur ATR aussi surchargeable par actif.
                 # v4.42 — et par strategie (Accumulation) si defini.
+                # v4.45 — et Funding Contrarian, sur le meme modele.
                 if strategy == "accumulation" and cfg.get("ACCUMULATION_SL_ATR_MULTIPLIER") is not None:
                     sl_atr_mult = cfg.get("ACCUMULATION_SL_ATR_MULTIPLIER")
+                elif strategy == "funding_contrarian" and cfg.get("FUNDING_SL_ATR_MULTIPLIER") is not None:
+                    sl_atr_mult = cfg.get("FUNDING_SL_ATR_MULTIPLIER")
                 else:
                     sl_atr_mult = cfg.get("SL_ATR_MULTIPLIER_BY_SYMBOL", {}).get(ticker, cfg.get("SL_ATR_MULTIPLIER", 1.0))
                 sl_dynamic = max(sl_min, min(sl_max, atr_pct_entry * sl_atr_mult))
