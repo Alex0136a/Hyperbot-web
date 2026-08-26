@@ -68,11 +68,19 @@ const ACCUM_OVERRIDE_KEYS = new Set([
 // v4.43 — sous-onglets Paper Trading par mode
 const PAPER_SUBTABS = [
   {key:"all", label:"Tous", icon:"📊", color:"#60a5fa"},
+  {key:"performance", label:"Performance", icon:"📈", color:"#34d399"},
   {key:"normal", label:"Normal", icon:"⚡", color:"#e2e8f0"},
   {key:"accumulation", label:"Accumulation", icon:"🎯", color:"#c084fc"},
   {key:"funding_contrarian", label:"Funding", icon:"💰", color:"#fbbf24"},
   {key:"spot_accumulation", label:"Spot-Accum", icon:"🌱", color:"#34d399"},
 ];
+// v4.44 — modes ayant une liste d actifs dediee personnalisable (pas
+// "normal", qui reste gere via l onglet Marches existant)
+const MODE_COIN_KEY = {
+  accumulation: "accumulation_active_coins",
+  funding_contrarian: "funding_active_coins",
+  spot_accumulation: "spot_accum_active_coins",
+};
 const confColor = c => c>=75?"#34d399":c>=60?"#fbbf24":"#f87171";
 const LOGCOL = { system:"#60a5fa", info:"#94a3b8", error:"#f87171", warn:"#fbbf24", ai:"#c084fc", long:"#34d399", short:"#f87171", dim:"#475569" };
 
@@ -592,6 +600,33 @@ function App() {
     }
     setStrategyPerfLoading(false);
   }, [token]);
+
+  const loadAllStrategyPerformance = useCallback(async () => {
+    if (!token) return;
+    setStrategyPerfLoading(true);
+    const modes = ["normal","accumulation","funding_contrarian","spot_accumulation"];
+    try {
+      const results = await Promise.all(modes.map(m=>
+        apiCall(`/api/strategy-performance/${m}`, "GET", null, token).catch(()=>null)
+      ));
+      setStrategyPerf(p=>{
+        const next = {...p};
+        modes.forEach((m,i)=>{ next[m] = results[i]; });
+        return next;
+      });
+    } catch(e) {}
+    setStrategyPerfLoading(false);
+  }, [token]);
+
+  const toggleModeCoin = useCallback(async (mode, ticker, active) => {
+    if (!token) return;
+    try {
+      await apiCall("/api/config/mode-coins", "PUT", {mode, ticker, active}, token);
+      loadData();
+    } catch(e) {
+      alert("Erreur : " + e.message);
+    }
+  }, [token, loadData]);
 
   useEffect(() => {
     if (tab === "indicateurs" && token) {
@@ -1862,7 +1897,7 @@ Confirmer ?`
             ))}
           </div>
 
-          {/* v4.43 — SOUS-ONGLETS PAR MODE (Normal/Accumulation/Funding/Spot-Accum) */}
+          {/* v4.43/v4.44 — SOUS-ONGLETS PAR MODE (Normal/Accumulation/Funding/Spot-Accum/Performance) */}
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:16}}>
             <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
               {PAPER_SUBTABS.map(st=>(
@@ -1873,12 +1908,49 @@ Confirmer ?`
               ))}
             </div>
 
-            {paperSubTab!=="all" && (()=>{
+            {/* v4.44 — ONGLET PERFORMANCE : compare les 4 modes, rafraichit tout au clic */}
+            {paperSubTab==="performance" && (
+              <div>
+                <button onClick={loadAllStrategyPerformance} disabled={strategyPerfLoading}
+                  style={{background:"#05301622",border:"1px solid #34d399",borderRadius:6,padding:"8px 16px",color:"#34d399",fontSize:11,cursor:"pointer",fontWeight:700,marginBottom:14}}>
+                  {strategyPerfLoading?"Chargement...":"🔄 Rafraîchir les 4 modes"}
+                </button>
+                {["normal","accumulation","funding_contrarian","spot_accumulation"].every(m=>!strategyPerf[m]) ? (
+                  <div style={{fontSize:11,color:"#94a3b8"}}>Cliquez sur "Rafraîchir" pour comparer la performance des 4 modes en un coup d'œil.</div>
+                ) : (
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                    {["normal","accumulation","funding_contrarian","spot_accumulation"].map(m=>{
+                      const meta = PAPER_SUBTABS.find(s=>s.key===m);
+                      const perf = strategyPerf[m];
+                      return (
+                        <div key={m} style={{background:"#0a0e1a",border:`1px solid ${meta.color}`,borderRadius:8,padding:12}}>
+                          <div style={{fontSize:12,fontWeight:700,color:meta.color,marginBottom:8}}>{meta.icon} {meta.label}</div>
+                          {!perf ? (
+                            <div style={{fontSize:10,color:"#94a3b8"}}>Pas encore chargé.</div>
+                          ) : (
+                            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+                              <div><div style={{fontSize:15,fontWeight:700,color:"#e2e8f0"}}>{perf.open_trades}/{perf.total_trades}</div><div style={{fontSize:8,color:"#94a3b8"}}>OUVERTS/TOTAL</div></div>
+                              <div><div style={{fontSize:15,fontWeight:700,color:"#fbbf24"}}>{perf.win_rate}%</div><div style={{fontSize:8,color:"#94a3b8"}}>WIN RATE</div></div>
+                              <div style={{gridColumn:"span 2"}}><div style={{fontSize:15,fontWeight:700,color:perf.net_pnl>=0?"#34d399":"#f87171"}}>{perf.net_pnl>=0?"+":""}{perf.net_pnl.toFixed(2)} USDC</div><div style={{fontSize:8,color:"#94a3b8"}}>NET</div></div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {paperSubTab!=="all" && paperSubTab!=="performance" && (()=>{
               const openFiltered = (paper?.open_trades||[]).filter(t=>(t.strategy||"normal")===paperSubTab);
               const historyFiltered = (signals||[]).filter(s=>s.closed_at && (s.strategy||"normal")===paperSubTab);
               const coinsSeen = [...new Set([...openFiltered.map(t=>t.coin), ...historyFiltered.map(s=>s.coin)])].sort();
               const perf = strategyPerf[paperSubTab];
               const stMeta = PAPER_SUBTABS.find(s=>s.key===paperSubTab);
+              const coinKey = MODE_COIN_KEY[paperSubTab]; // undefined pour "normal"
+              const modeCoinList = coinKey ? config?.[coinKey] : null; // null = herite du global
+              const globalActive = config?.active_coins || [];
               return (
                 <div>
                   <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
@@ -1918,6 +1990,26 @@ Confirmer ?`
                     </div>
                   )}
 
+                  {/* v4.44 — LISTE D'ACTIFS DEDIEE AU MODE, activable en un clic */}
+                  {coinKey && (
+                    <div style={{marginBottom:16}}>
+                      <div style={{fontSize:10,color:"#94a3b8",marginBottom:4,fontWeight:700}}>
+                        ACTIFS ACTIFS POUR CE MODE {modeCoinList===null ? "(hérite de Marchés — cliquez un actif pour personnaliser)" : "(liste personnalisée pour ce mode)"}
+                      </div>
+                      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                        {ALL_COINS.map(c=>{
+                          const isActive = modeCoinList===null ? globalActive.includes(c) : modeCoinList.includes(c);
+                          return (
+                            <button key={c} onClick={()=>toggleModeCoin(paperSubTab, c, !isActive)}
+                              style={{background:isActive?`${stMeta.color}22`:"#0a0e1a",border:isActive?`1px solid ${stMeta.color}`:"1px solid #1e2d4a",borderRadius:5,padding:"4px 9px",color:isActive?stMeta.color:"#475569",fontSize:10,fontWeight:700,cursor:"pointer"}}>
+                              {c}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
                   <div style={{fontSize:10,color:"#94a3b8",marginBottom:8,fontWeight:700}}>TRADES OUVERTS ({openFiltered.length})</div>
                   {openFiltered.length===0 ? (
                     <div style={{fontSize:11,color:"#94a3b8",marginBottom:14}}>Aucun trade ouvert dans ce mode.</div>
@@ -1941,26 +2033,32 @@ Confirmer ?`
                     </div>
                   ))}
 
-                  <div style={{fontSize:10,color:"#94a3b8",margin:"14px 0 8px",fontWeight:700}}>HISTORIQUE ({historyFiltered.length})</div>
+                  {/* v4.44 — historique COMPLET, propre a ce mode (plus de troncature a 20) */}
+                  <div style={{fontSize:10,color:"#94a3b8",margin:"14px 0 8px",fontWeight:700}}>HISTORIQUE COMPLET DE CE MODE ({historyFiltered.length})</div>
                   {historyFiltered.length===0 ? (
                     <div style={{fontSize:11,color:"#94a3b8"}}>Aucun trade fermé dans ce mode pour l'instant.</div>
-                  ) : historyFiltered.slice(0,20).map(s=>(
-                    <div key={s.id} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:8,marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                      <div>
-                        <span style={{background:s.action==="LONG"?"#052e16":"#2d0a0a",color:s.action==="LONG"?"#34d399":"#f87171",padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>{s.action}</span>
-                        <span style={{marginLeft:6,color:"#e2e8f0",fontSize:11}}>{s.coin}/USDC</span>
-                        <span style={{marginLeft:6,color:"#94a3b8",fontSize:9}}>{s.reason}</span>
-                      </div>
-                      <span style={{color:s.pnl>=0?"#34d399":"#f87171",fontSize:11,fontWeight:700}}>{s.pnl>=0?"+":""}{s.pnl?.toFixed(2)} USDC</span>
+                  ) : (
+                    <div style={{maxHeight:500,overflowY:"auto"}}>
+                      {historyFiltered.map(s=>(
+                        <div key={s.id} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:8,marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                          <div>
+                            <span style={{background:s.action==="LONG"?"#052e16":"#2d0a0a",color:s.action==="LONG"?"#34d399":"#f87171",padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>{s.action}</span>
+                            <span style={{marginLeft:6,color:"#e2e8f0",fontSize:11}}>{s.coin}/USDC</span>
+                            <span style={{marginLeft:6,color:"#94a3b8",fontSize:9}}>{s.reason}</span>
+                          </div>
+                          <span style={{color:s.pnl>=0?"#34d399":"#f87171",fontSize:11,fontWeight:700}}>{s.pnl>=0?"+":""}{s.pnl?.toFixed(2)} USDC</span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
               );
             })()}
             {paperSubTab==="all" && (
-              <div style={{fontSize:11,color:"#94a3b8"}}>Sélectionnez un mode ci-dessus pour voir son historique, sa performance et les actifs concernés séparément.</div>
+              <div style={{fontSize:11,color:"#94a3b8"}}>Sélectionnez un mode ci-dessus pour voir son historique complet, sa performance et ses actifs séparément — ou "Performance" pour comparer les 4 modes.</div>
             )}
           </div>
+
 
           {/* MODE BANNER + SETTINGS */}
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:16}}>
