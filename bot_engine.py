@@ -287,6 +287,14 @@ CONFIG = {
     "SPOT_ACCUM_SL_ENABLED": False,            # AUCUN SL par defaut — interrupteur explicite pour en ajouter un
     "SPOT_ACCUM_SL_PCT_OF_PNL": 5.0,           # si active : ferme si le PnL tombe a -5% (valeur, pas negative — le signe est applique automatiquement)
 
+    # v4.44 — SUR DEMANDE EXPLICITE : liste d actifs DEDIEE par mode
+    # (independante de la liste globale ACTIVE_COINS geree dans Marches).
+    # None = herite de la liste globale (aucun changement de comportement
+    # tant que rien n est personnalise) — voir _gate_active_or_auto_activate.
+    "ACCUMULATION_ACTIVE_COINS": None,
+    "FUNDING_ACTIVE_COINS": None,
+    "SPOT_ACCUM_ACTIVE_COINS": None,
+
     # v4.24 — SL/TTP ADAPTATIFS a l ATR reel (optionnel, DESACTIVE par
     # defaut — activation explicite requise). Au lieu de seuils fixes,
     # chaque trade calcule son propre SL a partir de l ATR au moment de
@@ -2636,15 +2644,26 @@ class BotEngine:
 
     def _gate_active_or_auto_activate(self, ticker, confidence, direction):
         """v4.4 — Auto-activation SUPPRIMEE sur demande explicite : un actif
-        non selectionne dans ACTIVE_COINS reste desormais TOUJOURS bloque,
-        quelle que soit la confiance du signal (meme 99%). Avant ce fix, le
-        bot pouvait activer tout seul un actif inactif des que la confiance
-        depassait AUTO_ACTIVATE_CONFIDENCE_PCT (80% par defaut) — ce
-        comportement n est plus souhaite : seule une activation manuelle
-        depuis l onglet Marches doit permettre a un actif de trader.
-        Retourne True si le trade peut s executer (actif deja dans
-        ACTIVE_COINS), False sinon.
+        non selectionne reste desormais TOUJOURS bloque, quelle que soit la
+        confiance du signal (meme 99%).
+        v4.44 — SUR DEMANDE EXPLICITE : chaque mode (Accumulation, Funding
+        Contrarian, Spot-Accumulation) peut desormais avoir sa PROPRE liste
+        d actifs actifs, independante de la liste globale (Marches). Tant
+        qu aucune liste dediee n est definie pour un mode (valeur None),
+        il continue de retomber sur la liste globale ACTIVE_COINS — aucun
+        changement de comportement tant que vous ne personnalisez rien.
+        Retourne True si le trade peut s executer, False sinon.
         """
+        mode_key_map = {
+            "accumulation": "ACCUMULATION_ACTIVE_COINS",
+            "funding_contrarian": "FUNDING_ACTIVE_COINS",
+            "spot_accumulation": "SPOT_ACCUM_ACTIVE_COINS",
+        }
+        override_key = mode_key_map.get(direction)
+        if override_key:
+            override_list = self.cfg.get(override_key)
+            if override_list is not None:
+                return ticker in override_list
         active_coins = self.cfg.get("ACTIVE_COINS")
         if active_coins is None or ticker in active_coins:
             return True  # pas de restriction, ou deja actif
