@@ -419,6 +419,9 @@ def _public_config() -> Dict[str, Any]:
         "require_sr_ema200_separation": cfg.get("REQUIRE_SR_EMA200_SEPARATION", False),
         "spot_accum_enabled": cfg.get("SPOT_ACCUM_ENABLED", False),
         "spot_accum_sl_enabled": cfg.get("SPOT_ACCUM_SL_ENABLED", False),
+        "accumulation_active_coins": cfg.get("ACCUMULATION_ACTIVE_COINS"),
+        "funding_active_coins": cfg.get("FUNDING_ACTIVE_COINS"),
+        "spot_accum_active_coins": cfg.get("SPOT_ACCUM_ACTIVE_COINS"),
         "ai_continuous": db.get_config_override("ai_continuous", False),
         "running": bot.trading_enabled,
         "is_running": bot.trading_enabled,
@@ -943,6 +946,43 @@ class FinnhubBody(BaseModel):
 def put_finnhub(body: FinnhubBody, email: str = Depends(require_user)):
     _apply_and_persist("FINNHUB_API_KEY", body.finnhub_key)
     return {"ok": True}
+
+
+MODE_ACTIVE_COINS_KEY = {
+    "accumulation": "ACCUMULATION_ACTIVE_COINS",
+    "funding_contrarian": "FUNDING_ACTIVE_COINS",
+    "spot_accumulation": "SPOT_ACCUM_ACTIVE_COINS",
+}
+
+
+class ModeCoinBody(BaseModel):
+    mode: str
+    ticker: str
+    active: bool
+
+
+@app.put("/api/config/mode-coins")
+def put_mode_coins(body: ModeCoinBody, email: str = Depends(require_user)):
+    """v4.44 — SUR DEMANDE EXPLICITE : bascule un actif ON/OFF pour un mode
+    PRECIS (Accumulation/Funding/Spot-Accum), en un clic, independamment de
+    la liste globale (Marches). Au premier reglage pour un mode, initialise
+    sa liste dediee a partir de la liste globale ACTIVE_COINS actuelle
+    (pour ne pas desactiver silencieusement tout le reste d un coup)."""
+    key = MODE_ACTIVE_COINS_KEY.get(body.mode)
+    if not key:
+        raise HTTPException(400, f"Mode inconnu : {body.mode}")
+    current = cfg.get(key)
+    if current is None:
+        current = list(cfg.get("ACTIVE_COINS") or [])
+    else:
+        current = list(current)
+    ticker = body.ticker.upper()
+    if body.active and ticker not in current:
+        current.append(ticker)
+    elif not body.active and ticker in current:
+        current.remove(ticker)
+    _apply_and_persist(key, current)
+    return {"ok": True, "mode": body.mode, "active_coins": current}
 
 
 class FiltersBody(BaseModel):
