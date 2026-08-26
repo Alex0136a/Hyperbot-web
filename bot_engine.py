@@ -191,6 +191,15 @@ CONFIG = {
     "FUNDING_TTP_ARM2_PRICE_PCT":      None,
     "FUNDING_TTP_TRAIL_GAP_PRICE_PCT": None,
     "FUNDING_SL_ATR_MULTIPLIER":       None,
+
+    # v4.46 — SUR DEMANDE EXPLICITE : taille par trade (% du capital)
+    # INDEPENDANTE par mode — jusqu ici, tous les modes partageaient le meme
+    # batch_entry_size fige (calcule une seule fois depuis POSITION_SIZE_PCT
+    # global). None = herite du comportement global habituel (aucun
+    # changement tant que rien n est personnalise).
+    "ACCUMULATION_POSITION_SIZE_PCT": None,
+    "FUNDING_POSITION_SIZE_PCT": None,
+    "SPOT_ACCUM_POSITION_SIZE_PCT": None,
     # Confirmation de tendance optionnelle : si activee, un LONG pres du
     # support n est accepte QUE si la tendance de fond (EMA200) est deja
     # haussiere (achat du repli dans une tendance, pas un pari de
@@ -4939,6 +4948,19 @@ class BotEngine:
             self.emit("log", {"msg": f"Nouveau lot — E fige a ${self.batch_entry_size:.2f} ({cfg['POSITION_SIZE_PCT']:.0f}% de ${equity:.2f}) pour jusqu a {cfg.get('MAX_OPEN_TRADES', 5)} trades simultanes", "level": "info"})
 
         size = min(self.batch_entry_size, capital_available)
+        # v4.46 — SUR DEMANDE EXPLICITE : taille INDEPENDANTE par mode, si
+        # definie — contourne le batch_entry_size PARTAGE (fige pour tout le
+        # lot, tous modes confondus) et calcule une taille dediee depuis
+        # l equity actuelle. None (par defaut) = aucun changement.
+        mode_size_key = {
+            "accumulation": "ACCUMULATION_POSITION_SIZE_PCT",
+            "funding_contrarian": "FUNDING_POSITION_SIZE_PCT",
+            "spot_accumulation": "SPOT_ACCUM_POSITION_SIZE_PCT",
+        }.get(strategy)
+        if mode_size_key:
+            mode_pct = cfg.get(mode_size_key)
+            if mode_pct is not None:
+                size = min(equity * mode_pct / 100, capital_available)
         if size <= 0:
             self.emit("log", {"msg": f"[{ticker}] Capital insuffisant pour E=${self.batch_entry_size:.2f} (disponible ${capital_available:.2f})", "level": "warn"})
             return
