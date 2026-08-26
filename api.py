@@ -1458,7 +1458,19 @@ def get_entry_diagnostics_one(ticker: str, email: str = Depends(require_user)):
 
 
 @app.get("/api/signals")
-def get_signals(limit: int = Query(50), email: str = Depends(require_user)):
+def get_signals(limit: int = Query(50), strategy: str = Query(None), email: str = Depends(require_user)):
+    """v4.44 — SUR DEMANDE EXPLICITE : parametre 'strategy' optionnel pour
+    filtrer l historique PAR MODE. Sans ce filtre, la limite de 50 est
+    partagee entre TOUS les modes confondus — insuffisant pour un historique
+    par mode complet (avec 4 modes actifs, chacun pourrait n avoir que
+    quelques lignes visibles, voire aucune, meme avec beaucoup de trades
+    reels). Avec le filtre, on interroge un bassin bien plus large AVANT de
+    filtrer, pour que 'limit' s applique au nombre de trades de CE mode
+    precis, pas au nombre de trades tous modes confondus."""
+    if strategy:
+        raw = db.get_trades(limit=max(limit * 20, 2000))
+        filtered = [r for r in raw if (r.get("strategy") or "normal") == strategy]
+        return {"signals": [_trade_row_to_signal(r) for r in filtered[:limit]]}
     return {"signals": [_trade_row_to_signal(r) for r in db.get_trades(limit=limit)]}
 
 
