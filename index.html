@@ -88,6 +88,37 @@ const MODE_COIN_KEY = {
   funding_contrarian: "funding_active_coins",
   spot_accumulation: "spot_accum_active_coins",
 };
+// v4.46 — SUR DEMANDE EXPLICITE : reglages SL/TTP/Taille DEDIES a chaque
+// mode, affiches directement dans son propre onglet (plus dans un panneau
+// global partage a chercher ailleurs — source de confusion signalee :
+// modifier le SL "global" affectait silencieusement tous les modes qui
+// n avaient pas encore leur propre valeur).
+const MODE_SETTINGS_FIELDS = {
+  accumulation: [
+    {key:"ACCUMULATION_POSITION_SIZE_PCT", label:"Taille par trade (% du capital)"},
+    {key:"ACCUMULATION_SL_PCT_OF_E", label:"SL (% de E)"},
+    {key:"ACCUMULATION_TTP_ARM1_PRICE_PCT", label:"TTP armement (% de prix)"},
+    {key:"ACCUMULATION_TTP_LOCK1_PRICE_PCT", label:"TTP verrou initial (% de prix)"},
+    {key:"ACCUMULATION_TTP_ARM2_PRICE_PCT", label:"TTP palier 2 (% de prix)"},
+    {key:"ACCUMULATION_TTP_TRAIL_GAP_PRICE_PCT", label:"TTP marge de repli (% de prix)"},
+  ],
+  funding_contrarian: [
+    {key:"FUNDING_POSITION_SIZE_PCT", label:"Taille par trade (% du capital)"},
+    {key:"FUNDING_SL_PCT_OF_E", label:"SL (% de E)"},
+    {key:"FUNDING_TTP_ARM1_PRICE_PCT", label:"TTP armement (% de prix)"},
+    {key:"FUNDING_TTP_LOCK1_PRICE_PCT", label:"TTP verrou initial (% de prix)"},
+    {key:"FUNDING_TTP_ARM2_PRICE_PCT", label:"TTP palier 2 (% de prix)"},
+    {key:"FUNDING_TTP_TRAIL_GAP_PRICE_PCT", label:"TTP marge de repli (% de prix)"},
+  ],
+  spot_accumulation: [
+    {key:"SPOT_ACCUM_POSITION_SIZE_PCT", label:"Taille par trade (% du capital)"},
+    {key:"SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT", label:"Minimum au-dessus du support (%)"},
+    {key:"SPOT_ACCUM_TTP_ARM_PCT", label:"TTP armement (% de PnL)"},
+    {key:"SPOT_ACCUM_TTP_TOLERANCE_PCT", label:"TTP marge de repli depuis le pic (%)"},
+    {key:"SPOT_ACCUM_TARGET_SR_PCT", label:"Objectif (% distance support-résistance)"},
+    {key:"SPOT_ACCUM_SL_PCT_OF_PNL", label:"SL optionnel (% du PnL, si activé)"},
+  ],
+};
 const confColor = c => c>=75?"#34d399":c>=60?"#fbbf24":"#f87171";
 const LOGCOL = { system:"#60a5fa", info:"#94a3b8", error:"#f87171", warn:"#fbbf24", ai:"#c084fc", long:"#34d399", short:"#f87171", dim:"#475569" };
 
@@ -655,6 +686,11 @@ function App() {
   useEffect(() => {
     if (tab==="paper" && paperSubTab!=="all" && paperSubTab!=="performance" && token) {
       loadModeHistory(paperSubTab);
+      // v4.46 — les reglages dedies par mode (SL/TTP/Taille) vivent dans
+      // advancedSettings — le charger ici aussi, pas seulement quand on
+      // visite l onglet Parametres, sinon les champs de ce panneau
+      // n auraient pas encore leurs valeurs au premier affichage.
+      if (!advancedSettings) apiCall("/api/config/advanced","GET",null,token).then(r=>setAdvancedSettings(r));
     }
   }, [tab, paperSubTab, token, loadModeHistory]);
 
@@ -2043,6 +2079,50 @@ Confirmer ?`
                     </div>
                   )}
 
+                  {/* v4.46 — SUR DEMANDE EXPLICITE : reglages SL/TTP/Taille
+                  DEDIES a CE mode, directement ici — plus besoin d aller les
+                  chercher dans Parametres avances, et surtout plus de
+                  confusion avec le reglage GLOBAL partage entre modes. */}
+                  {MODE_SETTINGS_FIELDS[paperSubTab] && (
+                    <div style={{background:"#0a0e1a",border:`1px solid ${stMeta.color}`,borderRadius:8,padding:12,marginBottom:16}}>
+                      <div style={{fontSize:10,color:stMeta.color,marginBottom:10,fontWeight:700}}>⚙️ Réglages dédiés à ce mode</div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                        {MODE_SETTINGS_FIELDS[paperSubTab].map(f=>{
+                          const meta = advancedSettings?.[f.key];
+                          const val = meta?.value;
+                          const isOverride = ACCUM_OVERRIDE_KEYS.has(f.key); // null = herite du mode normal
+                          return (
+                            <div key={f.key}>
+                              <div style={{fontSize:9,color:"#94a3b8",marginBottom:3}}>{f.label}</div>
+                              <div style={{display:"flex",gap:4}}>
+                                <input key={`${f.key}-${val}`} type="number" step="any"
+                                  defaultValue={val==null?"":val}
+                                  placeholder={isOverride && val==null ? "Hérite du mode normal" : ""}
+                                  onBlur={async(e)=>{
+                                    const raw = e.target.value;
+                                    const newVal = raw===""? (isOverride?null:0) : Number(raw);
+                                    try{
+                                      await apiCall("/api/config/advanced","PUT",{values:{[f.key]:newVal}},token);
+                                      apiCall("/api/config/advanced","GET",null,token).then(r=>setAdvancedSettings(r));
+                                    }catch(err){ alert("Erreur : "+err.message); }
+                                  }}
+                                  style={{width:"100%",background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11}}/>
+                                {isOverride && val!=null && (
+                                  <button type="button" title="Réinitialiser (hériter du mode normal)"
+                                    onClick={async()=>{
+                                      await apiCall("/api/config/advanced","PUT",{values:{[f.key]:null}},token);
+                                      apiCall("/api/config/advanced","GET",null,token).then(r=>setAdvancedSettings(r));
+                                    }}
+                                    style={{background:"#1e2d4a",border:"1px solid #334155",borderRadius:6,padding:"0 8px",color:"#94a3b8",fontSize:11,cursor:"pointer"}}>↺</button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
                   <div style={{fontSize:10,color:"#94a3b8",marginBottom:8,fontWeight:700}}>TRADES OUVERTS ({openFiltered.length})</div>
                   {openFiltered.length===0 ? (
                     <div style={{fontSize:11,color:"#94a3b8",marginBottom:14}}>Aucun trade ouvert dans ce mode.</div>
@@ -2111,7 +2191,7 @@ Confirmer ?`
             </div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
               <div>
-                <div style={{fontSize:9,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>TAILLE PAR TRADE (% DU CAPITAL)</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>TAILLE PAR TRADE (% DU CAPITAL) — mode normal</div>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                   <input key={`pct-${config?.position_pct}`} type="number" defaultValue={config?.position_pct||20} min="1" max="50"
                     onBlur={e=>{apiCall("/api/config","PUT",{position_pct:Number(e.target.value)},token).then(()=>{loadData();flashSave("pct");});}}
@@ -2121,7 +2201,7 @@ Confirmer ?`
                 <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>≈ {Math.round((config?.position_pct||20))}% du capital = E, figé pour tout un lot de trades simultanés (voir Trades simultanés max)</div>
               </div>
               <div>
-                <div style={{fontSize:10,color:"#f59e0b",marginBottom:6,fontWeight:700,letterSpacing:1}}>⚡ TTP - ARMEMENT (% DE MOUVEMENT DE PRIX)</div>
+                <div style={{fontSize:10,color:"#f59e0b",marginBottom:6,fontWeight:700,letterSpacing:1}}>⚡ TTP - ARMEMENT (% DE MOUVEMENT DE PRIX) — mode normal</div>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                   <input key={`ttp-${config?.ttp_arm1_price_pct}`} type="number" min="0.1" max="10" step="0.1" defaultValue={config?.ttp_arm1_price_pct||1.5}
                     onBlur={e=>{apiCall("/api/config","PUT",{ttp_arm1_price_pct:Number(e.target.value)},token).then(()=>{loadData();flashSave("ttp");});}}
@@ -2131,7 +2211,7 @@ Confirmer ?`
                 <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>Trailing Take Profit armé dès ce mouvement de PRIX (identique quel que soit le levier — le levier amplifie le $ gagné, pas le seuil) — réglages fins dans l'onglet Paramètres</div>
               </div>
               <div>
-                <div style={{fontSize:10,color:"#f87171",marginBottom:6,fontWeight:700,letterSpacing:1}}>🛡️ SL (% DE E)</div>
+                <div style={{fontSize:10,color:"#f87171",marginBottom:6,fontWeight:700,letterSpacing:1}}>🛡️ SL (% DE E) — mode normal</div>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                   <input key={`sl-${config?.sl_pct_of_e}`} type="number" min="0.1" max="10" step="0.1" defaultValue={config?.sl_pct_of_e||1.0}
                     onBlur={e=>{apiCall("/api/config","PUT",{sl_pct_of_e:Number(e.target.value)},token).then(()=>{loadData();flashSave("sl");});}}
@@ -2141,17 +2221,11 @@ Confirmer ?`
                 <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>Perte plafonnée à ce % de E, quel que soit le levier (le levier réduit le mouvement de prix nécessaire, pas le $ perdu)</div>
               </div>
               <div>
-                <div style={{fontSize:9,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>TRADES SIMULTANES MAX</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>TRADES SIMULTANES MAX (mode normal)</div>
                 <input key={`mot-${config?.max_open_trades}`} type="number" defaultValue={config?.max_open_trades||5} min="1" max="30"
                   onChange={e=>apiCall("/api/config","PUT",{max_open_trades:Number(e.target.value)},token).then(loadData)}
                   style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"8px 10px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12}}/>
-              </div>
-              <div>
-                <div style={{fontSize:9,color:"#94a3b8",marginBottom:4,letterSpacing:1}}>🚨 AUTO-ACTIVATION (% confiance)</div>
-                <input key={`aac-${config?.auto_activate_confidence_pct}`} type="number" defaultValue={config?.auto_activate_confidence_pct||80} min="50" max="100" step="1"
-                  onChange={e=>apiCall("/api/config","PUT",{auto_activate_confidence_pct:Number(e.target.value)},token).then(loadData)}
-                  style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"8px 10px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12}}/>
-                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>Un actif inactif se trade automatiquement si sa confiance atteint ce seuil</div>
+                <div style={{fontSize:9,color:"#94a3b8",marginTop:4}}>Accumulation, Funding et Spot-Accum ont chacun leur propre plafond, réglable dans leur onglet respectif ci-dessus</div>
               </div>
             </div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
