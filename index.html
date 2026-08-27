@@ -2145,6 +2145,7 @@ Confirmer ?`
                         </div>
                         <div style={{display:"flex",alignItems:"center",gap:8}}>
                           <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:12,fontWeight:700}}>{trade.pnl>=0?"+":""}{trade.pnl?.toFixed(2)} USDC</span>
+                          <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:10}}>({trade.pnl_pct>=0?"+":""}{trade.pnl_pct?.toFixed(2)}%)</span>
                           <button onClick={async()=>{
                             if(!confirm(`Fermer ${trade.coin} manuellement ?`)) return;
                             await apiCall("/api/paper/close","POST",{trade_id:trade.id,reason:"MANUEL"},token);
@@ -2200,6 +2201,23 @@ Confirmer ?`
                               }catch(err){ alert("Erreur : "+err.message); }
                             }}/>
                           <span style={{fontSize:9,color:"#475569"}}>(vide = objectif retiré, sortie via trailing/retournement uniquement)</span>
+                        </div>
+                      )}
+                      {isSpotAccum && (
+                        <div style={{display:"flex",alignItems:"center",gap:6,marginTop:6,paddingTop:6}}>
+                          <span style={{fontSize:9,color:"#94a3b8"}}>⚡ Prix d'armement trailing :</span>
+                          <input type="number" step="any" defaultValue={trade.trailing_arm_price||""}
+                            placeholder="Aucun (seuil PnL seul)"
+                            style={{width:110,background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:5,padding:"3px 6px",color:"#e2e8f0",fontFamily:"inherit",fontSize:10}}
+                            onBlur={async(e)=>{
+                              const raw = e.target.value;
+                              const newVal = raw===""? null : Number(raw);
+                              try{
+                                await apiCall("/api/spot-accum/trailing-arm","PUT",{trade_id:trade.id,trailing_arm_price:newVal},token);
+                                loadData();
+                              }catch(err){ alert("Erreur : "+err.message); }
+                            }}/>
+                          <span style={{fontSize:9,color:"#475569"}}>(auto : support + 70% de la distance S/R — s'ajoute au seuil de 3% de PnL)</span>
                         </div>
                       )}
                     </div>
