@@ -2154,6 +2154,37 @@ Confirmer ?`
                           </button>
                         </div>
                       </div>
+                      {/* v4.48 — FIX : fusion des DEUX panneaux "Trades ouverts"
+                      (celui-ci, filtre par mode, et l ancien panneau global
+                      "Mode Paper" plus bas, retire car redondant) — details
+                      complets desormais ICI, dans le seul panneau restant. */}
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6,marginTop:8}}>
+                        {[
+                          {l:"ENTRÉE",v:`$${trade.entry_price?.toLocaleString("en-US",{maximumFractionDigits:4})}`},
+                          {l:"ACTUEL",v:`$${trade.current_price?.toLocaleString("en-US",{maximumFractionDigits:4})}`},
+                          {l:"TAILLE",v:`${trade.size_usdc} USDC`},
+                          {l:"OUVERT",v:trade.opened_at?new Date(trade.opened_at).toLocaleTimeString("fr-FR"):"--"},
+                          {l:"DURÉE",v:(()=>{
+                            if(!trade.opened_at) return "--";
+                            const diffSec = Math.max(0, Math.floor((nowTick - new Date(trade.opened_at).getTime()) / 1000));
+                            const h = Math.floor(diffSec/3600), m = Math.floor((diffSec%3600)/60), s = diffSec%60;
+                            return h>0 ? `${h}h${String(m).padStart(2,"0")}m${String(s).padStart(2,"0")}s` : `${m}m${String(s).padStart(2,"0")}s`;
+                          })()},
+                        ].map((x,i)=>(
+                          <div key={i} style={{background:"#0f1629",borderRadius:5,padding:"5px 8px"}}>
+                            <div style={{fontSize:8,color:"#94a3b8"}}>{x.l}</div>
+                            <div style={{color:"#94a3b8",fontSize:11,fontWeight:500}}>{x.v}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{display:"flex",gap:8,marginTop:6,fontSize:10,flexWrap:"wrap",alignItems:"center"}}>
+                        <span style={{color:"#f87171"}}>SL: ${trade.stop_loss?.toFixed(4)}</span>
+                        <span style={{color:"#34d399"}}>TP1: ${trade.take_profit1?.toFixed(4)}</span>
+                        <span style={{color:"#34d399"}}>TP2: ${trade.take_profit2?.toFixed(4)}</span>
+                        <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:10}}>({trade.pnl_pct>=0?"+":""}{trade.pnl_pct?.toFixed(2)}%)</span>
+                        {trade.peak_pnl_pct!=null ? <span style={{color:"#c084fc",fontSize:10}}>🏔️ pic +{trade.peak_pnl_pct.toFixed(2)}%</span>
+                          : trade.peak_pnl!=null && <span style={{color:"#c084fc",fontSize:10}}>🏔️ pic +{trade.peak_pnl.toFixed(2)}$</span>}
+                      </div>
                       {isSpotAccum && (
                         <div style={{display:"flex",alignItems:"center",gap:6,marginTop:8,paddingTop:8,borderTop:"1px solid #1e2d4a"}}>
                           <span style={{fontSize:9,color:"#94a3b8"}}>🎯 Objectif :</span>
@@ -2281,6 +2312,13 @@ Confirmer ?`
           </div>
 
           {/* TRADES OUVERTS */}
+          {/* v4.48 — FIX : n affiche ce panneau global (tous modes melanges)
+          QUE sur le sous-onglet "Tous" — sur un sous-onglet de mode precis
+          (Accumulation/Funding/Spot-Accum/Normal), le panneau filtre plus
+          haut affiche deja les memes trades avec les memes details, en plus
+          complet (badge SL, objectif modifiable...) — deux panneaux
+          "Trades ouverts" simultanes etait la source de confusion signalee. */}
+          {paperSubTab==="all" && (
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:"#60a5fa",marginBottom:12}}>📈 Trades ouverts</div>
             {!paper?.open_trades?.length
@@ -2340,6 +2378,7 @@ Confirmer ?`
               ))
             }
           </div>
+          )}
 
           {/* v4.44 — FIX : l ancien panneau "Historique (50 derniers trades
           fermes)" ici affichait TOUS les modes melanges, sans filtre, et
