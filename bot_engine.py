@@ -302,9 +302,17 @@ CONFIG = {
     "SPOT_ACCUM_ENABLED": True,
     "SPOT_ACCUM_MAX_TRADES": 3,
     "SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT": 2.0,   # entree seulement si prix >= support + 2%
-    "SPOT_ACCUM_TTP_ARM_PCT": 3.0,             # armement du trailing a partir de ce % de PnL
+    # v4.50 — SUR DEMANDE EXPLICITE : plafond ajoute (n existait pas avant)
+    # — l entree doit rester dans une fenetre serree pres du support, pas
+    # n importe ou jusqu a la resistance.
+    "SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT": 5.0,   # entree seulement si prix <= support + 5%
+    "SPOT_ACCUM_TTP_ARM_PCT": 2.0,             # armement du trailing a partir de ce % de PnL
     "SPOT_ACCUM_TTP_TOLERANCE_PCT": 0.5,       # marge de repli depuis le pic, une fois arme
     "SPOT_ACCUM_TARGET_SR_PCT": 80.0,          # objectif = ce % de la distance support-resistance (mesuree a l entree)
+    # v4.49 — SUR DEMANDE EXPLICITE : second seuil de declenchement du
+    # trailing (s ajoute a SPOT_ACCUM_TTP_ARM_PCT, arme des que l un des
+    # deux est atteint) — base sur la structure du marche, pas un % de PnL.
+    "SPOT_ACCUM_TRAILING_ARM_SR_PCT": 70.0,    # = support + ce % de la distance support-resistance
     "SPOT_ACCUM_SL_ENABLED": False,            # AUCUN SL par defaut — interrupteur explicite pour en ajouter un
     "SPOT_ACCUM_SL_PCT_OF_PNL": 5.0,           # si active : ferme si le PnL tombe a -5% (valeur, pas negative — le signe est applique automatiquement)
     # v4.47 — SUR DEMANDE EXPLICITE : fermeture si un retournement de
@@ -3540,12 +3548,17 @@ class BotEngine:
                 return
 
             # 3) Trailing : arme une fois le PnL >= SPOT_ACCUM_TTP_ARM_PCT
-            #    (3% par defaut), puis suit le pic avec une marge de
+            #    (3% par defaut) OU le prix atteint trailing_arm_price
+            #    (v4.49 — support + 70% de la distance support-resistance,
+            #    seuil structurel qui S ADDITIONNE au seuil de PnL — arme
+            #    des que L UN DES DEUX est atteint, celui qui arrive en
+            #    premier), puis suit le pic avec une marge de
             #    SPOT_ACCUM_TTP_TOLERANCE_PCT (0.5% par defaut).
             arm_pct = cfg.get("SPOT_ACCUM_TTP_ARM_PCT", 3.0)
             tolerance_pct = cfg.get("SPOT_ACCUM_TTP_TOLERANCE_PCT", 0.5)
+            trailing_arm_price = pos.get("trailing_arm_price")
             if not state.spot_accum_armed:
-                if pnl_pct >= arm_pct:
+                if pnl_pct >= arm_pct or (trailing_arm_price is not None and price >= trailing_arm_price):
                     state.spot_accum_armed = True
                     state.spot_accum_peak_pnl_pct = pnl_pct
             else:
@@ -4887,9 +4900,14 @@ class BotEngine:
             return
 
         min_above_pct = cfg.get("SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT", 2.0)
+        # v4.50 — FIX : aucun plafond n existait avant — l entree pouvait se
+        # produire n importe ou entre le minimum et la resistance (parfois
+        # a 50-75% de la fourchette), contrairement a l intention reelle du
+        # mode ("ouvrir pres du support"). Ajoute une borne haute explicite.
+        max_above_pct = cfg.get("SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT", 5.0)
         dist_above_support_pct = (price - support) / support * 100
-        if dist_above_support_pct < min_above_pct:
-            return  # trop pres du support, pas encore l entree visee par ce mode
+        if dist_above_support_pct < min_above_pct or dist_above_support_pct > max_above_pct:
+            return  # hors de la fenetre visee (trop pres du support, ou trop loin)
         if price >= resistance:
             return  # deja au-dessus de la resistance recente, entree trop tardive
 
@@ -5206,9 +5224,23 @@ class BotEngine:
                 # uniquement sur le trailing (3%/0.5%) pour cette position.
                 if target_price <= price:
                     target_price = None
+            # v4.49 — SUR DEMANDE EXPLICITE : second seuil de declenchement
+            # du trailing, base sur la STRUCTURE du marche (pas juste un %
+            # de PnL fixe) — support + 70% de la distance support-resistance
+            # (= 30% avant la resistance, memes points). S ADDITIONNE au
+            # seuil de PnL existant (SPOT_ACCUM_TTP_ARM_PCT, 3% par defaut) :
+            # le trailing s arme des que L UN DES DEUX est atteint, celui
+            # qui arrive en premier. Meme protection anti-depassement.
+            trailing_arm_price = None
+            if support_at_entry is not None and resistance_at_entry is not None:
+                arm_pct = cfg.get("SPOT_ACCUM_TRAILING_ARM_SR_PCT", 70.0)
+                trailing_arm_price = support_at_entry + (arm_pct / 100.0) * (resistance_at_entry - support_at_entry)
+                if trailing_arm_price <= price:
+                    trailing_arm_price = None
             state.position["support_at_entry"] = support_at_entry
             state.position["resistance_at_entry"] = resistance_at_entry
             state.position["target_price"] = target_price
+            state.position["trailing_arm_price"] = trailing_arm_price
             state.spot_accum_armed = False
             state.spot_accum_peak_pnl_pct = None
         self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
