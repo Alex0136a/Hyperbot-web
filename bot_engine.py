@@ -313,7 +313,7 @@ CONFIG = {
     # (reutilise ADX_TREND_THRESHOLD, 25 par defaut) — "tendance haussiere
     # claire", pas juste prix > EMA200 franchi de justesse.
     "SPOT_ACCUM_REQUIRE_ADX_CONFIRM": True,
-    "SPOT_ACCUM_TTP_ARM_PCT": 2.0,             # armement du trailing a partir de ce % de PnL
+    "SPOT_ACCUM_TTP_ARM_PCT": 2.5,             # armement du trailing a partir de ce % de PnL
     "SPOT_ACCUM_TTP_TOLERANCE_PCT": 0.5,       # marge de repli depuis le pic, une fois arme
     "SPOT_ACCUM_TARGET_SR_PCT": 80.0,          # objectif = ce % de la distance support-resistance (mesuree a l entree)
     # v4.49 — SUR DEMANDE EXPLICITE : second seuil de declenchement du
