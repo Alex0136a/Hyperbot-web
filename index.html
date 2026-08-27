@@ -477,6 +477,10 @@ function App() {
   const [strategyPerf, setStrategyPerf] = useState({});
   const [strategyPerfLoading, setStrategyPerfLoading] = useState(false);
   const [showMarketPanel, setShowMarketPanel] = useState(false);
+  // v4.51 — refs pour les champs objectif/prix d'armement (Spot-Accum),
+  // desormais confirmes par un bouton explicite plutot qu au blur silencieux.
+  const targetInputRef = useRef({});
+  const trailingArmInputRef = useRef({});
   // v4.44 — FIX : historique DEDIE par mode (pas le "signals" partage,
   // plafonne a 50 TOUS modes confondus) — recupere a la demande quand un
   // sous-onglet de mode est selectionne, via /api/signals?strategy=X.
@@ -691,6 +695,12 @@ function App() {
       // visite l onglet Parametres, sinon les champs de ce panneau
       // n auraient pas encore leurs valeurs au premier affichage.
       if (!advancedSettings) apiCall("/api/config/advanced","GET",null,token).then(r=>setAdvancedSettings(r));
+      // v4.51 — SUR DEMANDE EXPLICITE : rafraichissement AUTOMATIQUE de
+      // l historique de ce mode (avant : seulement au changement d onglet,
+      // donnant l impression qu un trade ferme "disparaissait" tant qu on
+      // ne rechargeait pas la page manuellement).
+      const histInterval = setInterval(() => loadModeHistory(paperSubTab), 15000);
+      return () => clearInterval(histInterval);
     }
   }, [tab, paperSubTab, token, loadModeHistory]);
 
@@ -2187,37 +2197,43 @@ Confirmer ?`
                           : trade.peak_pnl!=null && <span style={{color:"#c084fc",fontSize:10}}>🏔️ pic +{trade.peak_pnl.toFixed(2)}$</span>}
                       </div>
                       {isSpotAccum && (
-                        <div style={{display:"flex",alignItems:"center",gap:6,marginTop:8,paddingTop:8,borderTop:"1px solid #1e2d4a"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:6,marginTop:8,paddingTop:8,borderTop:"1px solid #1e2d4a",flexWrap:"wrap"}}>
                           <span style={{fontSize:9,color:"#94a3b8"}}>🎯 Objectif :</span>
-                          <input type="number" step="any" defaultValue={trade.target_price||""}
+                          <input ref={el=>targetInputRef.current[trade.id]=el} type="number" step="any" defaultValue={trade.target_price||""}
                             placeholder="Aucun (trailing seul)"
-                            style={{width:110,background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:5,padding:"3px 6px",color:"#e2e8f0",fontFamily:"inherit",fontSize:10}}
-                            onBlur={async(e)=>{
-                              const raw = e.target.value;
-                              const newTarget = raw===""? null : Number(raw);
-                              try{
-                                await apiCall("/api/spot-accum/target","PUT",{trade_id:trade.id,target_price:newTarget},token);
-                                loadData();
-                              }catch(err){ alert("Erreur : "+err.message); }
-                            }}/>
+                            style={{width:110,background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:5,padding:"3px 6px",color:"#e2e8f0",fontFamily:"inherit",fontSize:10}}/>
+                          <button onClick={async()=>{
+                            const raw = targetInputRef.current[trade.id]?.value ?? "";
+                            const newTarget = raw===""? null : Number(raw);
+                            try{
+                              await apiCall("/api/spot-accum/target","PUT",{trade_id:trade.id,target_price:newTarget},token);
+                              loadData();
+                              if (paperSubTab!=="all" && paperSubTab!=="performance") loadModeHistory(paperSubTab);
+                            }catch(err){ alert("Erreur : "+err.message); }
+                          }} style={{background:"#052e1622",border:"1px solid #34d399",borderRadius:5,padding:"3px 8px",color:"#34d399",fontSize:9,cursor:"pointer",fontWeight:700}}>
+                            ✓ Modifier
+                          </button>
                           <span style={{fontSize:9,color:"#475569"}}>(vide = objectif retiré, sortie via trailing/retournement uniquement)</span>
                         </div>
                       )}
                       {isSpotAccum && (
-                        <div style={{display:"flex",alignItems:"center",gap:6,marginTop:6,paddingTop:6}}>
+                        <div style={{display:"flex",alignItems:"center",gap:6,marginTop:6,paddingTop:6,flexWrap:"wrap"}}>
                           <span style={{fontSize:9,color:"#94a3b8"}}>⚡ Prix d'armement trailing :</span>
-                          <input type="number" step="any" defaultValue={trade.trailing_arm_price||""}
+                          <input ref={el=>trailingArmInputRef.current[trade.id]=el} type="number" step="any" defaultValue={trade.trailing_arm_price||""}
                             placeholder="Aucun (seuil PnL seul)"
-                            style={{width:110,background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:5,padding:"3px 6px",color:"#e2e8f0",fontFamily:"inherit",fontSize:10}}
-                            onBlur={async(e)=>{
-                              const raw = e.target.value;
-                              const newVal = raw===""? null : Number(raw);
-                              try{
-                                await apiCall("/api/spot-accum/trailing-arm","PUT",{trade_id:trade.id,trailing_arm_price:newVal},token);
-                                loadData();
-                              }catch(err){ alert("Erreur : "+err.message); }
-                            }}/>
-                          <span style={{fontSize:9,color:"#475569"}}>(auto : support + 70% de la distance S/R — s'ajoute au seuil de 3% de PnL)</span>
+                            style={{width:110,background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:5,padding:"3px 6px",color:"#e2e8f0",fontFamily:"inherit",fontSize:10}}/>
+                          <button onClick={async()=>{
+                            const raw = trailingArmInputRef.current[trade.id]?.value ?? "";
+                            const newVal = raw===""? null : Number(raw);
+                            try{
+                              await apiCall("/api/spot-accum/trailing-arm","PUT",{trade_id:trade.id,trailing_arm_price:newVal},token);
+                              loadData();
+                              if (paperSubTab!=="all" && paperSubTab!=="performance") loadModeHistory(paperSubTab);
+                            }catch(err){ alert("Erreur : "+err.message); }
+                          }} style={{background:"#052e1622",border:"1px solid #34d399",borderRadius:5,padding:"3px 8px",color:"#34d399",fontSize:9,cursor:"pointer",fontWeight:700}}>
+                            ✓ Modifier
+                          </button>
+                          <span style={{fontSize:9,color:"#475569"}}>(auto : support + 70% de la distance S/R — s'ajoute au seuil de 2% de PnL)</span>
                         </div>
                       )}
                     </div>
