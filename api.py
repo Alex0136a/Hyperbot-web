@@ -662,6 +662,7 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "adaptive_sl_ttp": pos.get("adaptive_sl_ttp", False),
                 "strategy": pos.get("strategy", "normal"),  # v4.34 — FIX : jamais expose ici avant
                 "target_price": pos.get("target_price"),  # v4.47 — objectif Spot-Accum (modifiable)
+                "trailing_arm_price": pos.get("trailing_arm_price"),  # v4.49 — seuil structurel d'armement du trailing (modifiable)
             })
         except Exception as e:
             print(f"[_open_positions] Erreur sur la position {slot_key}, ignoree pour cette reponse: {e}")
@@ -766,9 +767,11 @@ ADVANCED_SETTINGS = {
     "SR_EMA200_PROXIMITY_PCT":      {"label": "Separation S/R vs EMA200 - proximite (%)", "default": 0.5},
     "SPOT_ACCUM_MAX_TRADES":            {"label": "Spot-Accum - trades simultanes max", "default": 3},
     "SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT": {"label": "Spot-Accum - minimum au-dessus du support (%)", "default": 2.0},
-    "SPOT_ACCUM_TTP_ARM_PCT":           {"label": "Spot-Accum - TTP armement (% de PnL)", "default": 3.0},
+    "SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT": {"label": "Spot-Accum - maximum au-dessus du support (%)", "default": 5.0},
+    "SPOT_ACCUM_TTP_ARM_PCT":           {"label": "Spot-Accum - TTP armement (% de PnL)", "default": 2.0},
     "SPOT_ACCUM_TTP_TOLERANCE_PCT":     {"label": "Spot-Accum - TTP marge de repli depuis le pic (%)", "default": 0.5},
     "SPOT_ACCUM_TARGET_SR_PCT":         {"label": "Spot-Accum - objectif (% distance support-resistance)", "default": 80.0},
+    "SPOT_ACCUM_TRAILING_ARM_SR_PCT":   {"label": "Spot-Accum - armement trailing (% distance support-résistance)", "default": 70.0},
     "SPOT_ACCUM_SL_PCT_OF_PNL":         {"label": "Spot-Accum - SL optionnel (% du PnL, si active)", "default": 5.0},
     "VOLUME_MIN_RATIO":        {"label": "Volume - ratio minimum vs moyenne","default": 1.2},
     "MOMENTUM_PERIOD":         {"label": "Momentum - periode (cycles)",      "default": 4},
@@ -1621,6 +1624,32 @@ def put_spot_accum_target(body: SpotAccumTargetBody, email: str = Depends(requir
     ticker = be.ticker_from_slot_key(body.trade_id)
     _push_log("info", f"[{ticker}] 🌱 Objectif Spot-Accum modifié manuellement : {'$'+str(body.target_price) if body.target_price else 'retiré (trailing seul)'}")
     return {"ok": True, "target_price": body.target_price}
+
+
+class SpotAccumTrailingArmBody(BaseModel):
+    trade_id: str
+    trailing_arm_price: Optional[float] = None  # None = retire ce seuil, garde seulement le seuil de PnL
+
+
+@app.put("/api/spot-accum/trailing-arm")
+def put_spot_accum_trailing_arm(body: SpotAccumTrailingArmBody, email: str = Depends(require_user)):
+    """v4.49 — SUR DEMANDE EXPLICITE : permet de modifier le seuil de PRIX
+    (structurel, 70% de la distance support-resistance par defaut) qui arme
+    le trailing pour une position Spot-Accumulation DEJA OUVERTE. S ADDITIONNE
+    au seuil de PnL (SPOT_ACCUM_TTP_ARM_PCT) — arme des que l un des deux est
+    atteint. None retire ce seuil : seul le PnL% arme alors le trailing."""
+    state = bot.states.get(body.trade_id)
+    if not state or not state.position:
+        raise HTTPException(404, "Aucune position ouverte pour cet identifiant")
+    if state.position.get("strategy") != "spot_accumulation":
+        raise HTTPException(400, "Cette position n'est pas en mode Spot-Accumulation")
+    if body.trailing_arm_price is not None and body.trailing_arm_price <= (state.current_price or state.position["entry"]):
+        raise HTTPException(400, "Le seuil doit être supérieur au prix actuel")
+    state.position["trailing_arm_price"] = body.trailing_arm_price
+    bot._save_open_positions()
+    ticker = be.ticker_from_slot_key(body.trade_id)
+    _push_log("info", f"[{ticker}] 🌱 Seuil d'armement trailing Spot-Accum modifié : {'$'+str(body.trailing_arm_price) if body.trailing_arm_price else 'retiré (seuil PnL seul)'}")
+    return {"ok": True, "trailing_arm_price": body.trailing_arm_price}
 
 
 # ─────────────────────────────────────────────────────────────────────────
