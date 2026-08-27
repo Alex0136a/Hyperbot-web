@@ -770,7 +770,7 @@ ADVANCED_SETTINGS = {
     "SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT": {"label": "Spot-Accum - minimum au-dessus du support (%)", "default": 1.0},
     "SPOT_ACCUM_MIN_SR_AMPLITUDE_PCT": {"label": "Spot-Accum - amplitude minimale fourchette S/R (%)", "default": 3.0},
     "SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT": {"label": "Spot-Accum - maximum au-dessus du support (%)", "default": 5.0},
-    "SPOT_ACCUM_TTP_ARM_PCT":           {"label": "Spot-Accum - TTP armement (% de PnL)", "default": 2.0},
+    "SPOT_ACCUM_TTP_ARM_PCT":           {"label": "Spot-Accum - TTP armement (% de PnL)", "default": 2.5},
     "SPOT_ACCUM_TTP_TOLERANCE_PCT":     {"label": "Spot-Accum - TTP marge de repli depuis le pic (%)", "default": 0.5},
     "SPOT_ACCUM_TARGET_SR_PCT":         {"label": "Spot-Accum - objectif (% distance support-resistance)", "default": 80.0},
     "SPOT_ACCUM_TRAILING_ARM_SR_PCT":   {"label": "Spot-Accum - armement trailing (% distance support-résistance)", "default": 70.0},
