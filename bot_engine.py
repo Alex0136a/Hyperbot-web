@@ -301,11 +301,18 @@ CONFIG = {
     # differente (ex: fenetre d armement 2.5%-3.5% plutot qu un trailing).
     "SPOT_ACCUM_ENABLED": True,
     "SPOT_ACCUM_MAX_TRADES": 3,
-    "SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT": 2.0,   # entree seulement si prix >= support + 2%
+    "SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT": 1.0,   # entree seulement si prix >= support + 1% (etait 2%)
     # v4.50 — SUR DEMANDE EXPLICITE : plafond ajoute (n existait pas avant)
     # — l entree doit rester dans une fenetre serree pres du support, pas
     # n importe ou jusqu a la resistance.
     "SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT": 5.0,   # entree seulement si prix <= support + 5%
+    # v4.53 — SUR DEMANDE EXPLICITE : la fourchette support-resistance doit
+    # avoir une amplitude minimale (support=100 -> resistance >= 103 pour 3%).
+    "SPOT_ACCUM_MIN_SR_AMPLITUDE_PCT": 3.0,
+    # v4.53 — SUR DEMANDE EXPLICITE : confirmation ADX de la tendance
+    # (reutilise ADX_TREND_THRESHOLD, 25 par defaut) — "tendance haussiere
+    # claire", pas juste prix > EMA200 franchi de justesse.
+    "SPOT_ACCUM_REQUIRE_ADX_CONFIRM": True,
     "SPOT_ACCUM_TTP_ARM_PCT": 2.0,             # armement du trailing a partir de ce % de PnL
     "SPOT_ACCUM_TTP_TOLERANCE_PCT": 0.5,       # marge de repli depuis le pic, une fois arme
     "SPOT_ACCUM_TARGET_SR_PCT": 80.0,          # objectif = ce % de la distance support-resistance (mesuree a l entree)
@@ -4899,7 +4906,27 @@ class BotEngine:
         if support is None or resistance is None or support <= 0:
             return
 
-        min_above_pct = cfg.get("SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT", 2.0)
+        # v4.53 — SUR DEMANDE EXPLICITE : confirmation ADX de la tendance
+        # (pas seulement prix > EMA200, qui peut etre franchi de justesse) —
+        # meme seuil que le reste du bot (ADX_TREND_THRESHOLD, 25 par
+        # defaut), calcule ici localement (pas encore disponible a ce point
+        # du cycle pour la logique normale).
+        if cfg.get("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", True):
+            adx_local = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
+            adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
+            if adx_local is None or adx_local < adx_threshold:
+                return  # tendance pas assez forte pour etre consideree "claire"
+
+        # v4.53 — SUR DEMANDE EXPLICITE : la fourchette support-resistance
+        # doit avoir une amplitude minimale (ex: support=100 -> resistance
+        # >= 103 pour 3%) — evite d entrer dans un range trop plat, ou meme
+        # atteindre l objectif ne rapporterait quasiment rien.
+        min_sr_amplitude_pct = cfg.get("SPOT_ACCUM_MIN_SR_AMPLITUDE_PCT", 3.0)
+        sr_amplitude_pct = (resistance - support) / support * 100
+        if sr_amplitude_pct < min_sr_amplitude_pct:
+            return  # fourchette trop etroite, pas assez de marge de mouvement
+
+        min_above_pct = cfg.get("SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT", 1.0)
         # v4.50 — FIX : aucun plafond n existait avant — l entree pouvait se
         # produire n importe ou entre le minimum et la resistance (parfois
         # a 50-75% de la fourchette), contrairement a l intention reelle du
