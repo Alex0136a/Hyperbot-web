@@ -419,6 +419,7 @@ def _public_config() -> Dict[str, Any]:
         "require_sr_ema200_separation": cfg.get("REQUIRE_SR_EMA200_SEPARATION", False),
         "spot_accum_enabled": cfg.get("SPOT_ACCUM_ENABLED", False),
         "spot_accum_sl_enabled": cfg.get("SPOT_ACCUM_SL_ENABLED", False),
+        "spot_accum_require_adx_confirm": cfg.get("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", True),
         "accumulation_active_coins": cfg.get("ACCUMULATION_ACTIVE_COINS"),
         "funding_active_coins": cfg.get("FUNDING_ACTIVE_COINS"),
         "spot_accum_active_coins": cfg.get("SPOT_ACCUM_ACTIVE_COINS"),
@@ -766,7 +767,8 @@ ADVANCED_SETTINGS = {
     "FUNDING_REFRESH_SEC":          {"label": "Funding Contrarian - frequence de rafraichissement (s)", "default": 300},
     "SR_EMA200_PROXIMITY_PCT":      {"label": "Separation S/R vs EMA200 - proximite (%)", "default": 0.5},
     "SPOT_ACCUM_MAX_TRADES":            {"label": "Spot-Accum - trades simultanes max", "default": 3},
-    "SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT": {"label": "Spot-Accum - minimum au-dessus du support (%)", "default": 2.0},
+    "SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT": {"label": "Spot-Accum - minimum au-dessus du support (%)", "default": 1.0},
+    "SPOT_ACCUM_MIN_SR_AMPLITUDE_PCT": {"label": "Spot-Accum - amplitude minimale fourchette S/R (%)", "default": 3.0},
     "SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT": {"label": "Spot-Accum - maximum au-dessus du support (%)", "default": 5.0},
     "SPOT_ACCUM_TTP_ARM_PCT":           {"label": "Spot-Accum - TTP armement (% de PnL)", "default": 2.0},
     "SPOT_ACCUM_TTP_TOLERANCE_PCT":     {"label": "Spot-Accum - TTP marge de repli depuis le pic (%)", "default": 0.5},
@@ -1025,6 +1027,7 @@ class FiltersBody(BaseModel):
     require_sr_ema200_separation: Optional[bool] = None
     spot_accum_enabled: Optional[bool] = None
     spot_accum_sl_enabled: Optional[bool] = None
+    spot_accum_require_adx_confirm: Optional[bool] = None
 
 
 @app.put("/api/config/filters")
@@ -1072,6 +1075,8 @@ def put_filters(body: FiltersBody, email: str = Depends(require_user)):
         _apply_and_persist("SPOT_ACCUM_ENABLED", body.spot_accum_enabled)
     if body.spot_accum_sl_enabled is not None:
         _apply_and_persist("SPOT_ACCUM_SL_ENABLED", body.spot_accum_sl_enabled)
+    if body.spot_accum_require_adx_confirm is not None:
+        _apply_and_persist("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", body.spot_accum_require_adx_confirm)
     return {"ok": True}
 
 
