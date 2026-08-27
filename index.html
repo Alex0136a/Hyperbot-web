@@ -2126,25 +2126,53 @@ Confirmer ?`
                   <div style={{fontSize:10,color:"#94a3b8",marginBottom:8,fontWeight:700}}>TRADES OUVERTS ({openFiltered.length})</div>
                   {openFiltered.length===0 ? (
                     <div style={{fontSize:11,color:"#94a3b8",marginBottom:14}}>Aucun trade ouvert dans ce mode.</div>
-                  ) : openFiltered.map(trade=>(
-                    <div key={trade.id} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:10,marginBottom:6,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                      <div>
-                        <span style={{background:trade.action==="LONG"?"#052e16":"#2d0a0a",color:trade.action==="LONG"?"#34d399":"#f87171",padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700}}>{trade.action}</span>
-                        <span style={{marginLeft:6,color:"#e2e8f0",fontSize:12,fontWeight:700}}>{trade.coin}/USDC</span>
-                        <span style={{marginLeft:6,color:"#94a3b8",fontSize:10}}>x{trade.leverage}</span>
+                  ) : openFiltered.map(trade=>{
+                    const isSpotAccum = trade.strategy==="spot_accumulation";
+                    const slOn = config?.spot_accum_sl_enabled;
+                    const slPct = advancedSettings?.SPOT_ACCUM_SL_PCT_OF_PNL?.value;
+                    return (
+                    <div key={trade.id} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:10,marginBottom:6}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                        <div>
+                          <span style={{background:trade.action==="LONG"?"#052e16":"#2d0a0a",color:trade.action==="LONG"?"#34d399":"#f87171",padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700}}>{trade.action}</span>
+                          <span style={{marginLeft:6,color:"#e2e8f0",fontSize:12,fontWeight:700}}>{trade.coin}/USDC</span>
+                          <span style={{marginLeft:6,color:"#94a3b8",fontSize:10}}>x{trade.leverage}</span>
+                          {isSpotAccum && (
+                            <span style={{marginLeft:6,background:slOn?"#052e16":"#2d0a0a",color:slOn?"#34d399":"#f87171",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>
+                              {slOn ? `SL actif à -${slPct}%` : "⚠️ Aucun SL"}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:12,fontWeight:700}}>{trade.pnl>=0?"+":""}{trade.pnl?.toFixed(2)} USDC</span>
+                          <button onClick={async()=>{
+                            if(!confirm(`Fermer ${trade.coin} manuellement ?`)) return;
+                            await apiCall("/api/paper/close","POST",{trade_id:trade.id,reason:"MANUEL"},token);
+                            loadData();
+                          }} style={{background:"#2d0a0a",border:"1px solid #f87171",borderRadius:5,padding:"4px 10px",color:"#f87171",fontSize:10,cursor:"pointer",fontWeight:700}}>
+                            ✕ Fermer
+                          </button>
+                        </div>
                       </div>
-                      <div style={{display:"flex",alignItems:"center",gap:8}}>
-                        <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:12,fontWeight:700}}>{trade.pnl>=0?"+":""}{trade.pnl?.toFixed(2)} USDC</span>
-                        <button onClick={async()=>{
-                          if(!confirm(`Fermer ${trade.coin} manuellement ?`)) return;
-                          await apiCall("/api/paper/close","POST",{trade_id:trade.id,reason:"MANUEL"},token);
-                          loadData();
-                        }} style={{background:"#2d0a0a",border:"1px solid #f87171",borderRadius:5,padding:"4px 10px",color:"#f87171",fontSize:10,cursor:"pointer",fontWeight:700}}>
-                          ✕ Fermer
-                        </button>
-                      </div>
+                      {isSpotAccum && (
+                        <div style={{display:"flex",alignItems:"center",gap:6,marginTop:8,paddingTop:8,borderTop:"1px solid #1e2d4a"}}>
+                          <span style={{fontSize:9,color:"#94a3b8"}}>🎯 Objectif :</span>
+                          <input type="number" step="any" defaultValue={trade.target_price||""}
+                            placeholder="Aucun (trailing seul)"
+                            style={{width:110,background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:5,padding:"3px 6px",color:"#e2e8f0",fontFamily:"inherit",fontSize:10}}
+                            onBlur={async(e)=>{
+                              const raw = e.target.value;
+                              const newTarget = raw===""? null : Number(raw);
+                              try{
+                                await apiCall("/api/spot-accum/target","PUT",{trade_id:trade.id,target_price:newTarget},token);
+                                loadData();
+                              }catch(err){ alert("Erreur : "+err.message); }
+                            }}/>
+                          <span style={{fontSize:9,color:"#475569"}}>(vide = objectif retiré, sortie via trailing/retournement uniquement)</span>
+                        </div>
+                      )}
                     </div>
-                  ))}
+                  );})}
 
                   {/* v4.44 — historique COMPLET, propre a ce mode (plus de troncature a 20) */}
                   <div style={{fontSize:10,color:"#94a3b8",margin:"14px 0 8px",fontWeight:700}}>HISTORIQUE COMPLET DE CE MODE ({historyFiltered.length}){modeHistoryLoading?" · chargement...":""}</div>
