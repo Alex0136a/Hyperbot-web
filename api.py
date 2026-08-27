@@ -995,6 +995,24 @@ def put_mode_coins(body: ModeCoinBody, email: str = Depends(require_user)):
     return {"ok": True, "mode": body.mode, "active_coins": current}
 
 
+class ModeCoinResetBody(BaseModel):
+    mode: str
+
+
+@app.put("/api/config/mode-coins/reset")
+def reset_mode_coins(body: ModeCoinResetBody, email: str = Depends(require_user)):
+    """v4.52 — SUR DEMANDE EXPLICITE : reinitialise la liste d actifs d un
+    mode PRECIS pour qu elle revienne a heriter de la liste globale
+    (Marches) — corrige le cas ou un mode etait reste bloque sur une liste
+    personnalisee figee (ex: 5 actifs), sans plus jamais suivre les
+    changements faits dans Marches, faute d un moyen de revenir en arriere."""
+    key = MODE_ACTIVE_COINS_KEY.get(body.mode)
+    if not key:
+        raise HTTPException(400, f"Mode inconnu : {body.mode}")
+    _apply_and_persist(key, None)
+    return {"ok": True, "mode": body.mode, "active_coins": None}
+
+
 class FiltersBody(BaseModel):
     filter_hours: Optional[bool] = None
     filter_weekend: Optional[bool] = None
