@@ -661,6 +661,7 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "ttp_gap_pct_used": pos.get("ttp_gap_pct"),
                 "adaptive_sl_ttp": pos.get("adaptive_sl_ttp", False),
                 "strategy": pos.get("strategy", "normal"),  # v4.34 — FIX : jamais expose ici avant
+                "target_price": pos.get("target_price"),  # v4.47 — objectif Spot-Accum (modifiable)
             })
         except Exception as e:
             print(f"[_open_positions] Erreur sur la position {slot_key}, ignoree pour cette reponse: {e}")
@@ -1593,6 +1594,33 @@ def paper_close(body: PaperCloseBody, email: str = Depends(require_user)):
             db.close_trade(trade_id, trade["exit"], trade["pnl"], trade["reason"])
     _push_log("warn", f"[{ticker}] Fermeture manuelle @ ${price:.2f} | PnL: {pnl:+.2f}$")
     return {"ok": True, "pnl": pnl}
+
+
+class SpotAccumTargetBody(BaseModel):
+    trade_id: str  # = slot_key (ex: "BTC_0")
+    target_price: Optional[float] = None  # None = retire l objectif (repli sur le trailing seul)
+
+
+@app.put("/api/spot-accum/target")
+def put_spot_accum_target(body: SpotAccumTargetBody, email: str = Depends(require_user)):
+    """v4.47 — SUR DEMANDE EXPLICITE : permet de modifier l objectif (prix
+    cible, 80% de la distance support-resistance par defaut) d une position
+    Spot-Accumulation DEJA OUVERTE — utile si le marche a evolue depuis
+    l entree et que l objectif initial ne semble plus pertinent. target_price
+    a None retire l objectif fixe : la position ne sortira plus que via le
+    trailing (3%/0.5%) ou le retournement confirme."""
+    state = bot.states.get(body.trade_id)
+    if not state or not state.position:
+        raise HTTPException(404, "Aucune position ouverte pour cet identifiant")
+    if state.position.get("strategy") != "spot_accumulation":
+        raise HTTPException(400, "Cette position n'est pas en mode Spot-Accumulation")
+    if body.target_price is not None and body.target_price <= (state.current_price or state.position["entry"]):
+        raise HTTPException(400, "L'objectif doit être supérieur au prix actuel")
+    state.position["target_price"] = body.target_price
+    bot._save_open_positions()
+    ticker = be.ticker_from_slot_key(body.trade_id)
+    _push_log("info", f"[{ticker}] 🌱 Objectif Spot-Accum modifié manuellement : {'$'+str(body.target_price) if body.target_price else 'retiré (trailing seul)'}")
+    return {"ok": True, "target_price": body.target_price}
 
 
 # ─────────────────────────────────────────────────────────────────────────
