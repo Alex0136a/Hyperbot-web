@@ -307,6 +307,12 @@ CONFIG = {
     "SPOT_ACCUM_TARGET_SR_PCT": 80.0,          # objectif = ce % de la distance support-resistance (mesuree a l entree)
     "SPOT_ACCUM_SL_ENABLED": False,            # AUCUN SL par defaut — interrupteur explicite pour en ajouter un
     "SPOT_ACCUM_SL_PCT_OF_PNL": 5.0,           # si active : ferme si le PnL tombe a -5% (valeur, pas negative — le signe est applique automatiquement)
+    # v4.47 — SUR DEMANDE EXPLICITE : fermeture si un retournement de
+    # tendance est CONFIRME (prix sous l EMA200 de facon soutenue) — activee
+    # par defaut (protection alignee sur la philosophie du mode), 18 cycles
+    # (~3 min) de confirmation pour eviter une sortie sur un simple creux.
+    "SPOT_ACCUM_REVERSAL_EXIT_ENABLED": True,
+    "SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES": 18,
 
     # v4.44 — SUR DEMANDE EXPLICITE : liste d actifs DEDIEE par mode
     # (independante de la liste globale ACTIVE_COINS geree dans Marches).
@@ -1732,6 +1738,10 @@ class SymbolState:
         # a chaque ouverture/fermeture d une position de ce mode.
         self.spot_accum_armed = False
         self.spot_accum_peak_pnl_pct = None
+        # v4.47 — compteur de cycles consecutifs ou le prix est reste sous
+        # l EMA200 (retournement de tendance) — remis a zero des que le prix
+        # repasse au-dessus.
+        self.spot_accum_reversal_count = 0
         # v4.21 — Historique des valeurs d indicateurs calculees (RSI, MACD,
         # EMA200, ATR, support/resistance) a chaque cycle, pour affichage en
         # graphe cote interface (diagnostic/surveillance). Purement
@@ -3475,6 +3485,39 @@ class BotEngine:
                     self.emit("trade", trade)
                     self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum STOP LOSS (optionnel, {sl_threshold_pnl:.1f}% du PnL) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
                     self._register_max_loss(ticker, pos.get("confidence"))
+                    self._save_open_positions()
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, symbol, pos, cfg)
+                    return
+
+            # v4.47 — SUR DEMANDE EXPLICITE : fermeture si un RETOURNEMENT DE
+            # TENDANCE est CONFIRME (prix repasse sous l EMA200 de facon
+            # SOUTENUE, pas un simple creux passager) — protection
+            # complementaire au SL optionnel, alignee sur la philosophie du
+            # mode (achete AVEC la tendance haussiere, sort si elle casse
+            # vraiment). Exige plusieurs cycles consecutifs pour eviter
+            # qu un bref repli ne declenche une sortie prematuree. Une fois
+            # ferme, le bot continue d evaluer normalement cet actif pour
+            # une reentree des qu une nouvelle tendance haussiere confirmee
+            # se represente (meme logique d entree qu a l ouverture, pas de
+            # mecanisme special necessaire au-dela de cette fermeture).
+            if cfg.get("SPOT_ACCUM_REVERSAL_EXIT_ENABLED", True):
+                ema200_now = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+                if ema200_now is not None and price < ema200_now:
+                    state.spot_accum_reversal_count += 1
+                else:
+                    state.spot_accum_reversal_count = 0
+                confirm_needed = cfg.get("SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES", 18)
+                if state.spot_accum_reversal_count >= confirm_needed:
+                    pnl, _, trade = state.close_position(price, "RETOURNEMENT CONFIRME")
+                    trade["symbol"] = symbol
+                    self.emit("trade", trade)
+                    if pnl > 0:
+                        self._register_win(ticker)
+                    else:
+                        self._register_max_loss(ticker, pos.get("confidence"))
+                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum RETOURNEMENT CONFIRME (prix sous l'EMA200 depuis {confirm_needed} cycles) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "warn"})
+                    state.spot_accum_reversal_count = 0
                     self._save_open_positions()
                     if mode == "live" and self.exchange:
                         close_order(self.exchange, symbol, pos, cfg)
