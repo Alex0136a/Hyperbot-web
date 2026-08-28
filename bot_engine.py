@@ -1761,6 +1761,9 @@ class SymbolState:
         # l EMA200 (retournement de tendance) — remis a zero des que le prix
         # repasse au-dessus.
         self.spot_accum_reversal_count = 0
+        # v4.55 — instantane diagnostic de chaque clause d entree
+        # Spot-Accumulation, expose via /api/entry-diagnostics.
+        self.spot_accum_gate_snapshot = {}
         # v4.21 — Historique des valeurs d indicateurs calculees (RSI, MACD,
         # EMA200, ATR, support/resistance) a chaque cycle, pour affichage en
         # graphe cote interface (diagnostic/surveillance). Purement
@@ -4917,16 +4920,27 @@ class BotEngine:
         au-dessus du support — on achete une tendance deja engagee, pas un
         rebond pres d un plancher (contrairement a Accumulation classique).
         AUCUNE garantie de fonctionnement — a valider par les resultats.
+        v4.55 — SUR DEMANDE EXPLICITE : capture un diagnostic detaille
+        (state.spot_accum_gate_snapshot) a CHAQUE etape, expose via
+        /api/entry-diagnostics (qui ne couvrait jusqu ici que le mode
+        normal) — pour voir precisement quelle clause bloque, sans deviner.
         """
         cfg = self.cfg
+        snap = {"ts": time.time(), "enabled": cfg.get("SPOT_ACCUM_ENABLED", False)}
+        state.spot_accum_gate_snapshot = snap
         if not cfg.get("SPOT_ACCUM_ENABLED", False):
+            snap["blocker"] = "mode desactive"
             return
         if not self._gate_active_or_auto_activate(ticker, 100, "spot_accumulation"):
+            snap["blocker"] = "actif non selectionne pour ce mode"
             return
 
+        snap["trend_up"] = trend_up
         if not trend_up:
+            snap["blocker"] = "pas de tendance haussiere (EMA200)"
             return  # exige la tendance generale haussiere (EMA200)
         if support is None or resistance is None or support <= 0:
+            snap["blocker"] = "support/resistance indisponible"
             return
 
         # v4.53 — SUR DEMANDE EXPLICITE : confirmation ADX de la tendance
@@ -4937,7 +4951,10 @@ class BotEngine:
         if cfg.get("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", True):
             adx_local = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
             adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
+            snap["adx"] = round(adx_local, 1) if adx_local is not None else None
+            snap["adx_threshold"] = adx_threshold
             if adx_local is None or adx_local < adx_threshold:
+                snap["blocker"] = f"ADX {snap['adx']} < {adx_threshold} (tendance pas assez forte)"
                 return  # tendance pas assez forte pour etre consideree "claire"
 
         # v4.53 — SUR DEMANDE EXPLICITE : la fourchette support-resistance
@@ -4946,7 +4963,10 @@ class BotEngine:
         # atteindre l objectif ne rapporterait quasiment rien.
         min_sr_amplitude_pct = cfg.get("SPOT_ACCUM_MIN_SR_AMPLITUDE_PCT", 3.0)
         sr_amplitude_pct = (resistance - support) / support * 100
+        snap["sr_amplitude_pct"] = round(sr_amplitude_pct, 2)
+        snap["min_sr_amplitude_pct"] = min_sr_amplitude_pct
         if sr_amplitude_pct < min_sr_amplitude_pct:
+            snap["blocker"] = f"fourchette S/R trop etroite ({sr_amplitude_pct:.2f}% < {min_sr_amplitude_pct}%)"
             return  # fourchette trop etroite, pas assez de marge de mouvement
 
         min_above_pct = cfg.get("SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT", 1.0)
@@ -4956,9 +4976,13 @@ class BotEngine:
         # mode ("ouvrir pres du support"). Ajoute une borne haute explicite.
         max_above_pct = cfg.get("SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT", 5.0)
         dist_above_support_pct = (price - support) / support * 100
+        snap["dist_above_support_pct"] = round(dist_above_support_pct, 2)
+        snap["window"] = f"{min_above_pct}-{max_above_pct}%"
         if dist_above_support_pct < min_above_pct or dist_above_support_pct > max_above_pct:
+            snap["blocker"] = f"hors fenetre ({dist_above_support_pct:.2f}% pas entre {min_above_pct}-{max_above_pct}%)"
             return  # hors de la fenetre visee (trop pres du support, ou trop loin)
         if price >= resistance:
+            snap["blocker"] = "prix deja au-dessus de la resistance"
             return  # deja au-dessus de la resistance recente, entree trop tardive
 
         # ── Score de confiance dedie : plus on est loin du support (dans la
@@ -4968,10 +4992,15 @@ class BotEngine:
         position_in_range_pct = ((price - support) / sr_range * 100) if sr_range > 0 else 50.0
         confidence = 65.0 + min(max(position_in_range_pct - min_above_pct, 0) / 50.0 * 20.0, 20.0)
         confidence = min(confidence, 85.0)
+        snap["confidence"] = round(confidence, 1)
 
         conf_threshold = self._get_confidence_threshold(ticker)
+        snap["confidence_threshold"] = conf_threshold
         if confidence < conf_threshold:
+            snap["blocker"] = f"confiance {confidence:.0f}% < seuil {conf_threshold:.0f}%"
             return
+
+        snap["blocker"] = None  # rien ne bloque, candidat genere ce cycle
 
         reasons = [
             f"🌱 Spot-Accumulation : {dist_above_support_pct:.2f}% au-dessus du support, tendance haussiere confirmee",
