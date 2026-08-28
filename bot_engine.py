@@ -4487,6 +4487,20 @@ class BotEngine:
         # precedent) — expose a la demande via /api/entry-diagnostics/{ticker},
         # pour comprendre en direct pourquoi un actif ne trade pas, au lieu
         # de devoir chasser les bons logs dans une fenetre horaire expiree.
+        # v4.58 — SUR DEMANDE EXPLICITE : detail des 3 sous-conditions
+        # unifiees, pour un diagnostic fiable (les anciens messages
+        # "rebond/cassure" ne refletent plus la vraie raison de blocage
+        # quand UNIFIED_SIMPLIFIED_MODE est actif).
+        unified_active = cfg.get("UNIFIED_SIMPLIFIED_MODE", True)
+        if unified_active:
+            trend_confirmed_long = self._unified_trend_confirmed(prices, trend_up)
+            trend_confirmed_short = self._unified_trend_confirmed(prices, trend_down)
+            proximity_long_ok = self._unified_proximity_ok(price, support, resistance, "long")
+            proximity_short_ok = self._unified_proximity_ok(price, support, resistance, "short")
+            amplitude_ok = self._unified_sr_amplitude_ok(support, resistance)
+        else:
+            trend_confirmed_long = trend_confirmed_short = proximity_long_ok = proximity_short_ok = amplitude_ok = None
+
         state.last_gate_snapshot = {
             "ts": time.time(),
             "price": price,
@@ -4500,6 +4514,12 @@ class BotEngine:
             "trend_down": trend_down,
             "long_signal_stale": state.long_signal_stale,
             "short_signal_stale": state.short_signal_stale,
+            "unified_mode_active": unified_active,
+            "unified_trend_confirmed_long": trend_confirmed_long,
+            "unified_trend_confirmed_short": trend_confirmed_short,
+            "unified_proximity_long_ok": proximity_long_ok,
+            "unified_proximity_short_ok": proximity_short_ok,
+            "unified_amplitude_ok": amplitude_ok,
             "direction_confirmed_long": direction_confirmed_long,
             "direction_confirmed_short": direction_confirmed_short,
             "amplitude_coherent": amplitude_coherent,
@@ -4525,10 +4545,27 @@ class BotEngine:
             self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG qualifie mais signal pas encore renouvele depuis la derniere fermeture — attente d une retombee puis d un nouveau croisement EMA", "level": "dim"})
         if rsi_sell and ema_bear and trend_down and state.short_signal_stale:
             self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT qualifie mais signal pas encore renouvele depuis la derniere fermeture — attente d une retombee puis d un nouveau croisement EMA", "level": "dim"})
-        if rsi_buy and ema_bull and trend_up and not state.long_signal_stale and not long_level_ok:
-            self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG qualifie mais ni rebond sur support ni cassure de resistance — pas de raison structurelle, signal ignore", "level": "dim"})
-        if rsi_sell and ema_bear and trend_down and not state.short_signal_stale and not short_level_ok:
-            self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT qualifie mais ni rebond sur resistance ni cassure de support — pas de raison structurelle, signal ignore", "level": "dim"})
+        if unified_active:
+            # v4.58 — messages de diagnostic COHERENTS avec la vraie logique
+            # active (evite le message trompeur "ni rebond ni cassure" qui
+            # decrivait l ancienne logique, plus utilisee pour la decision).
+            if rsi_buy and ema_bull and trend_up and not state.long_signal_stale and not long_level_ok:
+                raisons = []
+                if not trend_confirmed_long: raisons.append("tendance/ADX pas assez forte")
+                if not proximity_long_ok: raisons.append("hors fenetre 1-5% du support (et pas de cassure)")
+                if not amplitude_ok: raisons.append("fourchette S/R trop etroite")
+                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG qualifie mais base commune non reunie : {', '.join(raisons) if raisons else 'raison inconnue'}", "level": "dim"})
+            if rsi_sell and ema_bear and trend_down and not state.short_signal_stale and not short_level_ok:
+                raisons = []
+                if not trend_confirmed_short: raisons.append("tendance/ADX pas assez forte")
+                if not proximity_short_ok: raisons.append("hors fenetre 1-5% de la resistance (et pas de cassure)")
+                if not amplitude_ok: raisons.append("fourchette S/R trop etroite")
+                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT qualifie mais base commune non reunie : {', '.join(raisons) if raisons else 'raison inconnue'}", "level": "dim"})
+        else:
+            if rsi_buy and ema_bull and trend_up and not state.long_signal_stale and not long_level_ok:
+                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG qualifie mais ni rebond sur support ni cassure de resistance — pas de raison structurelle, signal ignore", "level": "dim"})
+            if rsi_sell and ema_bear and trend_down and not state.short_signal_stale and not short_level_ok:
+                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT qualifie mais ni rebond sur resistance ni cassure de support — pas de raison structurelle, signal ignore", "level": "dim"})
 
         if rsi_buy and ema_bull and trend_up and not state.long_signal_stale and long_level_ok:
             # v3.2 — FIX : ce filtre ne s applique qu en mode "reversal". En
