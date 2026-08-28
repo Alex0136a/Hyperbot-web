@@ -3683,8 +3683,16 @@ class BotEngine:
         lock1_price_pct = pos.get("ttp_lock1_pct", cfg.get("TTP_LOCK1_PRICE_PCT", 0.8))
         arm2_price_pct  = pos.get("ttp_arm2_pct",  cfg.get("TTP_ARM2_PRICE_PCT", 1.3))
         gap_price_pct   = pos.get("ttp_gap_pct",   cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3))
-        tier0_arm_pct   = cfg.get("TTP_TIER0_ARM_PRICE_PCT", 0.5)
-        tier0_gap_pct   = cfg.get("TTP_TIER0_GAP_PRICE_PCT", 0.42)
+        # v4.56 — FIX BUG CRITIQUE : priorite au seuil MEMORISE sur la
+        # position (mis a l echelle si SL/TTP adaptatif etait actif a
+        # l ouverture) — repli sur la config globale FIXE pour les
+        # positions ouvertes avant ce fix (champ absent). Avant ce fix, ces
+        # deux valeurs restaient TOUJOURS fixes meme quand arm1_price_pct
+        # etait mis a l echelle par l adaptatif, inversant leur relation
+        # logique sur les actifs a faible ATR — armement/desarmement du
+        # tier0/tier1 en boucle, plusieurs fois par minute (observe sur TIA).
+        tier0_arm_pct   = pos.get("tier0_arm_pct", cfg.get("TTP_TIER0_ARM_PRICE_PCT", 0.5))
+        tier0_gap_pct   = pos.get("tier0_gap_pct", cfg.get("TTP_TIER0_GAP_PRICE_PCT", 0.42))
 
         if state.tp_stage == 0:
             # ── Promotion directe vers le tier 1 (arm1 atteint) — desactive
@@ -5172,6 +5180,15 @@ class BotEngine:
             ttp_lock1_pct = cfg.get("TTP_LOCK1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_LOCK1_PRICE_PCT", 0.8))
             ttp_arm2_pct  = cfg.get("TTP_ARM2_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM2_PRICE_PCT", 1.3))
             ttp_gap_pct   = cfg.get("TTP_TRAIL_GAP_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3))
+        # v4.56 — FIX BUG CRITIQUE : tier0_arm_pct/tier0_gap_pct doivent
+        # aussi etre calcules ICI (a l ouverture) pour pouvoir etre mis a
+        # l echelle par le SL/TTP adaptatif ci-dessous et memorises sur la
+        # position — avant ce fix, ils n existaient qu en lecture directe
+        # de la config globale FIXE dans _manage_position_impl, jamais mis
+        # a l echelle, causant un armement/desarmement en boucle sur les
+        # actifs a faible ATR (voir le commentaire plus bas).
+        tier0_arm_pct = cfg.get("TTP_TIER0_ARM_PRICE_PCT", 0.5)
+        tier0_gap_pct = cfg.get("TTP_TIER0_GAP_PRICE_PCT", 0.42)
         # Calcule les seuils de CE trade precis a partir de l ATR actuel,
         # en conservant les MEMES proportions que les reglages (fixes ou
         # par-actif ci-dessus) — toujours en %. Si desactive (par defaut) ou
@@ -5200,12 +5217,26 @@ class BotEngine:
                 ratio_lock1 = (ttp_lock1_pct / sl_pct_of_e) if sl_pct_of_e else 0.8
                 ratio_arm2  = (ttp_arm2_pct  / sl_pct_of_e) if sl_pct_of_e else 1.3
                 ratio_gap   = (ttp_gap_pct   / sl_pct_of_e) if sl_pct_of_e else 0.3
+                # v4.56 — FIX BUG CRITIQUE : tier0_arm_pct/tier0_gap_pct
+                # restaient FIXES (jamais mis a l echelle) alors que
+                # ttp_arm1_pct l etait — sur un actif a faible ATR,
+                # ttp_arm1_pct pouvait finir SOUS le tier0_arm_pct fixe
+                # (0.5% par defaut), inversant leur relation logique :
+                # le trade s armait en tier 1 a, par exemple, 0.30%, puis
+                # etait IMMEDIATEMENT redescendu en tier 0 des le cycle
+                # suivant (0.30% <= 0.5%) — armement/desarmement en boucle,
+                # plusieurs fois par minute (observe sur TIA). Applique
+                # desormais le MEME ratio de mise a l echelle.
+                ratio_tier0_arm = (tier0_arm_pct / sl_pct_of_e) if sl_pct_of_e else 0.5
+                ratio_tier0_gap = (tier0_gap_pct / sl_pct_of_e) if sl_pct_of_e else 0.42
                 sl_pct_of_e   = round(sl_dynamic, 4)
                 ttp_arm1_pct  = round(sl_dynamic * ratio_arm1, 4)
                 ttp_lock1_pct = round(sl_dynamic * ratio_lock1, 4)
 
                 ttp_arm2_pct  = round(sl_dynamic * ratio_arm2, 4)
                 ttp_gap_pct   = round(sl_dynamic * ratio_gap, 4)
+                tier0_arm_pct = round(sl_dynamic * ratio_tier0_arm, 4)
+                tier0_gap_pct = round(sl_dynamic * ratio_tier0_gap, 4)
                 adaptive_used = True
 
         # ── v4.10 — le SL Hyperliquid (filet de securite) est un MULTIPLE du
@@ -5278,6 +5309,11 @@ class BotEngine:
         state.position["ttp_arm2_pct"]  = ttp_arm2_pct
         state.position["ttp_gap_pct"]   = ttp_gap_pct
         state.position["adaptive_sl_ttp"] = adaptive_used
+        # v4.56 — memorise les seuils tier0 REELLEMENT appliques a CE trade
+        # (mis a l echelle si adaptatif) — _manage_position_impl les relit
+        # ici en priorite, exactement comme sl_pct_of_e/ttp_arm1_pct.
+        state.position["tier0_arm_pct"] = tier0_arm_pct
+        state.position["tier0_gap_pct"] = tier0_gap_pct
         # v4.43 — SUR DEMANDE EXPLICITE : Spot-Accumulation memorise le
         # support/resistance mesures a l ENTREE (pas recalcules plus tard,
         # la structure de marche a pu changer) pour calculer l objectif a
