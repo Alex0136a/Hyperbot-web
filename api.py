@@ -1438,7 +1438,19 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
         elif snap.get("long_signal_stale"):
             blocker_long = "signal pas encore renouvele (fraicheur)"
         elif not snap.get("long_level_ok_final"):
-            if not snap.get("direction_confirmed_long"):
+            # v4.58 — SUR DEMANDE EXPLICITE : raisons COHERENTES avec le mode
+            # actif — le mode simplifie (base commune) n a plus rien a voir
+            # avec MACD/amplitude ATR/separation EMA200/confirmation post-trade.
+            if snap.get("unified_mode_active"):
+                if not snap.get("unified_trend_confirmed_long"):
+                    blocker_long = "tendance/ADX pas assez forte"
+                elif not snap.get("unified_proximity_long_ok"):
+                    blocker_long = "hors fenetre 1-5% du support (et pas de cassure)"
+                elif not snap.get("unified_amplitude_ok"):
+                    blocker_long = "fourchette S/R trop etroite"
+                else:
+                    blocker_long = "base commune non reunie (raison indeterminee)"
+            elif not snap.get("direction_confirmed_long"):
                 blocker_long = "MACD ne confirme pas"
             elif not snap.get("amplitude_coherent"):
                 blocker_long = "amplitude ATR incoherente"
@@ -1460,7 +1472,16 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
         elif snap.get("short_signal_stale"):
             blocker_short = "signal pas encore renouvele (fraicheur)"
         elif not snap.get("short_level_ok_final"):
-            if not snap.get("direction_confirmed_short"):
+            if snap.get("unified_mode_active"):
+                if not snap.get("unified_trend_confirmed_short"):
+                    blocker_short = "tendance/ADX pas assez forte"
+                elif not snap.get("unified_proximity_short_ok"):
+                    blocker_short = "hors fenetre 1-5% de la resistance (et pas de cassure)"
+                elif not snap.get("unified_amplitude_ok"):
+                    blocker_short = "fourchette S/R trop etroite"
+                else:
+                    blocker_short = "base commune non reunie (raison indeterminee)"
+            elif not snap.get("direction_confirmed_short"):
                 blocker_short = "MACD ne confirme pas"
             elif not snap.get("amplitude_coherent"):
                 blocker_short = "amplitude ATR incoherente"
