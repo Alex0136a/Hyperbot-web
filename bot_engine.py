@@ -707,6 +707,17 @@ PROFILE_SWING = {
     # precis, en priorite sur cette detection automatique.
     "ADX_PERIOD":               14,
     "ADX_TREND_THRESHOLD":      25.0,
+    # v4.58 — SUR DEMANDE EXPLICITE : 3 conditions de BASE PARTAGEES par les
+    # 3 modes (normal, Accumulation, Spot-Accumulation) — remplacent une
+    # grande partie de la complexite empilee ces dernieres iterations
+    # (fraicheur du signal, ancien respect des niveaux, MACD separe,
+    # ancienne coherence d amplitude, separation EMA200, confirmation
+    # post-trade) pour le mode NORMAL. Accumulation garde en plus sa logique
+    # de cassure (breakout) et sa confirmation post-trade existante.
+    "UNIFIED_REQUIRE_ADX_CONFIRM":     True,
+    "UNIFIED_MIN_ABOVE_SUPPORT_PCT":   1.0,
+    "UNIFIED_MAX_ABOVE_SUPPORT_PCT":   5.0,
+    "UNIFIED_MIN_SR_AMPLITUDE_PCT":    3.0,
     # v4.32 — marge d hysteresis autour du seuil ci-dessus : le mode ne
     # bascule que si l ADX depasse clairement le seuil (+marge pour "trend",
     # -marge pour "reversal") — dans la zone ambigue entre les deux, le
@@ -2705,6 +2716,54 @@ class BotEngine:
             return 2
         return 1
 
+    def _unified_trend_confirmed(self, prices, trend_ok):
+        """v4.58 — SUR DEMANDE EXPLICITE : verification de tendance PARTAGEE
+        par les 3 modes (normal, Accumulation, Spot-Accumulation) — EMA200
+        (trend_ok, deja calcule par l appelant) ET ADX >= seuil (tendance
+        REELLEMENT forte, pas juste un franchissement de justesse)."""
+        if not trend_ok:
+            return False
+        cfg = self.cfg
+        if not cfg.get("UNIFIED_REQUIRE_ADX_CONFIRM", True):
+            return True
+        adx = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
+        adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
+        return adx is not None and adx >= adx_threshold
+
+    def _unified_sr_amplitude_ok(self, support, resistance):
+        """v4.58 — Amplitude S/R PARTAGEE par les 3 modes : la fourchette
+        support-resistance doit faire au moins UNIFIED_MIN_SR_AMPLITUDE_PCT
+        (3% par defaut) — evite les fourchettes trop plates."""
+        if support is None or resistance is None or support <= 0:
+            return False
+        cfg = self.cfg
+        min_pct = cfg.get("UNIFIED_MIN_SR_AMPLITUDE_PCT", 3.0)
+        return (resistance - support) / support * 100 >= min_pct
+
+    def _unified_proximity_ok(self, price, support, resistance, direction, allow_breakout=True):
+        """v4.58 — Proximite 1-5% PARTAGEE par les 3 modes : pour un LONG,
+        le prix doit etre entre UNIFIED_MIN/MAX_ABOVE_SUPPORT_PCT au-dessus
+        du support (et symetriquement pour un SHORT, sous la resistance).
+        allow_breakout=True permet aussi une cassure nette comme alternative
+        (utilise par Normal/Accumulation, pas par Spot-Accum)."""
+        cfg = self.cfg
+        min_pct = cfg.get("UNIFIED_MIN_ABOVE_SUPPORT_PCT", 1.0)
+        max_pct = cfg.get("UNIFIED_MAX_ABOVE_SUPPORT_PCT", 5.0)
+        if direction == "long":
+            if support is None or support <= 0:
+                return False
+            dist_pct = (price - support) / support * 100
+            in_window = min_pct <= dist_pct <= max_pct
+            breakout = allow_breakout and resistance is not None and price > resistance
+            return in_window or breakout
+        else:  # short
+            if resistance is None or resistance <= 0:
+                return False
+            dist_pct = (resistance - price) / resistance * 100
+            in_window = min_pct <= dist_pct <= max_pct
+            breakout = allow_breakout and support is not None and price < support
+            return in_window or breakout
+
     def _gate_active_or_auto_activate(self, ticker, confidence, direction):
         """v4.4 — Auto-activation SUPPRIMEE sur demande explicite : un actif
         non selectionne reste desormais TOUJOURS bloque, quelle que soit la
@@ -4392,6 +4451,27 @@ class BotEngine:
                     self.emit("log", {"msg": f"[{ticker}] SHORT qualifie mais en attente de confirmation post-gain ({state.confirm_count_short}/{confirm_cycles_needed} cycles consecutifs, {state.post_win_wait_short}/{max_wait_cycles} max)", "level": "dim"})
                 short_level_ok = False
 
+        # v4.58 — SUR DEMANDE EXPLICITE : mode SIMPLIFIE — remplace TOUT ce
+        # qui precede (fraicheur, respect des niveaux, MACD/EMA200 par
+        # symbole, coherence d amplitude, separation EMA200, confirmation
+        # post-trade) par les 3 conditions communes aux 3 modes (tendance +
+        # ADX, proximite 1-5% avec cassure en alternative, amplitude S/R
+        # suffisante). Le RSI reste demande separement (rsi_buy/rsi_sell,
+        # deja calcules plus haut, inchange) comme filtre leger en plus.
+        # ACTIVE PAR DEFAUT — repasser a False pour retrouver l ancien
+        # comportement complet (aucun code retire, juste court-circuite).
+        if cfg.get("UNIFIED_SIMPLIFIED_MODE", True):
+            long_level_ok = (
+                self._unified_trend_confirmed(prices, trend_up)
+                and self._unified_proximity_ok(price, support, resistance, "long")
+                and self._unified_sr_amplitude_ok(support, resistance)
+            )
+            short_level_ok = (
+                self._unified_trend_confirmed(prices, trend_down)
+                and self._unified_proximity_ok(price, support, resistance, "short")
+                and self._unified_sr_amplitude_ok(support, resistance)
+            )
+
         # Pour certains symboles (SOL), MACD + BB sont OBLIGATOIRES pour entrer
         require_macd_bb  = ticker in cfg.get("SYMBOL_REQUIRE_MACD_BB", [])
 
@@ -4731,19 +4811,39 @@ class BotEngine:
         dist_to_support    = (price - support) / support * 100
         dist_to_resistance = (resistance - price) / price * 100
 
+        # v4.58 — SUR DEMANDE EXPLICITE : direction desormais basee sur les
+        # 3 conditions communes aux 3 modes (tendance + ADX, proximite 1-5%
+        # AVEC cassure conservee en alternative — sur demande explicite,
+        # Accumulation garde sa logique de cassure contrairement a
+        # Spot-Accumulation), amplitude S/R suffisante. Remplace l ancienne
+        # logique base sur ACCUMULATION_PROXIMITY_PCT seul (garde la
+        # variable pour compatibilite mais ne l utilise plus si le mode
+        # unifie est actif). Tout ce qui suit (MACD, ancienne coherence
+        # d amplitude, separation EMA200, confirmation post-trade) reste
+        # inchange, applique EN PLUS de ces 3 conditions.
         direction = None
-        if 0 <= dist_to_support <= proximity_pct:
-            # Sens coherent : le mouvement tres recent ne doit pas s effondrer
-            # a travers le support (sinon ce n est plus un rebond, c est une
-            # cassure en cours) — reutilise le meme filtre momentum que la
-            # logique normale.
-            if momentum_pct is None or momentum_pct >= -momentum_threshold:
-                if not require_trend or trend_up:
+        if cfg.get("UNIFIED_SIMPLIFIED_MODE", True):
+            if not self._unified_sr_amplitude_ok(support, resistance):
+                return
+            if self._unified_trend_confirmed(prices, trend_up) and self._unified_proximity_ok(price, support, resistance, "long"):
+                if momentum_pct is None or momentum_pct >= -momentum_threshold:
                     direction = "long"
-        elif 0 <= dist_to_resistance <= proximity_pct:
-            if momentum_pct is None or momentum_pct <= momentum_threshold:
-                if not require_trend or trend_down:
+            elif self._unified_trend_confirmed(prices, trend_down) and self._unified_proximity_ok(price, support, resistance, "short"):
+                if momentum_pct is None or momentum_pct <= momentum_threshold:
                     direction = "short"
+        else:
+            if 0 <= dist_to_support <= proximity_pct:
+                # Sens coherent : le mouvement tres recent ne doit pas s effondrer
+                # a travers le support (sinon ce n est plus un rebond, c est une
+                # cassure en cours) — reutilise le meme filtre momentum que la
+                # logique normale.
+                if momentum_pct is None or momentum_pct >= -momentum_threshold:
+                    if not require_trend or trend_up:
+                        direction = "long"
+            elif 0 <= dist_to_resistance <= proximity_pct:
+                if momentum_pct is None or momentum_pct <= momentum_threshold:
+                    if not require_trend or trend_down:
+                        direction = "short"
 
         if direction is None:
             return
