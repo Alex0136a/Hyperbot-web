@@ -1458,12 +1458,25 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
                 blocker_short = "niveau (support/resistance) non respecte"
         else:
             blocker_short = None
+        # v4.55 — SUR DEMANDE EXPLICITE : le diagnostic ne couvrait jusqu ici
+        # que le mode normal — ajoute Spot-Accumulation, dont la logique
+        # d entree est completement differente (LONG uniquement, fenetre de
+        # distance au support, amplitude S/R, confirmation ADX...).
+        spot_snap = state.spot_accum_gate_snapshot or {}
+        if has_position and state.position.get("strategy") == "spot_accumulation":
+            blocker_spot_accum = "position deja ouverte"
+        elif not spot_snap:
+            blocker_spot_accum = "pas encore de donnees"
+        else:
+            blocker_spot_accum = spot_snap.get("blocker", "pas encore de donnees")
         results.append({
             "ticker": ticker,
             "has_position": has_position,
             "snapshot_age_sec": round(time.time() - snap["ts"], 1) if snap.get("ts") else None,
             "blocker_long": blocker_long,
             "blocker_short": blocker_short,
+            "blocker_spot_accum": blocker_spot_accum,
+            "spot_accum_detail": spot_snap if spot_snap else None,
         })
     results.sort(key=lambda r: r["ticker"])
     return {"results": results}
