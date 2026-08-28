@@ -322,12 +322,16 @@ CONFIG = {
     "SPOT_ACCUM_TRAILING_ARM_SR_PCT": 70.0,    # = support + ce % de la distance support-resistance
     "SPOT_ACCUM_SL_ENABLED": False,            # AUCUN SL par defaut — interrupteur explicite pour en ajouter un
     "SPOT_ACCUM_SL_PCT_OF_PNL": 5.0,           # si active : ferme si le PnL tombe a -5% (valeur, pas negative — le signe est applique automatiquement)
-    # v4.47 — SUR DEMANDE EXPLICITE : fermeture si un retournement de
+    # v4.47/v4.54 — SUR DEMANDE EXPLICITE : fermeture si un retournement de
     # tendance est CONFIRME (prix sous l EMA200 de facon soutenue) — activee
-    # par defaut (protection alignee sur la philosophie du mode), 18 cycles
-    # (~3 min) de confirmation pour eviter une sortie sur un simple creux.
+    # par defaut. v4.54 corrige DEUX axes : la duree (l EMA200 ne bouge que
+    # toutes les ~2 min, 3 min de confirmation etait trop court pour
+    # representer un vrai changement de tendance) ET la qualite des donnees
+    # (n accepte le signal que si l EMA200 est assez mature ET la collecte
+    # saine — pas de coupure recente).
     "SPOT_ACCUM_REVERSAL_EXIT_ENABLED": True,
-    "SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES": 18,
+    "SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES": 180,      # ~30 min a 10s/cycle (etait 18 = ~3 min)
+    "SPOT_ACCUM_REVERSAL_MIN_EMA_MATURITY": 100,    # bougies mtf minimum (sur 200 max) pour faire confiance a l EMA200
 
     # v4.44 — SUR DEMANDE EXPLICITE : liste d actifs DEDIEE par mode
     # (independante de la liste globale ACTIVE_COINS geree dans Marches).
@@ -3505,24 +3509,43 @@ class BotEngine:
                         close_order(self.exchange, symbol, pos, cfg)
                     return
 
-            # v4.47 — SUR DEMANDE EXPLICITE : fermeture si un RETOURNEMENT DE
-            # TENDANCE est CONFIRME (prix repasse sous l EMA200 de facon
-            # SOUTENUE, pas un simple creux passager) — protection
-            # complementaire au SL optionnel, alignee sur la philosophie du
-            # mode (achete AVEC la tendance haussiere, sort si elle casse
-            # vraiment). Exige plusieurs cycles consecutifs pour eviter
-            # qu un bref repli ne declenche une sortie prematuree. Une fois
-            # ferme, le bot continue d evaluer normalement cet actif pour
-            # une reentree des qu une nouvelle tendance haussiere confirmee
-            # se represente (meme logique d entree qu a l ouverture, pas de
-            # mecanisme special necessaire au-dela de cette fermeture).
+            # v4.47/v4.54 — SUR DEMANDE EXPLICITE : fermeture si un
+            # RETOURNEMENT DE TENDANCE est CONFIRME. v4.54 corrige une vraie
+            # faille : l EMA200 ne se met a jour qu une fois toutes les
+            # ~2 min (echantillonnage par bougie), alors que l ancienne
+            # confirmation ne durait que 18 cycles (~3 min) — l EMA200
+            # elle-meme n avait quasiment pas bouge sur cette fenetre, ce
+            # n etait donc pas une vraie confirmation de retournement, juste
+            # du bruit de prix a court terme sous une ligne quasi figee.
+            # Corrige sur DEUX axes distincts, pas seulement la duree :
+            #   1) DUREE allongee a un niveau coherent avec la vitesse reelle
+            #      de l EMA200 (30 min par defaut, au lieu de 3 min).
+            #   2) QUALITE DES DONNEES : n accepte le signal que si l EMA200
+            #      est suffisamment MATURE (assez de bougies accumulees, pas
+            #      juste le minimum de 10) ET que la collecte est SAINE en ce
+            #      moment (pas de coupure WebSocket recente, pas de gap de
+            #      donnees) — un retournement calcule sur des donnees
+            #      fraichement redemarrees ou une collecte instable n est pas
+            #      fiable, meme si le compteur de cycles est au complet.
             if cfg.get("SPOT_ACCUM_REVERSAL_EXIT_ENABLED", True):
+                min_maturity = cfg.get("SPOT_ACCUM_REVERSAL_MIN_EMA_MATURITY", 100)
+                data_mature = len(state.mtf_prices) >= min_maturity
+                data_healthy = self._is_ws_healthy() if self.info is not None else True
                 ema200_now = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
-                if ema200_now is not None and price < ema200_now:
+
+                if not data_mature or not data_healthy or ema200_now is None:
+                    # Donnees pas assez fiables pour juger d un retournement
+                    # — on n accumule ni ne remet a zero le compteur, on
+                    # attend simplement d avoir une lecture de confiance.
+                    reason_skip = "EMA200 pas assez mature" if not data_mature else ("collecte instable" if not data_healthy else "EMA200 indisponible")
+                    if state.spot_accum_reversal_count > 0:
+                        self.emit("log", {"msg": f"[{ticker}] 🌱 Retournement en cours d'evaluation suspendu ({reason_skip}) — compteur conserve a {state.spot_accum_reversal_count}", "level": "dim"})
+                elif price < ema200_now:
                     state.spot_accum_reversal_count += 1
                 else:
                     state.spot_accum_reversal_count = 0
-                confirm_needed = cfg.get("SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES", 18)
+
+                confirm_needed = cfg.get("SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES", 180)  # ~30 min par defaut
                 if state.spot_accum_reversal_count >= confirm_needed:
                     pnl, _, trade = state.close_position(price, "RETOURNEMENT CONFIRME")
                     trade["symbol"] = symbol
@@ -3531,7 +3554,7 @@ class BotEngine:
                         self._register_win(ticker)
                     else:
                         self._register_max_loss(ticker, pos.get("confidence"))
-                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum RETOURNEMENT CONFIRME (prix sous l'EMA200 depuis {confirm_needed} cycles) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "warn"})
+                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum RETOURNEMENT CONFIRME (prix sous l'EMA200 depuis {confirm_needed} cycles, donnees matures et saines) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "warn"})
                     state.spot_accum_reversal_count = 0
                     self._save_open_positions()
                     if mode == "live" and self.exchange:
