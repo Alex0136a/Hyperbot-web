@@ -775,6 +775,8 @@ ADVANCED_SETTINGS = {
     "SPOT_ACCUM_TARGET_SR_PCT":         {"label": "Spot-Accum - objectif (% distance support-resistance)", "default": 80.0},
     "SPOT_ACCUM_TRAILING_ARM_SR_PCT":   {"label": "Spot-Accum - armement trailing (% distance support-résistance)", "default": 70.0},
     "SPOT_ACCUM_SL_PCT_OF_PNL":         {"label": "Spot-Accum - SL optionnel (% du PnL, si active)", "default": 5.0},
+    "SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES":    {"label": "Spot-Accum - retournement confirmé (cycles, ~10s chacun)", "default": 180},
+    "SPOT_ACCUM_REVERSAL_MIN_EMA_MATURITY":  {"label": "Spot-Accum - maturité EMA200 minimale (bougies)", "default": 100},
     "VOLUME_MIN_RATIO":        {"label": "Volume - ratio minimum vs moyenne","default": 1.2},
     "MOMENTUM_PERIOD":         {"label": "Momentum - periode (cycles)",      "default": 4},
     "MOMENTUM_THRESHOLD_PCT":  {"label": "Momentum - seuil %",               "default": 0.20},
