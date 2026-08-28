@@ -685,7 +685,16 @@ PROFILE_SWING = {
     "FOREX_WARMUP_MINUTES":     15,
     # Filtre ATR en swing — bloque les entrees sur marche trop calme.
     # Seuil global unique pour tous les actifs.
-    "ATR_FILTER":               True,
+    # v4.57 — SUR DEMANDE EXPLICITE : DESACTIVE — ce filtre s executait
+    # AVANT les appels a Accumulation/Spot-Accumulation dans _process,
+    # donc un blocage bloquait TOUS les modes simultanement, pas
+    # seulement le mode normal (confirme : BTC bloque ici pendant une
+    # vraie tendance baissiere lente de -4.3% sur 12h, empechant aussi
+    # Accumulation SHORT de s evaluer). Fait desormais doublon avec
+    # REQUIRE_AMPLITUDE_COHERENCE, plus rigoureux (relatif au SL de
+    # chaque trade, pas un seuil fixe jamais recalibre pour le nouveau
+    # calcul haut/bas).
+    "ATR_FILTER":               False,
     "ATR_PERIOD":               21,   # v3.2 — recalibre (14->21) pour preserver ~3min30 reelles avec le cycle a 10s (etait calibre pour 15s)
     "ATR_MIN_PCT":              0.015,
     "ATR_MIN_PCT_BY_SYMBOL":    {},
@@ -762,7 +771,8 @@ PROFILE_SCALP = {
     "VOLUME_MIN_RATIO":         1.0,
     "FOREX_WARMUP_MINUTES":     5,
     # Filtre ATR — seuil global unique pour tous les actifs
-    "ATR_FILTER":               True,
+    # v4.57 — SUR DEMANDE EXPLICITE : DESACTIVE, meme raison que le profil swing.
+    "ATR_FILTER":               False,
     "ATR_PERIOD":               21,   # v3.2 — recalibre (14->21) pour preserver la fenetre reelle originale avec le cycle a 10s
     "ATR_MIN_PCT":              0.02,
     "ATR_MIN_PCT_BY_SYMBOL":    {},
