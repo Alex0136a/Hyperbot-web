@@ -417,6 +417,8 @@ def _public_config() -> Dict[str, Any]:
         "funding_mode_enabled": cfg.get("FUNDING_MODE_ENABLED", False),
         "funding_mode_live_allowed": cfg.get("FUNDING_MODE_LIVE_ALLOWED", False),
         "require_sr_ema200_separation": cfg.get("REQUIRE_SR_EMA200_SEPARATION", False),
+        "unified_simplified_mode": cfg.get("UNIFIED_SIMPLIFIED_MODE", True),
+        "unified_require_adx_confirm": cfg.get("UNIFIED_REQUIRE_ADX_CONFIRM", True),
         "spot_accum_enabled": cfg.get("SPOT_ACCUM_ENABLED", False),
         "spot_accum_sl_enabled": cfg.get("SPOT_ACCUM_SL_ENABLED", False),
         "spot_accum_require_adx_confirm": cfg.get("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", True),
@@ -766,6 +768,9 @@ ADVANCED_SETTINGS = {
     "FUNDING_MODE_MAX_TRADES":      {"label": "Funding Contrarian - trades simultanes max", "default": 3},
     "FUNDING_REFRESH_SEC":          {"label": "Funding Contrarian - frequence de rafraichissement (s)", "default": 300},
     "SR_EMA200_PROXIMITY_PCT":      {"label": "Separation S/R vs EMA200 - proximite (%)", "default": 0.5},
+    "UNIFIED_MIN_ABOVE_SUPPORT_PCT":   {"label": "Base commune - minimum au-dessus du niveau (%)", "default": 1.0},
+    "UNIFIED_MAX_ABOVE_SUPPORT_PCT":   {"label": "Base commune - maximum au-dessus du niveau (%)", "default": 5.0},
+    "UNIFIED_MIN_SR_AMPLITUDE_PCT":    {"label": "Base commune - amplitude minimale fourchette S/R (%)", "default": 3.0},
     "SPOT_ACCUM_MAX_TRADES":            {"label": "Spot-Accum - trades simultanes max", "default": 3},
     "SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT": {"label": "Spot-Accum - minimum au-dessus du support (%)", "default": 1.0},
     "SPOT_ACCUM_MIN_SR_AMPLITUDE_PCT": {"label": "Spot-Accum - amplitude minimale fourchette S/R (%)", "default": 3.0},
@@ -1027,6 +1032,8 @@ class FiltersBody(BaseModel):
     funding_mode_enabled: Optional[bool] = None
     funding_mode_live_allowed: Optional[bool] = None
     require_sr_ema200_separation: Optional[bool] = None
+    unified_simplified_mode: Optional[bool] = None
+    unified_require_adx_confirm: Optional[bool] = None
     spot_accum_enabled: Optional[bool] = None
     spot_accum_sl_enabled: Optional[bool] = None
     spot_accum_require_adx_confirm: Optional[bool] = None
@@ -1070,6 +1077,13 @@ def put_filters(body: FiltersBody, email: str = Depends(require_user)):
     # de sa moyenne longue) — DESACTIVE par defaut.
     if body.require_sr_ema200_separation is not None:
         _apply_and_persist("REQUIRE_SR_EMA200_SEPARATION", body.require_sr_ema200_separation)
+    # v4.58 — mode SIMPLIFIE : 3 conditions communes (tendance+ADX,
+    # proximite 1-5%, amplitude S/R) remplacent la complexite empilee sur le
+    # mode normal, et s ajoutent a Accumulation. ACTIF par defaut.
+    if body.unified_simplified_mode is not None:
+        _apply_and_persist("UNIFIED_SIMPLIFIED_MODE", body.unified_simplified_mode)
+    if body.unified_require_adx_confirm is not None:
+        _apply_and_persist("UNIFIED_REQUIRE_ADX_CONFIRM", body.unified_require_adx_confirm)
     # v4.43 — mode Spot-Accumulation (achat d actif esprit spot, aucun SL
     # par defaut, levier toujours x1). spot_accum_sl_enabled ajoute un SL
     # optionnel en % du PnL (voir SPOT_ACCUM_SL_PCT_OF_PNL dans Parametres avances).
