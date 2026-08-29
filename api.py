@@ -1383,6 +1383,47 @@ def get_atr_summary(email: str = Depends(require_user)):
     return {"atr_period": atr_period, "results": results}
 
 
+@app.get("/api/trend-summary")
+def get_trend_summary(email: str = Depends(require_user)):
+    """v4.59 — SUR DEMANDE EXPLICITE : classe chaque actif suivi en
+    "haussier franc" / "baissier franc" / "indecis", a la demande — meme
+    logique que la base commune des 3 modes (_unified_trend_confirmed) :
+    EMA200 pour la direction, ADX >= seuil pour la force (une direction
+    sans force n est pas consideree franche)."""
+    cfg = bot.cfg
+    adx_period = cfg.get("ADX_PERIOD", 14)
+    adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
+    results = []
+    for slot_key, state in bot.states.items():
+        ticker = be.ticker_from_slot_key(slot_key)
+        price = state.current_price
+        prices = list(state.price_history)
+        ema200 = be.calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+        adx = be.calc_adx(prices, adx_period) if len(prices) >= adx_period + 1 else None
+        if price is None or ema200 is None or adx is None:
+            label = "donnees insuffisantes"
+        else:
+            strong = adx >= adx_threshold
+            if price > ema200 and strong:
+                label = "haussier franc"
+            elif price < ema200 and strong:
+                label = "baissier franc"
+            else:
+                label = "indecis"
+        results.append({
+            "ticker": ticker,
+            "price": price,
+            "ema200": round(ema200, 6) if ema200 is not None else None,
+            "adx": round(adx, 1) if adx is not None else None,
+            "adx_threshold": adx_threshold,
+            "label": label,
+            "active": ticker in (cfg.get("ACTIVE_COINS") or []),
+        })
+    order = {"haussier franc": 0, "baissier franc": 1, "indecis": 2, "donnees insuffisantes": 3}
+    results.sort(key=lambda r: (order.get(r["label"], 9), r["ticker"]))
+    return {"adx_threshold": adx_threshold, "results": results, "refreshed_at": time.time()}
+
+
 @app.get("/api/strategy-performance/{strategy}")
 def get_strategy_performance(strategy: str, email: str = Depends(require_user)):
     """v4.43 — SUR DEMANDE EXPLICITE : performance d un MODE precis
