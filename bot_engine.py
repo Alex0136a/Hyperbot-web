@@ -308,7 +308,7 @@ CONFIG = {
     "SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT": 5.0,   # entree seulement si prix <= support + 5%
     # v4.53 — SUR DEMANDE EXPLICITE : la fourchette support-resistance doit
     # avoir une amplitude minimale (support=100 -> resistance >= 103 pour 3%).
-    "SPOT_ACCUM_MIN_SR_AMPLITUDE_PCT": 3.0,
+    "SPOT_ACCUM_MIN_SR_AMPLITUDE_PCT": 2.0,
     # v4.53 — SUR DEMANDE EXPLICITE : confirmation ADX de la tendance
     # (reutilise ADX_TREND_THRESHOLD, 25 par defaut) — "tendance haussiere
     # claire", pas juste prix > EMA200 franchi de justesse.
@@ -717,7 +717,7 @@ PROFILE_SWING = {
     "UNIFIED_REQUIRE_ADX_CONFIRM":     True,
     "UNIFIED_MIN_ABOVE_SUPPORT_PCT":   1.0,
     "UNIFIED_MAX_ABOVE_SUPPORT_PCT":   5.0,
-    "UNIFIED_MIN_SR_AMPLITUDE_PCT":    3.0,
+    "UNIFIED_MIN_SR_AMPLITUDE_PCT":    2.0,
     # v4.32 — marge d hysteresis autour du seuil ci-dessus : le mode ne
     # bascule que si l ADX depasse clairement le seuil (+marge pour "trend",
     # -marge pour "reversal") — dans la zone ambigue entre les deux, le
