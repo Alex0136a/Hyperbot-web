@@ -472,6 +472,8 @@ function App() {
   const [atrSummary, setAtrSummary] = useState(null);
   const [entryDiag, setEntryDiag] = useState(null);
   const [entryDiagLoading, setEntryDiagLoading] = useState(false);
+  const [trendSummary, setTrendSummary] = useState(null);
+  const [trendSummaryLoading, setTrendSummaryLoading] = useState(false);
   // v4.43 — sous-onglets Paper Trading par mode (Normal/Accumulation/Funding/Spot-Accum)
   const [paperSubTab, setPaperSubTab] = useState("all");
   const [strategyPerf, setStrategyPerf] = useState({});
@@ -622,6 +624,18 @@ function App() {
       setAtrSummary(null);
     }
     setAtrSummaryLoading(false);
+  }, [token]);
+
+  const loadTrendSummary = useCallback(async () => {
+    if (!token) return;
+    setTrendSummaryLoading(true);
+    try {
+      const r = await apiCall("/api/trend-summary", "GET", null, token);
+      setTrendSummary(r);
+    } catch(e) {
+      setTrendSummary(null);
+    }
+    setTrendSummaryLoading(false);
   }, [token]);
 
   const loadEntryDiagnostics = useCallback(async () => {
@@ -1337,6 +1351,35 @@ Confirmer ?`
                   onClick={e=>e.target.select()}
                 />
               </>
+            )}
+          </div>
+
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:16}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={{fontSize:13,fontWeight:700,color:"#c084fc"}}>🧭 Tendance franche — tous les actifs (à la demande)</div>
+              <button onClick={loadTrendSummary} disabled={trendSummaryLoading}
+                style={{background:"#3b0f5e22",border:"1px solid #c084fc",borderRadius:6,padding:"7px 14px",color:"#c084fc",fontSize:11,cursor:"pointer",fontWeight:700}}>
+                {trendSummaryLoading?"Chargement...":"🔄 Récupérer maintenant"}
+              </button>
+            </div>
+            {!trendSummary ? (
+              <div style={{fontSize:11,color:"#94a3b8"}}>Cliquez pour voir, actif par actif, si la tendance est franchement haussière, franchement baissière, ou indécise (EMA200 pour la direction, ADX ≥ seuil pour la force).</div>
+            ) : (
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(140px, 1fr))",gap:8}}>
+                {trendSummary.results.map(r=>{
+                  const color = r.label==="haussier franc" ? "#34d399" : r.label==="baissier franc" ? "#f87171" : r.label==="indecis" ? "#fbbf24" : "#475569";
+                  const icon = r.label==="haussier franc" ? "📈" : r.label==="baissier franc" ? "📉" : r.label==="indecis" ? "〰️" : "❔";
+                  return (
+                    <div key={r.ticker} style={{background:"#0a0e1a",border:`1px solid ${color}`,borderRadius:8,padding:10}}>
+                      <div style={{fontSize:11,fontWeight:700,color:"#e2e8f0"}}>{r.ticker}{r.active?"":" (inactif)"}</div>
+                      <div style={{fontSize:11,color,fontWeight:700,marginTop:2}}>{icon} {r.label}</div>
+                      <div style={{fontSize:9,color:"#94a3b8",marginTop:3}}>
+                        {r.adx!=null ? `ADX ${r.adx}` : "ADX ?"} · {r.price!=null?`$${r.price.toLocaleString("en-US",{maximumFractionDigits:4})}`:"?"}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
 
