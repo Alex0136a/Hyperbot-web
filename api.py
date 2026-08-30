@@ -419,6 +419,7 @@ def _public_config() -> Dict[str, Any]:
         "require_sr_ema200_separation": cfg.get("REQUIRE_SR_EMA200_SEPARATION", False),
         "unified_simplified_mode": cfg.get("UNIFIED_SIMPLIFIED_MODE", True),
         "unified_require_adx_confirm": cfg.get("UNIFIED_REQUIRE_ADX_CONFIRM", True),
+        "ttp_dynamic_from_arm1": cfg.get("TTP_DYNAMIC_FROM_ARM1", True),
         "spot_accum_enabled": cfg.get("SPOT_ACCUM_ENABLED", False),
         "spot_accum_sl_enabled": cfg.get("SPOT_ACCUM_SL_ENABLED", False),
         "spot_accum_require_adx_confirm": cfg.get("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", True),
@@ -759,6 +760,7 @@ ADVANCED_SETTINGS = {
     "TTP_LOCK1_PRICE_PCT":         {"label": "TTP - seuil de sortie initial (% de mouvement de prix)", "default": 0.8},
     "TTP_ARM2_PRICE_PCT":          {"label": "TTP - 2e seuil, active le trailing continu (% de mouvement de prix)", "default": 1.3},
     "TTP_TRAIL_GAP_PRICE_PCT":     {"label": "TTP - marge de repli continue sous le pic (% de mouvement de prix)", "default": 0.3},
+    "TTP_DYNAMIC_TRAIL_GAP_PCT":   {"label": "TTP - marge du trailing dynamique dès l'armement (%)", "default": 0.5},
     "ACCUMULATION_MAX_TRADES":     {"label": "Accumulation - trades simultanes max", "default": 3},
     "ACCUMULATION_PROXIMITY_PCT":  {"label": "Accumulation - proximite support/resistance (%)", "default": 1.0},
     "SL_ATR_MULTIPLIER":       {"label": "SL/TTP adaptatif - multiplicateur ATR", "default": 1.0},
@@ -1034,6 +1036,7 @@ class FiltersBody(BaseModel):
     require_sr_ema200_separation: Optional[bool] = None
     unified_simplified_mode: Optional[bool] = None
     unified_require_adx_confirm: Optional[bool] = None
+    ttp_dynamic_from_arm1: Optional[bool] = None
     spot_accum_enabled: Optional[bool] = None
     spot_accum_sl_enabled: Optional[bool] = None
     spot_accum_require_adx_confirm: Optional[bool] = None
@@ -1084,6 +1087,8 @@ def put_filters(body: FiltersBody, email: str = Depends(require_user)):
         _apply_and_persist("UNIFIED_SIMPLIFIED_MODE", body.unified_simplified_mode)
     if body.unified_require_adx_confirm is not None:
         _apply_and_persist("UNIFIED_REQUIRE_ADX_CONFIRM", body.unified_require_adx_confirm)
+    if body.ttp_dynamic_from_arm1 is not None:
+        _apply_and_persist("TTP_DYNAMIC_FROM_ARM1", body.ttp_dynamic_from_arm1)
     # v4.43 — mode Spot-Accumulation (achat d actif esprit spot, aucun SL
     # par defaut, levier toujours x1). spot_accum_sl_enabled ajoute un SL
     # optionnel en % du PnL (voir SPOT_ACCUM_SL_PCT_OF_PNL dans Parametres avances).
