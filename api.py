@@ -1,2100 +1,5656 @@
 """
-api.py — Backend FastAPI pour HyperBot Web (déploiement GitHub + Railway).
+╔═══════════════════════════════════════════════════════╗
+║       HyperBot — Pro Edition                          ║
+║  RSI + EMA + MACD + BB + Volume + Trailing SL         ║
+║  Plage horaire | Multi-Crypto | Dashboard temps réel  ║
+║  Perp (BTC, SOL, PAXG) — Long + Short sur tous       ║
+╚═══════════════════════════════════════════════════════╝
 
-Sert :
-  - l API JSON consommée par index.html (voir contrat dans le fichier HTML)
-  - le fichier index.html lui-meme sur "/"
+INSTALLATION :
+    pip install hyperliquid-python-sdk eth-account
 
-Demarrage local :
-    pip install -r requirements.txt
-    uvicorn api:app --host 0.0.0.0 --port 8000
+LANCEMENT :
+    python hyperbot_dashboard.py
 
-Variables d environnement (voir README.md pour la liste complete) :
-    HYPERBOT_DATA_DIR        dossier de donnees persistantes (DB + logs + capital)
-    HYPERBOT_SECRET_KEY      cle secrete pour signer les tokens de session
-    HYPERBOT_PRIVATE_KEY / HYPERBOT_WALLET_ADDRESS / HYPERBOT_FINNHUB_API_KEY
+NOTES :
+    - BTC, SOL : marchés perpétuels (long + short)
+    - PAXG     : perpétuel or sur Hyperliquid (index 187, levier max x10)
+                 Tracker du prix de l or (1 PAXG = 1 once d or)
+                 Long ET Short disponibles — remplace XAUT spot
 """
-import os
-import json
-import queue
-import threading
+
 import time
+import threading
+import json
+from datetime import datetime
 from collections import deque
-from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Dict, Any
-
-from fastapi import FastAPI, HTTPException, Header, Query, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
-from pydantic import BaseModel
-
-# v3.2 — FIX CRITIQUE : les imports locaux (db, auth, bot_engine) DOIVENT se
-# faire AVANT tout changement de repertoire courant (os.chdir). Auparavant,
-# le chdir vers HYPERBOT_DATA_DIR (ex: /data) se faisait avant ces imports :
-# Python resolvait alors "import db" par rapport au NOUVEAU repertoire
-# courant (/data) au lieu du dossier contenant le code (/app), provoquant
-# un crash systematique ("ModuleNotFoundError: No module named 'db'") des
-# qu un Volume etait monte et HYPERBOT_DATA_DIR defini.
-import db
-import auth
-import bot_engine as be
-
-# ── Dossier de donnees persistantes (a monter en Volume sur Railway) ─────
-# Fait APRES les imports ci-dessus : seuls les FICHIERS ecrits a l execution
-# (base SQLite, capital, logs, session) doivent utiliser ce dossier — pas la
-# resolution des modules Python, deja faite a ce stade.
-_DATA_DIR = os.environ.get("HYPERBOT_DATA_DIR", ".")
-_DATA_DIR_CONFIGURED = "HYPERBOT_DATA_DIR" in os.environ
-os.makedirs(_DATA_DIR, exist_ok=True)
-os.chdir(_DATA_DIR)
-
-# ─────────────────────────────────────────────────────────────────────────
-#  INITIALISATION
-# ─────────────────────────────────────────────────────────────────────────
-db.init_db()
-
-# Nos 6 symboles reellement supportes (voir bot_engine.CONFIG["SYMBOLS"]).
-# L interface propose 30 cryptos (ALL_COINS) — on ne peut en activer que
-# parmi ce sous-ensemble reellement tradable par ce bot.
-SUPPORTED_TICKERS = [be.ticker_from_slot_key(s) for s in be.CONFIG["SYMBOLS"]]
-
-cfg = dict(be.CONFIG)
-
-# v3.2 : fallback via variable d environnement pour ACTIVE_COINS — permet de
-# fixer les actifs actifs sans dependre d un Volume Railway (comme pour les
-# cles Hyperliquid/Finnhub). Une eventuelle valeur enregistree en base (via
-# l interface web, necessite un Volume) reste prioritaire si presente.
-_env_active_coins = os.environ.get("HYPERBOT_ACTIVE_COINS", "").strip()
-if _env_active_coins:
-    cfg["ACTIVE_COINS"] = [c.strip().upper() for c in _env_active_coins.split(",") if c.strip()]
-
-for k, v in db.get_all_config_overrides().items():
-    cfg[k] = v
-be.apply_profile(cfg, cfg.get("PROFILE", "swing"))
-
-if db.get_meta("initial_balance") is None:
-    db.set_meta("initial_balance", str(cfg["CAPITAL_USD"]))
-if db.get_meta("reset_at") is None:
-    db.set_meta("reset_at", db.now_iso())
-
-# ── Diagnostic de persistance ────────────────────────────────────────────
-# BOOT_COUNT est stocke en base : s il repart TOUJOURS a 1 apres chaque
-# redeploiement Railway (au lieu de s incrementer 1, 2, 3...), c est la
-# preuve que les donnees ne persistent pas — HYPERBOT_DATA_DIR ne pointe
-# pas vers un Volume monte. Visible dans /health et dans les logs de
-# demarrage.
-BOOT_COUNT = int(db.get_meta("boot_count", "0")) + 1
-db.set_meta("boot_count", str(BOOT_COUNT))
-_startup_warnings = []
-if not _DATA_DIR_CONFIGURED:
-    _startup_warnings.append(
-        "HYPERBOT_DATA_DIR n est pas definie — les donnees (base, capital, cle "
-        "API) NE PERSISTERONT PAS entre deux redeploiements Railway. Cree un "
-        "Volume (Settings > Volumes), monte-le par exemple sur /data, et "
-        "definis HYPERBOT_DATA_DIR=/data."
-    )
-if BOOT_COUNT == 1:
-    _startup_warnings.append(
-        "Premier demarrage detecte pour cette base de donnees (boot_count=1). "
-        "Si ce nombre repart TOUJOURS a 1 apres un redeploiement, le Volume "
-        "n est pas correctement monte — voir /health."
-    )
-
-event_queue = queue.Queue()
-bot = be.BotEngine(cfg, event_queue)
-
-log_buffer = deque(maxlen=3000)
-_state_lock = threading.Lock()
-
-# v3.2 — FIX : l interface (index.html) attend un champ "message" (pas "msg")
-# et des niveaux "success"/"warning"/"error" (tout le reste s affiche en
-# gris) — alors que le bot (bot_engine.py) emet des niveaux "ok"/"warn"/
-# "error"/"win"/"loss"/"info"/"signal"/"dim". Sans cette traduction, TOUS
-# les logs s affichaient sans aucun texte visible (mauvais nom de champ) et
-# sans les bonnes couleurs.
-_LEVEL_MAP = {"ok": "success", "win": "success", "warn": "warning", "loss": "error", "error": "error"}
-
-
-def _push_log(level_raw: str, msg: str):
-    log_buffer.append({
-        "time": datetime.now(timezone.utc).isoformat(),
-        "level": _LEVEL_MAP.get(level_raw, "info"),
-        "message": msg,
-    })
-
-
-for _w in _startup_warnings:
-    _push_log("warn", _w)
-
-
-def _compute_protected_trade_ids():
-    """IDs exacts (pas les coins) des trades en base correspondant a des
-    positions REELLEMENT ouvertes en memoire du bot en ce moment — utilise
-    a la fois par le nettoyage manuel et le balayage automatique au
-    demarrage."""
-    protected_ids = []
-    for slot_key, s in bot.states.items():
-        if not s.position:
-            continue
-        ticker = be.ticker_from_slot_key(slot_key)
-        action = "LONG" if s.position["type"] == "long" else "SHORT"
-        tid = db.get_open_trade_id_by_coin_action(ticker, action)
-        if tid:
-            protected_ids.append(tid)
-    return protected_ids
-
-
-def _consume_events():
-    """Tourne en tache de fond : lit la queue du BotEngine et persiste les
-    evenements pertinents (logs en memoire, trades en base)."""
-    while True:
-        try:
-            ev = event_queue.get(timeout=1)
-        except queue.Empty:
-            continue
-        etype, data = ev.get("type"), ev.get("data") or {}
-        try:
-            if etype == "log":
-                _push_log(data.get("level", "info"), data.get("msg", ""))
-            elif etype == "ws_event":
-                db.insert_ws_event(data.get("kind", "unknown"), data.get("message", ""))
-            elif etype == "trade_opened":
-                db.insert_open_trade(
-                    coin=data["coin"], action=data["action"], confidence=data["confidence"],
-                    leverage=data["leverage"], position_size_pct=data["position_size_pct"],
-                    risk_reward=data["risk_reward"], timeframe=data["timeframe"],
-                    entry_price=data["entry"], stop_loss=data["stop_loss"],
-                    take_profit1=data["take_profit1"], take_profit2=data["take_profit2"],
-                    rsi=data.get("rsi"), entry_reasons=data.get("entry_reasons"),
-                    confidence_breakdown=data.get("confidence_breakdown"),
-                    strategy=data.get("strategy", "normal"),
-                    size_usd=data.get("size_usd"),
-                    sl_pct_used=data.get("sl_pct_used"),
-                    ttp_arm1_pct_used=data.get("ttp_arm1_pct_used"),
-                    adaptive_sl_ttp=data.get("adaptive_sl_ttp"),
-                )
-            elif etype == "trade":
-                ticker = be.ticker_from_slot_key(data.get("symbol", ""))
-                action = "LONG" if data.get("type") == "long" else "SHORT"
-                trade_id = db.get_open_trade_id_by_coin_action(ticker, action)
-                if trade_id:
-                    db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"), peak_pnl=data.get("peak_pnl_usd"), peak_pnl_pct=data.get("peak_pnl_pct"))
-                else:
-                    # v3.2 — diagnostic : auparavant, si aucune ligne ouverte
-                    # ne correspondait (coin/action), la fermeture etait
-                    # perdue EN SILENCE (le trade restait "ouvert" en base
-                    # pour toujours, jamais comptabilise dans le Bilan, meme
-                    # si la position etait bien fermee en memoire).
-                    msg = f"[event_consumer] ATTENTION : aucun trade ouvert trouve en base pour {ticker}/{action} (symbol brut={data.get('symbol')!r}, type brut={data.get('type')!r}) — fermeture perdue !"
-                    print(msg)
-                    _push_log("error", msg)
-            elif etype == "startup_ready":
-                # v3.2 — "programme balai" automatique au demarrage : a ce
-                # stade, la reconciliation Hyperliquid (mode live) ou la
-                # restauration des positions paper (voir bot_engine.py) est
-                # DEJA terminee — bot.states reflete donc l etat REEL exact.
-                # Tout trade "ouvert" en base qui ne correspond a AUCUNE
-                # position reelle a cet instant precis est forcement un
-                # orphelin (pas besoin d attendre 24h de delai comme pour le
-                # nettoyage manuel en cours de session, ou l incertitude est
-                # plus grande) — nettoyage immediat pour un tableau de bord
-                # propre des le demarrage.
-                try:
-                    protected_ids = _compute_protected_trade_ids()
-                    dup, stale = db.cleanup_signals(stale_hours=0, protected_ids=protected_ids)
-                    if dup or stale:
-                        msg = f"🧹 Nettoyage automatique au demarrage : {dup} doublon(s) + {stale} orphelin(s) supprime(s)."
-                        print(f"[AUDIT] {msg}")
-                        _push_log("ok", msg)
-                except Exception as e:
-                    print(f"[event_consumer] Erreur nettoyage automatique au demarrage : {e}")
-            elif etype == "active_coins_auto_added":
-                # v3.2 — un actif inactif vient d etre auto-active suite a une
-                # opportunite de tres forte confiance (voir
-                # _gate_active_or_auto_activate dans bot_engine.py). On
-                # persiste la nouvelle liste pour qu elle survive aux
-                # redemarrages, exactement comme un changement manuel.
-                new_list = data.get("active_coins")
-                if new_list:
-                    db.set_config_override("ACTIVE_COINS", new_list)
-                    print(f"[AUDIT] ACTIVE_COINS auto-etendu suite a une opportunite forte sur {data.get('ticker')} : {new_list}")
-        except Exception as e:
-            print(f"[event_consumer] Erreur traitement evenement {etype}: {e}")
-
-
-threading.Thread(target=_consume_events, daemon=True).start()
-
-app = FastAPI(title="HyperBot API")
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
-)
-
-
-@app.on_event("shutdown")
-def _on_shutdown():
-    # Best-effort : accumule le temps de fonctionnement si le process
-    # s arrete proprement (Railway envoie SIGTERM avant un redeploiement).
-    # Ne couvre pas un arret brutal (crash, kill -9) — dans ce cas, la
-    # derniere fraction de temps depuis "running_since" ne sera comptee
-    # qu au prochain calcul via _get_running_seconds si "running_since"
-    # est encore renseigne (le calcul inclut deja la session en cours).
-    # v4.14 — trading_enabled (pas running, qui reste toujours actif tant
-    # que le process tourne desormais) : ce compteur mesure le temps de
-    # TRADING actif, pas la duree de vie du process/moteur.
-    if bot.trading_enabled:
-        _mark_running_stop_and_accumulate()
-
-
-# ─────────────────────────────────────────────────────────────────────────
-#  TEMPS DE FONCTIONNEMENT REEL (exclut les periodes d arret)
-# ─────────────────────────────────────────────────────────────────────────
-# total_running_seconds (persiste en base) + running_since (horodatage du
-# demarrage en cours, tant que le bot tourne). La duree affichee au client
-# ne compte donc que le temps ou le bot a reellement tourne, jamais les
-# periodes ou il etait arrete — contrairement a un simple "temps ecoule
-# depuis le dernier reset".
-def _mark_running_start():
-    db.set_meta("running_since", db.now_iso())
-
-
-def _mark_running_stop_and_accumulate():
-    since = db.get_meta("running_since")
-    if not since:
-        return
-    try:
-        started = datetime.fromisoformat(since)
-        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
-        total = float(db.get_meta("total_running_seconds", "0")) + max(elapsed, 0)
-        db.set_meta("total_running_seconds", str(total))
-    except Exception as e:
-        print(f"[uptime] Erreur calcul temps de fonctionnement: {e}")
-    finally:
-        db.set_meta("running_since", "")
-
-
-def _get_running_seconds() -> float:
-    """Temps de fonctionnement cumule, y compris la session en cours si le
-    bot tourne actuellement (sans attendre un arret pour la comptabiliser)."""
-    total = float(db.get_meta("total_running_seconds", "0"))
-    since = db.get_meta("running_since")
-    if since:
-        try:
-            started = datetime.fromisoformat(since)
-            total += max((datetime.now(timezone.utc) - started).total_seconds(), 0)
-        except Exception:
-            pass
-    return total
-
-
-# ─────────────────────────────────────────────────────────────────────────
-#  AUTO-DEMARRAGE PERSISTANT (independant de la page web)
-# ─────────────────────────────────────────────────────────────────────────
-# Le bot tourne cote serveur (dans ce process), pas dans le navigateur : une
-# fois lance, il continue de tourner meme navigateur ferme. Pour qu il
-# redemarre TOUT SEUL apres un redeploiement/redemarrage Railway (sans
-# intervention manuelle sur la page web), on persiste un etat souhaite
-# ("running"/"stopped") en base, mis a jour par /api/bot/start et
-# /api/bot/stop. Au boot du process, on relit cet etat :
-#   - "running" (valeur par defaut, y compris au tout premier deploiement)
-#     -> demarrage automatique si la cle/wallet sont configures
-#   - "stopped" (l utilisateur a explicitement clique ARRETER) -> reste
-#     arrete tant qu il ne clique pas DEMARRER, meme apres un redeploiement.
-def _auto_start_if_desired():
-    # v4.14 — SUR DEMANDE EXPLICITE : le MOTEUR (collecte de prix,
-    # indicateurs, WebSocket, gestion des positions ouvertes) doit tourner
-    # en continu des que le process demarre, INDEPENDAMMENT du dernier etat
-    # "running"/"stopped" choisi par l utilisateur — cet etat persiste ne
-    # controle desormais plus que l ouverture de NOUVEAUX trades.
-    if not cfg.get("PRIVATE_KEY") or not cfg.get("WALLET_ADDRESS"):
-        _push_log("warn", "Moteur non demarre : cle API / wallet Hyperliquid non configures. Configurez-les puis redemarrez le service.")
-        return
-    bot.start_engine()
-    _push_log("ok", "Moteur demarre (collecte de prix/indicateurs, WebSocket) — actif en continu.")
-
-    desired = db.get_meta("bot_desired_state", "running")
-    if desired != "running":
-        _push_log("info", "Trading non active automatiquement (dernier etat : ARRETE manuellement). Le moteur tourne, mais aucun nouveau trade ne s ouvrira tant que DEMARRER n est pas reclique.")
-        return
-    bot.start()
-    _mark_running_start()
-    _push_log("ok", "Trading active automatiquement (etat persistant : en cours d execution).")
-
-
-_auto_start_if_desired()
-
-
-# ─────────────────────────────────────────────────────────────────────────
-#  AUTHENTIFICATION
-# ─────────────────────────────────────────────────────────────────────────
-class AuthBody(BaseModel):
-    email: str
-    password: str
-
-
-def require_user(authorization: Optional[str] = Header(None)) -> str:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(401, "Authentification requise")
-    token = authorization.split(" ", 1)[1]
-    email = auth.decode_token(token)
-    if not email:
-        raise HTTPException(401, "Token invalide ou expire")
-    return email
-
-
-@app.post("/api/register")
-def register(body: AuthBody):
-    # Un seul compte proprietaire pour ce bot — l inscription se ferme
-    # d elle-meme des qu un premier compte existe (evite qu un tiers
-    # s inscrive et prenne le controle du bot si l URL fuite).
-    if db.user_count() > 0:
-        raise HTTPException(403, "Inscription fermee — un compte existe deja sur cette instance")
-    if len(body.password) < 8:
-        raise HTTPException(400, "Mot de passe trop court (8 caracteres minimum)")
-    if db.get_user_by_email(body.email):
-        raise HTTPException(400, "Ce compte existe deja")
-    db.create_user(body.email, auth.hash_password(body.password))
-    return {"ok": True}
-
-
-@app.post("/api/login")
-def login(body: AuthBody):
-    user = db.get_user_by_email(body.email)
-    if not user or not auth.verify_password(body.password, user["password_hash"]):
-        raise HTTPException(401, "Email ou mot de passe incorrect")
-    token = auth.create_token(body.email)
-    return {"token": token, "email": body.email}
-
-
-@app.post("/api/logout")
-def logout(email: str = Depends(require_user)):
-    # JWT sans etat : rien a invalider cote serveur, le client oublie le token.
-    return {"ok": True}
-
-
-# ─────────────────────────────────────────────────────────────────────────
-#  HELPERS DE MAPPING (bot_engine <-> contrat API)
-# ─────────────────────────────────────────────────────────────────────────
-def _mask(secret: Optional[str]) -> str:
-    if not secret:
-        return ""
-    return "****" + secret[-4:] if len(secret) > 4 else "****"
-
-
-def _public_config() -> Dict[str, Any]:
-    last_times = [s.last_price_time for s in bot.states.values() if s.last_price_time]
-    return {
-        "trading_mode": cfg.get("MODE", "paper"),
-        "profile": cfg.get("PROFILE", "swing"),
-        "position_pct": cfg.get("POSITION_SIZE_PCT"),
-        # v4.10 — moteur ASYMETRIQUE : SL en % de E (perte $ plafonnee,
-        # independante du levier), TP en % de mouvement de prix (gain $
-        # amplifie par le levier). max_loss_usd/quick_profit_usd = valeurs $
-        # informatives a titre indicatif (capital courant, levier x1 pour le TP).
-        # Utiliser sl_pct_of_e / ttp_arm1_price_pct pour les valeurs reelles.
-        "max_loss_usd": round(cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100 * cfg.get("SL_PCT_OF_E", 1.0) / 100, 4),
-        "quick_profit_usd": round(cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100 * cfg.get("TTP_ARM1_PRICE_PCT", 1.0) / 100, 4),
-        "sl_pct_of_e": cfg.get("SL_PCT_OF_E", 1.0),
-        "ttp_arm1_price_pct": cfg.get("TTP_ARM1_PRICE_PCT", 1.0),
-        "ttp_lock1_price_pct": cfg.get("TTP_LOCK1_PRICE_PCT", 0.8),
-        "ttp_arm2_price_pct": cfg.get("TTP_ARM2_PRICE_PCT", 1.3),
-        "ttp_trail_gap_price_pct": cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3),
-        "max_open_trades": cfg.get("MAX_OPEN_TRADES", 15),
-        "auto_activate_confidence_pct": cfg.get("AUTO_ACTIVATE_CONFIDENCE_PCT", 80.0),
-        "active_coins": cfg.get("ACTIVE_COINS") or SUPPORTED_TICKERS,
-        "manual_exclude_coins": cfg.get("MANUAL_EXCLUDE_COINS", []),
-        "supported_coins": SUPPORTED_TICKERS,
-        "wallet": cfg.get("WALLET_ADDRESS", ""),
-        "api_key": _mask(cfg.get("PRIVATE_KEY", "")),
-        "finnhub_key": _mask(cfg.get("FINNHUB_API_KEY", "")),
-        "filter_hours": cfg.get("CRYPTO_OFFPEAK_ENABLED", True),
-        "filter_weekend": bool(cfg.get("FOREX_SYMBOLS")),
-        "filter_macro": cfg.get("CPI_BLACKOUT_ENABLED", True),
-        "accumulation_enabled": cfg.get("ACCUMULATION_ENABLED", False),
-        "accumulation_require_trend_confirm": cfg.get("ACCUMULATION_REQUIRE_TREND_CONFIRM", False),
-        "accumulation_max_trades": cfg.get("ACCUMULATION_MAX_TRADES", 3),
-        "accumulation_proximity_pct": cfg.get("ACCUMULATION_PROXIMITY_PCT", 1.0),
-        "sl_ttp_adaptive_enabled": cfg.get("SL_TTP_ADAPTIVE_ENABLED", False),
-        "funding_mode_enabled": cfg.get("FUNDING_MODE_ENABLED", False),
-        "funding_mode_live_allowed": cfg.get("FUNDING_MODE_LIVE_ALLOWED", False),
-        "require_sr_ema200_separation": cfg.get("REQUIRE_SR_EMA200_SEPARATION", False),
-        "unified_simplified_mode": cfg.get("UNIFIED_SIMPLIFIED_MODE", True),
-        "unified_require_adx_confirm": cfg.get("UNIFIED_REQUIRE_ADX_CONFIRM", True),
-        "ttp_dynamic_from_arm1": cfg.get("TTP_DYNAMIC_FROM_ARM1", True),
-        "spot_accum_enabled": cfg.get("SPOT_ACCUM_ENABLED", False),
-        "spot_accum_sl_enabled": cfg.get("SPOT_ACCUM_SL_ENABLED", False),
-        "spot_accum_require_adx_confirm": cfg.get("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", True),
-        "accumulation_active_coins": cfg.get("ACCUMULATION_ACTIVE_COINS"),
-        "funding_active_coins": cfg.get("FUNDING_ACTIVE_COINS"),
-        "spot_accum_active_coins": cfg.get("SPOT_ACCUM_ACTIVE_COINS"),
-        "ai_continuous": db.get_config_override("ai_continuous", False),
-        "running": bot.trading_enabled,
-        "is_running": bot.trading_enabled,
-        "engine_running": bot.running,  # v4.14 — moteur (collecte/WS), toujours actif independamment du trading
-        "started_at": db.get_meta("running_since") or None,
-        "last_scan": max(last_times).isoformat() if last_times else None,
-        "ws_connected": bot.info is not None,
-        "ws_healthy": bot._is_ws_healthy() if bot.info is not None else False,
-        "offpeak_hour_start": cfg.get("CRYPTO_OFFPEAK_HOUR_START_UTC", 21),
-        "offpeak_hour_end": cfg.get("CRYPTO_OFFPEAK_HOUR_END_UTC", 23),
-        "hyperliquid_configured": bool(cfg.get("PRIVATE_KEY") and cfg.get("WALLET_ADDRESS")),
-    }
-
-
-def _apply_and_persist(key: str, value):
-    cfg[key] = value
-    db.set_config_override(key, value)
-
-
-def _analyze_confidence_calibration(min_samples: int = 15):
-    """v4.2 — Calibration du score de confiance a partir des resultats REELS
-    des trades clotures, plutot que de se fier a des poids choisis a la
-    main dans le code. Pour chaque indicateur present dans
-    confidence_breakdown (macd, bollinger, volume, ema200, ema_mid,
-    momentum, consec, breakout), compare le taux de reussite des trades ou
-    il etait confirme vs ceux ou il ne l etait pas :
-      - Si l ecart (lift) est positif et mesure sur un echantillon
-        suffisant dans les deux groupes (>= min_samples), l indicateur a
-        vraiment un pouvoir predictif sur CE bot / CES marches -> son poids
-        est augmente proportionnellement.
-      - Si l ecart est nul/negatif, l indicateur n apporte rien de mesurable
-        ici -> son poids diminue (mais ne tombe jamais a zero strict, pour
-        eviter de l exclure definitivement sur un echantillon qui pourrait
-        encore etre bruite).
-      - Si l echantillon est insuffisant dans un des deux groupes, on ne
-        touche PAS a son poids actuel (mieux vaut garder le defaut que de
-        calibrer sur trop peu de donnees) et on le signale clairement.
-    Le total de points redistribue entre indicateurs calibrables est
-    preserve, pour que les seuils de confiance en % (65%, 75%, 85%...)
-    gardent le meme ordre de grandeur apres calibration.
-    """
-    trades = db.get_all_closed_trades()
-    rows = []
-    for t in trades:
-        bd = t.get("confidence_breakdown")
-        pnl = t.get("pnl")
-        if not bd or pnl is None:
-            continue
-        try:
-            bd = json.loads(bd)
-        except Exception:
-            continue
-        rows.append({"breakdown": bd, "win": pnl > 0})
-
-    total = len(rows)
-    overall_wins = sum(1 for r in rows if r["win"])
-    overall_win_rate = round(overall_wins / total * 100, 1) if total else 0.0
-
-    current_weights = cfg.get("CONFIDENCE_WEIGHTS", {})
-    all_keys = set(current_weights.keys())
-    for r in rows:
-        all_keys |= set(r["breakdown"].keys())
-
-    per_indicator = {}
-    for key in sorted(all_keys):
-        true_rows  = [r for r in rows if r["breakdown"].get(key) is True]
-        false_rows = [r for r in rows if r["breakdown"].get(key) is False]
-        n_true, n_false = len(true_rows), len(false_rows)
-        wr_true  = round(sum(1 for r in true_rows if r["win"]) / n_true * 100, 1) if n_true else None
-        wr_false = round(sum(1 for r in false_rows if r["win"]) / n_false * 100, 1) if n_false else None
-        enough_data = n_true >= min_samples and n_false >= min_samples
-        lift = round(wr_true - wr_false, 1) if enough_data else None
-        per_indicator[key] = {
-            "current_weight": current_weights.get(key, 0),
-            "n_true": n_true, "n_false": n_false,
-            "win_rate_true": wr_true, "win_rate_false": wr_false,
-            "lift_pts": lift, "enough_data": enough_data,
-        }
-
-    calibratable = [k for k, v in per_indicator.items() if v["enough_data"]]
-    new_weights = dict(current_weights)
-    if calibratable:
-        pool = sum(current_weights.get(k, 0) for k in calibratable)
-        raw = {k: max(per_indicator[k]["lift_pts"], 0) + 0.5 for k in calibratable}
-        raw_total = sum(raw.values())
-        for k in calibratable:
-            new_weights[k] = round(raw[k] / raw_total * pool, 1) if raw_total > 0 else current_weights.get(k, 0)
-    for k, v in per_indicator.items():
-        v["suggested_weight"] = new_weights.get(k, v["current_weight"])
-
-    return {
-        "total_closed_trades": len(trades),
-        "trades_with_breakdown": total,
-        "overall_win_rate": overall_win_rate,
-        "min_samples_required": min_samples,
-        "indicators": per_indicator,
-        "current_weights": current_weights,
-        "suggested_weights": new_weights,
-        "ready_to_calibrate": len(calibratable) > 0,
-    }
-
-
-def _analyze_confidence_by_asset(min_trades: int = 5):
-    """v4.4 — Probabilite de reussite REELLE par actif, calculee a partir de
-    l historique des trades clotures (pas une estimation theorique). Pour
-    chaque actif ayant deja des trades clotures : nombre de trades, taux de
-    reussite, PnL net, confiance moyenne a l entree. min_trades est
-    ajustable dynamiquement (parametre de requete) : plus il est bas, plus
-    d actifs apparaissent tot, mais avec un echantillon moins fiable."""
-    trades = db.get_all_closed_trades()
-    by_coin = {}
-    for t in trades:
-        pnl = t.get("pnl")
-        coin = t.get("coin")
-        if pnl is None or not coin:
-            continue
-        by_coin.setdefault(coin, []).append(t)
-
-    results = []
-    for coin, rows in by_coin.items():
-        n = len(rows)
-        wins = [r for r in rows if (r.get("pnl") or 0) > 0]
-        win_rate = round(len(wins) / n * 100, 1) if n else 0.0
-        net = round(sum(r.get("pnl") or 0 for r in rows), 2)
-        confs = [r.get("confidence") for r in rows if r.get("confidence") is not None]
-        avg_conf = round(sum(confs) / len(confs), 1) if confs else None
-        results.append({
-            "coin": coin,
-            "n_trades": n,
-            "win_rate": win_rate,
-            "net_pnl": net,
-            "avg_confidence": avg_conf,
-            "enough_data": n >= min_trades,
-        })
-
-    results.sort(key=lambda r: (r["enough_data"], r["win_rate"]), reverse=True)
-    return {
-        "min_trades_required": min_trades,
-        "total_closed_trades": len(trades),
-        "assets": results,
-    }
-
-
-def _open_positions() -> List[Dict[str, Any]]:
-    out = []
-    for slot_key, state in bot.states.items():
-        pos = state.position
-        if not pos:
-            continue
-        try:
-            ticker = be.ticker_from_slot_key(slot_key)
-            price = state.current_price or pos["entry"]
-            if pos["type"] == "long":
-                pnl_pct = (price - pos["entry"]) / pos["entry"] * 100
-            else:
-                pnl_pct = (pos["entry"] - price) / pos["entry"] * 100
-            pnl = pos["size"] * pnl_pct / 100
-
-            # opened_at est stocke par bot_engine.py au format "%d/%m/%Y %H:%M:%S"
-            # (francais, sans fuseau) — converti en ISO pour que new Date(...) le
-            # parse correctement cote navigateur (ambigu sinon selon le moteur JS).
-            # v3.2 — FIX : sans le "+00:00" explicite, le navigateur interprete
-            # cette heure comme une heure LOCALE (pas UTC), decalant l affichage
-            # de plusieurs heures selon le fuseau du visiteur (durees et heures
-            # d ouverture incoherentes, ex: "0min" alors que l heure affichee
-            # semblait ancienne).
-            opened_at_iso = None
-            try:
-                opened_at_iso = datetime.strptime(pos["opened_at"], "%d/%m/%Y %H:%M:%S").replace(tzinfo=timezone.utc).isoformat()
-            except Exception:
-                pass
-
-            # Complements (leverage, take_profit1/2) recuperes depuis la ligne DB
-            # ouverte correspondante — calcules une seule fois a l entree, voir
-            # bot_engine.py (emit "trade_opened").
-            action = "LONG" if pos["type"] == "long" else "SHORT"
-            leverage = cfg.get("LEVERAGE", 1)
-            tp1 = tp2 = None
-            try:
-                trade_id = db.get_open_trade_id_by_coin_action(ticker, action)
-                if trade_id:
-                    rows = db.get_trades(limit=1000)
-                    match = next((r for r in rows if r["id"] == trade_id), None)
-                    if match:
-                        leverage = match.get("leverage") or leverage
-                        tp1 = match.get("take_profit1")
-                        tp2 = match.get("take_profit2")
-            except Exception as e:
-                print(f"[_open_positions] Erreur enrichissement DB pour {ticker}: {e}")
-
-            # v4.15 — Pic de PnL latent atteint jusqu ici pendant la vie du
-            # trade (trailing principal ou protection anticipee, selon
-            # lequel est actif) — visible dans le panneau "Trades ouverts".
-            # v4.18 — priorite tier1 > tier0 > pic absolu (des le 1er cycle en
-            # profit, meme sous 0.5%) — voir close_position pour la meme logique.
-            peak_pnl_usd = (
-                state.peak_pnl_usd if state.peak_pnl_usd is not None
-                else state.tier0_peak_pnl_usd if state.tier0_peak_pnl_usd is not None
-                else state.absolute_peak_pnl_usd
-            )
-            # v4.17 — pic en % de mouvement de prix, calcule avec le E et le
-            # levier REELS de CETTE position (pos["size"]/pos["leverage"]),
-            # plus fiables ici que la variable "leverage" ci-dessus (qui peut
-            # provenir d un repli config si l enrichissement DB a echoue).
-            pos_size = pos.get("size", 0)
-            pos_leverage = pos.get("leverage", 1)
-            peak_pnl_pct = (
-                round(peak_pnl_usd / (pos_size * pos_leverage) * 100, 3)
-                if peak_pnl_usd is not None and pos_size and pos_leverage
-                else None
-            )
-
-            out.append({
-                "id": slot_key,
-                "coin": ticker,
-                "action": action,
-                "entry_price": pos["entry"],
-                "current_price": price,
-                "size": pos["size"],
-                "size_usdc": round(pos["size"], 2),
-                "leverage": leverage,
-                "stop_loss": pos["sl"],
-                "take_profit1": tp1,
-                "take_profit2": tp2,
-                "opened_at": opened_at_iso,
-                "pnl": round(pnl, 4),
-                "pnl_pct": round(pnl_pct, 3),
-                "peak_pnl": round(peak_pnl_usd, 4) if peak_pnl_usd is not None else None,
-                "peak_pnl_pct": peak_pnl_pct,
-                # v4.30 — seuils SL/TTP REELLEMENT appliques a CE trade (fixes
-                # ou adaptatifs a l ATR, figes a l ouverture) — voir bot_engine.py
-                # _finalize_open, stockes sur la position elle-meme.
-                "sl_pct_used": pos.get("sl_pct_of_e"),
-                "ttp_arm1_pct_used": pos.get("ttp_arm1_pct"),
-                "ttp_lock1_pct_used": pos.get("ttp_lock1_pct"),
-                "ttp_arm2_pct_used": pos.get("ttp_arm2_pct"),
-                "ttp_gap_pct_used": pos.get("ttp_gap_pct"),
-                "adaptive_sl_ttp": pos.get("adaptive_sl_ttp", False),
-                "strategy": pos.get("strategy", "normal"),  # v4.34 — FIX : jamais expose ici avant
-                "target_price": pos.get("target_price"),  # v4.47 — objectif Spot-Accum (modifiable)
-                "trailing_arm_price": pos.get("trailing_arm_price"),  # v4.49 — seuil structurel d'armement du trailing (modifiable)
-            })
-        except Exception as e:
-            print(f"[_open_positions] Erreur sur la position {slot_key}, ignoree pour cette reponse: {e}")
-            continue
-    return out
-
-
-def _trade_row_to_signal(row: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "id": row["id"],
-        "coin": row["coin"],
-        "action": row["action"],
-        "confidence": row["confidence"],
-        "leverage": row["leverage"],
-        "position_size": row["position_size_pct"],
-        "risk_reward": row["risk_reward"],
-        "timeframe": row["timeframe"],
-        "entry": row["entry_price"],
-        "price": row["entry_price"],
-        "rsi": row["rsi"] if "rsi" in row.keys() else None,
-        "entry_reasons": row["entry_reasons"] if "entry_reasons" in row.keys() else None,
-        "stop_loss": row["stop_loss"],
-        "take_profit1": row["take_profit1"],
-        "take_profit2": row["take_profit2"],
-        "created_at": row["created_at"],
-        "closed_at": row["closed_at"],
-        "exit_price": row["exit_price"],
-        "pnl": row["pnl"],
-        "reason": row["reason"],
-        "strategy": row["strategy"] if "strategy" in row.keys() else "normal",
-        "peak_pnl": row["peak_pnl"] if "peak_pnl" in row.keys() else None,
-        "peak_pnl_pct": row["peak_pnl_pct"] if "peak_pnl_pct" in row.keys() else None,
-        "size_usd": row["size_usd"] if "size_usd" in row.keys() else None,
-        "sl_pct_used": row["sl_pct_used"] if "sl_pct_used" in row.keys() else None,
-        "ttp_arm1_pct_used": row["ttp_arm1_pct_used"] if "ttp_arm1_pct_used" in row.keys() else None,
-        "adaptive_sl_ttp": bool(row["adaptive_sl_ttp"]) if "adaptive_sl_ttp" in row.keys() and row["adaptive_sl_ttp"] is not None else False,
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────
-#  CONFIG
-# ─────────────────────────────────────────────────────────────────────────
-class ConfigBody(BaseModel):
-    trading_mode: Optional[str] = None
-    position_pct: Optional[float] = None
-    # v4.0 — champs legacy en $, encore acceptes pour compat avec l interface
-    # actuelle : convertis a la volee en % de mouvement de prix (voir put_config).
-    max_loss_usd: Optional[float] = None
-    quick_profit_usd: Optional[float] = None
-    # v4.9 — nouveaux champs natifs, en % de MOUVEMENT DE PRIX (a privilegier)
-    sl_pct_of_e: Optional[float] = None
-    ttp_arm1_price_pct: Optional[float] = None
-    ttp_lock1_price_pct: Optional[float] = None
-    ttp_arm2_price_pct: Optional[float] = None
-    ttp_trail_gap_price_pct: Optional[float] = None
-    max_open_trades: Optional[int] = None
-    auto_activate_confidence_pct: Optional[float] = None
-    wallet: Optional[str] = None
-    api_key: Optional[str] = None
-    active_coins: Optional[List[str]] = None
-
-
-# v3.2 — Reglages avances : whitelist de parametres de STRATEGIE surs a
-# exposer/editer librement depuis l interface (indicateurs, filtres,
-# session, confiance...). Volontairement separee des reglages "structurels"
-# (SYMBOLS, cles API, wallet...) qui ont deja leurs propres formulaires
-# dedies et securises — pas question de les rendre modifiables via un
-# simple champ numerique generique.
-ADVANCED_SETTINGS = {
-    "RSI_PERIOD":              {"label": "RSI - Periode",                     "default": 14},
-    "RSI_OVERSOLD":            {"label": "RSI - Seuil survente",              "default": 32},
-    "RSI_OVERBOUGHT":          {"label": "RSI - Seuil surachat",              "default": 68},
-    "RSI_EXTREME_LOW":         {"label": "RSI - Zone survente extreme (no SHORT sous)",  "default": 15},
-    "RSI_EXTREME_HIGH":        {"label": "RSI - Zone surachat extreme (no LONG au-dessus)", "default": 85},
-    "EMA_SHORT":               {"label": "EMA courte - periode",              "default": 12},
-    "EMA_LONG":                {"label": "EMA longue - periode",              "default": 26},
-    "EMA_MID_PERIOD":          {"label": "EMA intermediaire - periode (cycles, ~33min a 10s/cycle)", "default": 200},
-    "MACD_FAST":               {"label": "MACD - rapide",                    "default": 12},
-    "MACD_SLOW":               {"label": "MACD - lent",                      "default": 26},
-    "MACD_SIGNAL":             {"label": "MACD - signal",                    "default": 9},
-    "BB_PERIOD":               {"label": "Bollinger - periode",              "default": 20},
-    "BB_STD":                  {"label": "Bollinger - ecart-type",           "default": 2.0},
-    "ATR_PERIOD":              {"label": "ATR - periode (cycles)",           "default": 21},
-    "ATR_MIN_PCT":             {"label": "ATR - seuil min % (filtre marche calme)", "default": 0.015},
-    "ADX_PERIOD":              {"label": "ADX - periode",                    "default": 14},
-    "ADX_TREND_THRESHOLD":     {"label": "ADX - seuil Trend/Reversal",       "default": 25.0},
-    "SR_PERIOD":               {"label": "Support/Resistance - periode (cycles)", "default": 50},
-    "SL_PCT_OF_E":                {"label": "Stop Loss (% de E)", "default": 1.0},
-    "EXCHANGE_SAFETY_SL_MULT":    {"label": "SL Hyperliquid - multiple du Stop Loss bot", "default": 2.0},
-    "TTP_ARM1_PRICE_PCT":          {"label": "TTP - 1er seuil d'armement (% de mouvement de prix)", "default": 1.0},
-    "TTP_LOCK1_PRICE_PCT":         {"label": "TTP - seuil de sortie initial (% de mouvement de prix)", "default": 0.8},
-    "TTP_ARM2_PRICE_PCT":          {"label": "TTP - 2e seuil, active le trailing continu (% de mouvement de prix)", "default": 1.3},
-    "TTP_TRAIL_GAP_PRICE_PCT":     {"label": "TTP - marge de repli continue sous le pic (% de mouvement de prix)", "default": 0.3},
-    "TTP_DYNAMIC_TRAIL_GAP_PCT":   {"label": "TTP - marge du trailing dynamique dès l'armement (%)", "default": 0.5},
-    "ACCUMULATION_MAX_TRADES":     {"label": "Accumulation - trades simultanes max", "default": 3},
-    "ACCUMULATION_PROXIMITY_PCT":  {"label": "Accumulation - proximite support/resistance (%)", "default": 1.0},
-    "SL_ATR_MULTIPLIER":       {"label": "SL/TTP adaptatif - multiplicateur ATR", "default": 1.0},
-    "SL_PCT_MIN":              {"label": "SL/TTP adaptatif - plancher de securite (%)", "default": 0.3},
-    "SL_PCT_MAX":              {"label": "SL/TTP adaptatif - plafond de securite (%)", "default": 3.0},
-    "FUNDING_ANNUAL_THRESHOLD_PCT": {"label": "Funding Contrarian - seuil annualise (%)", "default": 25.0},
-    "FUNDING_MODE_MAX_TRADES":      {"label": "Funding Contrarian - trades simultanes max", "default": 3},
-    "FUNDING_REFRESH_SEC":          {"label": "Funding Contrarian - frequence de rafraichissement (s)", "default": 300},
-    "SR_EMA200_PROXIMITY_PCT":      {"label": "Separation S/R vs EMA200 - proximite (%)", "default": 0.5},
-    "UNIFIED_MIN_ABOVE_SUPPORT_PCT":   {"label": "Base commune - minimum au-dessus du niveau (%)", "default": 1.0},
-    "UNIFIED_MAX_ABOVE_SUPPORT_PCT":   {"label": "Base commune - maximum au-dessus du niveau (%)", "default": 5.0},
-    "UNIFIED_MIN_SR_AMPLITUDE_PCT":    {"label": "Base commune - amplitude minimale fourchette S/R (%)", "default": 2.0},
-    "SPOT_ACCUM_MAX_TRADES":            {"label": "Spot-Accum - trades simultanes max", "default": 3},
-    "SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT": {"label": "Spot-Accum - minimum au-dessus du support (%)", "default": 1.0},
-    "SPOT_ACCUM_MIN_SR_AMPLITUDE_PCT": {"label": "Spot-Accum - amplitude minimale fourchette S/R (%)", "default": 2.0},
-    "SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT": {"label": "Spot-Accum - maximum au-dessus du support (%)", "default": 5.0},
-    "SPOT_ACCUM_TTP_ARM_PCT":           {"label": "Spot-Accum - TTP armement (% de PnL)", "default": 2.5},
-    "SPOT_ACCUM_TTP_TOLERANCE_PCT":     {"label": "Spot-Accum - TTP marge de repli depuis le pic (%)", "default": 0.5},
-    "SPOT_ACCUM_TARGET_SR_PCT":         {"label": "Spot-Accum - objectif (% distance support-resistance)", "default": 80.0},
-    "SPOT_ACCUM_TRAILING_ARM_SR_PCT":   {"label": "Spot-Accum - armement trailing (% distance support-résistance)", "default": 70.0},
-    "SPOT_ACCUM_SL_PCT_OF_PNL":         {"label": "Spot-Accum - SL optionnel (% du PnL, si active)", "default": 5.0},
-    "SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES":    {"label": "Spot-Accum - retournement confirmé (cycles, ~10s chacun)", "default": 180},
-    "SPOT_ACCUM_REVERSAL_MIN_EMA_MATURITY":  {"label": "Spot-Accum - maturité EMA200 minimale (bougies)", "default": 100},
-    "VOLUME_MIN_RATIO":        {"label": "Volume - ratio minimum vs moyenne","default": 1.2},
-    "MOMENTUM_PERIOD":         {"label": "Momentum - periode (cycles)",      "default": 4},
-    "MOMENTUM_THRESHOLD_PCT":  {"label": "Momentum - seuil %",               "default": 0.20},
-    "CONFIDENCE_MIN_PCT":      {"label": "Confiance - seuil minimum %",      "default": 65.0},
-    "CONFIDENCE_STEP_PCT":     {"label": "Confiance - pas d ajustement %",   "default": 5.0},
-    "CONFIDENCE_MAX_PCT":      {"label": "Confiance - plafond dynamique %",  "default": 87.0},
-    "CONFIDENCE_RESET_HOURS":  {"label": "Confiance - decroissance auto apres (h)", "default": 2.0},
-    "AUTO_ACTIVATE_CONFIDENCE_PCT": {"label": "Auto-activation - seuil %",   "default": 80.0},
-    "CRYPTO_OFFPEAK_HOUR_START_UTC": {"label": "Heures creuses - debut (UTC)", "default": 21},
-    "CRYPTO_OFFPEAK_HOUR_END_UTC":   {"label": "Heures creuses - fin (UTC)",   "default": 23},
-    "CPI_BLACKOUT_BEFORE_MIN": {"label": "Blackout CPI - minutes avant",     "default": 15},
-    "CPI_BLACKOUT_AFTER_MIN":  {"label": "Blackout CPI - minutes apres",     "default": 30},
+import queue
+
+# ─────────────────────────────────────────────
+#  VERSION
+# ─────────────────────────────────────────────
+# Incrementer a chaque modification importante
+# Visible dans le header du dashboard pour identifier
+# exactement quelle version tourne sans ambiguite
+BOT_VERSION = "3.1"
+BOT_BUILD   = "2026-07-04-d"  # incremente a chaque correctif — visible dans les logs
+                               # pour confirmer sans ambiguite quelle version tourne
+# Historique :
+# 3.1 (build 2026-07-04-d) — FIX CRITIQUE : NameError sur 'rsi_mode' utilise
+#        avant d etre defini dans le message du filtre ATR — plantait
+#        silencieusement le traitement d un actif des que le marche etait
+#        juge trop calme (cause probable du blocage "collecte bloquee" —
+#        le symbole disparaissait du log sans trace car _process_with_timeout
+#        n avait pas de except pour capturer/loguer l exception). Egalement
+#        fix : les exceptions dans _process sont desormais capturees et
+#        loguees explicitement (message + traceback) au lieu d etre avalees.
+# 3.1 (build 2026-07-04-c) — Timeout sur le fetch prix (get_prices), sur le
+#        fetch CPI Finnhub, ET filet generique par symbole (_process_with_timeout,
+#        12s) — protege contre tout gel du cycle, quelle qu en soit la cause
+# 3.1 (build 2026-07-04-b) — WebSocket temps reel (allMids) pour Max Loss/SL/
+#        Trailing TP, alarme visible ON/OFF, timeout sur get_prices
+# 3.1 (build initial) —
+# 3.1 — Fix bug cle API (check placeholder incorrect qui ne se declenchait jamais)
+#        Fix bug session fantome (sauvegarde capital/session meme sans demarrage)
+#        Levier (LEVERAGE) desormais reellement applique sur Hyperliquid
+#        Cle privee/wallet chargeables depuis variables d environnement (securite)
+#        Nouveau moteur de risque en dollars : Max Loss -0.75$ gere par le bot,
+#        SL 1.5% conserve uniquement comme filet de securite sur Hyperliquid
+#        Trailing Take Profit 2 etages : Quick Profit arme a +1$ (sortie si retour a 1$),
+#        puis trailing illimite a partir de +1.5$ tant que le profit progresse
+#        Score de confiance (0-100%) sur chaque signal — entree seulement si >= 65%
+#        Confiance minimale dynamique par actif : +5% apres chaque perte, -5% apres chaque gain
+# 1.0 — Version initiale (RSI + EMA + Trailing SL/TP)
+# 1.1 — Ajout PAXG EMA 20/50, paliers corriges
+# 1.2 — 6 slots ON/OFF, boutons SL/TP/FERMER manuels
+# 1.3 — Filtre ATR par symbole, pivot EMA, 2 cycles PAXG
+# 1.4 — Support/Resistance scalp (50 cycles)
+# 1.5 — Persistance session, reprise auto, uptime
+# 1.6 — ATR affiche sur cartes, PnL Session
+# 1.7 — Filtre Momentum instantane (4 cycles, tous actifs)
+# 1.8 — BTC SL/TP resseres 1.0%/2.0%, Trailing delta 0.8%
+# 1.9 — Paliers BTC specifiques (0.35/0.7/1.0/1.5%)
+# 2.0 — Fix repertoire travail (chdir au demarrage)
+# 2.1 — RSI mode tendance BTC (>50=LONG, <50=SHORT)
+# 2.2 — RSI mode tendance HYPE (meme logique que BTC)
+# 2.3 — RSI mode tendance ETH + SOL + BNB (PAXG garde retournement)
+# 2.4 — Logs enrichis : RSI+mode+ATR dans chaque ouverture et blocage
+# 2.5 — Sauvegarde logs dans fichier (hyperbot_log_swing/scalp.txt) avec rotation 5MB
+# 2.6 — Dashboard : max 5 messages de position visibles (6eme efface le plus ancien)
+# 2.7 — Fichier log : epuration automatique 7 jours (declenchee si >2MB)
+# 2.8 — Momentum BTC swing releve a 0.20% (etait 0.15%) — plus selectif SHORT
+# 2.9 — EMA intermediaire BTC+ETH (EMA50 swing/EMA60 scalp) filtre tendance 25-50 min
+# 2.9b— Log : retention reduite a 24h (etait 7 jours), epuration si >500KB
+# 3.0 — TP ramene a 1.5% sur tous les actifs, EMA50/60 etendue a SOL/BNB/HYPE
+#        TSL delta 0.6% (etait 1.2%), TTP step 0.8% (etait 1.5%)
+#        SOL : MACD+BB obligatoires supprimes (bloquaient tous les trades)
+
+# ─────────────────────────────────────────────
+#  CONFIGURATION
+# ─────────────────────────────────────────────
+CONFIG = {
+    "PRIVATE_KEY":        "",
+    "WALLET_ADDRESS":     "",
+
+
+    # Cryptos à trader — 6 slots disponibles
+    # Modifiables depuis le dashboard via les boutons ACTIF 1 a 6
+    # v3.2 — liste etendue a 30 actifs (Hyperliquid propose 300+ perpetuels,
+    # ces 30 sont les plus liquides/suivis). Les 6 premiers (BTC, PAXG, ETH,
+    # SOL, BNB, HYPE) beneficient d un reglage fin par symbole (voir
+    # SYMBOL_RSI_MODE, ATR_MIN_PCT_BY_SYMBOL, etc. plus bas) — les 24 autres
+    # utilisent les reglages globaux par defaut (pas de tuning specifique).
+    # ACTIVE_COINS (pilotable depuis l interface web) permet de n en activer
+    # qu une partie a la fois ; MAX_OPEN_TRADES limite le nombre de positions
+    # simultanees quel que soit le nombre d actifs actifs.
+    "SYMBOLS":            ["BTC", "PAXG", "ETH", "SOL", "BNB", "HYPE",
+                           "ARB", "AVAX", "LINK", "OP", "INJ", "TIA", "TAO",
+                           "WIF", "JUP", "PENDLE", "EIGEN", "RENDER", "SUI",
+                           "APT", "SEI", "DOGE", "XRP", "NEAR", "FTM", "AAVE",
+                           "UNI", "CRV", "SUSHI", "GMX", "POL"],
+
+    # v3.2 — Nouvelle approche : les 30 marches sont TOUS eligibles par
+    # defaut (le bot pioche librement parmi eux selon le score de
+    # confiance de chacun, pas de presélection restrictive) — la limite
+    # reelle est desormais MAX_OPEN_TRADES (15 par defaut). L onglet
+    # Marchés reste disponible pour EXCLURE manuellement un actif si
+    # besoin, mais ce n est plus une liste a activer un par un.
+    # v4.3 — PAXG desactive par defaut (reste dans SYMBOLS/ALL_COINS : simple
+    # exclusion, reactivable en un clic depuis l onglet Marches sans toucher
+    # au code). POL (ex-MATIC — Polygon a migre son ticker vers POL en 2024,
+    # "MATIC" n existe plus sur Hyperliquid) ajoute a la place.
+    # v4.6 — TAO, TIA, SUI desactives par defaut : analyse sur 1048 trades
+    # reels (07/08/2026) montrant un deficit statistiquement significatif et
+    # robuste sur un large echantillon par actif :
+    #   TAO  : 77 trades, 28.6% de reussite, -4.63$ net
+    #   TIA  : 105 trades, 37.1% de reussite, -4.09$ net
+    #   SUI  : 53 trades, 32.1% de reussite, -3.55$ net
+    # A eux trois : -12.27$, plus de la moitie de la perte nette totale
+    # (-24.04$) sur cette periode. Reactivables en un clic depuis l onglet
+    # Marches si une analyse ulterieure montre une amelioration.
+    "ACTIVE_COINS":       ["BTC", "ETH", "SOL", "BNB", "HYPE",
+                           "ARB", "AVAX", "LINK", "OP", "INJ",
+                           "WIF", "JUP", "PENDLE", "EIGEN", "RENDER",
+                           "APT", "SEI", "DOGE", "XRP", "NEAR", "FTM", "AAVE",
+                           "UNI", "CRV", "SUSHI", "GMX", "POL"],
+    "MAX_OPEN_TRADES":    5,
+
+    # v4.9 — Cooldown de reentree DANS LE MEME SENS apres la fermeture d un
+    # trade sur un actif : hypothese que repartir tout de suite dans la
+    # meme direction (apres un SL notamment) capture souvent du bruit plutot
+    # qu un vrai signal frais. Un signal dans le sens OPPOSE (retournement)
+    # n est jamais concerne — seule la repetition immediate du meme pari est
+    # freinee. S applique aux deux strategies (normal et Accumulation).
+    "REENTRY_COOLDOWN_SEC": 900,  # 15 minutes
+
+    # v4.3 — Actifs EXPLICITEMENT desactives par l utilisateur depuis l onglet
+    # Marches (ex: un actif perdant a repetition). Contrairement a une simple
+    # absence de ACTIVE_COINS, un actif ici ne peut JAMAIS etre auto-active
+    # par l opportunite forte (_gate_active_or_auto_activate) — seule une
+    # reactivation manuelle depuis l interface peut l en retirer. PAXG n est
+    # PAS ici par defaut (simple exclusion "douce", auto-activable).
+    "MANUAL_EXCLUDE_COINS": [],
+
+    # ── Mode ACCUMULATION (v4.8) ─────────────────────────────────────────
+    # Strategie INDEPENDANTE de la logique RSI/tendance habituelle : entre
+    # un LONG quand le prix est proche du SUPPORT recent, un SHORT quand il
+    # est proche de la RESISTANCE recente — logique de rebond/rejet, plutot
+    # que de suivi de tendance. Fonctionne EN PLUS des signaux normaux (pas
+    # a leur place), avec son propre plafond de trades simultanes
+    # (ACCUMULATION_MAX_TRADES, separe de MAX_OPEN_TRADES). Meme moteur de
+    # sortie que le bot normal : SL/TP/TTP et calcul du levier prudent
+    # identiques (voir _manage_position_impl, _compute_prudent_leverage).
+    # Chaque trade issu de ce mode est marque "strategy": "accumulation"
+    # (logs, evenements, historique) pour rester bien distinct des trades
+    # normaux.
+    "ACCUMULATION_ENABLED":              False,
+    "ACCUMULATION_MAX_TRADES":           3,     # plafond de trades Accumulation simultanes, independant de MAX_OPEN_TRADES
+    "ACCUMULATION_PROXIMITY_PCT":        1.0,   # "proche" du support/resistance = a moins de ce % de distance
 
     # v4.42 — SUR DEMANDE EXPLICITE : jeu de seuils SL/TTP DEDIE au mode
-    # Accumulation (LONG et SHORT confondus). default=None : Accumulation
-    # continue de retomber sur les reglages du mode normal tant que rien
-    # n est explicitement defini ici — ne rien toucher = aucun changement.
-    "ACCUMULATION_SL_PCT_OF_E":             {"label": "Accumulation - SL (% de E)", "default": None},
-    "ACCUMULATION_TTP_ARM1_PRICE_PCT":      {"label": "Accumulation - TTP armement (% de prix)", "default": None},
-    "ACCUMULATION_TTP_LOCK1_PRICE_PCT":     {"label": "Accumulation - TTP verrou initial (% de prix)", "default": None},
-    "ACCUMULATION_TTP_ARM2_PRICE_PCT":      {"label": "Accumulation - TTP palier 2 (% de prix)", "default": None},
-    "ACCUMULATION_TTP_TRAIL_GAP_PRICE_PCT": {"label": "Accumulation - TTP marge de repli (% de prix)", "default": None},
-    "ACCUMULATION_SL_ATR_MULTIPLIER":       {"label": "Accumulation - multiplicateur ATR (mode adaptatif)", "default": None},
-    "FUNDING_SL_PCT_OF_E":             {"label": "Funding - SL (% de E)", "default": None},
-    "FUNDING_TTP_ARM1_PRICE_PCT":      {"label": "Funding - TTP armement (% de prix)", "default": None},
-    "FUNDING_TTP_LOCK1_PRICE_PCT":     {"label": "Funding - TTP verrou initial (% de prix)", "default": None},
-    "FUNDING_TTP_ARM2_PRICE_PCT":      {"label": "Funding - TTP palier 2 (% de prix)", "default": None},
-    "FUNDING_TTP_TRAIL_GAP_PRICE_PCT": {"label": "Funding - TTP marge de repli (% de prix)", "default": None},
-    "FUNDING_SL_ATR_MULTIPLIER":       {"label": "Funding - multiplicateur ATR (mode adaptatif)", "default": None},
+    # Accumulation (LONG et SHORT confondus, un seul jeu pour les deux
+    # sens), separe du mode normal. Laisser a None = aucun changement de
+    # comportement (Accumulation continue de retomber sur les reglages du
+    # mode normal, comme avant cette fonctionnalite) — ne definir une valeur
+    # ici QUE pour ecarter deliberement Accumulation du mode normal.
+    "ACCUMULATION_SL_PCT_OF_E":            None,
+    "ACCUMULATION_TTP_ARM1_PRICE_PCT":     None,
+    "ACCUMULATION_TTP_LOCK1_PRICE_PCT":    None,
+    "ACCUMULATION_TTP_ARM2_PRICE_PCT":     None,
+    "ACCUMULATION_TTP_TRAIL_GAP_PRICE_PCT": None,
+    "ACCUMULATION_SL_ATR_MULTIPLIER":      None,  # utilise seulement si SL_TTP_ADAPTIVE_ENABLED est actif
+
+    # v4.45 — SUR DEMANDE EXPLICITE : meme mecanisme que Accumulation,
+    # applique a Funding Contrarian — pour que les 4 modes (normal,
+    # accumulation, funding, spot-accum) soient tous reglables
+    # independamment. None = herite du mode normal, aucun changement de
+    # comportement tant que rien n est personnalise.
+    "FUNDING_SL_PCT_OF_E":             None,
+    "FUNDING_TTP_ARM1_PRICE_PCT":      None,
+    "FUNDING_TTP_LOCK1_PRICE_PCT":     None,
+    "FUNDING_TTP_ARM2_PRICE_PCT":      None,
+    "FUNDING_TTP_TRAIL_GAP_PRICE_PCT": None,
+    "FUNDING_SL_ATR_MULTIPLIER":       None,
+
+    # v4.46 — SUR DEMANDE EXPLICITE : taille par trade (% du capital)
+    # INDEPENDANTE par mode — jusqu ici, tous les modes partageaient le meme
+    # batch_entry_size fige (calcule une seule fois depuis POSITION_SIZE_PCT
+    # global). None = herite du comportement global habituel (aucun
+    # changement tant que rien n est personnalise).
+    "ACCUMULATION_POSITION_SIZE_PCT": None,
+    "FUNDING_POSITION_SIZE_PCT": None,
+    "SPOT_ACCUM_POSITION_SIZE_PCT": None,
+    # Confirmation de tendance optionnelle : si activee, un LONG pres du
+    # support n est accepte QUE si la tendance de fond (EMA200) est deja
+    # haussiere (achat du repli dans une tendance, pas un pari de
+    # retournement pur) — et inversement pour un SHORT pres de la
+    # resistance. Desactivee par defaut : logique de rebond/rejet pure,
+    # independante de la tendance de fond.
+    "ACCUMULATION_REQUIRE_TREND_CONFIRM": False,
+
+    # v4.19 — SUR DEMANDE EXPLICITE : "respect des niveaux" FUSIONNE dans la
+    # logique d entree PRINCIPALE (pas seulement le mode Accumulation, qui
+    # reste une strategie a part). Un trade normal ne se declenche desormais
+    # QUE s il a une vraie raison structurelle d exister : soit un rebond
+    # pres d un support/resistance recent, soit une cassure nette de ce
+    # niveau — jamais plus "RSI+EMA d accord au milieu de la fourchette,
+    # sans aucun rapport avec la structure du marche". Reduit mecaniquement
+    # le nombre de trades, chacun restant structurellement justifie.
+    "REQUIRE_LEVEL_RESPECT":      True,
+    "ENTRY_LEVEL_PROXIMITY_PCT":  1.0,   # "proche" du support/resistance = a moins de ce % de distance (rebond)
+
+    # v4.20 — SUR DEMANDE EXPLICITE, suite a un lot de trades fouettes par le
+    # bruit apres la fusion du respect des niveaux (pics minuscules 0.01% a
+    # 0.66% avant SL) : deux gardes-fous supplementaires, cumulatifs.
+    # 1) Confirmation de direction : le MACD doit confirmer RSI+EMA pour
+    #    TOUS les actifs (generalise SYMBOL_REQUIRE_MACD_BB a tout le monde).
+    "REQUIRE_DIRECTION_CONFIRM":   True,
+    # 2) Coherence d amplitude : l ATR recent doit rester dans une fourchette
+    #    coherente avec le SL configure — ni trop calme (TTP inatteignable),
+    #    ni trop agite (le bruit seul suffit a toucher le SL).
+    "REQUIRE_AMPLITUDE_COHERENCE": True,
+    "MIN_AMPLITUDE_TO_SL_RATIO":   0.5,   # ATR minimum = 50% du SL configure
+    "MAX_AMPLITUDE_TO_SL_RATIO":   2.5,   # ATR maximum = 250% du SL configure
+
+    # v4.37 — SUR DEMANDE EXPLICITE, DESACTIVE PAR DEFAUT (switch separe,
+    # a activer volontairement une fois qu on aura des donnees sur les
+    # garde-fous Accumulation deja en place) : bloque un LONG si le support
+    # est proche ET en dessous de l EMA200 (marche sans separation nette par
+    # rapport a sa moyenne longue — signe d un range sans vraie tendance),
+    # et un SHORT si la resistance est proche ET au dessus de l EMA200.
+    # Applique au mode normal ET a Accumulation.
+    "REQUIRE_SR_EMA200_SEPARATION": False,
+    "SR_EMA200_PROXIMITY_PCT": 0.5,  # "proche" de l EMA200 = a moins de ce % d ecart
+
+    # v4.25 — Confirmation renforcee apres un gain (voir _process) : nombre
+    # de cycles CONSECUTIFS ou toutes les conditions d entree doivent rester
+    # vraies avant d autoriser une reouverture dans le MEME sens qu un trade
+    # qui vient de gagner. Chaque cycle dure CYCLE_INTERVAL secondes (10s
+    # par defaut) — 18 cycles = ~3 minutes de confirmation soutenue,
+    # suffisant pour filtrer un simple recroisement furtif sans pour autant
+    # rater une vraie continuation.
+    "POST_WIN_CONFIRM_CYCLES": 18,
+    # v4.26 — Delai maximum d attente (en cycles) avant de basculer sur un
+    # second indicateur (Bollinger) plutot que de rester bloque
+    # indefiniment si le signal n est jamais soutenu 18 cycles d affilee.
+    # 180 cycles = ~30 min a 10s/cycle — au-dela, l actif retrouve la main
+    # (avec ou sans confirmation Bollinger), jamais bloque plus longtemps.
+    "POST_WIN_MAX_WAIT_CYCLES": 180,
+
+    # v4.33 — SUR DEMANDE EXPLICITE : mode "Funding Contrarian", source de
+    # signal FONDAMENTALEMENT DIFFERENTE de RSI/MACD/EMA (des indicateurs
+    # deja integres dans les prix par des acteurs plus rapides). Le funding
+    # rate reflete un vrai desequilibre de position entre traders a effet de
+    # levier (pas un motif de prix) : quand il est extreme, ca signale un
+    # positionnement sur-leverage dans un sens — logique contrarian (SHORT
+    # si funding tres positif = trop de LONG en levier, LONG si tres negatif).
+    # AUCUNE garantie que cet avantage soit reel sur cette plateforme/ces
+    # actifs — a valider par les resultats, pas suppose. SECURITE EXPLICITE :
+    # reste cantonne au paper trading tant que FUNDING_MODE_LIVE_ALLOWED
+    # n est pas active manuellement, meme si le bot est en mode live —
+    # protege un capital de trading deja fragilise pendant la phase de test.
+    "FUNDING_MODE_ENABLED": False,
+    "FUNDING_MODE_LIVE_ALLOWED": False,  # reste paper-only tant que non deverrouille explicitement
+    "FUNDING_ANNUAL_THRESHOLD_PCT": 25.0,  # funding annualise au-dela duquel le positionnement est juge "extreme"
+    "FUNDING_MODE_MAX_TRADES": 3,          # plafond de trades simultanes, independant des autres modes
+    "FUNDING_REFRESH_SEC": 300,            # frequence de rafraichissement du funding (5 min, evite de spammer l API)
+
+    # v4.43 — SUR DEMANDE EXPLICITE : mode "Spot-Accumulation" — achat
+    # d actif dans l esprit spot ("tant que l actif existe on peut esperer
+    # une hausse ou garder ses actifs"). DESACTIVE par defaut. Particularites
+    # par rapport a tous les autres modes :
+    #   - AUCUN Stop Loss par defaut (une position perdante reste ouverte
+    #     indefiniment, jamais fermee de force sur une perte) — un
+    #     interrupteur separe (SPOT_ACCUM_SL_ENABLED) permet d en ajouter un,
+    #     exprime en % du PnL (pas % de E comme les autres modes).
+    #   - Toujours LEVIER x1 (jamais de levier prudent calcule) — coherent
+    #     avec l esprit spot et l absence de SL (pas de risque de liquidation).
+    #   - Entree LONG uniquement, avec la tendance generale haussiere
+    #     (EMA200) ET a au moins SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT au-dessus
+    #     du support (pas pres du support comme Accumulation — ici on
+    #     achete une tendance deja engagee, pas un rebond).
+    #   - Sortie : TTP arme une fois le PnL >= SPOT_ACCUM_TTP_ARM_PCT (3%),
+    #     puis trailing avec une marge de SPOT_ACCUM_TTP_TOLERANCE_PCT
+    #     (0.5%) depuis le pic. Objectif complementaire : si le prix
+    #     atteint SPOT_ACCUM_TARGET_SR_PCT (80%) de la distance
+    #     support-resistance mesuree a l entree, fermeture immediate
+    #     (objectif atteint), meme si le trailing n a pas encore suivi.
+    # INTERPRETATION A CONFIRMER : la formulation "TTP a 3% avec tolerance
+    # de 0.5%" a ete comprise comme un armement a 3% puis un trailing avec
+    # 0.5% de marge de repli depuis le pic — a corriger si l intention etait
+    # differente (ex: fenetre d armement 2.5%-3.5% plutot qu un trailing).
+    "SPOT_ACCUM_ENABLED": True,
+    "SPOT_ACCUM_MAX_TRADES": 3,
+    "SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT": 1.0,   # entree seulement si prix >= support + 1% (etait 2%)
+    # v4.50 — SUR DEMANDE EXPLICITE : plafond ajoute (n existait pas avant)
+    # — l entree doit rester dans une fenetre serree pres du support, pas
+    # n importe ou jusqu a la resistance.
+    "SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT": 5.0,   # entree seulement si prix <= support + 5%
+    # v4.53 — SUR DEMANDE EXPLICITE : la fourchette support-resistance doit
+    # avoir une amplitude minimale (support=100 -> resistance >= 103 pour 3%).
+    "SPOT_ACCUM_MIN_SR_AMPLITUDE_PCT": 2.0,
+    # v4.53 — SUR DEMANDE EXPLICITE : confirmation ADX de la tendance
+    # (reutilise ADX_TREND_THRESHOLD, 25 par defaut) — "tendance haussiere
+    # claire", pas juste prix > EMA200 franchi de justesse.
+    "SPOT_ACCUM_REQUIRE_ADX_CONFIRM": True,
+    "SPOT_ACCUM_TTP_ARM_PCT": 1.0,             # armement du trailing a partir de ce % de PnL
+    "SPOT_ACCUM_TTP_TOLERANCE_PCT": 0.5,       # marge de repli depuis le pic, une fois arme
+    "SPOT_ACCUM_TARGET_SR_PCT": 80.0,          # objectif = ce % de la distance support-resistance (mesuree a l entree)
+    # v4.49 — SUR DEMANDE EXPLICITE : second seuil de declenchement du
+    # trailing (s ajoute a SPOT_ACCUM_TTP_ARM_PCT, arme des que l un des
+    # deux est atteint) — base sur la structure du marche, pas un % de PnL.
+    "SPOT_ACCUM_TRAILING_ARM_SR_PCT": 70.0,    # = support + ce % de la distance support-resistance
+    "SPOT_ACCUM_SL_ENABLED": False,            # AUCUN SL par defaut — interrupteur explicite pour en ajouter un
+    "SPOT_ACCUM_SL_PCT_OF_PNL": 5.0,           # si active : ferme si le PnL tombe a -5% (valeur, pas negative — le signe est applique automatiquement)
+    # v4.47/v4.54 — SUR DEMANDE EXPLICITE : fermeture si un retournement de
+    # tendance est CONFIRME (prix sous l EMA200 de facon soutenue) — activee
+    # par defaut. v4.54 corrige DEUX axes : la duree (l EMA200 ne bouge que
+    # toutes les ~2 min, 3 min de confirmation etait trop court pour
+    # representer un vrai changement de tendance) ET la qualite des donnees
+    # (n accepte le signal que si l EMA200 est assez mature ET la collecte
+    # saine — pas de coupure recente).
+    "SPOT_ACCUM_REVERSAL_EXIT_ENABLED": True,
+    "SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES": 180,      # ~30 min a 10s/cycle (etait 18 = ~3 min)
+    "SPOT_ACCUM_REVERSAL_MIN_EMA_MATURITY": 100,    # bougies mtf minimum (sur 200 max) pour faire confiance a l EMA200
+
+    # v4.44 — SUR DEMANDE EXPLICITE : liste d actifs DEDIEE par mode
+    # (independante de la liste globale ACTIVE_COINS geree dans Marches).
+    # None = herite de la liste globale (aucun changement de comportement
+    # tant que rien n est personnalise) — voir _gate_active_or_auto_activate.
+    "ACCUMULATION_ACTIVE_COINS": None,
+    "FUNDING_ACTIVE_COINS": None,
+    "SPOT_ACCUM_ACTIVE_COINS": None,
+
+    # v4.24 — SL/TTP ADAPTATIFS a l ATR reel (optionnel, DESACTIVE par
+    # defaut — activation explicite requise). Au lieu de seuils fixes,
+    # chaque trade calcule son propre SL a partir de l ATR au moment de
+    # l entree (SL = ATR% x SL_ATR_MULTIPLIER, borne entre SL_PCT_MIN et
+    # SL_PCT_MAX pour eviter les cas extremes). Les seuils TTP (arm1, lock1,
+    # arm2, gap) sont ensuite recalcules pour CONSERVER LES MEMES
+    # PROPORTIONS que les reglages fixes actuels (TTP_ARM1_PRICE_PCT etc.),
+    # juste mis a l echelle du SL adaptatif. Toujours en % — un marche
+    # volatil obtient des seuils plus larges, un marche calme des seuils
+    # plus serres, mais toujours proportionnellement coherents entre eux.
+    "SL_TTP_ADAPTIVE_ENABLED": False,
+    "SL_ATR_MULTIPLIER":       1.0,   # SL = ATR% x ce multiplicateur
+    "SL_PCT_MIN":              0.3,   # plancher de securite (evite un SL quasi nul si ATR tres faible)
+    "SL_PCT_MAX":              3.0,   # plafond de securite (evite un SL demesure si ATR tres eleve)
+
+    # Tous les symboles sont des perpétuels — SPOT_SYMBOLS vide
+    # PAXG remplace XAUT spot : index 187 sur Hyperliquid, levier max x10
+    # Ticker direct "PAXG" dans l API (pas de @XXX)
+    "SPOT_SYMBOLS":       [],
+    "SPOT_TICKER_MAP":    {},
+    "SPOT_SL_ASSET_MAP":  {},
+
+    # Stop Loss / Take Profit specifiques par symbole — v3.2 : generalises,
+    # plus aucune exception par symbole (voir PROFILE_SWING/PROFILE_SCALP,
+    # qui ecrasent de toute facon ces valeurs a chaque demarrage/reset via
+    # apply_profile). Utilise STOP_LOSS_PCT/TAKE_PROFIT_PCT globaux pour tous.
+    "SYMBOL_SL_PCT":      {},
+    "SYMBOL_TP_PCT":      {},
+
+    # RSI specifique par symbole — v3.2 : generalise, plus d exception.
+    "SYMBOL_RSI_OVERSOLD":   {},
+    "SYMBOL_RSI_OVERBOUGHT": {},
+
+    # Symboles pour lesquels MACD + BB sont OBLIGATOIRES pour entrer (pas juste optionnels)
+    "SYMBOL_REQUIRE_MACD_BB": [],
+
+    # Symboles pour lesquels l EMA200 est OBLIGATOIRE — v3.2 : generalise,
+    # plus aucun symbole n a cette contrainte particuliere.
+    "SYMBOL_REQUIRE_EMA200": [],
+
+    "CAPITAL_USD":        100,
+    "POSITION_SIZE_PCT":  20,              # 20% du capital par trade — E fige par lot (voir MAX_OPEN_TRADES)
+    "LEVERAGE":           1,
+
+    # RSI — seuils elargis pour signaux plus forts et moins de faux positifs
+    "RSI_PERIOD":         14,
+    "RSI_OVERSOLD":       32,              # etait 38 : entre uniquement sur vraie survente
+    "RSI_OVERBOUGHT":     68,              # etait 62 : entre uniquement sur vrai surachat
+
+    # EMA — periodes plus longues pour reduire les faux croisements (whipsaws)
+    "EMA_SHORT":          12,             # etait 8
+    "EMA_LONG":           26,             # etait 21
+
+    # MACD — inchange, deja bien calibre
+    "MACD_FAST":          12,
+    "MACD_SLOW":          26,
+    "MACD_SIGNAL":        9,
+
+    # Bollinger Bands — std reduit pour que les bandes soient utiles
+    "BB_PERIOD":          20,             # etait 14 : periode standard
+    "BB_STD":             2.0,            # etait 2.5 : bandes plus proches = filtre actif
+
+    # Volume : ratio minimum vs moyenne (1.0 = desactive)
+    "VOLUME_MIN_RATIO":   1.2,            # etait 1.5 : moins restrictif
+
+    # Gestion du risque — SL elargi pour laisser le trade respirer
+    "STOP_LOSS_PCT":      1.5,            # etait 0.8 : evite les SL sur simple bruit
+    "TAKE_PROFIT_PCT":    3.0,            # etait 2.0 : ratio RR 1:2 maintenu
+
+    # Trailing Stop Loss — delta elargi pour ne pas couper les trades gagnants
+    "TRAILING_STOP":      True,
+    "TRAILING_DELTA_PCT": 1.2,   # delta global, applique desormais a tous uniformement
+
+    # v3.2 : plus de delta specifique par symbole — generalise a tous.
+    "SYMBOL_TRAILING_DELTA_PCT": {},
+
+    # Seuil minimum de deplacement du Trailing SL avant synchronisation sur Hyperliquid.
+    # Evite les appels API inutiles sur de micro-mouvements de prix.
+    # Exemple : 0.1 = le SL doit avoir bouge d au moins 0.1% pour etre envoye a Hyperliquid.
+    "TRAILING_SL_MIN_MOVE_PCT": 0.1,
+
+    # Buffer de securite sur les ordres SL/TP poses sur Hyperliquid.
+    # Meme avec le mark price, un micro-ecart residuel peut exister.
+    # Ce buffer decale legerement les niveaux pour eviter les sorties inattendues.
+    # Exemple : 0.05% sur un SL a $60000 long = SL pose a $59970 au lieu de $60000
+    "MARK_PRICE_BUFFER_PCT": 0.05,
+    # Apres la reouverture du marche Forex (lundi matin, fin de pause nocturne),
+    # le bot observe PAXG pendant cette duree avant de prendre des positions.
+    # Permet au spread de se normaliser et aux indicateurs de se recaler.
+    # S applique aussi bien aux longs qu aux shorts sur PAXG.
+    "FOREX_WARMUP_MINUTES": 15,
+    "FOREX_SYMBOLS":        ["PAXG"],  # symboles soumis a la chauffe Forex
+
+    # ── Trailing Take Profit ──────────────────────────────────────────────────
+    # Quand le prix atteint le TP initial, au lieu de fermer la position,
+    # le bot deplace le TP plus haut (step) et attend un retournement de tendance
+    # confirme par au moins 2 signaux sur 3 avant de sortir.
+    "TRAILING_TP":             True,
+    "TRAILING_TP_STEP_PCT":    1.5,
+    # Seuils de retournement pour la sortie Trailing TP :
+    "TRAILING_TP_RSI_EXIT":    55,
+    "TRAILING_TP_MIN_SIGNALS": 2,
+
+    # SL protecteur des gains — quand le Trailing TP se deplace vers un nouveau sommet,
+    # le SL remonte a ce pourcentage du TP precedent (calcule sur le gain, pas le prix brut).
+    # 97% = on preserve 97% du gain acquis au moment ou le dernier TP etait atteint.
+    # Garantit qu on ne peut jamais reperdre ce qui a ete gagne une fois le TP initial touche.
+    "TRAILING_TP_PROTECT_PCT": 0.97,
+
+    # Plage horaire Paris (0 et 24 = 24h/24) — appliquee en mode paper ET live
+    "TRADE_HOUR_START":   0,
+    "TRADE_HOUR_END":     24,
+
+    "MODE":               "paper",
+    "CYCLE_INTERVAL":     10,
+    # Duree (s) sans tick WebSocket recu au-dela de laquelle le cycle reprend
+    # la main sur la surveillance des positions ouvertes (filet de secours si
+    # le WebSocket se deconnecte silencieusement). Voir _on_ws_allmids et
+    # _maybe_manage_position_via_cycle.
+    "WS_STALE_AFTER_SEC": 20,
+    # Delai max (s) tolere pour un appel reseau de recuperation des prix
+    # (get_prices). Au-dela, l appel est ABANDONNE (thread daemon laisse
+    # tourner en arriere-plan) plutot que de geler tout le cycle indefiniment
+    # en cas de coupure reseau. Voir _get_prices_with_timeout.
+    "PRICE_FETCH_TIMEOUT_SEC": 10,
+    # Delai max (s) tolere pour le traitement complet d un symbole (_process).
+    # Filet de secours generique : si N IMPORTE QUELLE partie du traitement se
+    # bloque un jour (appel reseau cache, I/O disque, etc.), ce symbole est
+    # simplement ignore pour ce cycle au lieu de geler tout le bot.
+    "PROCESS_TIMEOUT_SEC": 12,
+
+    # Profil actif au demarrage : "swing" ou "scalp"
+    "PROFILE":            "swing",
+
+    # ── Moteur de risque en % DE E (v4.0) ────────────────────────────────────
+    # E = taille de l entree (POSITION_SIZE_PCT % du capital), AVANT levier.
+    # Le SL % "legacy" ci-dessus (STOP_LOSS_PCT / SYMBOL_SL_PCT) n est plus
+    # utilise pour la gestion normale des sorties : il sert desormais
+    # UNIQUEMENT a poser un ordre de securite fixe sur Hyperliquid (filet de
+    # secours si le bot est deconnecte / en retard). La gestion normale se
+    # fait entierement en % de E :
+    # v4.10 — RETOUR au SL en % de E (perte $ PLAFONNEE, independante du
+    # levier) — sur clarification explicite : "ce qui change avec le levier
+    # ce n est pas le montant de la perte, c est la distance de prix
+    # necessaire pour l atteindre". Le levier reduit le mouvement de prix
+    # requis pour toucher le SL (E=20$, SL=1% -> perte 0.20$ a x1 COMME a x3,
+    # mais il faut un mouvement de 1% a x1 contre seulement 0.33% a x3). Le
+    # TP, lui, reste en % de mouvement de prix pur (inchange, amplifie par
+    # le levier) — SEUL le SL est plafonne en $ ainsi, sur demande explicite.
+    "SL_PCT_OF_E":            1.0,   # Stop Loss = -1.0% de E -> perte $ plafonnee, quel que soit le levier
+    "EXCHANGE_SAFETY_SL_MULT": 2.0,  # SL pose sur Hyperliquid = ce multiple du SL bot (filet de securite uniquement)
+
+    # Trailing Take Profit (TTP), en % de MOUVEMENT DE PRIX REEL (v4.7) :
+    #   - v4.7 — SUR DEMANDE EXPLICITE : contrairement au SL (reste en % de
+    #     E, le levier y reduit le mouvement de prix necessaire donc plafonne
+    #     la perte $), le TP ne doit PAS etre plafonne par le levier — le
+    #     levier doit au contraire pouvoir AMPLIFIER librement le gain
+    #     obtenu. Ces seuils sont donc de vrais % de mouvement de PRIX,
+    #     identiques quel que soit le levier applique sur ce trade.
+    #   - Arme des que le prix bouge de TTP_ARM1_PRICE_PCT (defaut 1.2%)
+    #     dans le sens du trade. Seuil de sortie fixe a TTP_LOCK1_PRICE_PCT
+    #     (defaut 1.0%) tant que le PIC de mouvement n a pas rejoint
+    #     TTP_ARM2_PRICE_PCT.
+    #   - Des que le pic de mouvement atteint TTP_ARM2_PRICE_PCT (defaut
+    #     1.5%), le seuil de sortie devient pic - TTP_TRAIL_GAP_PRICE_PCT
+    #     (defaut 0.3%) et continue de suivre le pic a l infini (trailing
+    #     pur, sans plafond).
+    "TTP_ARM1_PRICE_PCT":      1.0,
+    "TTP_LOCK1_PRICE_PCT":     0.8,
+    "TTP_ARM2_PRICE_PCT":      1.3,
+    "TTP_TRAIL_GAP_PRICE_PCT": 0.3,
+    # v4.60 — SUR DEMANDE EXPLICITE : des l armement (tier 1), le trailing
+    # devient IMMEDIATEMENT dynamique (sortie = pic - marge fixe, mis a jour
+    # a chaque nouveau pic) au lieu d attendre un second palier (arm2).
+    # Applique a Normal/Accumulation/Funding — PAS Spot-Accumulation (deja
+    # dynamique par nature). ACTIF par defaut ; repasser a False pour
+    # retrouver l ancien comportement (verrou fixe a lock1 avant arm2).
+    "TTP_DYNAMIC_FROM_ARM1": True,
+    "TTP_DYNAMIC_TRAIL_GAP_PCT": 0.5,
+
+    # v4.11 — Protection anticipee ("tier 0"), sur demande explicite : les
+    # trades n atteignant JAMAIS TTP_ARM1_PRICE_PCT (1.0% par defaut)
+    # n avaient jusqu ici AUCUNE protection — un trade monte a +0.99% pouvait
+    # rendre tout son gain (et plus, jusqu au SL) sans jamais rien capturer.
+    # Des que le prix atteint TTP_TIER0_ARM_PRICE_PCT (0.5%), un trailing
+    # s arme avec une marge plus large (TTP_TIER0_GAP_PRICE_PCT, 0.42%) —
+    # ex: pic a 0.99% -> sortie a 0.57%, capture plus de la moitie du pic
+    # au lieu de zero. Ce tier 0 se desactive des que le prix atteint le
+    # seuil d armement principal (arm1, 1.0%) — le trailing principal, plus
+    # fin, prend alors le relai. Il peut en theorie se reactiver si le prix
+    # repasse sous ce seuil de 0.5% pendant que tier 1 est actif — dans les
+    # faits, avec TTP_LOCK1_PRICE_PCT (0.8%) superieur a ce seuil, tier 1
+    # ferme toujours le trade avant que ca puisse arriver (protection
+    # simplement redondante avec les reglages actuels, utile si reconfigures).
+    "TTP_TIER0_ARM_PRICE_PCT": 0.5,
+    "TTP_TIER0_GAP_PRICE_PCT": 0.42,
+
+    # ── Score de confiance (0-100%) — filtre final avant toute entree ───────
+    # Poids relatifs des confirmations optionnelles disponibles pour un signal.
+    # Le score est ramene sur 100% du poids REELLEMENT disponible pour ce
+    # cycle/symbole (ex: si EMA200 n est pas calculable, son poids est retire
+    # du total plutot que compte comme un echec).
+    # Valeurs par defaut raisonnables — a ajuster selon les resultats observes.
+    "CONFIDENCE_WEIGHTS": {
+        "macd":      15,   # MACD aligne avec la direction du signal
+        "bollinger": 15,   # Prix du bon cote de la bande de Bollinger
+        "volume":    10,   # Volume superieur a la moyenne recente
+        "ema200":    15,   # Alignement avec la tendance longue (EMA200)
+        "ema_mid":   10,   # Alignement avec la tendance intermediaire (25-50 min)
+        "momentum":  10,   # Momentum instantane franchement dans le sens du signal
+        "consec":    10,   # Cycles consecutifs au-dela du minimum requis (conviction)
+        "breakout":  15,   # v3.2 — Casse une resistance/support recent (comportement de trader)
+    },
+    "CONFIDENCE_MIN_PCT":  65.0,  # Seuil minimum pour prendre un trade
+    "CONFIDENCE_STEP_PCT": 5.0,   # Ajustement du seuil par actif a chaque perte/gain
+    "CONFIDENCE_MAX_PCT":  87.0,  # Plafond du seuil dynamique (evite de bloquer un actif a vie)
+    # v3.2 — Decroissance automatique : si un actif reste penalise sans avoir
+    # eu l occasion de regagner sa confiance (perte, puis plus aucun signal
+    # qualifiant faute d atteindre le seuil releve) pendant ce delai, son
+    # seuil redescend automatiquement a la base — evite un blocage permanent.
+    # 0 ou negatif = decroissance desactivee (comportement d avant).
+    "CONFIDENCE_RESET_HOURS": 2.0,
+
+    # v3.2 — Auto-activation d un actif INACTIF (pas dans ACTIVE_COINS) si
+    # une opportunite exceptionnelle est detectee dessus (confiance >= ce
+    # seuil). Permet de profiter d une belle opportunite sur l un des 30
+    # marches suivis sans devoir l activer manuellement a l avance.
+    "AUTO_ACTIVATE_CONFIDENCE_PCT": 80.0,
+
+    # v3.2 — Prudence live : session de trading limitee a 23h45 sur chaque
+    # periode de 24h. Passe ce delai, plus aucune NOUVELLE entree n est
+    # ouverte tant que TOUTES les positions de la session ne sont pas
+    # fermees (normalement ou manuellement) — une fois toutes fermees, une
+    # nouvelle session de 24h redemarre immediatement. Les positions deja
+    # ouvertes continuent d etre gerees normalement (SL/Quick Profit/
+    # Trailing) pendant cette periode de blocage.
+    # v3.2 — SESSION_MAX_HOURS retire : le decoupage se fait desormais sur
+    # le jour calendaire UTC fixe (00h00-23h59:59), sans aucun blocage des
+    # nouvelles entrees en fin de journee. Voir api.py pour l attribution
+    # des statistiques par jour d OUVERTURE (pas de fermeture).
+
+    # v3.2 — Zones RSI extremes : evite d entrer a contre-sens dans une zone
+    # de retournement violent probable (survente/surachat extreme). Ne
+    # bloque QUE les nouvelles entrees dans le sens "continuation" quand le
+    # RSI est deja tres extreme.
+    "RSI_EXTREME_LOW": 15,   # ne pas SHORT si RSI < ce seuil (survente extreme)
+    "RSI_EXTREME_HIGH": 85,  # ne pas LONG si RSI > ce seuil (surachat extreme)
+
+    # ── Heures creuses crypto — nouvelles entrees suspendues (PAXG exclu, ─────
+    #    deja gere par FOREX_SYMBOLS/is_forex_open) ───────────────────────────
+    # Fenetre par defaut : 02h-06h UTC, periode de liquidite generalement la
+    # plus faible sur les marches crypto. A ajuster si besoin.
+    "CRYPTO_OFFPEAK_HOUR_START_UTC": 21,
+    "CRYPTO_OFFPEAK_HOUR_END_UTC":   23,
+
+    # ── Blackout CPI (annonces US) via calendrier economique Finnhub ─────────
+    # Cle chargeable depuis la variable d environnement HYPERBOT_FINNHUB_API_KEY.
+    # Bloque uniquement les NOUVELLES entrees crypto autour de l heure de
+    # publication du CPI (le PAXG est deja couvert par la fermeture Forex).
+    "FINNHUB_API_KEY":         "",
+    "CPI_BLACKOUT_BEFORE_MIN": 15,   # minutes avant l annonce
+    "CPI_BLACKOUT_AFTER_MIN":  30,   # minutes apres l annonce
+    "CPI_CACHE_REFRESH_HOURS": 12,   # frequence de rafraichissement du calendrier
 }
 
+# ─────────────────────────────────────────────
+#  SECURITE — CLE PRIVEE / WALLET DEPUIS L ENVIRONNEMENT
+# ─────────────────────────────────────────────
+# Priorite aux variables d environnement HYPERBOT_PRIVATE_KEY /
+# HYPERBOT_WALLET_ADDRESS pour eviter de stocker un secret en clair dans ce
+# fichier (risque si le fichier est partage, versionne ou sauvegarde dans le
+# cloud). Si absentes, on retombe sur les valeurs codees en dur ci-dessus
+# (deconseille en usage reel).
+# Exemple avant lancement (Windows PowerShell) :
+#   $env:HYPERBOT_PRIVATE_KEY   = "0x..."
+#   $env:HYPERBOT_WALLET_ADDRESS = "0x..."
+# Exemple avant lancement (Linux / macOS) :
+#   export HYPERBOT_PRIVATE_KEY=0x...
+#   export HYPERBOT_WALLET_ADDRESS=0x...
+import os as _os_env
 
-@app.get("/api/config/advanced")
-def get_advanced_config(email: str = Depends(require_user)):
-    return {
-        key: {"value": cfg.get(key, meta["default"]), "label": meta["label"], "default": meta["default"]}
-        for key, meta in ADVANCED_SETTINGS.items()
-    }
+def _clean_hex_secret(value):
+    """v4.4 — Nettoie une cle privee / adresse wallet collee depuis
+    l environnement ou l interface : espaces/tabulations/retours a la ligne
+    en trop (tres frequent lors d un copier-coller dans les variables
+    Railway) et guillemets englobants accidentels. Ne touche PAS au
+    contenu hexadecimal lui-meme."""
+    if not value:
+        return value
+    v = value.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+        v = v[1:-1].strip()
+    return v
 
+CONFIG["PRIVATE_KEY"]    = _clean_hex_secret(_os_env.environ.get("HYPERBOT_PRIVATE_KEY", CONFIG["PRIVATE_KEY"]))
+CONFIG["WALLET_ADDRESS"] = _clean_hex_secret(_os_env.environ.get("HYPERBOT_WALLET_ADDRESS", CONFIG["WALLET_ADDRESS"]))
+CONFIG["FINNHUB_API_KEY"] = _os_env.environ.get("HYPERBOT_FINNHUB_API_KEY", CONFIG["FINNHUB_API_KEY"])
 
-class AdvancedConfigBody(BaseModel):
-    # v4.42 — Optional[float] (pas juste float) : autorise l envoi explicite
-    # de None pour REINITIALISER un reglage Accumulation dedie et revenir a
-    # l heritage du mode normal (voir ACCUMULATION_SL_PCT_OF_E etc.).
-    values: Dict[str, Optional[float]]
+# ─────────────────────────────────────────────
+#  PROFILS SWING / SCALP
+# ─────────────────────────────────────────────
+PROFILE_SWING = {
+    "PROFILE":                  "swing",
+    # v3.2 — REGLES GENERALISEES A TOUS LES CRYPTOS : plus aucun traitement
+    # special par symbole (RSI, EMA, ATR, pivot, EMA200, cycles consecutifs).
+    # Tous les actifs (BTC, ETH, SOL, BNB, HYPE, PAXG et les 24 autres)
+    # utilisent exactement les memes seuils globaux ci-dessous.
+    # SEULE EXCEPTION : PAXG (l or) suit en plus les heures de fermeture du
+    # Forex (voir FOREX_SYMBOLS dans CONFIG, gere independamment de ce profil)
+    # — c est la seule difference de traitement qui subsiste pour l or.
+    "RSI_OVERSOLD":             32,
+    "RSI_OVERBOUGHT":           68,
+    "SYMBOL_RSI_OVERSOLD":      {},
+    "SYMBOL_RSI_OVERBOUGHT":    {},
+    # Mode RSI unique pour tous : "trend" (entre dans le sens du momentum,
+    # RSI>50=LONG, RSI<50=SHORT) — auparavant reserve a BTC/ETH/SOL/BNB/HYPE,
+    # desormais le comportement par defaut pour tout le monde (voir le
+    # fallback "trend" dans _process, plus "reversal").
+    "SYMBOL_RSI_MODE":          {},
+    "EMA_SHORT":                12,
+    "EMA_LONG":                 26,
+    "SYMBOL_EMA_SHORT":         {},
+    "SYMBOL_EMA_LONG":          {},
+    # EMA intermediaire — filtre de tendance 25-50 min, applique desormais a
+    # TOUS les actifs de la meme facon via EMA_MID_PERIOD (plus de dict par
+    # symbole). v3.2 — recalibre pour representer une VRAIE fenetre de
+    # 25-50 min avec CYCLE_INTERVAL=10s (200 cycles x 10s = ~33 min,
+    # milieu de la fourchette). La collecte initiale plus longue qui en
+    # decoule est compensee par la reprise rapide (persistance <10 min).
+    "EMA_MID_PERIOD":           200,
+    "SYMBOL_EMA_MID":           {},
+    "STOP_LOSS_PCT":            1.5,
+    "TAKE_PROFIT_PCT":          1.5,
+    "SYMBOL_SL_PCT":            {},
+    "SYMBOL_TP_PCT":            {},
+    "TRAILING_STOP":            True,
+    "TRAILING_DELTA_PCT":       0.6,
+    "SYMBOL_TRAILING_DELTA_PCT":{},
+    "TRAILING_TP":              True,
+    "TRAILING_TP_STEP_PCT":     0.8,
+    "TRAILING_TP_RSI_EXIT":     55,
+    "TRAILING_TP_MIN_SIGNALS":  2,
+    "TRAILING_TP_PROTECT_PCT":  0.97,
+    "TRAILING_SL_MIN_MOVE_PCT": 0.1,
+    "SYMBOL_REQUIRE_MACD_BB":   [],
+    "SYMBOL_REQUIRE_EMA200":    [],
+    "PIVOT_CONFIRM_SYMBOLS":    [],
+    "CONSEC_CONFIRM_SYMBOLS":   {},
+    "VOLUME_MIN_RATIO":         1.2,
+    "FOREX_WARMUP_MINUTES":     15,
+    # Filtre ATR en swing — bloque les entrees sur marche trop calme.
+    # Seuil global unique pour tous les actifs.
+    # v4.57 — SUR DEMANDE EXPLICITE : DESACTIVE — ce filtre s executait
+    # AVANT les appels a Accumulation/Spot-Accumulation dans _process,
+    # donc un blocage bloquait TOUS les modes simultanement, pas
+    # seulement le mode normal (confirme : BTC bloque ici pendant une
+    # vraie tendance baissiere lente de -4.3% sur 12h, empechant aussi
+    # Accumulation SHORT de s evaluer). Fait desormais doublon avec
+    # REQUIRE_AMPLITUDE_COHERENCE, plus rigoureux (relatif au SL de
+    # chaque trade, pas un seuil fixe jamais recalibre pour le nouveau
+    # calcul haut/bas).
+    "ATR_FILTER":               False,
+    "ATR_PERIOD":               21,   # v3.2 — recalibre (14->21) pour preserver ~3min30 reelles avec le cycle a 10s (etait calibre pour 15s)
+    "ATR_MIN_PCT":              0.015,
+    "ATR_MIN_PCT_BY_SYMBOL":    {},
 
+    # v3.2 — Detection automatique du mode Trend/Reversal via l ADX (force
+    # de la tendance), par actif, a chaque cycle. ADX >= seuil -> mode
+    # "trend" (suivi de tendance). ADX < seuil -> mode "reversal" (parie
+    # sur un retournement en marche sans direction nette). SYMBOL_RSI_MODE
+    # reste disponible pour forcer manuellement un mode fixe sur un actif
+    # precis, en priorite sur cette detection automatique.
+    "ADX_PERIOD":               14,
+    "ADX_TREND_THRESHOLD":      25.0,
+    # v4.58 — SUR DEMANDE EXPLICITE : 3 conditions de BASE PARTAGEES par les
+    # 3 modes (normal, Accumulation, Spot-Accumulation) — remplacent une
+    # grande partie de la complexite empilee ces dernieres iterations
+    # (fraicheur du signal, ancien respect des niveaux, MACD separe,
+    # ancienne coherence d amplitude, separation EMA200, confirmation
+    # post-trade) pour le mode NORMAL. Accumulation garde en plus sa logique
+    # de cassure (breakout) et sa confirmation post-trade existante.
+    "UNIFIED_REQUIRE_ADX_CONFIRM":     True,
+    "UNIFIED_MIN_ABOVE_SUPPORT_PCT":   1.0,
+    "UNIFIED_MAX_ABOVE_SUPPORT_PCT":   5.0,
+    "UNIFIED_MIN_SR_AMPLITUDE_PCT":    2.0,
+    # v4.32 — marge d hysteresis autour du seuil ci-dessus : le mode ne
+    # bascule que si l ADX depasse clairement le seuil (+marge pour "trend",
+    # -marge pour "reversal") — dans la zone ambigue entre les deux, le
+    # dernier mode retenu est conserve, pour eviter un flip-flop trend/
+    # reversal a chaque cycle sur un actif dont l ADX oscille pres du seuil.
+    "ADX_HYSTERESIS_MARGIN":    3.0,
 
-@app.put("/api/config/advanced")
-def put_advanced_config(body: AdvancedConfigBody, email: str = Depends(require_user)):
-    applied, ignored = {}, []
-    for key, value in body.values.items():
-        if key not in ADVANCED_SETTINGS:
-            ignored.append(key)
+    # ── SL par paliers de gains (swing uniquement) ───────────────────────────
+    "SL_LOCK_ENABLED":          True,
+    "SL_LOCK_STEPS": [
+        (0.5, 0.0),   # +0.5% → breakeven
+        (1.0, 0.9),   # +1.0% → +0.9%
+        (1.5, 1.3),   # +1.5% → +1.3%
+        (2.0, 1.8),   # +2.0% → +1.8%
+    ],
+    "SL_LOCK_STEPS_BY_SYMBOL": {},
+
+    # Momentum Instantane — "ce qui se passe MAINTENANT" prevaut sur les EMA
+    # Si le prix a bouge de +/-0.20% sur les 4 derniers cycles (2 min) dans
+    # le sens OPPOSE au signal EMA/RSI, l entree est bloquee. Seuil unique
+    # pour tous les actifs.
+    "MOMENTUM_PERIOD":          4,
+    "MOMENTUM_THRESHOLD_PCT":   0.20,
+}
+
+PROFILE_SCALP = {
+    "PROFILE":                  "scalp",
+    # RSI compromis swing/scalp — BTC entre plus facilement
+    "RSI_OVERSOLD":             40,
+    "RSI_OVERBOUGHT":           60,
+    "SYMBOL_RSI_OVERSOLD":      {},
+    "SYMBOL_RSI_OVERBOUGHT":    {},
+    "SYMBOL_RSI_MODE":          {},
+    # EMA plus courtes pour etre plus reactif
+    "EMA_SHORT":                8,
+    "EMA_LONG":                 21,
+    "SYMBOL_EMA_SHORT":         {},
+    "SYMBOL_EMA_LONG":          {},
+    # EMA intermediaire scalp — fenetre plus courte (30 min), uniforme pour tous
+    # v3.2 — recalibre pour ~30 min reelles avec CYCLE_INTERVAL=10s
+    "EMA_MID_PERIOD":           180,
+    "SYMBOL_EMA_MID":           {},
+    # SL et TP serres
+    "STOP_LOSS_PCT":            0.4,
+    "TAKE_PROFIT_PCT":          0.8,
+    "SYMBOL_SL_PCT":            {},
+    "SYMBOL_TP_PCT":            {},
+    # Trailing serre
+    "TRAILING_STOP":            True,
+    "TRAILING_DELTA_PCT":       0.3,
+    "SYMBOL_TRAILING_DELTA_PCT":{},
+    "TRAILING_TP":              True,
+    "TRAILING_TP_STEP_PCT":     0.4,
+    "TRAILING_TP_RSI_EXIT":     52,
+    "TRAILING_TP_MIN_SIGNALS":  2,
+    "TRAILING_TP_PROTECT_PCT":  0.97,
+    "TRAILING_SL_MIN_MOVE_PCT": 0.05,
+    "SYMBOL_REQUIRE_EMA200":    [],
+    "SYMBOL_REQUIRE_MACD_BB":   [],
+    "PIVOT_CONFIRM_SYMBOLS":    [],
+    "CONSEC_CONFIRM_SYMBOLS":   {},
+    "VOLUME_MIN_RATIO":         1.0,
+    "FOREX_WARMUP_MINUTES":     5,
+    # Filtre ATR — seuil global unique pour tous les actifs
+    # v4.57 — SUR DEMANDE EXPLICITE : DESACTIVE, meme raison que le profil swing.
+    "ATR_FILTER":               False,
+    "ATR_PERIOD":               21,   # v3.2 — recalibre (14->21) pour preserver la fenetre reelle originale avec le cycle a 10s
+    "ATR_MIN_PCT":              0.02,
+    "ATR_MIN_PCT_BY_SYMBOL":    {},
+    "ATR_EXCLUDE_SYMBOLS":      [],     # plus d exclusion
+
+    # Support/Resistance — confirmation de breakout (SCALP uniquement)
+    # LONG  : prix doit CASSER au-dessus de la resistance des 50 derniers cycles (25 min)
+    # SHORT : prix doit CASSER en-dessous du support des 50 derniers cycles
+    # Filtre les faux signaux RSI/EMA en exigeant un vrai mouvement directionnel
+    "SR_PERIOD":                50,
+    # v3.2 — Filtre marge Support/Resistance : bloque une entree si le
+    # support/resistance recent (50 cycles) est trop proche pour laisser la
+    # place a un Quick Profit avant de s y heurter. Actif par defaut pour
+    # tous les profils (avant : reserve au breakout scalp uniquement).
+    "SR_MIN_ROOM_FILTER":       True,
+
+    # Momentum Instantane — "ce qui se passe MAINTENANT" prevaut sur les EMA
+    # Si le prix a bouge de +/-0.10% sur les 4 derniers cycles (2 min) dans
+    # le sens OPPOSE au signal EMA/RSI, l entree est bloquee.
+    # Seuil plus bas qu en swing car cycles plus courts et mouvements rapides.
+    "MOMENTUM_PERIOD":          4,
+    "MOMENTUM_THRESHOLD_PCT":   0.10,
+}
+
+def apply_profile(cfg, profile_name):
+    """Applique un profil SWING ou SCALP sur le cfg actif.
+    Preserve les parametres fixes (cles API, symboles, capital, mode).
+    """
+    profile = PROFILE_SWING if profile_name == "swing" else PROFILE_SCALP
+    for k, v in profile.items():
+        cfg[k] = v
+    cfg["PROFILE"] = profile_name
+
+# ─────────────────────────────────────────────
+#  INDICATEURS TECHNIQUES
+# ─────────────────────────────────────────────
+def calc_ema(prices, period):
+    if len(prices) < period:
+        return None
+    k = 2 / (period + 1)
+    ema = sum(prices[:period]) / period
+    for p in prices[period:]:
+        ema = p * k + ema * (1 - k)
+    return ema
+
+def calc_adx(prices, period=14):
+    """Average Directional Index (approxime) — mesure la FORCE d une
+    tendance, independamment de sa direction. Contrairement a l ATR (qui
+    mesure l amplitude du mouvement), l ADX mesure si ce mouvement est
+    DIRECTIONNEL (tendance nette) ou erratique (range/oscillation).
+    - ADX eleve (~25+)  : vraie tendance en cours -> mode "trend" adapte
+      (suivre le mouvement, RSI>50 achete, RSI<50 vend).
+    - ADX faible (~20-) : marche en range, sans direction nette -> mode
+      "reversal" adapte (RSI survente achete, RSI surachat vend — parier
+      sur l oscillation plutot que sur une tendance qui ne vient pas).
+    Comme calc_atr, utilise les variations de close (pas de high/low
+    disponibles) — une approximation fidele dans l esprit de l ADX
+    classique, pas une implementation Wilder exacte.
+    Retourne une valeur 0-100, ou None si donnees insuffisantes.
+    """
+    if len(prices) < period * 2 + 1:
+        return None
+    diffs = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+    plus_dm  = [d if d > 0 else 0 for d in diffs]
+    minus_dm = [-d if d < 0 else 0 for d in diffs]
+    tr       = [abs(d) for d in diffs]
+
+    dx_values = []
+    for end in range(period, len(diffs) + 1):
+        window_tr = sum(tr[end-period:end])
+        if window_tr <= 0:
             continue
-        _apply_and_persist(key, value)
-        applied[key] = value
-    return {"ok": True, "applied": applied, "ignored": ignored}
+        window_plus  = sum(plus_dm[end-period:end])
+        window_minus = sum(minus_dm[end-period:end])
+        plus_di  = 100 * window_plus / window_tr
+        minus_di = 100 * window_minus / window_tr
+        di_sum = plus_di + minus_di
+        if di_sum <= 0:
+            continue
+        dx_values.append(100 * abs(plus_di - minus_di) / di_sum)
+
+    if not dx_values:
+        return None
+    return sum(dx_values[-period:]) / min(period, len(dx_values))
 
 
-@app.get("/api/config")
-def get_config(email: str = Depends(require_user)):
-    return _public_config()
-
-
-@app.put("/api/config")
-def put_config(body: ConfigBody, email: str = Depends(require_user)):
-    if body.trading_mode is not None:
-        if bot.trading_enabled:
-            raise HTTPException(400, "Arretez le bot avant de changer de mode (paper/live)")
-        if body.trading_mode not in ("paper", "live"):
-            raise HTTPException(400, "trading_mode doit etre 'paper' ou 'live'")
-        _apply_and_persist("MODE", body.trading_mode)
-
-    if body.position_pct is not None:
-        _apply_and_persist("POSITION_SIZE_PCT", body.position_pct)
-
-    # v4.10 — moteur ASYMETRIQUE : SL en % de E (perte $ plafonnee), TP en %
-    # de mouvement de prix (gain $ amplifie par le levier). Les champs $
-    # legacy (max_loss_usd, quick_profit_usd) restent acceptes pour compat
-    # avec l interface actuelle : convertis a la volee via une estimation de
-    # E a levier x1 (capital/POSITION_SIZE_PCT courants).
-    e_estimate = cfg["CAPITAL_USD"] * cfg["POSITION_SIZE_PCT"] / 100
-
-    if body.max_loss_usd is not None:
-        if e_estimate > 0:
-            _apply_and_persist("SL_PCT_OF_E", body.max_loss_usd / e_estimate * 100)
+def calc_rsi(prices, period=14):
+    if len(prices) < period + 1:
+        return None
+    recent = prices[-(period + 1):]
+    gains = losses = 0
+    for i in range(1, len(recent)):
+        d = recent[i] - recent[i - 1]
+        if d > 0:
+            gains += d
         else:
-            raise HTTPException(400, "Capital/position_pct invalides pour convertir max_loss_usd en %")
+            losses -= d
+    if losses == 0:
+        return 100.0
+    return 100 - (100 / (1 + gains / losses))
 
-    if body.quick_profit_usd is not None:
-        if e_estimate > 0:
-            _apply_and_persist("TTP_ARM1_PRICE_PCT", body.quick_profit_usd / e_estimate * 100)
-        else:
-            raise HTTPException(400, "Capital/position_pct invalides pour convertir quick_profit_usd en %")
+def calc_macd(prices, fast=12, slow=26, signal=9):
+    if len(prices) < slow + signal:
+        return None, None
+    macd_series = []
+    for i in range(slow - 1, len(prices)):
+        ef = calc_ema(prices[:i+1], fast)
+        es = calc_ema(prices[:i+1], slow)
+        if ef and es:
+            macd_series.append(ef - es)
+    if len(macd_series) < signal:
+        return None, None
+    macd_line = macd_series[-1]
+    signal_line = calc_ema(macd_series, signal)
+    return macd_line, signal_line
 
-    if body.sl_pct_of_e is not None:
-        _apply_and_persist("SL_PCT_OF_E", body.sl_pct_of_e)
-
-    if body.ttp_arm1_price_pct is not None:
-        _apply_and_persist("TTP_ARM1_PRICE_PCT", body.ttp_arm1_price_pct)
-
-    if body.ttp_lock1_price_pct is not None:
-        _apply_and_persist("TTP_LOCK1_PRICE_PCT", body.ttp_lock1_price_pct)
-
-    if body.ttp_arm2_price_pct is not None:
-        _apply_and_persist("TTP_ARM2_PRICE_PCT", body.ttp_arm2_price_pct)
-
-    if body.ttp_trail_gap_price_pct is not None:
-        _apply_and_persist("TTP_TRAIL_GAP_PRICE_PCT", body.ttp_trail_gap_price_pct)
-
-    if body.max_open_trades is not None:
-        clamped = max(1, min(body.max_open_trades, len(SUPPORTED_TICKERS)))
-        _apply_and_persist("MAX_OPEN_TRADES", clamped)
-
-    if body.auto_activate_confidence_pct is not None:
-        clamped_conf = max(50.0, min(body.auto_activate_confidence_pct, 100.0))
-        _apply_and_persist("AUTO_ACTIVATE_CONFIDENCE_PCT", clamped_conf)
-
-    # v3.2 — FIX : ignore une chaine vide plutot que d ecraser un wallet deja
-    # enregistre — un formulaire n envoyant pas de wallet ne doit jamais
-    # pouvoir effacer celui deja configure (defense en profondeur, en plus
-    # du fix cote interface qui ne l envoie plus vide).
-    if body.wallet:
-        _apply_and_persist("WALLET_ADDRESS", be._clean_hex_secret(body.wallet))
-
-    if body.api_key and not body.api_key.startswith("****"):
-        _apply_and_persist("PRIVATE_KEY", be._clean_hex_secret(body.api_key))
-
-    if body.active_coins is not None:
-        valid = [c for c in body.active_coins if c in SUPPORTED_TICKERS]
-        ignored = [c for c in body.active_coins if c not in SUPPORTED_TICKERS]
-        old_active = set(cfg.get("ACTIVE_COINS") or SUPPORTED_TICKERS)
-        new_active = set(valid)
-        removed = old_active - new_active  # actifs que l utilisateur vient de desactiver
-        added    = new_active - old_active  # actifs que l utilisateur vient de reactiver
-        # v4.3 — une desactivation manuelle depuis l onglet Marches est une
-        # exclusion EXPLICITE : elle doit tenir meme si la confiance de cet
-        # actif remonte tres haut ensuite (voir _gate_active_or_auto_activate
-        # dans bot_engine.py). Une reactivation manuelle leve cette exclusion.
-        manual_exclude = set(cfg.get("MANUAL_EXCLUDE_COINS", []))
-        manual_exclude |= removed
-        manual_exclude -= added
-        _apply_and_persist("ACTIVE_COINS", valid)
-        _apply_and_persist("MANUAL_EXCLUDE_COINS", sorted(manual_exclude))
-        if removed:
-            _push_log("warn", f"Actifs desactives manuellement (ne seront plus jamais auto-reactives) : {', '.join(sorted(removed))}")
-        if ignored:
-            _push_log("warn", f"Actifs ignores (non supportes par ce bot) : {', '.join(ignored)}")
-
-    return _public_config()
+def calc_bollinger(prices, period=20, std_mult=2.0):
+    if len(prices) < period:
+        return None, None, None
+    recent = prices[-period:]
+    mid = sum(recent) / period
+    variance = sum((p - mid) ** 2 for p in recent) / period
+    std = variance ** 0.5
+    return mid + std_mult * std, mid, mid - std_mult * std
 
 
-class HyperliquidBody(BaseModel):
-    # v3.2 — FIX : l interface (index.html) envoie ces champs sous les noms
-    # "hl_wallet" / "hl_api_key" a cet endpoint precis (un autre formulaire,
-    # sur /api/config, utilise "wallet"/"api_key" — les deux sont donc geres
-    # ici par securite). Le mismatch precedent faisait que la requete
-    # "reussissait" (200 OK) sans rien enregistrer reellement.
-    wallet: Optional[str] = None
-    api_key: Optional[str] = None
-    hl_wallet: Optional[str] = None
-    hl_api_key: Optional[str] = None
+def calc_atr(prices, period=14):
+    """Average True Range — mesure la volatilite reelle du marche.
+    Un ATR% faible = marche en range, risque de faux signaux.
+    Un ATR% eleve = marche directionnel, bonne opportunite de scalping.
+    Utilise les variations de close (pas de high/low disponibles).
+    Retourne (atr_abs, atr_pct) ou (None, None) si insuffisant.
+    v4.36 — CONSERVEE pour compatibilite (utilisee sur price_history, le
+    flux brut par cycle de 10s) — voir calc_true_range_atr ci-dessous pour
+    le calcul PREFERE, base sur de vraies bougies haut/bas/cloture, plus
+    representatif de la volatilite reelle qu une simple variation cloture-a-
+    cloture sur un intervalle aussi court.
+    """
+    if len(prices) < period + 1:
+        return None, None
+    tr_list = [abs(prices[i] - prices[i-1]) for i in range(1, len(prices))]
+    atr = sum(tr_list[-period:]) / period
+    atr_pct = (atr / prices[-1]) * 100 if prices[-1] > 0 else 0
+    return atr, atr_pct
 
 
-@app.put("/api/config/hyperliquid")
-def put_hyperliquid(body: HyperliquidBody, email: str = Depends(require_user)):
-    wallet = body.wallet or body.hl_wallet
-    api_key = body.api_key or body.hl_api_key
-    if wallet:
-        _apply_and_persist("WALLET_ADDRESS", be._clean_hex_secret(wallet))
-    if api_key and not api_key.startswith("****"):
-        _apply_and_persist("PRIVATE_KEY", be._clean_hex_secret(api_key))
-    return {"ok": True, "note": "Prend effet au prochain demarrage du bot (arret puis demarrage)."}
+def calc_true_range_atr(candles, period=14):
+    """v4.36 — SUR DEMANDE EXPLICITE : vrai calcul d ATR (methode Wilder),
+    a partir de VRAIES bougies (haut, bas, cloture) construites en direct
+    depuis le flux WebSocket (voir SymbolState.candle_history) — plus
+    representatif de la volatilite reelle que calc_atr (qui ne voit que des
+    points de prix isoles espaces de 10s, structurellement quasi-nul).
+
+    True Range = max(haut-bas, |haut-cloture_precedente|, |bas-cloture_precedente|)
+    ATR = moyenne des True Range sur la periode.
+
+    candles : liste de tuples (high, low, close), la plus recente en dernier.
+    Retourne (atr_abs, atr_pct) ou (None, None) si insuffisant.
+    """
+    if len(candles) < period + 1:
+        return None, None
+    tr_list = []
+    for i in range(1, len(candles)):
+        high, low, _ = candles[i]
+        prev_close = candles[i-1][2]
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        tr_list.append(tr)
+    atr = sum(tr_list[-period:]) / period
+    last_close = candles[-1][2]
+    atr_pct = (atr / last_close) * 100 if last_close > 0 else 0
+    return atr, atr_pct
 
 
-class FinnhubBody(BaseModel):
-    finnhub_key: str
+def calc_avg_candle_fluctuation(candles, period=14):
+    """v4.41 — SUR DEMANDE EXPLICITE : fluctuation moyenne A L INTERIEUR de
+    chaque bougie (haut-bas, en % de la cloture), INDEPENDAMMENT de sa
+    couleur finale (verte ou rouge) — different de l ATR, qui mesure
+    l amplitude ENTRE bougies consecutives (True Range). Sert a mesurer le
+    "bruit interne" propre a chaque actif : une tendance n est jamais
+    lineaire, une meme bougie peut osciller plusieurs fois de sens avant de
+    clore dans une direction. Purement informatif — n influence aucune
+    decision de trading, juste un outil de calibrage manuel des seuils
+    SL/TTP/ATR par actif.
+    Retourne le % moyen (haut-bas)/cloture sur les N dernieres bougies, ou
+    None si pas assez de bougies.
+    """
+    if len(candles) < period:
+        return None
+    recent = candles[-period:]
+    fluctuations = []
+    for high, low, close in recent:
+        if close > 0:
+            fluctuations.append((high - low) / close * 100)
+    if not fluctuations:
+        return None
+    return sum(fluctuations) / len(fluctuations)
 
 
-@app.put("/api/config/finnhub")
-def put_finnhub(body: FinnhubBody, email: str = Depends(require_user)):
-    _apply_and_persist("FINNHUB_API_KEY", body.finnhub_key)
-    return {"ok": True}
+def calc_support_resistance(prices, period=50):
+    """Calcule le support et la resistance recents.
+    Resistance = plus haut local sur la periode (hors prix courant)
+    Support    = plus bas local sur la periode (hors prix courant)
+    Utilise pour confirmer les breakouts en scalping :
+    - LONG valide si le prix CASSE au-dessus de la resistance recente
+    - SHORT valide si le prix CASSE en-dessous du support recent
+    Retourne (support, resistance) ou (None, None) si insuffisant.
+    """
+    if len(prices) < period + 1:
+        return None, None
+    # Exclure le prix courant (dernier element) pour eviter l auto-validation
+    window = prices[-(period+1):-1]
+    support    = min(window)
+    resistance = max(window)
+    return support, resistance
 
-
-MODE_ACTIVE_COINS_KEY = {
-    "accumulation": "ACCUMULATION_ACTIVE_COINS",
-    "funding_contrarian": "FUNDING_ACTIVE_COINS",
-    "spot_accumulation": "SPOT_ACCUM_ACTIVE_COINS",
-}
-
-
-class ModeCoinBody(BaseModel):
-    mode: str
-    ticker: str
-    active: bool
-
-
-@app.put("/api/config/mode-coins")
-def put_mode_coins(body: ModeCoinBody, email: str = Depends(require_user)):
-    """v4.44 — SUR DEMANDE EXPLICITE : bascule un actif ON/OFF pour un mode
-    PRECIS (Accumulation/Funding/Spot-Accum), en un clic, independamment de
-    la liste globale (Marches). Au premier reglage pour un mode, initialise
-    sa liste dediee a partir de la liste globale ACTIVE_COINS actuelle
-    (pour ne pas desactiver silencieusement tout le reste d un coup)."""
-    key = MODE_ACTIVE_COINS_KEY.get(body.mode)
-    if not key:
-        raise HTTPException(400, f"Mode inconnu : {body.mode}")
-    current = cfg.get(key)
-    if current is None:
-        current = list(cfg.get("ACTIVE_COINS") or [])
-    else:
-        current = list(current)
-    ticker = body.ticker.upper()
-    if body.active and ticker not in current:
-        current.append(ticker)
-    elif not body.active and ticker in current:
-        current.remove(ticker)
-    _apply_and_persist(key, current)
-    return {"ok": True, "mode": body.mode, "active_coins": current}
-
-
-class ModeCoinResetBody(BaseModel):
-    mode: str
-
-
-@app.put("/api/config/mode-coins/reset")
-def reset_mode_coins(body: ModeCoinResetBody, email: str = Depends(require_user)):
-    """v4.52 — SUR DEMANDE EXPLICITE : reinitialise la liste d actifs d un
-    mode PRECIS pour qu elle revienne a heriter de la liste globale
-    (Marches) — corrige le cas ou un mode etait reste bloque sur une liste
-    personnalisee figee (ex: 5 actifs), sans plus jamais suivre les
-    changements faits dans Marches, faute d un moyen de revenir en arriere."""
-    key = MODE_ACTIVE_COINS_KEY.get(body.mode)
-    if not key:
-        raise HTTPException(400, f"Mode inconnu : {body.mode}")
-    _apply_and_persist(key, None)
-    return {"ok": True, "mode": body.mode, "active_coins": None}
-
-
-class FiltersBody(BaseModel):
-    filter_hours: Optional[bool] = None
-    filter_weekend: Optional[bool] = None
-    filter_macro: Optional[bool] = None
-    accumulation_enabled: Optional[bool] = None
-    accumulation_require_trend_confirm: Optional[bool] = None
-    sl_ttp_adaptive_enabled: Optional[bool] = None
-    funding_mode_enabled: Optional[bool] = None
-    funding_mode_live_allowed: Optional[bool] = None
-    require_sr_ema200_separation: Optional[bool] = None
-    unified_simplified_mode: Optional[bool] = None
-    unified_require_adx_confirm: Optional[bool] = None
-    ttp_dynamic_from_arm1: Optional[bool] = None
-    spot_accum_enabled: Optional[bool] = None
-    spot_accum_sl_enabled: Optional[bool] = None
-    spot_accum_require_adx_confirm: Optional[bool] = None
-
-
-@app.put("/api/config/filters")
-def put_filters(body: FiltersBody, email: str = Depends(require_user)):
-    # filter_hours  -> heures creuses crypto (CRYPTO_OFFPEAK_ENABLED)
-    # filter_weekend-> fermeture Forex sur PAXG (FOREX_SYMBOLS)
-    # filter_macro  -> blackout CPI Finnhub (CPI_BLACKOUT_ENABLED)
-    if body.filter_hours is not None:
-        _apply_and_persist("CRYPTO_OFFPEAK_ENABLED", body.filter_hours)
-    if body.filter_weekend is not None:
-        _apply_and_persist("FOREX_SYMBOLS", ["PAXG"] if body.filter_weekend else [])
-    if body.filter_macro is not None:
-        _apply_and_persist("CPI_BLACKOUT_ENABLED", body.filter_macro)
-    # v4.8 — mode Accumulation (LONG pres du support / SHORT pres de la
-    # resistance, independant de la logique RSI/tendance normale)
-    if body.accumulation_enabled is not None:
-        _apply_and_persist("ACCUMULATION_ENABLED", body.accumulation_enabled)
-    if body.accumulation_require_trend_confirm is not None:
-        _apply_and_persist("ACCUMULATION_REQUIRE_TREND_CONFIRM", body.accumulation_require_trend_confirm)
-    # v4.24 — SL/TTP adaptatifs a l ATR reel (unique/global : un seul
-    # multiplicateur pour tous les actifs, mais le resultat differe par
-    # actif car chacun a sa propre ATR au moment de l entree — voir
-    # SL_ATR_MULTIPLIER/SL_PCT_MIN/SL_PCT_MAX dans Parametres avances).
-    if body.sl_ttp_adaptive_enabled is not None:
-        _apply_and_persist("SL_TTP_ADAPTIVE_ENABLED", body.sl_ttp_adaptive_enabled)
-    # v4.33 — mode Funding Contrarian : source de signal differente
-    # (desequilibre de position via le funding rate, pas RSI/MACD/EMA).
-    # funding_mode_live_allowed reste False par defaut : meme active, ce
-    # mode simule ses trades (paper) tant que ce deuxieme interrupteur n est
-    # pas leve manuellement, quel que soit le mode global du bot — protege
-    # un capital de trading deja fragilise pendant la phase de validation.
-    if body.funding_mode_enabled is not None:
-        _apply_and_persist("FUNDING_MODE_ENABLED", body.funding_mode_enabled)
-    if body.funding_mode_live_allowed is not None:
-        _apply_and_persist("FUNDING_MODE_LIVE_ALLOWED", body.funding_mode_live_allowed)
-    # v4.37 — bloque un LONG/SHORT si le support/resistance est proche ET du
-    # mauvais cote de l EMA200 (marche en range pur, sans separation nette
-    # de sa moyenne longue) — DESACTIVE par defaut.
-    if body.require_sr_ema200_separation is not None:
-        _apply_and_persist("REQUIRE_SR_EMA200_SEPARATION", body.require_sr_ema200_separation)
-    # v4.58 — mode SIMPLIFIE : 3 conditions communes (tendance+ADX,
-    # proximite 1-5%, amplitude S/R) remplacent la complexite empilee sur le
-    # mode normal, et s ajoutent a Accumulation. ACTIF par defaut.
-    if body.unified_simplified_mode is not None:
-        _apply_and_persist("UNIFIED_SIMPLIFIED_MODE", body.unified_simplified_mode)
-    if body.unified_require_adx_confirm is not None:
-        _apply_and_persist("UNIFIED_REQUIRE_ADX_CONFIRM", body.unified_require_adx_confirm)
-    if body.ttp_dynamic_from_arm1 is not None:
-        _apply_and_persist("TTP_DYNAMIC_FROM_ARM1", body.ttp_dynamic_from_arm1)
-    # v4.43 — mode Spot-Accumulation (achat d actif esprit spot, aucun SL
-    # par defaut, levier toujours x1). spot_accum_sl_enabled ajoute un SL
-    # optionnel en % du PnL (voir SPOT_ACCUM_SL_PCT_OF_PNL dans Parametres avances).
-    if body.spot_accum_enabled is not None:
-        _apply_and_persist("SPOT_ACCUM_ENABLED", body.spot_accum_enabled)
-    if body.spot_accum_sl_enabled is not None:
-        _apply_and_persist("SPOT_ACCUM_SL_ENABLED", body.spot_accum_sl_enabled)
-    if body.spot_accum_require_adx_confirm is not None:
-        _apply_and_persist("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", body.spot_accum_require_adx_confirm)
-    return {"ok": True}
-
-
-class AiContinuousBody(BaseModel):
-    enabled: bool
-
-
-@app.put("/api/config/ai-continuous")
-def put_ai_continuous(body: AiContinuousBody, email: str = Depends(require_user)):
-    # Aucun equivalent fonctionnel dans ce bot (pas de couche IA generative
-    # de signaux) — stocke pour compatibilite avec l interface, sans effet.
-    db.set_config_override("ai_continuous", body.enabled)
-    return {"ok": True, "note": "Reserve — sans effet sur ce bot (pas de moteur IA continu)."}
-
-
-# ─────────────────────────────────────────────────────────────────────────
-#  CONTROLE DU BOT
-# ─────────────────────────────────────────────────────────────────────────
-@app.post("/api/bot/start")
-def bot_start(email: str = Depends(require_user)):
-    if bot.trading_enabled:
-        raise HTTPException(400, "Le trading tourne deja")
-    # v3.2 : la cle API + le wallet Hyperliquid sont obligatoires (paper ET
-    # live) — on le verifie ici pour repondre immediatement plutot que de
-    # laisser le thread du bot echouer silencieusement en arriere-plan.
-    if not cfg.get("PRIVATE_KEY") or not cfg.get("WALLET_ADDRESS"):
-        raise HTTPException(
-            400,
-            "Cle API et wallet Hyperliquid obligatoires (paper et live). "
-            "Configurez-les via /api/config/hyperliquid ou les variables "
-            "d environnement HYPERBOT_PRIVATE_KEY / HYPERBOT_WALLET_ADDRESS."
-        )
-    bot.start()
-    _mark_running_start()
-    db.set_meta("bot_desired_state", "running")
-    return {"ok": True}
-
-
-@app.post("/api/bot/stop")
-def bot_stop(email: str = Depends(require_user)):
-    bot.stop()
-    _mark_running_stop_and_accumulate()
-    # Persiste explicitement l intention d arret : le TRADING ne redemarrera
-    # pas tout seul apres un redeploiement/redemarrage Railway tant que
-    # quelqu un n aura pas reclique sur DEMARRER (voir _auto_start_if_desired).
-    # v4.14 — le MOTEUR (collecte/WebSocket), lui, redemarre toujours
-    # automatiquement des que le process reboote, meme si le trading reste
-    # arrete — seule la persistance de nouveaux trades depend de cet etat.
-    db.set_meta("bot_desired_state", "stopped")
-    return {"ok": True}
-
-
-@app.post("/api/bot/force-recollect")
-def force_recollect(email: str = Depends(require_user)):
-    """Force une collecte d indicateurs entierement fraiche pour tous les
-    actifs, sans attendre un redeploiement — utile si un probleme est
-    suspecte sur les indicateurs restaures (reprise rapide < 90s). Ne touche
-    ni aux positions ouvertes, ni au capital, ni a l historique."""
-    bot.force_fresh_collection()
-    return {"ok": True, "message": "Collecte fraiche forcee pour tous les actifs — les indicateurs vont se reconstruire progressivement."}
-
-
-@app.post("/api/bot/reset-confidence")
-def reset_confidence(email: str = Depends(require_user)):
-    """Reinitialisation CIBLEE des seuils de confiance dynamiques par actif —
-    ne touche ni aux positions ouvertes, ni au capital, ni a l historique.
-    Utile quand de nombreux actifs sont "au frigo" (seuil eleve suite a des
-    pertes), sans avoir a attendre la decroissance automatique ni a faire
-    une reinitialisation complete destructrice."""
-    bot.reset_confidence_penalties()
-    return {"ok": True, "message": "Toutes les penalites de confiance ont ete reinitialisees — chaque actif repart au seuil de base."}
-
-
-@app.get("/api/confidence/calibration")
-def get_confidence_calibration(email: str = Depends(require_user)):
-    """v4.2 — Analyse (sans rien modifier) le pouvoir predictif reel de
-    chaque indicateur du score de confiance, a partir de l historique des
-    trades clotures. Permet de voir AVANT d appliquer si les poids actuels
-    sont corrects, sur-estimes ou sous-estimes par rapport aux resultats
-    reellement observes sur ce compte."""
-    return _analyze_confidence_calibration()
-
-
-@app.post("/api/confidence/calibration/apply")
-def apply_confidence_calibration(email: str = Depends(require_user)):
-    """v4.2 — Recalcule ET applique les poids de CONFIDENCE_WEIGHTS a partir
-    de l historique reel. Refuse si aucun indicateur n a assez de donnees
-    (evite de calibrer sur du bruit). Les indicateurs sans assez de donnees
-    gardent leur poids actuel inchange ; seuls ceux avec un echantillon
-    suffisant (>= min_samples dans les deux groupes) sont ajustes."""
-    print(f"[AUDIT] /api/confidence/calibration/apply appele par {email} a {datetime.now(timezone.utc).isoformat()}")
-    analysis = _analyze_confidence_calibration()
-    if not analysis["ready_to_calibrate"]:
-        raise HTTPException(
-            400,
-            f"Pas assez de donnees pour calibrer (minimum {analysis['min_samples_required']} trades "
-            f"dans chaque groupe 'confirme'/'non confirme' par indicateur). "
-            f"Trades clotures avec detail disponible : {analysis['trades_with_breakdown']}."
-        )
-    _apply_and_persist("CONFIDENCE_WEIGHTS", analysis["suggested_weights"])
-    return {"ok": True, "applied_weights": analysis["suggested_weights"], "analysis": analysis}
-
-
-@app.get("/api/confidence/by-asset")
-def get_confidence_by_asset(min_trades: int = 5, email: str = Depends(require_user)):
-    """v4.4 — Probabilite de reussite reelle par actif, a partir de
-    l historique des trades clotures. min_trades ajustable dynamiquement
-    depuis l interface (bouton dans l onglet Historique)."""
-    return _analyze_confidence_by_asset(min_trades=min_trades)
-
-
-@app.get("/api/ws/events")
-def get_ws_events(email: str = Depends(require_user)):
-    """v4.6 — Journal des evenements WebSocket (connexion, deconnexion,
-    echec/succes de reconnexion) des 7 derniers jours, persiste en base
-    (survit aux redemarrages, contrairement au log en memoire)."""
-    events = db.get_ws_events(days=7)
-    return {
-        "events": events,
-        "currently_healthy": bot._is_ws_healthy() if bot.info is not None else False,
-        "currently_connected": bot.info is not None,
-    }
-
-
-@app.get("/api/bot/logs")
-def bot_logs(persistent: bool = Query(False), limit: int = Query(200), search: str = Query(None), email: str = Depends(require_user)):
-    if persistent:
-        # Lit la fin du fichier de log sur disque (persiste entre redemarrages
-        # si HYPERBOT_DATA_DIR pointe vers un Volume Railway).
-        # v3.2 — FIX : le fichier contient des lignes texte brutes
-        # ("YYYY-MM-DD HH:MM:SS [LEVEL   ] message"), mais l interface attend
-        # des objets {time, level, message} comme pour les logs en direct —
-        # sans ce parsing, les logs persistants s affichaient vides.
-        # v3.2 — FIX #2 : la limite par defaut (200 lignes) etait bien trop
-        # basse compte tenu du volume de log genere (jusqu a 30 actifs
-        # values a chaque cycle de 10s) — elle ne couvrait parfois que 2-3
-        # minutes reelles, alors que le fichier lui-meme garde 24h. Un
-        # parametre "search" permet desormais de filtrer par mot-cle (ex: un
-        # ticker precis) AVANT d appliquer la limite, pour retrouver un
-        # evenement precis n importe ou dans la fenetre de 24h — pas
-        # seulement dans les dernieres minutes.
-        import re
-        pattern = re.compile(r"^(\S+ \S+) \[(\w+)\s*\] (.*)$")
-        try:
-            with open(be.LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
-                all_lines = f.readlines()
-            if search:
-                all_lines = [l for l in all_lines if search.lower() in l.lower()]
-            lines = all_lines[-limit:]
-            parsed = []
-            for line in lines:
-                line = line.rstrip("\n")
-                m = pattern.match(line)
-                if m:
-                    time_str, level_str, msg = m.groups()
-                    parsed.append({
-                        "time": time_str,
-                        "level": _LEVEL_MAP.get(level_str.lower(), "info"),
-                        "message": msg,
-                    })
-                else:
-                    parsed.append({"time": "", "level": "info", "message": line})
-            return {"logs": parsed}
-        except FileNotFoundError:
-            return {"logs": []}
-    return {"logs": list(log_buffer)[-limit:]}
-
-
-# ─────────────────────────────────────────────────────────────────────────
-#  DONNEES DE MARCHE / POSITIONS / SIGNAUX
-# ─────────────────────────────────────────────────────────────────────────
-@app.get("/api/prices")
-def get_prices(email: str = Depends(require_user)):
-    # v3.2 : priorite au cache WebSocket complet (bot.all_mids, alimente par
-    # le flux allMids — couvre potentiellement TOUS les actifs Hyperliquid,
-    # pas seulement ceux tradés par ce bot). Complete avec les prix suivis
-    # individuellement (state.current_price) pour nos symboles, au cas ou
-    # le WebSocket ne serait pas encore actif (repli cycle REST).
-    prices = {}
+# ─────────────────────────────────────────────
+#  CONNEXION HYPERLIQUID
+# ─────────────────────────────────────────────
+def connect_hyperliquid(private_key, wallet_address):
+    """Retourne (info, exchange, error_detail). error_detail est None en cas
+    de succes, sinon un message texte precis (type + message de l exception)
+    — evite d avaler silencieusement la vraie cause d un echec de connexion
+    (mauvais format de cle, dependance manquante, probleme reseau, etc.)."""
+    private_key = _clean_hex_secret(private_key)
+    wallet_address = _clean_hex_secret(wallet_address)
     try:
-        for ticker, raw in (bot.all_mids or {}).items():
-            try:
-                prices[ticker] = float(raw)
-            except (TypeError, ValueError):
+        from hyperliquid.info import Info
+        from hyperliquid.exchange import Exchange
+        from hyperliquid.utils import constants
+        import eth_account
+        account = eth_account.Account.from_key(private_key)
+        # v3.1 : skip_ws=False active la connexion WebSocket du SDK, necessaire
+        # pour s abonner au flux temps reel (allMids) utilise par la
+        # surveillance Max Loss / Trailing TP en direct (voir _on_ws_allmids).
+        info = Info(constants.MAINNET_API_URL, skip_ws=False)
+        exchange = Exchange(account, constants.MAINNET_API_URL, vault_address=wallet_address)
+        return info, exchange, None
+    except Exception as e:
+        import traceback
+        detail = f"{type(e).__name__}: {e}"
+        if "non-hexadecimal digit" in str(e).lower():
+            # v4.4 — cause la plus frequente en pratique : un caractere
+            # invisible (espace, retour a la ligne, guillemet) reste colle
+            # a la cle malgre le nettoyage ci-dessus, ou la valeur collee
+            # n est tout simplement pas une cle privee hexadecimale valide
+            # (ex: phrase mnemonique au lieu de la cle, cle tronquee lors du
+            # copier-coller, ou variable Railway mal renseignee).
+            detail += (" — verifiez que HYPERBOT_PRIVATE_KEY contient bien la cle "
+                       "privee hexadecimale complete (64 caracteres apres le '0x' "
+                       "eventuel), sans espace ni guillemet, et pas une phrase de "
+                       "recuperation (seed phrase).")
+        print(f"[connect_hyperliquid] {detail}")
+        print(traceback.format_exc())
+        return None, None, detail
+
+def sync_capital_from_hyperliquid(info, wallet_address):
+    """Lit le solde réel USDC depuis Hyperliquid et le retourne.
+    Retourne None en cas d'echec pour ne pas ecraser le capital local.
+    """
+    try:
+        state = info.user_state(wallet_address)
+        real_balance = float(state["marginSummary"]["accountValue"])
+        print(f"[CAPITAL] Solde reel Hyperliquid : ${real_balance:.2f}")
+        return real_balance
+    except Exception as e:
+        print(f"[CAPITAL] Impossible de lire le solde Hyperliquid : {e}")
+        return None
+
+def recover_open_positions(info, wallet_address, symbols, cfg):
+    """Recupere les positions ouvertes sur Hyperliquid apres un crash.
+    Retourne un dict {symbol: position_dict} compatible avec SymbolState.
+    """
+    recovered = {}
+    try:
+        state = info.user_state(wallet_address)
+        positions = state.get("assetPositions", [])
+        for item in positions:
+            pos = item.get("position", {})
+            coin = pos.get("coin", "")
+            szi  = float(pos.get("szi", 0))      # positif = long, negatif = short
+            entry = float(pos.get("entryPx", 0) or 0)
+            if coin not in symbols or szi == 0 or entry == 0:
                 continue
-    except Exception:
-        pass
-    for k, s in bot.states.items():
-        ticker = be.ticker_from_slot_key(k)
-        if s.current_price and ticker not in prices:
-            prices[ticker] = s.current_price
-    return {"prices": prices}
+            direction = "long" if szi > 0 else "short"
+            size_usd  = abs(szi) * entry
+            sl_pct = cfg.get("SYMBOL_SL_PCT", {}).get(coin, cfg["STOP_LOSS_PCT"])
+            tp_pct = cfg.get("SYMBOL_TP_PCT", {}).get(coin, cfg["TAKE_PROFIT_PCT"])
+            sl_p = entry * (1 - sl_pct/100) if direction == "long" else entry * (1 + sl_pct/100)
+            tp_p = entry * (1 + tp_pct/100) if direction == "long" else entry * (1 - tp_pct/100)
+            recovered[coin] = {
+                "type":  direction,
+                "entry": entry,
+                "sl":    sl_p,
+                "tp":    tp_p,
+                "size":  size_usd,
+                "peak":  entry,
+            }
+            print(f"[RECOVER] {coin} {direction.upper()} @ ${entry:.2f} | SL ${sl_p:.2f} | TP ${tp_p:.2f}")
+    except Exception as e:
+        print(f"[RECOVER] Erreur recuperation positions : {e}")
+    return recovered
 
+def reconcile_closed_positions(info, wallet_address, saved_positions, cfg):
+    """Au redemarrage en mode live, compare les positions sauvegardees localement
+    avec ce qu Hyperliquid retourne. Si une position n existe plus sur la bourse,
+    c est qu elle a ete fermee pendant la deconnexion (SL ou TP touche).
+    Retourne une liste de trades reconstitues pour mise a jour du capital et historique.
+    """
+    ghost_trades = []
+    if not saved_positions:
+        return ghost_trades
+    try:
+        state      = info.user_state(wallet_address)
+        open_coins = set()
+        for item in state.get("assetPositions", []):
+            pos  = item.get("position", {})
+            coin = pos.get("coin", "")
+            szi  = float(pos.get("szi", 0))
+            if coin and szi != 0:
+                open_coins.add(coin)
 
-@app.get("/api/volatility")
-def get_volatility(email: str = Depends(require_user)):
-    """Classement en direct de la volatilite (ATR%) des actifs suivis — aide
-    a identifier ou le mouvement de prix est le plus fort a l instant present
-    (donc le potentiel de capture le plus eleve avec les seuils actuels).
-    Inclut aussi l ADX (force de la tendance) et le mode detecte
-    (trend/reversal) pour chaque actif."""
-    active_coins = cfg.get("ACTIVE_COINS") or SUPPORTED_TICKERS
-    adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
-    manual_modes = cfg.get("SYMBOL_RSI_MODE", {})
-    rows = []
-    for slot_key, state in bot.states.items():
-        ticker = be.ticker_from_slot_key(slot_key)
-        if state.current_atr_pct is None:
-            continue
-        adx = state.current_adx
-        if manual_modes.get(ticker):
-            mode = manual_modes[ticker]
-        elif adx is not None:
-            mode = "trend" if adx >= adx_threshold else "reversal"
-        else:
-            # v3.2 — FIX : le bot bascule sur "trend" par defaut si l ADX
-            # n est pas encore calculable (collecte insuffisante) — l API
-            # doit refleter EXACTEMENT ce meme comportement, sinon
-            # l interface affichait aucun badge, donnant l impression
-            # trompeuse d un actif "non tradable" alors qu il l est deja.
-            mode = "trend"
-        rows.append({
-            "coin": ticker,
-            "atr_pct": round(state.current_atr_pct, 4),
-            "adx": round(adx, 1) if adx is not None else None,
-            "mode": mode,
-            "price": state.current_price,
-            "active": ticker in active_coins,
-            "has_position": bool(state.position),
-        })
-    rows.sort(key=lambda r: r["atr_pct"], reverse=True)
-    return {"ranking": rows, "updated_at": datetime.now(timezone.utc).isoformat()}
-
-
-@app.get("/api/positions")
-def get_positions(email: str = Depends(require_user)):
-    return {"positions": _open_positions()}
-
-
-@app.get("/api/indicators/{ticker}")
-def get_indicator_history(ticker: str, email: str = Depends(require_user)):
-    """v4.21 — Historique des indicateurs (RSI, MACD, EMA200, ATR,
-    support/resistance) d un actif, pour affichage en graphe cote
-    interface. Cherche parmi TOUS les slots (BTC_0, BTC_1...) portant ce
-    ticker et retourne celui qui a le plus de donnees (le plus actif)."""
-    ticker = ticker.upper()
-    best_state = None
-    best_len = -1
-    for slot_key, state in bot.states.items():
-        if be.ticker_from_slot_key(slot_key) == ticker:
-            n = len(state.indicator_history)
-            if n > best_len:
-                best_len = n
-                best_state = state
-    if best_state is None:
-        raise HTTPException(404, f"Actif inconnu ou non suivi : {ticker}")
-    return {"ticker": ticker, "history": list(best_state.indicator_history)}
-
-
-@app.get("/api/atr-summary")
-def get_atr_summary(email: str = Depends(require_user)):
-    """v4.38 — SUR DEMANDE EXPLICITE : resume de l ATR (vrai calcul haut/bas
-    de Wilder, avec repli sur l ancien calcul cloture-a-cloture si pas
-    encore assez de bougies accumulees) de TOUS les actifs suivis, a la
-    demande — pour recalibrer ATR_MIN_PCT sur des donnees reelles plutot
-    que de scanner des dizaines de lignes eparpillees dans les logs."""
-    cfg = bot.cfg
-    atr_period = cfg.get("ATR_PERIOD", 14)
-    results = []
-    for slot_key, state in bot.states.items():
-        ticker = be.ticker_from_slot_key(slot_key)
-        atr_pct_val = None
-        source = None
-        if len(state.candle_history) >= atr_period + 1:
-            _, atr_pct_val = be.calc_true_range_atr(list(state.candle_history), atr_period)
-            source = "haut/bas (vrai)"
-        if atr_pct_val is None and len(state.price_history) >= atr_period + 1:
-            _, atr_pct_val = be.calc_atr(list(state.price_history), atr_period)
-            source = "cloture-a-cloture (repli)"
-        results.append({
-            "ticker": ticker,
-            "atr_pct": round(atr_pct_val, 4) if atr_pct_val is not None else None,
-            "source": source,
-            "candles_collected": len(state.candle_history),
-            "active": ticker in cfg.get("ACTIVE_COINS", []),
-        })
-    results.sort(key=lambda r: (r["atr_pct"] is None, -(r["atr_pct"] or 0)))
-    return {"atr_period": atr_period, "results": results}
-
-
-@app.get("/api/trend-summary")
-def get_trend_summary(email: str = Depends(require_user)):
-    """v4.59 — SUR DEMANDE EXPLICITE : classe chaque actif suivi en
-    "haussier franc" / "baissier franc" / "indecis", a la demande — meme
-    logique que la base commune des 3 modes (_unified_trend_confirmed) :
-    EMA200 pour la direction, ADX >= seuil pour la force (une direction
-    sans force n est pas consideree franche)."""
-    cfg = bot.cfg
-    adx_period = cfg.get("ADX_PERIOD", 14)
-    adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
-    results = []
-    for slot_key, state in bot.states.items():
-        ticker = be.ticker_from_slot_key(slot_key)
-        price = state.current_price
-        prices = list(state.price_history)
-        ema200 = be.calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
-        adx = be.calc_adx(prices, adx_period) if len(prices) >= adx_period + 1 else None
-        if price is None or ema200 is None or adx is None:
-            label = "donnees insuffisantes"
-        else:
-            strong = adx >= adx_threshold
-            if price > ema200 and strong:
-                label = "haussier franc"
-            elif price < ema200 and strong:
-                label = "baissier franc"
-            else:
-                label = "indecis"
-        results.append({
-            "ticker": ticker,
-            "price": price,
-            "ema200": round(ema200, 6) if ema200 is not None else None,
-            "adx": round(adx, 1) if adx is not None else None,
-            "adx_threshold": adx_threshold,
-            "label": label,
-            "active": ticker in (cfg.get("ACTIVE_COINS") or []),
-        })
-    order = {"haussier franc": 0, "baissier franc": 1, "indecis": 2, "donnees insuffisantes": 3}
-    results.sort(key=lambda r: (order.get(r["label"], 9), r["ticker"]))
-    return {"adx_threshold": adx_threshold, "results": results, "refreshed_at": time.time()}
-
-
-@app.get("/api/strategy-performance/{strategy}")
-def get_strategy_performance(strategy: str, email: str = Depends(require_user)):
-    """v4.43 — SUR DEMANDE EXPLICITE : performance d un MODE precis
-    (normal/accumulation/funding_contrarian/spot_accumulation), calculee a
-    la demande depuis l historique reel en base — pour le bouton
-    "Performance" de chaque sous-onglet de l onglet Paper Trading."""
-    all_closed = db.get_all_closed_trades()
-    filtered = [t for t in all_closed if (t.get("strategy") or "normal") == strategy]
-    wins = [t for t in filtered if (t.get("pnl") or 0) > 0]
-    losses = [t for t in filtered if (t.get("pnl") or 0) <= 0]
-    total_pnl = sum((t.get("pnl") or 0) for t in filtered)
-    win_pnl = sum((t.get("pnl") or 0) for t in wins)
-    loss_pnl = sum((t.get("pnl") or 0) for t in losses)
-    open_count = sum(1 for st in bot.states.values() if st.position and (st.position.get("strategy") or "normal") == strategy)
-    return {
-        "strategy": strategy,
-        "total_trades": len(filtered),
-        "open_trades": open_count,
-        "wins": len(wins),
-        "losses": len(losses),
-        "win_rate": round(len(wins) / len(filtered) * 100, 1) if filtered else 0,
-        "net_pnl": round(total_pnl, 4),
-        "win_pnl": round(win_pnl, 4),
-        "loss_pnl": round(loss_pnl, 4),
-        "refreshed_at": time.time(),
-    }
-
-
-@app.get("/api/entry-diagnostics")
-def get_entry_diagnostics_all(email: str = Depends(require_user)):
-    """v4.40 — SUR DEMANDE EXPLICITE, suite a un ecart de 13h sans aucun
-    trade jamais explique faute de logs disponibles : instantane de l etat
-    de TOUTES les portes d entree (RSI, MACD, amplitude, niveaux, fraicheur,
-    confirmation post-trade, separation EMA200...) pour TOUS les actifs
-    suivis, a la demande — capture a chaque cycle cote bot_engine, donc
-    toujours a jour au moment de l appel, quelle que soit la retention des
-    logs. Vue d ensemble compacte : pour le detail complet d un actif, voir
-    /api/entry-diagnostics/{ticker}."""
-    results = []
-    for slot_key, state in bot.states.items():
-        ticker = be.ticker_from_slot_key(slot_key)
-        snap = state.last_gate_snapshot or {}
-        has_position = state.position is not None
-        # v4.40 — resume compact : identifie le PREMIER obstacle qui bloque
-        # chaque sens, pour un coup d oeil rapide sans lire les 20 champs.
-        blocker_long = None
-        if has_position:
-            blocker_long = "position deja ouverte"
-        elif not snap:
-            blocker_long = "pas encore de donnees"
-        elif not (snap.get("rsi_buy") and snap.get("ema_bull") and snap.get("trend_up")):
-            blocker_long = "signal de base non reuni (RSI/EMA/tendance)"
-        elif snap.get("long_signal_stale"):
-            blocker_long = "signal pas encore renouvele (fraicheur)"
-        elif not snap.get("long_level_ok_final"):
-            # v4.58 — SUR DEMANDE EXPLICITE : raisons COHERENTES avec le mode
-            # actif — le mode simplifie (base commune) n a plus rien a voir
-            # avec MACD/amplitude ATR/separation EMA200/confirmation post-trade.
-            if snap.get("unified_mode_active"):
-                if not snap.get("unified_trend_confirmed_long"):
-                    blocker_long = "tendance/ADX pas assez forte"
-                elif not snap.get("unified_proximity_long_ok"):
-                    blocker_long = "hors fenetre 1-5% du support (et pas de cassure)"
-                elif not snap.get("unified_amplitude_ok"):
-                    blocker_long = "fourchette S/R trop etroite"
-                else:
-                    blocker_long = "base commune non reunie (raison indeterminee)"
-            elif not snap.get("direction_confirmed_long"):
-                blocker_long = "MACD ne confirme pas"
-            elif not snap.get("amplitude_coherent"):
-                blocker_long = "amplitude ATR incoherente"
-            elif not snap.get("sr_ema_long_ok"):
-                blocker_long = "support trop proche de l EMA200"
-            elif snap.get("post_win_confirm_long"):
-                blocker_long = f"confirmation post-trade en attente ({snap.get('confirm_count_long',0)}/18 cycles, {snap.get('post_win_wait_long',0)}/180 max)"
-            else:
-                blocker_long = "niveau (support/resistance) non respecte"
-        else:
-            blocker_long = None  # rien ne bloque, devrait trader au prochain signal
-        blocker_short = None
-        if has_position:
-            blocker_short = "position deja ouverte"
-        elif not snap:
-            blocker_short = "pas encore de donnees"
-        elif not (snap.get("rsi_sell") and snap.get("ema_bear") and snap.get("trend_down")):
-            blocker_short = "signal de base non reuni (RSI/EMA/tendance)"
-        elif snap.get("short_signal_stale"):
-            blocker_short = "signal pas encore renouvele (fraicheur)"
-        elif not snap.get("short_level_ok_final"):
-            if snap.get("unified_mode_active"):
-                if not snap.get("unified_trend_confirmed_short"):
-                    blocker_short = "tendance/ADX pas assez forte"
-                elif not snap.get("unified_proximity_short_ok"):
-                    blocker_short = "hors fenetre 1-5% de la resistance (et pas de cassure)"
-                elif not snap.get("unified_amplitude_ok"):
-                    blocker_short = "fourchette S/R trop etroite"
-                else:
-                    blocker_short = "base commune non reunie (raison indeterminee)"
-            elif not snap.get("direction_confirmed_short"):
-                blocker_short = "MACD ne confirme pas"
-            elif not snap.get("amplitude_coherent"):
-                blocker_short = "amplitude ATR incoherente"
-            elif not snap.get("sr_ema_short_ok"):
-                blocker_short = "resistance trop proche de l EMA200"
-            elif snap.get("post_win_confirm_short"):
-                blocker_short = f"confirmation post-trade en attente ({snap.get('confirm_count_short',0)}/18 cycles, {snap.get('post_win_wait_short',0)}/180 max)"
-            else:
-                blocker_short = "niveau (support/resistance) non respecte"
-        else:
-            blocker_short = None
-        # v4.55 — SUR DEMANDE EXPLICITE : le diagnostic ne couvrait jusqu ici
-        # que le mode normal — ajoute Spot-Accumulation, dont la logique
-        # d entree est completement differente (LONG uniquement, fenetre de
-        # distance au support, amplitude S/R, confirmation ADX...).
-        spot_snap = state.spot_accum_gate_snapshot or {}
-        if has_position and state.position.get("strategy") == "spot_accumulation":
-            blocker_spot_accum = "position deja ouverte"
-        elif not spot_snap:
-            blocker_spot_accum = "pas encore de donnees"
-        else:
-            blocker_spot_accum = spot_snap.get("blocker", "pas encore de donnees")
-        results.append({
-            "ticker": ticker,
-            "has_position": has_position,
-            "snapshot_age_sec": round(time.time() - snap["ts"], 1) if snap.get("ts") else None,
-            "blocker_long": blocker_long,
-            "blocker_short": blocker_short,
-            "blocker_spot_accum": blocker_spot_accum,
-            "spot_accum_detail": spot_snap if spot_snap else None,
-        })
-    results.sort(key=lambda r: r["ticker"])
-    return {"results": results}
-
-
-@app.get("/api/entry-diagnostics/{ticker}")
-def get_entry_diagnostics_one(ticker: str, email: str = Depends(require_user)):
-    """v4.40 — Detail COMPLET de l instantane des portes d entree pour UN
-    actif precis (tous les champs bruts, pas juste le resume compact)."""
-    ticker = ticker.upper()
-    best_state = None
-    best_ts = -1
-    for slot_key, state in bot.states.items():
-        if be.ticker_from_slot_key(slot_key) == ticker:
-            ts = (state.last_gate_snapshot or {}).get("ts", -1)
-            if ts > best_ts:
-                best_ts = ts
-                best_state = state
-    if best_state is None:
-        raise HTTPException(404, f"Actif inconnu ou non suivi : {ticker}")
-    return {
-        "ticker": ticker,
-        "has_position": best_state.position is not None,
-        "position": best_state.position,
-        "snapshot": best_state.last_gate_snapshot,
-    }
-
-
-@app.get("/api/signals")
-def get_signals(limit: int = Query(50), strategy: str = Query(None), email: str = Depends(require_user)):
-    """v4.44 — SUR DEMANDE EXPLICITE : parametre 'strategy' optionnel pour
-    filtrer l historique PAR MODE. Sans ce filtre, la limite de 50 est
-    partagee entre TOUS les modes confondus — insuffisant pour un historique
-    par mode complet (avec 4 modes actifs, chacun pourrait n avoir que
-    quelques lignes visibles, voire aucune, meme avec beaucoup de trades
-    reels). Avec le filtre, on interroge un bassin bien plus large AVANT de
-    filtrer, pour que 'limit' s applique au nombre de trades de CE mode
-    precis, pas au nombre de trades tous modes confondus."""
-    if strategy:
-        raw = db.get_trades(limit=max(limit * 20, 2000))
-        filtered = [r for r in raw if (r.get("strategy") or "normal") == strategy]
-        return {"signals": [_trade_row_to_signal(r) for r in filtered[:limit]]}
-    return {"signals": [_trade_row_to_signal(r) for r in db.get_trades(limit=limit)]}
-
-
-@app.get("/api/stats")
-def get_stats(email: str = Depends(require_user)):
-    rows = db.get_trades(limit=100000)
-    if not rows:
-        return {"total": 0, "longs": 0, "shorts": 0, "avg_confidence": 0, "avg_rr": "--"}
-    longs = sum(1 for r in rows if r["action"] == "LONG")
-    shorts = sum(1 for r in rows if r["action"] == "SHORT")
-    confs = [r["confidence"] for r in rows if r["confidence"] is not None]
-    rrs = [r["risk_reward"] for r in rows if r["risk_reward"] is not None]
-    return {
-        "total": len(rows),
-        "longs": longs,
-        "shorts": shorts,
-        "avg_confidence": round(sum(confs) / len(confs), 1) if confs else 0,
-        "avg_rr": round(sum(rrs) / len(rrs), 2) if rrs else "--",
-    }
-
-
-@app.get("/api/paper/portfolio")
-def paper_portfolio(email: str = Depends(require_user)):
-    # v3.2 — FIX : l interface attend total_pnl/total_pnl_pct (le PnL NON
-    # REALISE des positions actuellement ouvertes), alors que cette route ne
-    # renvoyait que le PnL REALISE cumule (s.pnl, uniquement des trades deja
-    # fermes) — d ou "PnL ouvert" et "Performance" bloques a 0.00 en
-    # permanence, meme avec des positions ouvertes en profit/perte.
-    open_positions = _open_positions()
-    unrealized_pnl = round(sum(p["pnl"] for p in open_positions), 2)
-    realized_pnl = sum(s.pnl for s in bot.states.values())
-    initial_balance = float(db.get_meta("initial_balance", cfg["CAPITAL_USD"])) or 1.0
-
-    closed = db.get_all_closed_trades()
-    wins = sum(1 for r in closed if (r["pnl"] or 0) > 0)
-    win_rate = round(wins / len(closed) * 100, 1) if closed else 0
-
-    # v3.2 — FIX : "balance" (affiche "SOLDE VIRTUEL") ne deduisait pas les
-    # montants deja engages dans les positions ouvertes — il affichait donc
-    # le capital total, pas ce qu il reste reellement disponible pour de
-    # nouveaux trades.
-    engaged = sum(p["size"] for p in open_positions)
-    return {
-        "balance": round(bot.capital + realized_pnl - engaged, 2),
-        "open_trades": open_positions,
-        "total_pnl": unrealized_pnl,
-        "total_pnl_pct": round(unrealized_pnl / initial_balance * 100, 3),
-        "win_rate": win_rate,
-    }
-
-
-@app.post("/api/paper/reset")
-def paper_reset(email: str = Depends(require_user)):
-    print(f"[AUDIT] /api/paper/reset appele par {email} a {datetime.now(timezone.utc).isoformat()}")
-    if bot.trading_enabled:
-        raise HTTPException(400, "Arretez le bot avant de reinitialiser")
-    db.clear_all_trades()
-    # v4.14 — le moteur (cycle de gestion des positions) tourne desormais en
-    # continu, y compris pendant un reset (seul trading_enabled est verifie
-    # ci-dessus, pas l arret du moteur) : on protege cette mutation directe
-    # de l etat avec le meme verrou que _manage_position, pour eviter toute
-    # collision avec un cycle en cours au meme instant.
-    with bot.lock:
-        for state in bot.states.values():
-            state.position = None
-            state.pnl = 0.0
-            state.trades = 0
-            state.wins = 0
-            state.closed_trades.clear()
-    # v4.1 — FIX : repart du capital par defaut du CODE (be.CONFIG), pas de
-    # cfg["CAPITAL_USD"] qui contient la derniere valeur PERSISTEE (chargee
-    # au demarrage depuis hyperbot_capital_*.json) — sans ce fix, changer le
-    # capital par defaut dans le code n avait plus aucun effet des qu un
-    # fichier de capital existait deja sur le volume, et "reinitialiser"
-    # ne faisait que re-sauvegarder cette meme valeur perimee.
-    cfg["CAPITAL_USD"] = be.CONFIG["CAPITAL_USD"]
-    bot.capital = cfg["CAPITAL_USD"]
-    bot.sessions = 0
-    bot.total_pnl_all = 0.0
-    # v4.1 — un capital reinitialise demarre un lot neuf : l ancien E fige
-    # (base sur l ancien capital) ne doit pas survivre a la reinitialisation.
-    bot.batch_entry_size = None
-    bot.clear_all_persisted_files()
-    be.save_capital(bot.capital, 0, 0.0)
-    be.save_batch_entry_size(None)
-    db.set_meta("reset_at", db.now_iso())
-    db.set_meta("initial_balance", str(bot.capital))
-    db.set_meta("total_running_seconds", "0")
-    db.set_meta("running_since", "")
-    return {"ok": True}
-
-
-class PaperCloseBody(BaseModel):
-    trade_id: str  # = slot_key (ex: "BTC_0")
-    reason: str = "MANUEL"
-
-
-@app.post("/api/paper/close")
-def paper_close(body: PaperCloseBody, email: str = Depends(require_user)):
-    state = bot.states.get(body.trade_id)
-    if not state or not state.position:
-        raise HTTPException(404, "Aucune position ouverte pour cet identifiant")
-    price = state.current_price or state.position["entry"]
-    ticker = be.ticker_from_slot_key(body.trade_id)
-    pos_snapshot = dict(state.position)  # avant fermeture — necessaire pour close_order (actifs spot)
-    with _state_lock:
-        pnl, win, trade = state.close_position(price, body.reason)
-        trade["symbol"] = body.trade_id
-        if cfg.get("MODE") == "live" and bot.exchange:
-            be.close_order(bot.exchange, body.trade_id, pos_snapshot, cfg)
-        action = "LONG" if trade["type"] == "long" else "SHORT"
-        trade_id = db.get_open_trade_id_by_coin_action(ticker, action)
-        if trade_id:
-            db.close_trade(trade_id, trade["exit"], trade["pnl"], trade["reason"])
-    _push_log("warn", f"[{ticker}] Fermeture manuelle @ ${price:.2f} | PnL: {pnl:+.2f}$")
-    return {"ok": True, "pnl": pnl}
-
-
-class SpotAccumTargetBody(BaseModel):
-    trade_id: str  # = slot_key (ex: "BTC_0")
-    target_price: Optional[float] = None  # None = retire l objectif (repli sur le trailing seul)
-
-
-@app.put("/api/spot-accum/target")
-def put_spot_accum_target(body: SpotAccumTargetBody, email: str = Depends(require_user)):
-    """v4.47 — SUR DEMANDE EXPLICITE : permet de modifier l objectif (prix
-    cible, 80% de la distance support-resistance par defaut) d une position
-    Spot-Accumulation DEJA OUVERTE — utile si le marche a evolue depuis
-    l entree et que l objectif initial ne semble plus pertinent. target_price
-    a None retire l objectif fixe : la position ne sortira plus que via le
-    trailing (3%/0.5%) ou le retournement confirme."""
-    state = bot.states.get(body.trade_id)
-    if not state or not state.position:
-        raise HTTPException(404, "Aucune position ouverte pour cet identifiant")
-    if state.position.get("strategy") != "spot_accumulation":
-        raise HTTPException(400, "Cette position n'est pas en mode Spot-Accumulation")
-    if body.target_price is not None and body.target_price <= (state.current_price or state.position["entry"]):
-        raise HTTPException(400, "L'objectif doit être supérieur au prix actuel")
-    state.position["target_price"] = body.target_price
-    bot._save_open_positions()
-    ticker = be.ticker_from_slot_key(body.trade_id)
-    _push_log("info", f"[{ticker}] 🌱 Objectif Spot-Accum modifié manuellement : {'$'+str(body.target_price) if body.target_price else 'retiré (trailing seul)'}")
-    return {"ok": True, "target_price": body.target_price}
-
-
-class SpotAccumTrailingArmBody(BaseModel):
-    trade_id: str
-    trailing_arm_price: Optional[float] = None  # None = retire ce seuil, garde seulement le seuil de PnL
-
-
-@app.put("/api/spot-accum/trailing-arm")
-def put_spot_accum_trailing_arm(body: SpotAccumTrailingArmBody, email: str = Depends(require_user)):
-    """v4.49 — SUR DEMANDE EXPLICITE : permet de modifier le seuil de PRIX
-    (structurel, 70% de la distance support-resistance par defaut) qui arme
-    le trailing pour une position Spot-Accumulation DEJA OUVERTE. S ADDITIONNE
-    au seuil de PnL (SPOT_ACCUM_TTP_ARM_PCT) — arme des que l un des deux est
-    atteint. None retire ce seuil : seul le PnL% arme alors le trailing."""
-    state = bot.states.get(body.trade_id)
-    if not state or not state.position:
-        raise HTTPException(404, "Aucune position ouverte pour cet identifiant")
-    if state.position.get("strategy") != "spot_accumulation":
-        raise HTTPException(400, "Cette position n'est pas en mode Spot-Accumulation")
-    if body.trailing_arm_price is not None and body.trailing_arm_price <= (state.current_price or state.position["entry"]):
-        raise HTTPException(400, "Le seuil doit être supérieur au prix actuel")
-    state.position["trailing_arm_price"] = body.trailing_arm_price
-    bot._save_open_positions()
-    ticker = be.ticker_from_slot_key(body.trade_id)
-    _push_log("info", f"[{ticker}] 🌱 Seuil d'armement trailing Spot-Accum modifié : {'$'+str(body.trailing_arm_price) if body.trailing_arm_price else 'retiré (seuil PnL seul)'}")
-    return {"ok": True, "trailing_arm_price": body.trailing_arm_price}
-
-
-# ─────────────────────────────────────────────────────────────────────────
-#  BILAN / STATISTIQUES / RAPPORT
-# ─────────────────────────────────────────────────────────────────────────
-def _day_key(iso_str: str) -> str:
-    return datetime.fromisoformat(iso_str).astimezone(timezone.utc).strftime("%d/%m")
-
-
-def _aggregate(rows: List[Dict[str, Any]], base: float = None) -> Dict[str, Any]:
-    total = len(rows)
-    wins = [r for r in rows if (r["pnl"] or 0) > 0]
-    losses = [r for r in rows if (r["pnl"] or 0) <= 0]
-    gains = round(sum(r["pnl"] for r in wins), 2)
-    pertes = round(sum(r["pnl"] for r in losses), 2)
-    net = round(gains + pertes, 2)
-    win_rate = round(len(wins) / total * 100, 1) if total else 0
-    # v4.2 — % du net par rapport au capital initial (base), quand fourni.
-    # Permet d afficher la performance en % en plus du montant $, pour le
-    # jour courant, le total et chaque jour de l historique (onglet Bilan).
-    net_pct = round(net / base * 100, 2) if base else None
-    return {
-        "total": total, "wins": len(wins), "losses": len(losses),
-        "gains": gains, "pertes": pertes, "net": net, "win_rate": win_rate,
-        "net_pct": net_pct,
-    }
-
-
-def _compute_daily(rows: List[Dict[str, Any]], days: int = 7, base: float = None) -> List[Dict[str, Any]]:
-    """v3.2 — Jour calendaire UTC fixe (00h00-23h59:59) : chaque trade est
-    attribue au jour ou il a ete OUVERT (created_at), pas ferme (closed_at).
-    Un trade ouvert juste avant minuit et ferme apres compte donc pour la
-    journee de son ouverture — coherent avec le decoupage en jours fixes
-    demande, sans qu un trade a cheval sur minuit ne soit "perdu" ou compte
-    deux fois."""
-    today = datetime.now(timezone.utc).date()
-    buckets = {}
-    for i in range(days):
-        d = today - timedelta(days=i)  # v3.2 — du plus recent (aujourd hui) au plus vieux
-        buckets[d.strftime("%d/%m")] = []
-    for r in rows:
-        if not r["created_at"]:
-            continue
+        # Recuperer l historique recent des fills pour connaitre le prix de cloture reel
         try:
-            key = _day_key(r["created_at"])
+            fills = info.user_fills(wallet_address)
         except Exception:
-            continue
-        if key in buckets:
-            buckets[key].append(r)
-    out = []
-    for day, day_rows in buckets.items():
-        agg = _aggregate(day_rows, base)
-        out.append({"day": day, **agg})
-    return out
+            fills = []
 
+        fill_map = {}  # coin -> dernier fill de cloture
+        for f in fills:
+            coin = f.get("coin", "")
+            if f.get("dir", "") in ("Close Long", "Close Short") or f.get("reduceOnly", False):
+                if coin not in fill_map:
+                    fill_map[coin] = f  # on prend le plus recent
 
-def _compute_by_coin(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    by_coin: Dict[str, List[Dict[str, Any]]] = {}
-    for r in rows:
-        by_coin.setdefault(r["coin"], []).append(r)
-    out = []
-    for coin, coin_rows in by_coin.items():
-        agg = _aggregate(coin_rows)
-        wins = [r for r in coin_rows if (r["pnl"] or 0) > 0]
-        losses = [r for r in coin_rows if (r["pnl"] or 0) <= 0]
-        avg_gain = round(sum(r["pnl"] for r in wins) / len(wins), 2) if wins else 0
-        avg_loss = round(sum(r["pnl"] for r in losses) / len(losses), 2) if losses else 0
-        total_minutes = 0
-        for r in coin_rows:
+        for coin, pos in saved_positions.items():
+            if coin in open_coins:
+                continue  # position encore ouverte, rien a faire
+
+            # La position a disparu pendant la deconnexion
+            entry  = pos["entry"]
+            size   = pos["size"]
+            ptype  = pos["type"]
+
+            fill    = fill_map.get(coin)
+            exit_px = float(fill["px"]) if fill else pos["sl"]
+            reason  = "SL/TP HYPERLIQUID" if fill else "SL ESTIME"
+
+            if ptype == "long":
+                pnl_pct = (exit_px - entry) / entry * 100
+            else:
+                pnl_pct = (entry - exit_px) / entry * 100
+            pnl_usd = size * pnl_pct / 100
+            win     = pnl_usd > 0
+
+            ghost_trades.append({
+                "symbol":  coin,
+                "type":    ptype,
+                "entry":   entry,
+                "exit":    exit_px,
+                "pnl":     round(pnl_usd, 4),
+                "pnl_pct": round(pnl_pct, 2),
+                "reason":  reason,
+                "win":     win,
+                "ts":      time.time(),
+            })
+            print(f"[RECONCILE] {coin} ferme pendant deconnexion | {reason} @ ${exit_px:.2f} | PnL: ${pnl_usd:.2f}")
+
+    except Exception as e:
+        print(f"[RECONCILE] Erreur : {e}")
+    return ghost_trades
+
+def emergency_close_all(exchange, info, wallet_address, cfg):
+    """Fermeture d'urgence de toutes les positions ouvertes sur Hyperliquid.
+    Utilisé si la reprise est impossible.
+    """
+    try:
+        state = info.user_state(wallet_address)
+        positions = state.get("assetPositions", [])
+        for item in positions:
+            pos = item.get("position", {})
+            coin = pos.get("coin", "")
+            szi  = float(pos.get("szi", 0))
+            if szi == 0:
+                continue
             try:
-                opened = datetime.fromisoformat(r["created_at"])
-                closed = datetime.fromisoformat(r["closed_at"]) if r["closed_at"] else opened
-                total_minutes += int((closed - opened).total_seconds() / 60)
+                if is_spot(coin, cfg):
+                    api_ticker = cfg.get("SPOT_TICKER_MAP", {}).get(coin, coin)
+                    sz = abs(round(szi, 6))
+                    exchange.market_open(api_ticker, szi < 0, sz)  # vendre si long, racheter si short
+                else:
+                    exchange.market_close(coin)
+                print(f"[URGENCE] {coin} ferme avec succes")
+            except Exception as e:
+                print(f"[URGENCE] Erreur fermeture {coin} : {e}")
+    except Exception as e:
+        print(f"[URGENCE] Erreur recuperation positions : {e}")
+
+def ticker_from_slot_key(slot_key):
+    """Extrait le vrai ticker API depuis une cle slot.
+    "BTC_0"  → "BTC"
+    "SOL_2"  → "SOL"
+    "BTC_1"  → "BTC"  (deuxieme slot BTC)
+    Si pas de suffixe _N, retourne tel quel (compatibilite).
+    """
+    parts = slot_key.rsplit("_", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        return parts[0]
+    return slot_key
+
+
+def get_prices(info, slot_keys, cfg):
+    """Recupere les prix mark price pour une liste de slot_keys."""
+    try:
+        meta, asset_ctxs = info.meta_and_asset_ctxs()
+        universe = meta.get("universe", [])
+
+        mark_prices = {}
+        for i, ctx in enumerate(asset_ctxs):
+            if i < len(universe) and ctx and ctx.get("markPx"):
+                name = universe[i].get("name", "")
+                try:
+                    mark_prices[name] = float(ctx["markPx"])
+                except (ValueError, TypeError):
+                    pass
+
+        result = {}
+        for k in slot_keys:
+            t = ticker_from_slot_key(k)
+            if t in mark_prices and mark_prices[t] > 0:
+                result[k] = mark_prices[t]
+
+        missing = [k for k in slot_keys if k not in result]
+        if missing:
+            mids = info.all_mids()
+            for k in missing:
+                t = ticker_from_slot_key(k)
+                if t in mids:
+                    try:
+                        v = float(mids[t])
+                        if v > 0:
+                            result[k] = v
+                    except (ValueError, TypeError):
+                        pass
+
+        return result
+
+    except Exception as e:
+        try:
+            mids = info.all_mids()
+            result = {}
+            for k in slot_keys:
+                t = ticker_from_slot_key(k)
+                if t in mids:
+                    try:
+                        v = float(mids[t])
+                        if v > 0:
+                            result[k] = v
+                    except (ValueError, TypeError):
+                        pass
+            return result
+        except Exception:
+            return {}
+def is_spot(symbol, cfg):
+    # symbol peut etre une slot_key "BTC_0" — extraire le vrai ticker
+    return ticker_from_slot_key(symbol) in cfg.get("SPOT_SYMBOLS", [])
+
+def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, tp_price=None, leverage=1):
+    """Passe un ordre market d entree avec SL et TP sur Hyperliquid.
+    symbol peut etre une slot_key "BTC_0" — le vrai ticker est extrait automatiquement.
+
+    v4.5 — FIX CRITIQUE : size_usd est la MARGE (E), pas le notionnel. Sur
+    Hyperliquid (et tout exchange a marge), le levier reduit la marge
+    REQUISE pour un notionnel donne — il n augmente PAS automatiquement la
+    quantite d un ordre dimensionne sur la marge seule. Avant ce fix,
+    l ordre reel envoye ne representait toujours qu un notionnel de 1x
+    (size_usd / price), quel que soit le levier applique via
+    update_leverage() juste avant : un trade "x3" n ouvrait en realite
+    qu une position de la meme taille qu un trade "x1", desynchronisant
+    completement le PnL reel du compte Hyperliquid par rapport a la
+    logique interne du bot (SL/TTP, calcules eux sur E x levier). Le
+    notionnel reel doit etre size_usd x leverage.
+    """
+    ticker = ticker_from_slot_key(symbol)
+    try:
+        if is_spot(symbol, cfg):
+            # Spot n a pas de notion de levier — inchange.
+            sz = max(round(size_usd / price, 6), 0.0001)
+            api_ticker = cfg.get("SPOT_TICKER_MAP", {}).get(ticker, ticker)
+            result = exchange.market_open(api_ticker, is_buy, sz)
+            entry_ok = result and result.get("status") == "ok"
+
+            if entry_ok:
+                position_mock = {"type": "long" if is_buy else "short", "entry": price, "size": size_usd}
+                protective_orders = []
+
+                if sl_price is not None:
+                    sl_order = _build_sl_order(ticker, position_mock, sl_price, cfg)
+                    if sl_order:
+                        protective_orders.append(sl_order)
+                    else:
+                        print(f"[ORDER] SL spot {ticker} : asset ID inconnu — protection interne uniquement")
+
+                if tp_price is not None:
+                    tp_order = _build_tp_order(ticker, position_mock, tp_price, cfg)
+                    if tp_order:
+                        protective_orders.append(tp_order)
+                    else:
+                        print(f"[ORDER] TP spot {ticker} : asset ID inconnu — gere en interne uniquement")
+
+                if protective_orders:
+                    prot_result = exchange.bulk_orders(protective_orders, grouping="na")
+                    prot_ok = prot_result and prot_result.get("status") == "ok"
+                    if not prot_ok:
+                        print(f"[ORDER] SL/TP spot {ticker} non poses — protection interne uniquement")
+
+            return entry_ok
+
+        # ── PERP : entree + SL + TP en groupe atomique normalTpsl ──
+        notional_usd = size_usd * max(leverage, 1)
+        sz = max(round(notional_usd / price, 4), 0.001)
+        close_side = not is_buy
+        # v4.5 — pos_mock["size"] doit etre le NOTIONNEL reel (deja leverage)
+        # pour que _build_sl_order/_build_tp_order calculent la meme
+        # quantite sz que l ordre d entree ci-dessus — sinon les ordres
+        # protecteurs ne couvriraient qu une fraction (1/levier) de la
+        # position reellement ouverte.
+        pos_mock = {"type": "long" if is_buy else "short", "entry": price, "size": notional_usd}
+
+        entry_order = {
+            "coin":        ticker,
+            "is_buy":      is_buy,
+            "sz":          sz,
+            "px":          price * 1.01 if is_buy else price * 0.99,
+            "order_type":  {"limit": {"tif": "Ioc"}},
+            "reduce_only": False,
+        }
+        orders = [entry_order]
+
+        if sl_price is not None:
+            sl_order = _build_sl_order(ticker, pos_mock, sl_price, cfg)
+            if sl_order:
+                orders.append(sl_order)
+
+        if tp_price is not None:
+            tp_order = _build_tp_order(ticker, pos_mock, tp_price, cfg)
+            if tp_order:
+                orders.append(tp_order)
+
+        grouping = "normalTpsl" if len(orders) > 1 else "na"
+        result = exchange.bulk_orders(orders, grouping=grouping)
+
+        if result and result.get("status") == "ok":
+            statuses = result.get("response", {}).get("data", {}).get("statuses", [])
+            return bool(statuses and "error" not in statuses[0])
+        return False
+
+    except Exception as e:
+        print(f"[ORDER] Erreur place_order {ticker} : {e}")
+        return False
+
+def close_order(exchange, symbol, position, cfg):
+    """Ferme une position — perp ou spot selon le symbole."""
+    ticker = ticker_from_slot_key(symbol)
+    try:
+        if is_spot(symbol, cfg):
+            sz = max(round(position["size"] / position["entry"], 6), 0.0001)
+            api_ticker = cfg.get("SPOT_TICKER_MAP", {}).get(ticker, ticker)
+            is_buy = position["type"] == "short"
+            result = exchange.market_open(api_ticker, is_buy, sz)
+        else:
+            result = exchange.market_close(ticker)
+        return result and result.get("status") == "ok"
+    except Exception:
+        return False
+
+def _spot_sl_asset(symbol, cfg):
+    """Retourne l asset ID numerique pour les ordres trigger spot (10000 + index).
+    Utilise SPOT_SL_ASSET_MAP si disponible, sinon tente de parser le ticker @NNN.
+    Retourne None si non resolvable (SL natif impossible).
+    """
+    asset_map = cfg.get("SPOT_SL_ASSET_MAP", {})
+    if symbol in asset_map:
+        return asset_map[symbol]
+    # Fallback : parser "@182" → 10182
+    ticker = cfg.get("SPOT_TICKER_MAP", {}).get(symbol, "")
+    if ticker.startswith("@"):
+        try:
+            return 10000 + int(ticker[1:])
+        except ValueError:
+            pass
+    return None
+
+
+def _build_sl_order(symbol, position, sl_price, cfg):
+    """Construit un ordre SL trigger avec buffer de securite mark price.
+    Long  : trigger decale legerement sous sl_price (buffer vers le bas)
+    Short : trigger decale legerement au dessus de sl_price (buffer vers le haut)
+    Garantit que le SL ne se declenche pas sur un micro-ecart mark/mid.
+    """
+    is_long    = position["type"] == "long"
+    close_side = not is_long
+    sz         = max(round(position["size"] / position["entry"], 4), 0.001)
+
+    buffer     = cfg.get("MARK_PRICE_BUFFER_PCT", 0.05) / 100
+    trigger_px = round(sl_price * (1 - buffer) if is_long else sl_price * (1 + buffer), 2)
+    limit_px   = round(trigger_px * 0.99 if is_long else trigger_px * 1.01, 2)
+
+    if is_spot(symbol, cfg):
+        asset_id = _spot_sl_asset(symbol, cfg)
+        if asset_id is None:
+            return None
+        coin_field = str(asset_id)
+    else:
+        coin_field = symbol
+
+    return {
+        "coin":        coin_field,
+        "is_buy":      close_side,
+        "sz":          sz,
+        "px":          limit_px,
+        "order_type":  {"trigger": {"triggerPx": trigger_px, "isMarket": True, "tpsl": "sl"}},
+        "reduce_only": True,
+    }
+
+
+def _build_tp_order(symbol, position, tp_price, cfg):
+    """Construit un ordre TP trigger avec buffer de securite mark price.
+    Long  : trigger decale legerement au dessus de tp_price (buffer vers le haut)
+    Short : trigger decale legerement sous tp_price (buffer vers le bas)
+    Garantit que le TP ne se declenche pas trop tot sur un micro-ecart mark/mid.
+    """
+    is_long    = position["type"] == "long"
+    close_side = not is_long
+    sz         = max(round(position["size"] / position["entry"], 4), 0.001)
+
+    buffer     = cfg.get("MARK_PRICE_BUFFER_PCT", 0.05) / 100
+    trigger_px = round(tp_price * (1 + buffer) if is_long else tp_price * (1 - buffer), 2)
+    limit_px   = round(trigger_px * 0.99 if is_long else trigger_px * 1.01, 2)
+
+    if is_spot(symbol, cfg):
+        asset_id = _spot_sl_asset(symbol, cfg)
+        if asset_id is None:
+            return None
+        coin_field = str(asset_id)
+    else:
+        coin_field = symbol
+
+    return {
+        "coin":        coin_field,
+        "is_buy":      close_side,
+        "sz":          sz,
+        "px":          limit_px,
+        "order_type":  {"trigger": {"triggerPx": trigger_px, "isMarket": True, "tpsl": "tp"}},
+        "reduce_only": True,
+    }
+
+
+def _get_open_orders_by_type(info, wallet_address, symbol):
+    """Retourne les ordres SL et TP actifs sur Hyperliquid pour un symbole.
+    Classe les ordres en deux listes : sl_oids et tp_oids.
+    """
+    sl_oids, tp_oids = [], []
+    try:
+        open_orders = info.open_orders(wallet_address)
+        for o in open_orders:
+            if o.get("coin") != symbol or not o.get("reduceOnly", False):
+                continue
+            otype = o.get("orderType", "").lower()
+            oid   = o["oid"]
+            tpsl  = o.get("tpsl", "").lower()
+            if tpsl == "sl" or "stop" in otype:
+                sl_oids.append(oid)
+            elif tpsl == "tp" or "take profit" in otype or "tp" in otype:
+                tp_oids.append(oid)
+    except Exception as e:
+        print(f"[ORDERS] Erreur lecture ordres {symbol} : {e}")
+    return sl_oids, tp_oids
+
+
+def update_sl_on_hyperliquid(exchange, info, wallet_address, symbol, position, new_sl, cfg):
+    """Met a jour le Stop Loss sur Hyperliquid pour le trailing SL.
+    Supporte les PERP et le SPOT (si l asset ID est connu dans SPOT_SL_ASSET_MAP).
+    Strategie ATOMIQUE : pose le nouveau SL en premier, annule l ancien ensuite.
+    """
+    # Pour le spot, verifier que l asset ID est resolvable
+    if is_spot(symbol, cfg) and _spot_sl_asset(symbol, cfg) is None:
+        print(f"[TSL] {symbol} spot : asset ID inconnu — SL gere en interne uniquement")
+        return
+
+    try:
+        # ── ETAPE 1 : construire et poser le NOUVEAU SL ──────────────────────
+        new_sl_order = _build_sl_order(symbol, position, new_sl, cfg)
+        if new_sl_order is None:
+            print(f"[TSL] {symbol} : impossible de construire l ordre SL")
+            return
+
+        result = exchange.bulk_orders([new_sl_order], grouping="na")
+        new_sl_ok = result and result.get("status") == "ok"
+
+        if not new_sl_ok:
+            print(f"[TSL] ECHEC pose nouveau SL {symbol} @ {new_sl:.2f} — ancien SL conserve")
+            return
+
+        # ── ETAPE 2 : annuler les ANCIENS SL seulement si le nouveau est confirme ─
+        sl_oids, _ = _get_open_orders_by_type(info, wallet_address, symbol)
+        if sl_oids:
+            cancels = [{"coin": symbol, "oid": oid} for oid in sl_oids]
+            exchange.bulk_cancel(cancels)
+
+    except Exception as e:
+        print(f"[TSL] Erreur mise a jour SL Hyperliquid {symbol} : {e}")
+
+
+def cancel_tp_on_hyperliquid(exchange, info, wallet_address, symbol, cfg):
+    """Annule le TP fixe sur Hyperliquid quand le Trailing TP s active.
+    Supporte les PERP et le SPOT.
+    """
+    try:
+        _, tp_oids = _get_open_orders_by_type(info, wallet_address, symbol)
+        if tp_oids:
+            cancels = [{"coin": symbol, "oid": oid} for oid in tp_oids]
+            exchange.bulk_cancel(cancels)
+            print(f"[TTP] TP fixe annule sur Hyperliquid pour {symbol} ({len(tp_oids)} ordre(s))")
+        else:
+            print(f"[TTP] Aucun TP fixe actif sur Hyperliquid pour {symbol}")
+    except Exception as e:
+        print(f"[TTP] Erreur annulation TP {symbol} : {e}")
+
+
+def ensure_sl_on_hyperliquid(exchange, info, wallet_address, symbol, position, cfg):
+    """Verifie qu un SL actif existe sur Hyperliquid pour une position donnee.
+    Si aucun SL n est detecte, en repose un immediatement.
+    Supporte les PERP et le SPOT (si l asset ID est resolvable).
+    """
+    if is_spot(symbol, cfg) and _spot_sl_asset(symbol, cfg) is None:
+        print(f"[GUARD] {symbol} spot : asset ID inconnu — SL natif impossible, protection interne uniquement")
+        return
+
+    try:
+        sl_oids, _ = _get_open_orders_by_type(info, wallet_address, symbol)
+
+        if sl_oids:
+            print(f"[GUARD] {symbol} : SL actif detecte ({len(sl_oids)} ordre(s)) — OK")
+            return
+
+        # Aucun SL detecte — reposer un SL de secours immediatement
+        # v4.5 — FIX : position["size"] est la MARGE (E), pas le notionnel.
+        # _build_sl_order calcule sz = size/entry — sans le levier, le SL de
+        # secours ne couvrirait qu une fraction (1/levier) de la position
+        # reellement ouverte sur Hyperliquid, laissant le reste sans
+        # protection. On reconstruit un pos_mock avec le notionnel reel.
+        notional_position = dict(position)
+        notional_position["size"] = position.get("size", 0) * max(position.get("leverage", 1), 1)
+        rescue_sl = _build_sl_order(symbol, notional_position, position["sl"], cfg)
+        if rescue_sl is None:
+            print(f"[GUARD] {symbol} : impossible de construire le SL de secours")
+            return
+
+        result = exchange.bulk_orders([rescue_sl], grouping="na")
+        ok = result and result.get("status") == "ok"
+        status = "POSE" if ok else "ECHEC"
+        print(f"[GUARD] {symbol} : SL manquant — SL de secours {status} @ ${position['sl']:.2f}")
+
+    except Exception as e:
+        print(f"[GUARD] Erreur verification SL {symbol} : {e}")
+
+# ─────────────────────────────────────────────
+#  PLAGE HORAIRE
+# ─────────────────────────────────────────────
+def is_trading_hours(cfg):
+    start = cfg["TRADE_HOUR_START"]
+    end   = cfg["TRADE_HOUR_END"]
+    if start == 0 and end == 24:
+        return True
+    from datetime import datetime as _dt, timezone, timedelta
+    now_utc = _dt.now(timezone.utc)
+    month = now_utc.month
+    paris_offset = 2 if 3 < month < 10 else 1
+    if month == 3 and now_utc.day >= 25:
+        paris_offset = 2
+    elif month == 10 and now_utc.day >= 25:
+        paris_offset = 1
+    hour = (now_utc + timedelta(hours=paris_offset)).hour
+    return start <= hour < end
+
+def is_forex_open():
+    """Vérifie si le marché Forex/Or est ouvert.
+    Ouvert : Lundi 00h01 — Vendredi 22h00 (heure Paris)
+    Fermé  : Vendredi 22h00 — Lundi 00h01 + chaque nuit 22h-00h01
+    Calcul basé sur UTC pour éviter les problèmes de changement d'heure.
+    """
+    from datetime import datetime as _dt, timezone, timedelta
+    now_utc = _dt.now(timezone.utc)
+    month = now_utc.month
+    paris_offset = 2 if 3 < month < 10 else 1
+    if month == 3 and now_utc.day >= 25:
+        paris_offset = 2
+    elif month == 10 and now_utc.day >= 25:
+        paris_offset = 1
+    now = now_utc + timedelta(hours=paris_offset)
+
+    weekday = now.weekday()  # 0=Lundi, 4=Vendredi, 5=Samedi, 6=Dimanche
+    hour = now.hour
+    minute = now.minute
+
+    if weekday == 5:   # Samedi
+        return False
+    if weekday == 6:   # Dimanche
+        return False
+    if weekday == 4 and hour >= 22:
+        return False
+    if hour == 22 or hour == 23:
+        return False
+    if hour == 0 and minute == 0:
+        return False
+    return True
+
+def is_crypto_offpeak(cfg):
+    """Heures creuses du marche crypto — periode de liquidite generalement
+    la plus faible (fin de session US, Europe deja fermee depuis plusieurs
+    heures, avant reprise de la session asiatique), calculee en UTC (le
+    marche crypto est mondial et 24/7, contrairement au Forex/PAXG deja
+    gere separement via FOREX_SYMBOLS).
+    Fenetre par defaut : 21h00-23h00 UTC — Europe ferme ~16h UTC, US ferme
+    ~20h-22h UTC, Asie ne rouvre que vers minuit UTC : c est le seul moment
+    ou les trois grandes sessions sont simultanement creuses.
+    Ajustable via CRYPTO_OFFPEAK_HOUR_START_UTC / _END_UTC dans CONFIG.
+    Ne bloque que les NOUVELLES entrees ; les positions ouvertes continuent
+    d etre gerees normalement.
+    """
+    from datetime import datetime as _dt, timezone
+    start = cfg.get("CRYPTO_OFFPEAK_HOUR_START_UTC", 21)
+    end   = cfg.get("CRYPTO_OFFPEAK_HOUR_END_UTC", 23)
+    hour  = _dt.now(timezone.utc).hour
+    if start <= end:
+        return start <= hour < end
+    return hour >= start or hour < end  # plage qui traverse minuit UTC
+
+def fetch_cpi_events_from_finnhub(api_key):
+    """Recupere les prochaines annonces CPI US depuis l API Economic Calendar
+    de Finnhub (https://finnhub.io/docs/api/economic-calendar).
+    Retourne une liste de datetime UTC (triee), ou [] en cas d echec/cle absente.
+    Necessite une cle Finnhub valide (voir HYPERBOT_FINNHUB_API_KEY).
+    Note : l acces a cet endpoint peut necessiter un abonnement Finnhub payant
+    selon les conditions actuelles de l API — en cas d echec, le bot continue
+    de trader normalement (pas de blackout CPI applique) et logue l erreur.
+    """
+    if not api_key:
+        return []
+    import urllib.request, json
+    from datetime import datetime as _dt, timezone, timedelta
+    try:
+        today = _dt.now(timezone.utc).date()
+        frm = (today - timedelta(days=1)).isoformat()
+        to  = (today + timedelta(days=35)).isoformat()
+        url = f"https://finnhub.io/api/v1/calendar/economic?from={frm}&to={to}&token={api_key}"
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        events = data.get("economicCalendar") or data.get("data") or []
+        cpi_dates = []
+        for ev in events:
+            name    = (ev.get("event") or "").upper()
+            country = (ev.get("country") or "").upper()
+            if "CPI" not in name and "CONSUMER PRICE" not in name:
+                continue
+            if country not in ("US", "USA", ""):
+                continue
+            raw = ev.get("time") or ev.get("date") or ""
+            dt_val = None
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+                try:
+                    dt_val = _dt.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+                    break
+                except ValueError:
+                    continue
+            if dt_val:
+                cpi_dates.append(dt_val)
+        return sorted(cpi_dates)
+    except Exception as e:
+        print(f"[CPI] Erreur recuperation calendrier Finnhub : {e}")
+        return []
+
+# ─────────────────────────────────────────────
+#  STATE PAR SYMBOLE
+# ─────────────────────────────────────────────
+class SymbolState:
+    def __init__(self):
+        self.position      = None
+        self.price_history = deque(maxlen=500)
+        self.vol_history   = deque(maxlen=50)
+        self.trades        = 0
+        self.wins          = 0
+        self.pnl           = 0.0
+        self.closed_trades = []
+        self.current_price = 0.0
+        self.current_rsi   = None
+        self.current_macd  = None
+        self.current_atr_pct = None   # ATR% du dernier cycle — pour affichage dashboard
+        self.current_adx = None       # ADX du dernier cycle — force de tendance (mode trend/reversal)
+        # v4.32 — memorise le dernier mode trend/reversal retenu, pour
+        # hysteresis (voir _process) : evite que le mode bascule a chaque
+        # cycle si l ADX oscille juste autour du seuil.
+        self.last_rsi_mode = None
+        self._last_status_log_ts = None  # limite la frequence du log "latent" (voir _manage_position_impl)
+        self.current_sig   = None
+        self.prev_macd     = None
+        self.prev_sig      = None
+        self.collecting    = True
+        self.peak_price    = None
+        self.trailing_tp_active = False
+        self.peak_pnl_usd  = None   # Pic de PnL latent en $ (etage 2 du Trailing TP)
+        self.tp_stage      = 0      # 0=inactif, 1=Quick Profit arme, 2=Trailing illimite
+        # v4.11 — Protection anticipee ("tier 0") : trailing intermediaire
+        # entre 0 et l armement principal (arm1), pour eviter qu un trade qui
+        # monte pres du seuil (ex: +0.99%) sans jamais l atteindre ne rende
+        # tout son gain en cas de retournement (aucune protection actuelle
+        # tant que tp_stage reste a 0).
+        self.tier0_armed        = False
+        self.tier0_peak_pnl_usd = None
+        # v4.18 — SUR DEMANDE EXPLICITE : suit le pic de PnL latent DES
+        # L OUVERTURE, independamment des seuils de trailing (tier0_arm=0.5%,
+        # arm1=1.0%). Avant ce fix, un trade qui montait a +0.3% sans jamais
+        # atteindre 0.5% (seuil du tier0) puis repartait en perte n affichait
+        # AUCUN pic dans l historique — alors qu il y en avait bien un. Ce
+        # champ est purement informatif/diagnostic : il n influence AUCUNE
+        # decision de sortie, contrairement a peak_pnl_usd/tier0_peak_pnl_usd.
+        self.absolute_peak_pnl_usd = None
+        # v4.15 — SUR DEMANDE EXPLICITE : apres la fermeture d un trade, exige
+        # que le croisement EMA (ema_bull/ema_bear) soit RETOMBE puis se soit
+        # RECROISE avant d autoriser une reouverture dans le MEME sens — pas
+        # juste "le cooldown de 15 min a expire alors que le signal n a
+        # jamais bouge". Garantit que chaque reouverture est justifiee par un
+        # evenement technique frais et distinct, pas la continuation muette
+        # du meme signal qui a deja donne le trade precedent.
+        self.long_signal_stale  = False  # True juste apres une fermeture LONG, tant que ema_bull n est pas retombe au moins une fois
+        self.short_signal_stale = False  # True juste apres une fermeture SHORT, tant que ema_bear n est pas retombe au moins une fois
+        # v4.25/v4.31 — SUR DEMANDE EXPLICITE : apres une FERMETURE (gain OU
+        # perte, v4.31 — initialement seulement apres un gain, etendu suite
+        # a une serie de 7+ pertes consecutives observee sur ARB LONG) dans
+        # un sens donne, la reouverture dans ce MEME sens exige que toutes
+        # les conditions d entree soient reunies sur PLUSIEURS cycles
+        # CONSECUTIFS (pas un seul) — un signal qui hesite (vrai un cycle,
+        # faux le suivant) fait repartir le compteur a zero. Empeche un
+        # actif choppy de re-declencher "techniquement frais" (EMA repasse
+        # vite) mais pas reellement nouveau, toutes les 40-70 minutes.
+        # Le nom "post_win" est reste pour limiter les changements, mais le
+        # declenchement couvre desormais TOUTE fermeture (voir close_position
+        # et les blocs STOP LOSS / SL SECURITE / TTP dans _manage_position_impl).
+        self.post_win_confirm_long  = False
+        self.post_win_confirm_short = False
+        self.confirm_count_long  = 0
+        self.confirm_count_short = 0
+        # v4.26 — SUR DEMANDE EXPLICITE : evite qu un signal jamais soutenu
+        # 18 cycles d affilee ne bloque l actif INDEFINIMENT dans ce sens.
+        # Compte le temps d ATTENTE total (pas remis a zero par un flicker,
+        # contrairement a confirm_count) — au-dela de POST_WIN_MAX_WAIT_CYCLES,
+        # bascule sur un second indicateur independant (Bollinger) pour
+        # decider, puis leve la contrainte dans tous les cas (succes ou non)
+        # pour ne jamais rester bloque plus longtemps que ce delai.
+        self.post_win_wait_long  = 0
+        self.post_win_wait_short = 0
+        self.mtf_prices    = deque(maxlen=200)
+        # v4.36 — SUR DEMANDE EXPLICITE : suivi du plus HAUT/BAS reel entre
+        # deux echantillonnages (alimente en temps reel par le WebSocket, pas
+        # seulement au moment du cycle) — permet de batir de vraies bougies
+        # OHLC (open/high/low/close) au lieu d un simple point de prix tous
+        # les ~2 min, et un vrai calcul d ATR (True Range de Wilder,
+        # haut-bas-cloture) au lieu de cloture-a-cloture (qui sous-estimait
+        # fortement la volatilite reelle — voir _process/calc_atr).
+        self.window_high = None   # plus haut vu depuis le dernier point de bougie
+        self.window_low  = None   # plus bas vu depuis le dernier point de bougie
+        self.candle_history = deque(maxlen=200)  # (high, low, close) par bougie ~2min, pour l ATR reel
+        # v4.39 — FIX BUG CRITIQUE : l echantillonnage MTF (bougies + EMA200)
+        # se basait sur len(price_history) % MTF_STEP == 0 — hors
+        # price_history est une deque PLAFONNEE (maxlen=500), dont la
+        # longueur se FIGE definitivement a 500 une fois pleine (surtout
+        # apres une RESTAURATION depuis la sauvegarde, ou elle peut deja
+        # etre pleine des le premier cycle). Si ce reste fige n est jamais 0,
+        # l echantillonnage gele SILENCIEUSEMENT pour toujours (bougies et
+        # EMA200 cessent tous les deux de progresser). Remplace par un
+        # compteur de cycles dedie, qui ne se fige jamais.
+        self.cycle_count = 0
+        # v4.40 — SUR DEMANDE EXPLICITE : instantane de l etat de TOUTES les
+        # portes d entree (RSI, MACD, amplitude, niveaux, fraicheur,
+        # confirmation post-trade, separation EMA200...) capture a CHAQUE
+        # cycle — expose a la demande via /api/entry-diagnostics/{ticker},
+        # pour comprendre en direct pourquoi un actif ne trade pas, sans
+        # devoir chasser les bons logs dans une fenetre horaire expiree.
+        self.last_gate_snapshot = {}
+        # v4.43 — Suivi du trailing Spot-Accumulation (arme une fois a
+        # SPOT_ACCUM_TTP_ARM_PCT, puis trailing depuis le pic). Reinitialise
+        # a chaque ouverture/fermeture d une position de ce mode.
+        self.spot_accum_armed = False
+        self.spot_accum_peak_pnl_pct = None
+        # v4.47 — compteur de cycles consecutifs ou le prix est reste sous
+        # l EMA200 (retournement de tendance) — remis a zero des que le prix
+        # repasse au-dessus.
+        self.spot_accum_reversal_count = 0
+        # v4.55 — instantane diagnostic de chaque clause d entree
+        # Spot-Accumulation, expose via /api/entry-diagnostics.
+        self.spot_accum_gate_snapshot = {}
+        # v4.21 — Historique des valeurs d indicateurs calculees (RSI, MACD,
+        # EMA200, ATR, support/resistance) a chaque cycle, pour affichage en
+        # graphe cote interface (diagnostic/surveillance). Purement
+        # informatif — n influence aucune decision de trading.
+        self.indicator_history = deque(maxlen=300)
+        self.forex_was_open  = None
+        self.forex_reopen_time = None
+        self.last_price_time = None   # Horodatage du dernier prix enregistre
+        self.prev_ema_s      = None   # EMA courte du cycle precedent (detection pivot)
+        self.prev_ema_l      = None   # EMA longue du cycle precedent (detection pivot)
+        self.consec_bull     = 0      # Nombre de cycles consecutifs haussiers (EMA bull)
+        self.consec_bear     = 0      # Nombre de cycles consecutifs baissiers (EMA bear)
+        # v4.9 — Cooldown de reentree dans le MEME sens apres une fermeture
+        # (voir close_position / _check_reentry_cooldown)
+        self.last_closed_direction = None
+        self.last_closed_at        = None
+
+    def reset_indicators(self):
+        """Reinitialise les donnees de prix et indicateurs techniques.
+        Appele a la reactivation d une paire si les donnees sont trop anciennes.
+        Preserve : trades, PnL, position ouverte, historique des trades fermes.
+        """
+        self.price_history  = deque(maxlen=500)
+        self.vol_history    = deque(maxlen=50)
+        self.mtf_prices     = deque(maxlen=200)
+        self.window_high = None
+        self.window_low  = None
+        self.candle_history = deque(maxlen=200)
+        self.cycle_count = 0
+        self.last_gate_snapshot = {}
+        self.indicator_history = deque(maxlen=300)
+        self.current_rsi    = None
+        self.current_macd   = None
+        self.current_sig    = None
+        self.prev_macd      = None
+        self.prev_sig       = None
+        self.collecting     = True
+        self.last_price_time = None
+        self.forex_was_open  = None
+        self.prev_ema_s      = None
+        self.prev_ema_l      = None
+        self.consec_bull     = 0
+        self.consec_bear     = 0
+
+    def open_position(self, ptype, entry, sl, tp, size, confidence=None, leverage=1, strategy="normal"):
+        self.position = {
+            "type": ptype, "entry": entry, "sl": sl, "tp": tp,
+            "size": size, "opened_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            "confidence": confidence, "leverage": leverage,
+            "strategy": strategy,  # v4.8 — "normal" ou "accumulation", pour differencier partout en aval
+        }
+        self.peak_price = entry
+        self.trailing_tp_active = False
+        self.peak_pnl_usd = None
+        self.tp_stage = 0
+        self.tier0_armed = False
+        self.tier0_peak_pnl_usd = None
+        self.absolute_peak_pnl_usd = None
+
+    def trades_last_24h(self):
+        cutoff = datetime.now().timestamp() - 86400
+        recent = [t for t in self.closed_trades if t.get("ts", 0) >= cutoff]
+        count = len(recent)
+        wins = sum(1 for t in recent if t["win"])
+        pnl = sum(t["pnl"] for t in recent)
+        wr = wins / count * 100 if count > 0 else 0.0
+        return {"trades": count, "wins": wins, "pnl": pnl, "win_rate": wr}
+
+    def update_trailing_stop(self, price, delta_pct):
+        if not self.position:
+            return
+        pos = self.position
+        delta = delta_pct / 100
+        if pos["type"] == "long":
+            if price > self.peak_price:
+                self.peak_price = price
+                new_sl = self.peak_price * (1 - delta)
+                if new_sl > pos["sl"]:
+                    pos["sl"] = new_sl
+        elif pos["type"] == "short":
+            if price < self.peak_price:
+                self.peak_price = price
+                new_sl = self.peak_price * (1 + delta)
+                if new_sl < pos["sl"]:
+                    pos["sl"] = new_sl
+
+    def close_position(self, exit_price, reason):
+        p = self.position
+        if p["type"] == "long":
+            pnl_pct = (exit_price - p["entry"]) / p["entry"] * 100
+        else:
+            pnl_pct = (p["entry"] - exit_price) / p["entry"] * 100
+        # v4.2 — FIX CRITIQUE : le levier n etait JAMAIS applique ici, alors
+        # qu il l est bien dans le calcul de declenchement (_manage_position_impl).
+        # Consequence : un trade a levier x3 se fermait au bon moment (le
+        # declenchement SL/TTP, lui, appliquait deja correctement le levier),
+        # mais le PnL $ enregistre/comptabilise ne reflétait que le levier x1
+        # — sous-evaluant le vrai gain/perte jusqu a 3x sur les trades a
+        # levier x2/x3, faussant le capital suivi par le bot ET (en mode live)
+        # le desynchronisant du solde reel Hyperliquid.
+        pnl_usd = p["size"] * p.get("leverage", 1) * pnl_pct / 100
+        self.pnl    += pnl_usd
+        self.trades += 1
+        win = pnl_usd > 0
+        if win:
+            self.wins += 1
+        # v4.15 — Pic de PnL latent atteint pendant la vie du trade, visible
+        # dans le log/l historique de fermeture — que ce soit le pic du
+        # trailing principal (peak_pnl_usd) ou celui de la protection
+        # anticipee (tier0_peak_pnl_usd) si le trade n a jamais depasse
+        # arm1. None si le trade n a jamais ete en profit (ex: SL direct).
+        # v4.18 — priorite : pic tier1 (le plus fin) > pic tier0 > pic absolu
+        # (des le 1er cycle en profit, couvre les trades qui n ont jamais
+        # atteint 0.5% mais ont quand meme ete brievement en profit avant
+        # de partir en perte — auparavant invisibles dans l historique).
+        peak_pnl_usd_at_close = (
+            self.peak_pnl_usd if self.peak_pnl_usd is not None
+            else self.tier0_peak_pnl_usd if self.tier0_peak_pnl_usd is not None
+            else self.absolute_peak_pnl_usd
+        )
+        # v4.17 — pic aussi en % de mouvement de prix (prefere par l utilisateur
+        # a l affichage en $) : reconverti ici, ou E et le levier de CE trade
+        # precis sont connus avec certitude (size/leverage stockes sur la
+        # position au moment de son ouverture).
+        E_at_close = p.get("size", 0)
+        leverage_at_close = p.get("leverage", 1)
+        peak_pnl_pct_at_close = (
+            round(peak_pnl_usd_at_close / (E_at_close * leverage_at_close) * 100, 3)
+            if peak_pnl_usd_at_close is not None and E_at_close and leverage_at_close
+            else None
+        )
+        trade = {
+            "time": datetime.now().strftime("%H:%M:%S"), "symbol": "",
+            "type": p["type"], "entry": p["entry"], "exit": exit_price,
+            "pnl": pnl_usd, "reason": reason, "win": win,
+            "ts": datetime.now().timestamp(),
+            "strategy": p.get("strategy", "normal"),  # v4.8
+            "peak_pnl_usd": peak_pnl_usd_at_close,  # v4.15
+            "peak_pnl_pct": peak_pnl_pct_at_close,  # v4.17
+        }
+        self.closed_trades.append(trade)
+        # v4.3 — FIX FUITE MEMOIRE : seul un historique glissant de 24h est
+        # necessaire ici (voir trades_last_24h, seule utilisation reelle de
+        # cette liste). Sans purge, self.closed_trades grossit indefiniment
+        # pendant toute la duree de vie du process — sur un bot tournant
+        # 24h/24 pendant des jours/semaines, ca finit par declencher un
+        # "Out of memory" sur Railway. L historique COMPLET reste de toute
+        # facon persiste en base (voir db.py / get_all_closed_trades), donc
+        # rien n est perdu en purgeant cette copie en memoire.
+        cutoff_24h = datetime.now().timestamp() - 86400
+        self.closed_trades = [t for t in self.closed_trades if t.get("ts", 0) >= cutoff_24h]
+        # v4.9 — Cooldown de reentree : on retient la direction et l heure de
+        # CETTE fermeture, pour empecher une reouverture dans le MEME sens
+        # avant un delai minimum (voir _check_reentry_cooldown). Un signal
+        # dans le sens OPPOSE (retournement) n est pas concerne.
+        self.last_closed_direction = p["type"]
+        self.last_closed_at = time.time()
+        # v4.15 — Exige un croisement EMA frais et distinct avant d autoriser
+        # une reouverture dans le MEME sens (voir _process, ou ce flag est
+        # leve des que la condition retombe au moins une fois).
+        if p["type"] == "long":
+            self.long_signal_stale = True
+        else:
+            self.short_signal_stale = True
+        self.position = None
+        self.peak_price = None
+        self.trailing_tp_active = False
+        self.peak_pnl_usd = None
+        self.tp_stage = 0
+        self.tier0_armed = False
+        self.tier0_peak_pnl_usd = None
+        self.absolute_peak_pnl_usd = None
+        return pnl_usd, win, trade
+
+    def win_rate(self):
+        return 0.0 if self.trades == 0 else self.wins / self.trades * 100
+
+# ─────────────────────────────────────────────
+#  CAPITAL PERSISTANT — INTERETS COMPOSES
+# ─────────────────────────────────────────────
+# Fichiers de persistance specifiques au profil (swing/scalp)
+# Evite les conflits d ecriture quand 2 instances tournent dans le meme dossier
+_PROFILE_SUFFIX = CONFIG.get("PROFILE", "swing")
+CAPITAL_FILE = f"hyperbot_capital_{_PROFILE_SUFFIX}.json"
+STATE_FILE   = f"hyperbot_session_state_{_PROFILE_SUFFIX}.json"
+LOG_FILE     = f"hyperbot_log_{_PROFILE_SUFFIX}.txt"
+
+def write_log(msg, level="info"):
+    """Ecrit un message dans le fichier de log avec horodatage.
+    Conservation : 24 dernières heures. Epuration automatique si > 500KB.
+    Format : 2026-06-14 23:11:26 [LEVEL] message
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    import os
+    try:
+        timestamp = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"{timestamp} [{level.upper():8s}] {msg}\n"
+
+        # Ajouter la ligne immediatement (leger et rapide)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line)
+
+        # Epuration 24h — declenchee si > 500KB (~6h de logs)
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 500 * 1024:
+            cutoff = _dt.now() - _td(hours=24)
+            kept = []
+            with open(LOG_FILE, "r", encoding="utf-8", errors="ignore") as f:
+                for l in f:
+                    try:
+                        line_date = _dt.strptime(l[:19], "%Y-%m-%d %H:%M:%S")
+                        if line_date >= cutoff:
+                            kept.append(l)
+                    except Exception:
+                        kept.append(l)
+            with open(LOG_FILE, "w", encoding="utf-8") as f:
+                f.writelines(kept)
+
+    except Exception:
+        pass  # Ne jamais bloquer le bot pour un log
+
+def save_session_state(mode, profile, symbols, active_slots, running):
+    """Sauvegarde l etat courant de la session (mode, profil, slots, statut).
+    Permet un redemarrage automatique dans le meme etat apres coupure.
+    Ecriture atomique (tmp + replace) pour eviter les conflits Windows.
+    """
+    import json, os
+    data = {
+        "mode":         mode,
+        "profile":      profile,
+        "symbols":      symbols,
+        "active_slots": sorted(list(active_slots)),
+        "running":      running,
+    }
+    tmp_file = STATE_FILE + ".tmp"
+    import time
+    for attempt in range(3):
+        try:
+            with open(tmp_file, "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp_file, STATE_FILE)
+            return
+        except PermissionError as e:
+            # Fichier verrouille temporairement (OneDrive/Defender scan en cours)
+            # Reessai avec micro-pause — la sauvegarde suivante (60s) reessaiera aussi
+            if attempt < 2:
+                time.sleep(0.15)
+                continue
+            print(f"[STATE] Permission refusee apres 3 essais — ignore ({e})")
+            try:
+                if os.path.exists(tmp_file):
+                    os.remove(tmp_file)
             except Exception:
                 pass
-        out.append({
-            "coin": coin, **agg, "avg_gain": avg_gain, "avg_loss": avg_loss,
-            "total_minutes": total_minutes,
-        })
-    out.sort(key=lambda c: c["net"], reverse=True)
-    return out
+        except Exception as e:
+            print(f"[STATE] Erreur sauvegarde: {e}")
+            return
+
+def load_session_state():
+    """Charge l etat de la derniere session, ou None si absent/invalide."""
+    import json, os
+    if not os.path.exists(STATE_FILE):
+        return None
+    try:
+        with open(STATE_FILE, "r") as f:
+            data = json.load(f)
+        return data
+    except Exception as e:
+        print(f"[STATE] Erreur lecture: {e} — etat ignore")
+        return None
 
 
-@app.get("/api/report/daily-table")
-def get_daily_table(email: str = Depends(require_user)):
-    """Rapport journalier sur le jour calendaire UTC FIXE en cours
-    (00h00:00 a 23h59:59) : gains, pertes, nombre de trades et performance
-    par actif + une ligne total. v3.2 — attribution par date d OUVERTURE
-    (created_at) : un trade ouvert aujourd hui mais ferme demain (ou plus
-    tard) compte pour la journee de son ouverture, pas de sa fermeture —
-    coherent avec le decoupage en jours fixes (plus de session glissante
-    de 24h ni de blocage en fin de journee). Concu pour etre telecharge
-    en tableau (CSV) depuis l interface."""
-    closed = db.get_all_closed_trades()
-    today_str = datetime.now(timezone.utc).strftime("%d/%m")
-    day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    recent = [r for r in closed if r["created_at"] and _day_key(r["created_at"]) == today_str]
-
-    initial_balance = float(db.get_meta("initial_balance", cfg["CAPITAL_USD"])) or 1.0
-    by_coin = _compute_by_coin(recent)
-    for row in by_coin:
-        row["performance_pct"] = round(row["net"] / initial_balance * 100, 3)
-
-    total = _aggregate(recent)
-    total["performance_pct"] = round(total["net"] / initial_balance * 100, 3)
-
-    return {
-        "period_start": day_start.isoformat(),
-        "period_end": (day_start + timedelta(hours=23, minutes=59, seconds=59)).isoformat(),
-        "by_coin": by_coin,
-        "total": total,
-    }
-
-
-@app.get("/api/bilan")
-def get_bilan(email: str = Depends(require_user)):
-    closed = db.get_all_closed_trades()
-    total_pnl_realized = sum(s.pnl for s in bot.states.values())  # realise cette session
-    initial_balance = float(db.get_meta("initial_balance", cfg["CAPITAL_USD"]))
-    open_positions = _open_positions()
-    open_pnl = round(sum(p["pnl"] for p in open_positions), 2)
-    # v3.2 — FIX : total_capital n incluait que le PnL REALISE (trades deja
-    # fermes) — tant qu aucun trade n avait encore ete cloture dans la
-    # session, "Total" et "Performance" restaient figes a 1000$/+0%, meme
-    # avec des positions ouvertes clairement en profit/perte. On inclut
-    # desormais aussi le PnL LATENT (mark-to-market), comme pour Paper
-    # Trading — Capital total = valeur reelle actuelle du portefeuille.
-    total_capital = bot.capital + total_pnl_realized + open_pnl
-    performance_pct = round((total_capital - initial_balance) / initial_balance * 100, 2) if initial_balance else 0
-
-    today_str = datetime.now(timezone.utc).strftime("%d/%m")
-    # v3.2 — jour calendaire UTC fixe : attribution par date d OUVERTURE
-    # (created_at), pas de fermeture — un trade ouvert aujourd hui mais
-    # ferme demain compte pour aujourd hui.
-    today_rows = [r for r in closed if r["created_at"] and _day_key(r["created_at"]) == today_str]
-
-    return {
-        "balance": round(bot.capital + total_pnl_realized - sum(p["size"] for p in open_positions), 2),
-        "total_capital": round(total_capital, 2),
-        "initial_balance": round(initial_balance, 2),
-        "performance_pct": performance_pct,
-        "open_pnl": open_pnl,
-        "open_count": len(open_positions),
-        "reset_at": db.get_meta("reset_at"),
-        "running_seconds": round(_get_running_seconds()),
-        "today": _aggregate(today_rows, initial_balance),
-        "total": _aggregate(closed, initial_balance),
-        "daily": _compute_daily(closed, days=7, base=initial_balance),
-        "by_coin": _compute_by_coin(closed),
-    }
-
-
-@app.get("/api/stats/daily")
-def get_stats_daily(email: str = Depends(require_user)):
-    # v3.2 — FIX : l onglet Performance attend un OBJET structure precis
-    # (summary/daily/wins/losses avec des noms de champs specifiques comme
-    # total_wins_usdc, net_pnl, close_reason...), completement different de
-    # ce que renvoyait cette route auparavant (une simple liste avec les
-    # noms de _aggregate) — d ou la page blanche sans aucune donnee.
-    closed = db.get_all_closed_trades()
-    wins_rows   = [r for r in closed if (r["pnl"] or 0) > 0]
-    losses_rows = [r for r in closed if (r["pnl"] or 0) <= 0]
-    total_wins_usdc = round(sum(r["pnl"] for r in wins_rows), 2)
-    total_losses_usdc = round(sum(r["pnl"] for r in losses_rows), 2)
-    win_rate = round(len(wins_rows) / len(closed) * 100, 1) if closed else 0
-
-    today = datetime.now(timezone.utc).date()
-    buckets = {}
-    for i in range(7):
-        d = today - timedelta(days=6 - i)
-        buckets[d.strftime("%d/%m")] = []
-    for r in closed:
-        if not r["closed_at"]:
-            continue
+def load_capital(default_capital):
+    """Charge le capital depuis le fichier de sauvegarde.
+    Si le fichier n'existe pas, utilise le capital par defaut de la config.
+    """
+    import json, os
+    if os.path.exists(CAPITAL_FILE):
         try:
-            key = _day_key(r["closed_at"])
-        except Exception:
-            continue
-        if key in buckets:
-            buckets[key].append(r)
+            with open(CAPITAL_FILE, "r") as f:
+                data = json.load(f)
+            capital = data.get("capital", default_capital)
+            sessions = data.get("sessions", 0)
+            total_pnl = data.get("total_pnl", 0.0)
+            print(f"[CAPITAL] Capital charge: ${capital:.2f} | Sessions: {sessions} | PnL total: ${total_pnl:.2f}")
+            return capital, sessions, total_pnl
+        except Exception as e:
+            print(f"[CAPITAL] Erreur lecture fichier: {e} — capital par defaut utilise")
+    return default_capital, 0, 0.0
 
-    daily = []
-    for day, day_rows in buckets.items():
-        dw = [r for r in day_rows if (r["pnl"] or 0) > 0]
-        dl = [r for r in day_rows if (r["pnl"] or 0) <= 0]
-        daily.append({
-            "day": day,
-            "wins": len(dw),
-            "total_wins_usdc": round(sum(r["pnl"] for r in dw), 2),
-            "losses": len(dl),
-            "total_losses_usdc": round(sum(r["pnl"] for r in dl), 2),
-            "net_pnl": round(sum(r["pnl"] or 0 for r in day_rows), 2),
-        })
+def save_capital(capital, sessions, total_pnl):
+    """Sauvegarde le capital apres chaque session.
+    Utilise un fichier temporaire + remplacement atomique pour eviter
+    les erreurs de permission Windows (fichier verrouille par un autre processus
+    ou marque lecture seule).
+    """
+    import json, os
+    from datetime import datetime as _dt
+    data = {
+        "capital":    round(capital, 4),
+        "sessions":   sessions,
+        "total_pnl":  round(total_pnl, 4),
+        "last_saved": _dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    tmp_file = CAPITAL_FILE + ".tmp"
+    import time
+    for attempt in range(3):
+        try:
+            with open(tmp_file, "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp_file, CAPITAL_FILE)
+            return
+        except PermissionError as e:
+            if attempt < 2:
+                time.sleep(0.15)
+                continue
+            print(f"[CAPITAL] Permission refusee apres 3 essais — ignore ({e})")
+            try:
+                if os.path.exists(tmp_file):
+                    os.remove(tmp_file)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[CAPITAL] Erreur sauvegarde: {e}")
+            return
 
-    def _fmt(r):
+
+BATCH_FILE = f"hyperbot_batch_{_PROFILE_SUFFIX}.json"
+
+def load_batch_entry_size():
+    """Charge la taille d entree E figee pour le lot en cours (survit a un
+    redemarrage/redeploiement tant que le lot de trades n est pas termine).
+    Retourne None si aucun lot n est en cours (E sera recalcule au prochain
+    trade, des que le capital le permet)."""
+    import json, os
+    if os.path.exists(BATCH_FILE):
+        try:
+            with open(BATCH_FILE, "r") as f:
+                data = json.load(f)
+            return data.get("batch_entry_size")
+        except Exception as e:
+            print(f"[BATCH] Erreur lecture fichier: {e} — E sera recalcule")
+    return None
+
+def save_batch_entry_size(value):
+    """Sauvegarde la taille d entree E figee pour le lot en cours."""
+    import json, os, time
+    data = {"batch_entry_size": round(value, 6) if value is not None else None}
+    tmp_file = BATCH_FILE + ".tmp"
+    for attempt in range(3):
+        try:
+            with open(tmp_file, "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp_file, BATCH_FILE)
+            return
+        except PermissionError as e:
+            if attempt < 2:
+                time.sleep(0.15)
+                continue
+            print(f"[BATCH] Permission refusee apres 3 essais — ignore ({e})")
+        except Exception as e:
+            print(f"[BATCH] Erreur sauvegarde: {e}")
+            return
+
+
+# ─────────────────────────────────────────────
+class BotEngine:
+    def __init__(self, cfg, event_queue):
+        self.cfg = cfg
+        self.q = event_queue
+        # v4.14 — SUR DEMANDE EXPLICITE : separation entre le MOTEUR (collecte
+        # de prix, indicateurs, WebSocket, gestion des positions ouvertes —
+        # doit tourner en continu, sauf vraie panne) et le TRADING (ouverture
+        # de NOUVELLES positions — seul ce qui est controle par le bouton
+        # Demarrer/Arreter). self.running = moteur actif ; self.trading_enabled
+        # = nouvelles entrees autorisees. Les positions deja ouvertes
+        # continuent TOUJOURS d etre gerees (SL/TP), meme trading_enabled=False.
+        self.running = False
+        self.trading_enabled = False
+        # v4.33 — cache du funding rate par ticker (rafraichi periodiquement,
+        # pas a chaque cycle — voir _refresh_funding_rates_if_due).
+        self.funding_rates = {}          # ticker -> taux horaire (float)
+        self._funding_last_refresh = 0.0  # timestamp du dernier rafraichissement
+        # Sauvegarder les noms originaux (vrais tickers sans suffixe)
+        # Normaliser : si cfg["SYMBOLS"] contient deja des slot_keys, les extraire
+        raw_symbols = [ticker_from_slot_key(s) for s in cfg["SYMBOLS"]]
+        self._original_symbols = raw_symbols[:]  # ["BTC", "PAXG", "SOL"]
+
+        # Construire les slot_keys proprement : "BTC_0", "PAXG_1", "SOL_2"
+        slot_keys = [f"{s}_{i}" for i, s in enumerate(raw_symbols)]
+        self.states = {k: SymbolState() for k in slot_keys}
+        cfg["SYMBOLS"] = slot_keys
+        self._all_symbols = slot_keys[:]
+        # Chargement capital persistant — interets composes
+        self.capital, self.sessions, self.total_pnl_all = load_capital(cfg["CAPITAL_USD"])
+        self.cfg["CAPITAL_USD"] = self.capital
+        # v4.1 — E fige par lot de trades (voir _enter_position) : None tant
+        # qu aucun lot n est en cours, recalcule au prochain trade ouvert.
+        self.batch_entry_size = load_batch_entry_size()
+        self.cycle = 0
+        self.info = None
+        self.exchange = None
+        # Fix v3.1 : evite qu un stop() sans start() prealable (ex: fermeture
+        # de l app sans jamais avoir clique DEMARRER) n incremente le compteur
+        # de sessions et ne resauvegarde le capital pour rien.
+        self._started = False
+        # Confiance minimale dynamique par actif (ticker -> seuil %)
+        # Absent de ce dict = utilise CONFIDENCE_MIN_PCT (seuil de base)
+        self.confidence_thresholds = {}
+        # v3.2 — Horodatage de la derniere elevation de seuil par actif (ticker
+        # -> datetime UTC) — permet une decroissance automatique apres un
+        # delai (CONFIDENCE_RESET_HOURS) si l actif n a pas eu l occasion de
+        # gagner entre-temps, pour eviter qu il ne reste bloque indefiniment
+        # (plus le seuil est haut, moins il a de chances de se qualifier pour
+        # une nouvelle tentative qui lui permettrait de redescendre).
+        self.confidence_threshold_set_at = {}
+        # v3.2 — File d attente des candidats valides du cycle en cours,
+        # classes par confiance decroissante puis executes en priorite dans
+        # cet ordre jusqu a MAX_OPEN_TRADES (voir _finalize_pending_candidates).
+        self._pending_candidates = []
+        # v4.8 — File d attente separee pour les candidats du mode
+        # Accumulation (independante des candidats normaux, plafond propre
+        # ACCUMULATION_MAX_TRADES — voir _finalize_pending_accumulation_candidates).
+        self._pending_accumulation_candidates = []
+        # v4.33 — File d attente separee pour les candidats du mode Funding
+        # Contrarian (independante, plafond propre FUNDING_MODE_MAX_TRADES).
+        self._pending_funding_candidates = []
+        # v4.43 — File d attente separee pour Spot-Accumulation.
+        self._pending_spot_accum_candidates = []
+        # Cache du calendrier CPI Finnhub (evite d appeler l API a chaque cycle)
+        self._cpi_events = []
+        self._cpi_last_fetch = None
+        # ── v3.1 : surveillance temps reel des positions via WebSocket ───────
+        # self.lock protege les mutations d etat (position, pnl, ...) car
+        # _manage_position peut desormais etre appele soit depuis le thread
+        # du cycle (_run, toutes les CYCLE_INTERVAL sec) soit depuis le thread
+        # WebSocket du SDK Hyperliquid (_on_ws_allmids, a chaque tick de prix).
+        self.lock = threading.Lock()
+        self._ws_subscribed = False
+        self._last_ws_tick = None   # timestamp (time.time()) du dernier tick allMids recu
+        self._ws_was_healthy = None  # None = pas encore evalue ; sert a detecter les transitions
+        self._last_ws_reconnect_attempt = None  # limite la frequence des tentatives de reconnexion
+        # v4.7 — une coupure WebSocket PROLONGEE (>5 min en continu) doit etre
+        # traitee comme un "arret" pour la fiabilite des indicateurs, au meme
+        # titre qu un redemarrage complet du process : au-dela de ce delai on
+        # ne peut plus faire confiance a la fraicheur des donnees collectees
+        # (voir _check_ws_health_alert).
+        self._ws_unhealthy_since = None      # timestamp (time.time()) du DEBUT de la coupure en cours
+        self._ws_fresh_collection_forced = False  # evite de redeclencher en boucle pour la meme coupure
+        self.all_mids = {}  # v3.2 : cache brut de tous les prix Hyperliquid (affichage marche complet)
+
+    # ── Sauvegarde des positions ouvertes pour reconciliation au redemarrage ──
+    POSITIONS_FILE = "hyperbot_positions.json"
+    CONFIDENCE_FILE = "hyperbot_confidence.json"
+    INDICATOR_STATE_FILE = "hyperbot_indicators.json"
+    # v4.22 — SUR DEMANDE EXPLICITE : fichier SEPARE pour l historique de
+    # diagnostic (graphes RSI/MACD/EMA200/ATR/S-R, voir indicator_history).
+    # Contrairement a INDICATOR_STATE_FILE (regle des 5 min, pour la
+    # FIABILITE des indicateurs de TRADING), celui-ci est toujours restaure
+    # a l identique quelle que soit la duree de la coupure — c est un
+    # historique de consultation, pas une donnee de decision, une coupure
+    # longue n invalide pas l interet de regarder ce qui s est passe avant.
+    INDICATOR_HISTORY_FILE = "hyperbot_indicator_history.json"
+    INDICATOR_RESUME_MAX_GAP_SEC = 300  # 5 min — au-dela, on repart en collecte fraiche
+
+    def _save_open_positions(self):
+        """Sauvegarde les positions ouvertes (live ET paper depuis v3.2, pour
+        survivre a un redemarrage/redeploiement) — indexe par slot_key (ex:
+        "BTC_0"), pas par ticker brut, pour eviter toute ambiguite si un
+        meme ticker occupait plusieurs emplacements.
+        v3.2 — FIX CRITIQUE : sauvegarde aussi l etat du Trailing TP (pic de
+        profit atteint, etage Quick Profit/Trailing) — sans ca, un
+        redemarrage faisait "oublier" au bot qu une position avait deja
+        depasse son pic, lui faisant reprendre une reference basse et rater
+        la fermeture qui aurait du se produire (perte de l avantage acquis)."""
+        import json, os
+        positions = {}
+        for sym, st in self.states.items():
+            if st.position:
+                snapshot = dict(st.position)
+                snapshot["_peak_pnl_usd"] = st.peak_pnl_usd
+                snapshot["_tp_stage"] = st.tp_stage
+                snapshot["_trailing_tp_active"] = st.trailing_tp_active
+                snapshot["_tier0_armed"] = st.tier0_armed  # v4.11
+                snapshot["_tier0_peak_pnl_usd"] = st.tier0_peak_pnl_usd  # v4.11
+                snapshot["_absolute_peak_pnl_usd"] = st.absolute_peak_pnl_usd  # v4.18
+                positions[sym] = snapshot
+        try:
+            with open(self.POSITIONS_FILE, "w") as f:
+                json.dump(positions, f, indent=2)
+            print(f"[POSITIONS] Sauvegarde OK : {len(positions)} position(s) -> {os.path.abspath(self.POSITIONS_FILE)} (coins: {[ticker_from_slot_key(k) for k in positions]})")
+        except Exception as e:
+            print(f"[POSITIONS] ERREUR sauvegarde : {e}")
+
+    def _load_saved_positions(self):
+        """Charge les positions sauvegardees lors de la derniere session live."""
+        import json, os
+        abspath = os.path.abspath(self.POSITIONS_FILE)
+        if not os.path.exists(self.POSITIONS_FILE):
+            print(f"[POSITIONS] Aucun fichier trouve a {abspath} — rien a restaurer.")
+            return {}
+        try:
+            with open(self.POSITIONS_FILE, "r") as f:
+                data = json.load(f)
+            print(f"[POSITIONS] Chargement OK depuis {abspath} : {len(data)} position(s) trouvee(s) (coins: {[ticker_from_slot_key(k) for k in data]})")
+            # Vider le fichier apres lecture pour eviter double reconciliation
+            with open(self.POSITIONS_FILE, "w") as f:
+                json.dump({}, f)
+            return data
+        except Exception as e:
+            print(f"[POSITIONS] ERREUR lecture : {e}")
+            return {}
+
+    def _save_confidence_thresholds(self):
+        """Sauvegarde les seuils de confiance dynamiques par actif (survit aux
+        redemarrages/redeploiements) — sans ca, un Max Loss qui avait rendu
+        un actif plus exigeant serait oublie au prochain demarrage, comme si
+        de rien n etait. v3.2 — sauvegarde aussi l horodatage de chaque
+        elevation, pour que la decroissance automatique par delai (voir
+        _decay_confidence_thresholds) survive elle aussi aux redemarrages."""
+        import json
+        try:
+            payload = {
+                "thresholds": self.confidence_thresholds,
+                "set_at": {k: v.isoformat() for k, v in self.confidence_threshold_set_at.items()},
+            }
+            with open(self.CONFIDENCE_FILE, "w") as f:
+                json.dump(payload, f, indent=2)
+        except Exception as e:
+            print(f"[CONFIANCE] Erreur sauvegarde : {e}")
+
+    def _load_confidence_thresholds(self):
+        """Restaure les seuils de confiance dynamiques par actif au demarrage,
+        ainsi que leurs horodatages (pour la decroissance automatique).
+        Compatible avec l ancien format (juste un dict plat de seuils, sans
+        horodatages) pour ne pas perdre une sauvegarde faite avant ce fix."""
+        import json, os
+        if not os.path.exists(self.CONFIDENCE_FILE):
+            return
+        try:
+            with open(self.CONFIDENCE_FILE, "r") as f:
+                data = json.load(f)
+            if "thresholds" in data:
+                self.confidence_thresholds = {k: float(v) for k, v in data["thresholds"].items()}
+                self.confidence_threshold_set_at = {
+                    k: datetime.fromisoformat(v) for k, v in data.get("set_at", {}).items()
+                }
+            else:
+                # ancien format : dict plat de seuils, sans horodatages
+                self.confidence_thresholds = {k: float(v) for k, v in data.items()}
+            if self.confidence_thresholds:
+                print(f"[CONFIANCE] Seuils restaures : {self.confidence_thresholds}")
+        except Exception as e:
+            print(f"[CONFIANCE] Erreur lecture : {e}")
+
+    def _save_indicator_state(self):
+        """Sauvegarde l etat des indicateurs (prix collectes, compteurs de
+        cycles consecutifs, etc.) avec un horodatage precis. Ne sera restaure
+        au demarrage QUE si l arret a dure moins de
+        INDICATOR_RESUME_MAX_GAP_SEC secondes (voir _load_indicator_state) —
+        au-dela, une collecte fraiche est toujours preferable (un trou de
+        donnees trop long fausserait les indicateurs)."""
+        import json
+        from datetime import timezone
+        try:
+            snapshot = {}
+            for slot_key, st in self.states.items():
+                snapshot[slot_key] = {
+                    "price_history": list(st.price_history),
+                    "vol_history": list(st.vol_history),
+                    "mtf_prices": list(st.mtf_prices),
+                    "collecting": st.collecting,
+                    "consec_bull": st.consec_bull,
+                    "consec_bear": st.consec_bear,
+                    "prev_ema_s": st.prev_ema_s,
+                    "prev_ema_l": st.prev_ema_l,
+                    "prev_macd": st.prev_macd,
+                    "prev_sig": st.prev_sig,
+                }
+            payload = {"saved_at": datetime.now(timezone.utc).isoformat(), "states": snapshot}
+            with open(self.INDICATOR_STATE_FILE, "w") as f:
+                json.dump(payload, f)
+        except Exception as e:
+            print(f"[INDICATEURS] Erreur sauvegarde : {e}")
+
+    def _load_indicator_state_if_recent(self):
+        """Restaure l etat des indicateurs UNIQUEMENT si le fichier a ete
+        sauvegarde il y a moins de INDICATOR_RESUME_MAX_GAP_SEC secondes —
+        evite de reprendre une collecte avec un trou de donnees trop
+        important (fausserait RSI/EMA/MACD/ATR)."""
+        import json, os
+        from datetime import timezone
+        if not os.path.exists(self.INDICATOR_STATE_FILE):
+            print("[INDICATEURS] Aucun etat sauvegarde trouve — collecte fraiche.")
+            return
+        try:
+            with open(self.INDICATOR_STATE_FILE, "r") as f:
+                payload = json.load(f)
+            saved_at = datetime.fromisoformat(payload["saved_at"])
+            gap = (datetime.now(timezone.utc) - saved_at).total_seconds()
+            if gap > self.INDICATOR_RESUME_MAX_GAP_SEC:
+                print(f"[INDICATEURS] Etat sauvegarde il y a {gap:.0f}s (> {self.INDICATOR_RESUME_MAX_GAP_SEC}s) — collecte fraiche.")
+                return
+            restored = 0
+            for slot_key, data in payload.get("states", {}).items():
+                st = self.states.get(slot_key)
+                if not st:
+                    continue
+                st.price_history = deque(data.get("price_history", []), maxlen=500)
+                st.vol_history = deque(data.get("vol_history", []), maxlen=50)
+                st.mtf_prices = deque(data.get("mtf_prices", []), maxlen=200)
+                st.collecting = data.get("collecting", True)
+                st.consec_bull = data.get("consec_bull", 0)
+                st.consec_bear = data.get("consec_bear", 0)
+                st.prev_ema_s = data.get("prev_ema_s")
+                st.prev_ema_l = data.get("prev_ema_l")
+                st.prev_macd = data.get("prev_macd")
+                st.prev_sig = data.get("prev_sig")
+                restored += 1
+            print(f"[INDICATEURS] Etat restaure ({gap:.0f}s d arret) : {restored} actif(s), collecte NON relancee.")
+            self.emit("log", {"msg": f"⏩ Reprise rapide : etat des indicateurs restaure ({gap:.0f}s d arret, < {self.INDICATOR_RESUME_MAX_GAP_SEC}s) — pas de nouvelle collecte necessaire.", "level": "ok"})
+        except Exception as e:
+            print(f"[INDICATEURS] Erreur lecture, collecte fraiche par securite : {e}")
+
+    def _save_indicator_history(self):
+        """v4.22 — Sauvegarde l historique de diagnostic (indicator_history :
+        RSI/MACD/EMA200/ATR/support-resistance dates, pour les graphes cote
+        interface). Fichier SEPARE de _save_indicator_state : celui-ci est
+        toujours restaure integralement au demarrage, quelle que soit la
+        duree de la coupure — c est un historique de consultation pour
+        comprendre a posteriori ce que le bot a fait, pas une donnee dont la
+        fraicheur conditionne une decision de trading."""
+        import json
+        try:
+            snapshot = {sym: list(st.indicator_history) for sym, st in self.states.items()}
+            with open(self.INDICATOR_HISTORY_FILE, "w") as f:
+                json.dump(snapshot, f)
+        except Exception as e:
+            print(f"[INDICATEURS] Erreur sauvegarde historique diagnostic : {e}")
+
+    def _load_indicator_history(self):
+        """v4.22 — Restaure l historique de diagnostic SANS condition de
+        delai (contrairement a _load_indicator_state_if_recent) — a appeler
+        une seule fois au demarrage."""
+        import json, os
+        if not os.path.exists(self.INDICATOR_HISTORY_FILE):
+            return
+        try:
+            with open(self.INDICATOR_HISTORY_FILE, "r") as f:
+                snapshot = json.load(f)
+            restored = 0
+            for sym, points in snapshot.items():
+                st = self.states.get(sym)
+                if not st:
+                    continue
+                st.indicator_history = deque(points, maxlen=300)
+                restored += 1
+            print(f"[INDICATEURS] Historique diagnostic restaure : {restored} actif(s).")
+        except Exception as e:
+            print(f"[INDICATEURS] Erreur lecture historique diagnostic : {e}")
+
+    def force_fresh_collection(self):
+        """Force une collecte entierement fraiche pour tous les actifs,
+        meme si un etat recent aurait pu etre restaure — utile si on
+        soupconne un probleme sur les indicateurs sans attendre un
+        redeploiement. Ne touche pas aux positions ouvertes ni au PnL."""
+        import os
+        for st in self.states.values():
+            st.reset_indicators()
+        try:
+            if os.path.exists(self.INDICATOR_STATE_FILE):
+                os.remove(self.INDICATOR_STATE_FILE)
+        except Exception as e:
+            print(f"[INDICATEURS] Erreur suppression fichier lors du forcage : {e}")
+
+    def reset_confidence_penalties(self):
+        """v3.2 — Reinitialisation CIBLEE : remet tous les seuils de confiance
+        dynamiques a la base, sans toucher aux positions ouvertes, au
+        capital ni a l historique des trades. Utile quand de nombreux actifs
+        sont "au frigo" suite a une serie de pertes (ex: pendant des tests
+        intensifs), sans avoir a attendre la decroissance automatique (2h
+        par defaut) ni a faire une reinitialisation complete destructrice."""
+        count = len(self.confidence_thresholds)
+        self.confidence_thresholds = {}
+        self.confidence_threshold_set_at = {}
+        self._save_confidence_thresholds()
+        self.emit("log", {"msg": f"🔄 {count} penalite(s) de confiance reinitialisee(s) manuellement — tous les actifs repartent au seuil de base.", "level": "ok"})
+
+    def clear_all_persisted_files(self):
+        """v3.2 — FIX CRITIQUE : supprime les fichiers de sauvegarde sur
+        disque (positions, seuils de confiance, etat des indicateurs).
+        Sans cet appel, une reinitialisation depuis l interface (base de
+        donnees + memoire vidées) ne servait a rien : au prochain
+        demarrage, le bot relisait ces fichiers restes intacts et
+        restaurait les anciennes positions comme si de rien n etait.
+        v4.1 — supprime aussi le fichier de capital et le fichier de E fige
+        par lot : sans ca, un capital/E perime restait sur disque et etait
+        recharge tel quel au prochain demarrage, meme apres une remise a
+        zero explicite depuis l interface."""
+        import os
+        for f in (self.POSITIONS_FILE, self.CONFIDENCE_FILE, self.INDICATOR_STATE_FILE,
+                  CAPITAL_FILE, BATCH_FILE, self.INDICATOR_HISTORY_FILE):
+            try:
+                if os.path.exists(f):
+                    os.remove(f)
+                    print(f"[RESET] Fichier supprime : {f}")
+            except Exception as e:
+                print(f"[RESET] Erreur suppression {f} : {e}")
+        self.confidence_thresholds = {}
+        self.confidence_threshold_set_at = {}
+        self.emit("log", {"msg": "🔄 Fichiers de sauvegarde (positions, confiance, indicateurs, capital, lot) purges suite a une reinitialisation.", "level": "warn"})
+
+    def emit(self, etype, data=None):
+        self.q.put({"type": etype, "data": data or {}})
+        # Sauvegarde simultanee dans le fichier de log
+        if etype == "log" and data and "msg" in data:
+            write_log(data["msg"], data.get("level", "info"))
+
+    def start_engine(self):
+        """v4.14 — Demarre le MOTEUR (connexion Hyperliquid, WebSocket,
+        boucle de collecte/gestion) — independamment du trading. Idempotent :
+        ne fait rien si deja demarre. A appeler UNE SEULE FOIS, au demarrage
+        du process (voir api.py), pas a chaque clic sur Demarrer. Une fois
+        lance, tourne en continu (avec reconnexion automatique, voir _run)
+        jusqu a l arret du process lui-meme — le bouton Demarrer/Arreter
+        n a plus aucune prise dessus, seul self.trading_enabled en depend."""
+        if self.running:
+            return
+        self.running = True
+        threading.Thread(target=self._run, daemon=True).start()
+        # v3.2 : sauvegarde dediee toutes les 5s, decouplee du cycle de trading
+        # (15s) — reduit la fenetre de "fraicheur perdue" en cas de coupure
+        # brutale (redeploiement, crash) sans avoir a acce le rythme du cycle
+        # de trading lui-meme. Cout negligeable (petit fichier JSON local).
+        threading.Thread(target=self._periodic_save_loop, daemon=True).start()
+
+    def start(self):
+        """v4.14 — Bouton "Demarrer" : autorise desormais UNIQUEMENT
+        l ouverture de nouveaux trades (self.trading_enabled). Le moteur
+        (WebSocket, indicateurs, gestion des positions deja ouvertes) tourne
+        deja en continu depuis le demarrage du process — ce bouton ne le
+        redemarre pas, il n a plus besoin de l etre."""
+        if not self.running:
+            self.start_engine()  # filet de securite si jamais pas encore lance
+        self.trading_enabled = True
+        self._started = True
+        # Marquer le debut de session dans le fichier log
+        write_log(f"{'='*60}", "info")
+        write_log(f"TRADING ACTIVE — v{BOT_VERSION} (build {BOT_BUILD}) | mode={self.cfg.get('MODE')} | profil={self.cfg.get('PROFILE')}", "info")
+        write_log(f"Actifs : {[s for s in self.cfg.get('SYMBOLS', [])]}", "info")
+        write_log(f"{'='*60}", "info")
+
+    def _periodic_save_loop(self):
+        while self.running:
+            time.sleep(5)
+            if not self.running:
+                break
+            try:
+                self._save_open_positions()
+                self._save_confidence_thresholds()
+                self._save_indicator_history()  # v4.22 — historique diagnostic, sans condition de delai
+            except Exception as e:
+                print(f"[SAVE-5S] Erreur : {e}")
+
+    def _persist_capital_snapshot(self):
+        """v4.3 — FIX RESILIENCE CRITIQUE : sauvegarde le capital courant
+        (baseline de la session + PnL realise jusqu ici) APRES CHAQUE TRADE,
+        pas seulement lors d un arret propre (stop()). Avant ce fix, un
+        redemarrage non-propre (crash, kill Railway, "Out of memory"...)
+        perdait TOUT le PnL realise de la session en cours de la
+        comptabilite persistee du capital — meme si chaque trade individuel
+        restait, lui, correctement enregistre en base (SQLite, via db.py,
+        independamment de ce mecanisme). Symptome observe concretement :
+        le capital affiche (~96$, -3.98%) ne correspondait plus a la somme
+        reelle de tous les trades enregistres (net +0.35$ depuis le debut),
+        a cause d un redemarrage force pendant la fuite memoire corrigee en
+        v4.3 (voir close_position/self.closed_trades)."""
+        total_pnl = sum(s.pnl for s in self.states.values())
+        current_capital = self.cfg["CAPITAL_USD"] + total_pnl
+        save_capital(current_capital, self.sessions, self.total_pnl_all)
+
+    def stop(self):
+        """v4.14 — Bouton "Arreter" : bloque UNIQUEMENT l ouverture de
+        nouveaux trades (self.trading_enabled = False). Les positions deja
+        ouvertes continuent d etre gerees normalement (SL/TP actifs) — le
+        moteur (WebSocket, indicateurs) continue de tourner sans
+        interruption, ne se deconnecte plus a l arret."""
+        self.trading_enabled = False
+        if not self._started:
+            # Jamais demarre (ex: le trading n a jamais ete active) — rien a
+            # sauvegarder, evite de gonfler le compteur de sessions.
+            return
+        self._started = False
+        # Sauvegarde du capital pour interets composes
+        total_pnl = sum(s.pnl for s in self.states.values())
+        new_capital = self.cfg["CAPITAL_USD"] + total_pnl
+        self.sessions += 1
+        self.total_pnl_all += total_pnl
+        save_capital(new_capital, self.sessions, self.total_pnl_all)
+        self.emit("log", {"msg": f"Capital sauvegarde: ${new_capital:.2f} (session #{self.sessions})", "level": "ok"})
+
+    def _sim_prices(self):
+        import random
+        # Prix de base pour la simulation paper — etendu a tous les actifs courants
+        base = {
+            "BTC": 63500, "ETH": 1700, "SOL": 68, "BNB": 605,
+            "PAXG": 4290, "XRP": 1.17, "DOGE": 0.09, "ADA": 0.17,
+            "AVAX": 6.81, "LINK": 8.03, "DOT": 0.99, "UNI": 2.58,
+            "NEAR": 2.24, "AAVE": 64.41, "LTC": 43.21, "BCH": 211.0,
+            "HYPE": 64.57, "TAO": 217.0, "HBAR": 0.08, "POL": 0.08,
+        }
         return {
-            "action": r["action"], "coin": r["coin"],
-            "close_reason": r["reason"] or "?",
-            "pnl": r["pnl"], "closed_at": r["closed_at"],
+            k: base.get(ticker_from_slot_key(k), 10.0) * (1 + random.uniform(-0.005, 0.005))
+            for k in self.cfg["SYMBOLS"]
         }
 
-    return {
-        "summary": {
-            "total_wins": len(wins_rows),
-            "total_wins_usdc": total_wins_usdc,
-            "total_losses": len(losses_rows),
-            "total_losses_usdc": total_losses_usdc,
-            "win_rate": win_rate,
-        },
-        "daily": daily,
-        "wins": [_fmt(r) for r in sorted(wins_rows, key=lambda r: r["closed_at"] or "", reverse=True)],
-        "losses": [_fmt(r) for r in sorted(losses_rows, key=lambda r: r["closed_at"] or "", reverse=True)],
-    }
+    def _send_snapshot(self):
+        total_pnl = sum(s.pnl for s in self.states.values())
+        # Stats 24h glissantes
+        h24_trades = sum(s.trades_last_24h()["trades"] for s in self.states.values())
+        h24_pnl    = sum(s.trades_last_24h()["pnl"]    for s in self.states.values())
+        h24_wins   = sum(s.trades_last_24h()["wins"]   for s in self.states.values())
+        h24_wr     = h24_wins / h24_trades * 100 if h24_trades > 0 else 0.0
+        self.emit("snapshot", {
+            "cycle": self.cycle,
+            "capital": self.capital + total_pnl,
+            "total_pnl": total_pnl,
+            "in_hours": is_trading_hours(self.cfg),
+            "ws_connected": self.info is not None,
+            "ws_healthy": self._is_ws_healthy(),
+            "h24": {"trades": h24_trades, "pnl": h24_pnl, "win_rate": h24_wr},
+            "states": {
+                sym: {
+                    "price": st.current_price, "rsi": st.current_rsi,
+                    "macd": st.current_macd, "pnl": st.pnl,
+                    "trades": st.trades, "win_rate": st.win_rate(),
+                    "position": st.position, "collecting": st.collecting,
+                    "atr_pct": st.current_atr_pct,
+                } for sym, st in self.states.items()
+            }
+        })
+
+    # ── v3.1 : Score de confiance et seuil dynamique par actif ──────────────
+    def _score_confidence(self, direction, macd_bull, macd_bear, bb_low_ok, bb_up_ok,
+                           vol_ok, ema200, ema_mid, price, momentum_pct,
+                           momentum_threshold, consec, min_consec, cfg,
+                           support=None, resistance=None):
+        """Calcule un score de confiance 0-100% a partir des confirmations
+        optionnelles disponibles pour ce signal (en plus des filtres deja
+        obligatoires comme RSI/EMA/tendance qui ont deja valide avant d arriver
+        ici). Seuls les indicateurs reellement calculables pour ce cycle/symbole
+        entrent dans le score : celui-ci est ramene sur 100% du poids
+        REELLEMENT disponible, pas du poids total theorique. Ainsi un actif
+        sans EMA_MID configure n est pas penalise pour un indicateur absent.
+
+        v4.2 — Retourne aussi le detail brut (quel indicateur etait
+        confirme/disponible), pour permettre une calibration ulterieure des
+        poids a partir des resultats REELS des trades (voir api.py, module
+        de calibration de la confiance). Sans cette trace, impossible de
+        savoir apres coup si "MACD confirme" a effectivement correle avec
+        des trades gagnants sur CE bot, sur CES marches.
+        """
+        w = cfg.get("CONFIDENCE_WEIGHTS", {})
+        earned, available = 0.0, 0.0
+        breakdown = {}
+
+        def add(key, confirmed):
+            nonlocal earned, available
+            pts = w.get(key, 0)
+            available += pts
+            if confirmed:
+                earned += pts
+            breakdown[key] = bool(confirmed)
+
+        add("macd", macd_bull if direction == "long" else macd_bear)
+        add("bollinger", bb_low_ok if direction == "long" else bb_up_ok)
+        add("volume", vol_ok)
+
+        if ema200 is not None:
+            add("ema200", price > ema200 if direction == "long" else price < ema200)
+        if ema_mid is not None:
+            add("ema_mid", price > ema_mid if direction == "long" else price < ema_mid)
+        if momentum_pct is not None:
+            # Confirmation franche : momentum au-dela de la moitie du seuil de blocage,
+            # dans le sens du signal (pas juste "non oppose")
+            half = momentum_threshold / 2
+            add("momentum", momentum_pct >= half if direction == "long" else momentum_pct <= -half)
+
+        add("consec", consec > min_consec)
+
+        # v3.2 — Comportement de trader : casser une resistance (LONG) ou un
+        # support (SHORT) recent est une vraie confirmation de force, pas
+        # juste l absence d obstacle — un trader experimente y voit un
+        # signal a part entiere, pas seulement un "pas de blocage".
+        if direction == "long" and resistance is not None:
+            add("breakout", price > resistance)
+        elif direction == "short" and support is not None:
+            add("breakout", price < support)
+
+        score = 100.0 if available <= 0 else earned / available * 100
+        return score, breakdown
+
+    def _get_confidence_threshold(self, ticker):
+        base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
+        return self.confidence_thresholds.get(ticker, base)
+
+    def _compute_prudent_leverage(self, ticker, confidence, rsi_mode):
+        """v3.2 — Levier prudent, calcule INDIVIDUELLEMENT pour chaque trade
+        (plus une valeur fixe globale). Trois garde-fous cumulatifs :
+        1. JAMAIS de levier en mode "reversal" — un pari a contre-courant
+           est deja plus risque par nature, pas besoin d en rajouter.
+           v4.8 — le mode Accumulation (rsi_mode="accumulation") est
+           desormais traite comme "trend" ici, sur demande explicite : meme
+           calcul de levier que le bot normal, pas de restriction propre.
+        2. JAMAIS de levier sur un actif actuellement en "penalite" (son
+           seuil de confiance dynamique est deja releve suite a une perte
+           recente) — pas de raison de prendre plus de risque sur un actif
+           qui vient de mal se comporter.
+        3. Sinon, levier croissant avec la force du signal, plafonne a x3 :
+           65-74% confiance -> x1 | 75-84% -> x2 | 85%+ -> x3.
+        """
+        if rsi_mode not in ("trend", "accumulation"):
+            return 1
+        base_threshold = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
+        if self.confidence_thresholds.get(ticker, base_threshold) > base_threshold:
+            return 1
+        if confidence >= 85:
+            return 3
+        elif confidence >= 75:
+            return 2
+        return 1
+
+    def _unified_trend_confirmed(self, prices, trend_ok):
+        """v4.58 — SUR DEMANDE EXPLICITE : verification de tendance PARTAGEE
+        par les 3 modes (normal, Accumulation, Spot-Accumulation) — EMA200
+        (trend_ok, deja calcule par l appelant) ET ADX >= seuil (tendance
+        REELLEMENT forte, pas juste un franchissement de justesse)."""
+        if not trend_ok:
+            return False
+        cfg = self.cfg
+        if not cfg.get("UNIFIED_REQUIRE_ADX_CONFIRM", True):
+            return True
+        adx = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
+        adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
+        return adx is not None and adx >= adx_threshold
+
+    def _unified_sr_amplitude_ok(self, support, resistance):
+        """v4.58 — Amplitude S/R PARTAGEE par les 3 modes : la fourchette
+        support-resistance doit faire au moins UNIFIED_MIN_SR_AMPLITUDE_PCT
+        (3% par defaut) — evite les fourchettes trop plates."""
+        if support is None or resistance is None or support <= 0:
+            return False
+        cfg = self.cfg
+        min_pct = cfg.get("UNIFIED_MIN_SR_AMPLITUDE_PCT", 3.0)
+        return (resistance - support) / support * 100 >= min_pct
+
+    def _unified_proximity_ok(self, price, support, resistance, direction, allow_breakout=True):
+        """v4.58 — Proximite 1-5% PARTAGEE par les 3 modes : pour un LONG,
+        le prix doit etre entre UNIFIED_MIN/MAX_ABOVE_SUPPORT_PCT au-dessus
+        du support (et symetriquement pour un SHORT, sous la resistance).
+        allow_breakout=True permet aussi une cassure nette comme alternative
+        (utilise par Normal/Accumulation, pas par Spot-Accum)."""
+        cfg = self.cfg
+        min_pct = cfg.get("UNIFIED_MIN_ABOVE_SUPPORT_PCT", 1.0)
+        max_pct = cfg.get("UNIFIED_MAX_ABOVE_SUPPORT_PCT", 5.0)
+        if direction == "long":
+            if support is None or support <= 0:
+                return False
+            dist_pct = (price - support) / support * 100
+            in_window = min_pct <= dist_pct <= max_pct
+            breakout = allow_breakout and resistance is not None and price > resistance
+            return in_window or breakout
+        else:  # short
+            if resistance is None or resistance <= 0:
+                return False
+            dist_pct = (resistance - price) / resistance * 100
+            in_window = min_pct <= dist_pct <= max_pct
+            breakout = allow_breakout and support is not None and price < support
+            return in_window or breakout
+
+    def _gate_active_or_auto_activate(self, ticker, confidence, direction):
+        """v4.4 — Auto-activation SUPPRIMEE sur demande explicite : un actif
+        non selectionne reste desormais TOUJOURS bloque, quelle que soit la
+        confiance du signal (meme 99%).
+        v4.44 — SUR DEMANDE EXPLICITE : chaque mode (Accumulation, Funding
+        Contrarian, Spot-Accumulation) peut desormais avoir sa PROPRE liste
+        d actifs actifs, independante de la liste globale (Marches). Tant
+        qu aucune liste dediee n est definie pour un mode (valeur None),
+        il continue de retomber sur la liste globale ACTIVE_COINS — aucun
+        changement de comportement tant que vous ne personnalisez rien.
+        Retourne True si le trade peut s executer, False sinon.
+        """
+        mode_key_map = {
+            "accumulation": "ACCUMULATION_ACTIVE_COINS",
+            "funding_contrarian": "FUNDING_ACTIVE_COINS",
+            "spot_accumulation": "SPOT_ACCUM_ACTIVE_COINS",
+        }
+        override_key = mode_key_map.get(direction)
+        if override_key:
+            override_list = self.cfg.get(override_key)
+            if override_list is not None:
+                return ticker in override_list
+        active_coins = self.cfg.get("ACTIVE_COINS")
+        if active_coins is None or ticker in active_coins:
+            return True  # pas de restriction, ou deja actif
+        return False  # inactif -> bloque, quelle que soit la confiance
+
+    def _register_max_loss(self, ticker, entry_confidence=None):
+        """Apres un Max Loss / SL securite sur un actif, on releve son seuil
+        de confiance minimum requis a : confiance qu avait CE trade a son
+        entree + 5% (pas juste +5% sur le dernier seuil utilise) — plus un
+        trade perdant avait ete pris avec confiance elevee, plus la barre
+        remonte haut pour le prochain, jusqu au plafond CONFIDENCE_MAX_PCT.
+        Si la confiance d entree n est pas disponible (positions recuperees
+        apres un crash, anciennes positions), on se rabat sur l ancien
+        comportement (+5% sur le seuil actuel).
+        """
+        from datetime import timezone
+        base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
+        step = self.cfg.get("CONFIDENCE_STEP_PCT", 5.0)
+        cap  = self.cfg.get("CONFIDENCE_MAX_PCT", 90.0)
+        current = self.confidence_thresholds.get(ticker, base)
+        if entry_confidence is not None:
+            new_threshold = min(entry_confidence + step, cap)
+        else:
+            new_threshold = min(current + step, cap)
+        if new_threshold != current:
+            self.confidence_thresholds[ticker] = new_threshold
+            self.confidence_threshold_set_at[ticker] = datetime.now(timezone.utc)
+            self.emit("log", {"msg": f"[{ticker}] Confiance minimale requise relevee a {new_threshold:.0f}% (confiance d entree {entry_confidence:.0f}% + {step:.0f}%)" if entry_confidence is not None else f"[{ticker}] Confiance minimale requise relevee a {new_threshold:.0f}% (apres perte)", "level": "warn"})
+            self._save_confidence_thresholds()
+
+    def _register_win(self, ticker):
+        """v4.3 — Apres une sortie positive (TTP), la confiance minimum
+        requise redescend D UN PAS (CONFIDENCE_STEP_PCT) vers la base, PAS
+        d un coup jusqu a la base. Avant ce fix, un unique petit gain (meme
+        de quelques centimes) effacait INTEGRALEMENT toute la mefiance
+        accumulee suite a plusieurs pertes — sur un marche agite/en range,
+        ca cree un cycle perte-perte-perte-petit gain(reset total)-perte...
+        qui empeche la protection de vraiment s accumuler et laisse le bot
+        retrader activement un actif difficile toute une journee (observe
+        concretement le 15/07 : 78 trades, 30.8% de reussite, pire journee).
+        Desormais il faut autant de gains que de pertes essuyees pour
+        redescendre completement a la base — une seule bonne surprise ne
+        suffit plus a effacer un historique de pertes recentes."""
+        base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
+        step = self.cfg.get("CONFIDENCE_STEP_PCT", 5.0)
+        current = self.confidence_thresholds.get(ticker, base)
+        if current > base:
+            from datetime import timezone
+            new_threshold = max(current - step, base)
+            if new_threshold <= base:
+                self.confidence_thresholds[ticker] = base
+                self.confidence_threshold_set_at.pop(ticker, None)
+            else:
+                self.confidence_thresholds[ticker] = new_threshold
+                # on rafraichit l horodatage : le decay (v3.2) continue de
+                # s appliquer normalement depuis ce nouveau palier, pas
+                # depuis l ancien plus eleve.
+                self.confidence_threshold_set_at[ticker] = datetime.now(timezone.utc)
+            self.emit("log", {"msg": f"[{ticker}] Confiance minimale requise abaissee a {self.confidence_thresholds.get(ticker, base):.0f}% (apres gain Quick Profit/Trailing TP — descente progressive, pas totale)", "level": "ok"})
+            self._save_confidence_thresholds()
+
+    def _decay_confidence_thresholds(self):
+        """v3.2 — Sur demande : evite qu un actif reste bloque INDEFINIMENT a
+        un seuil de confiance eleve. Auparavant, la SEULE facon de redescendre
+        etait de GAGNER un trade sur cet actif — mais plus le seuil est haut,
+        moins il a de chances de se qualifier pour une nouvelle tentative qui
+        lui permettrait justement de redescendre (risque de blocage
+        permanent). Apres CONFIDENCE_RESET_HOURS (defaut 2h) sans avoir pu
+        rejouer sa chance sur cet actif, le seuil redescend automatiquement
+        au niveau de base — lui donnant une nouvelle occasion equitable,
+        plutot que de rester "au frigo" indefiniment.
+        Appelee une fois par cycle (verification peu couteuse)."""
+        from datetime import timezone
+        reset_hours = self.cfg.get("CONFIDENCE_RESET_HOURS", 2.0)
+        if reset_hours <= 0:
+            return  # decroissance desactivee si regle a 0 ou moins
+        base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
+        now = datetime.now(timezone.utc)
+        for ticker in list(self.confidence_thresholds.keys()):
+            set_at = self.confidence_threshold_set_at.get(ticker)
+            if set_at is None:
+                continue  # pas d horodatage (ex: restaure d une ancienne sauvegarde) -> ne pas forcer un reset immediat
+            elapsed_h = (now - set_at).total_seconds() / 3600
+            if elapsed_h >= reset_hours:
+                self.confidence_thresholds[ticker] = base
+                self.confidence_threshold_set_at.pop(ticker, None)
+                self.emit("log", {
+                    "msg": f"[{ticker}] Confiance minimale requise redescendue a {base:.0f}% ({elapsed_h:.1f}h sans nouvelle tentative — nouvelle chance equitable accordee)",
+                    "level": "ok"
+                })
+                self._save_confidence_thresholds()
+
+    # ── v3.1 : Blackout CPI (Finnhub) ────────────────────────────────────────
+    def _refresh_cpi_events_if_needed(self):
+        """Rafraichit le calendrier CPI depuis Finnhub au maximum toutes les
+        CPI_CACHE_REFRESH_HOURS heures (evite de spammer l API a chaque cycle).
+        En cas d echec, timeout ou cle absente, le cache reste vide et aucun
+        blackout n est applique (le bot continue de trader normalement).
+        v3.1 : l appel reseau tourne dans un thread separe avec timeout — un
+        gel de ce bloc (observe en usage reel, coincidant exactement avec la
+        toute premiere execution de ce code apres la collecte) ne doit plus
+        jamais bloquer le cycle principal du bot.
+        """
+        from datetime import datetime as _dt, timezone
+        now = _dt.now(timezone.utc)
+        refresh_h = self.cfg.get("CPI_CACHE_REFRESH_HOURS", 12)
+        if self._cpi_last_fetch is not None and (now - self._cpi_last_fetch).total_seconds() < refresh_h * 3600:
+            return
+        self._cpi_last_fetch = now
+        api_key = self.cfg.get("FINNHUB_API_KEY", "")
+        if not api_key:
+            return
+        result = {}
+        def _worker():
+            result["events"] = fetch_cpi_events_from_finnhub(api_key)
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        t.join(timeout=self.cfg.get("PRICE_FETCH_TIMEOUT_SEC", 10))
+        if t.is_alive():
+            self.emit("log", {"msg": "⚠ Calendrier CPI (Finnhub) : reponse trop lente — abandon, nouvel essai au prochain rafraichissement", "level": "warn"})
+            return
+        events = result.get("events", [])
+        self._cpi_events = events
+        if events:
+            next_ev = events[0].strftime("%d/%m %H:%M UTC")
+            self.emit("log", {"msg": f"Calendrier CPI (Finnhub) mis a jour — prochaine annonce : {next_ev}", "level": "info"})
+        else:
+            self.emit("log", {"msg": "Calendrier CPI (Finnhub) : aucune donnee recuperee — blackout CPI inactif", "level": "dim"})
+
+    def _is_cpi_blackout(self):
+        """Retourne (True, datetime_event) si l instant present tombe dans la
+        fenetre de blackout autour d une annonce CPI, sinon (False, None)."""
+        if not self._cpi_events:
+            return False, None
+        from datetime import datetime as _dt, timezone, timedelta
+        now    = _dt.now(timezone.utc)
+        before = timedelta(minutes=self.cfg.get("CPI_BLACKOUT_BEFORE_MIN", 15))
+        after  = timedelta(minutes=self.cfg.get("CPI_BLACKOUT_AFTER_MIN", 30))
+        for ev in self._cpi_events:
+            if ev - before <= now <= ev + after:
+                return True, ev
+        return False, None
+
+    def _on_ws_allmids(self, msg):
+        """Callback WebSocket Hyperliquid — flux 'allMids' (prix mid de tous
+        les actifs, mis a jour en temps reel par l exchange).
+        Tourne dans le thread interne du SDK Hyperliquid (PAS le thread
+        principal du bot _run) : des qu un prix arrive pour un actif ayant
+        une position ouverte, on verifie IMMEDIATEMENT Max Loss / SL securite /
+        Trailing TP via _manage_position (thread-safe grace a self.lock),
+        sans attendre le prochain cycle de CYCLE_INTERVAL secondes.
+        Format du message attendu : {"channel": "allMids", "data": {"mids": {...}}}
+        (a verifier selon la version du SDK hyperliquid-python-sdk installee —
+        cette integration n a pas pu etre testee en conditions reelles, faute
+        d acces reseau dans l environnement de developpement).
+        """
+        try:
+            data = msg.get("data", {}) if isinstance(msg, dict) else {}
+            mids = data.get("mids", {})
+            if not mids:
+                return
+            self._last_ws_tick = time.time()
+            # v3.2 : cache BRUT de tous les prix recus (pas seulement nos
+            # symboles tradés) — permet a l API web d afficher un marche
+            # complet (jusqu a 30 cryptos) sans avoir besoin d ouvrir une
+            # position sur chacun.
+            self.all_mids = mids
+            # v4.36 — SUR DEMANDE EXPLICITE : suit le plus HAUT/BAS reel de
+            # TOUS les actifs (pas seulement ceux en position) a chaque tick
+            # WebSocket — alimente de vraies bougies OHLC pour l EMA200 et un
+            # vrai calcul d ATR (Wilder), au lieu d un simple point de prix
+            # espace de 2 minutes qui ne voyait jamais les mouvements entre
+            # deux echantillonnages.
+            for slot_key, state in self.states.items():
+                ticker = ticker_from_slot_key(slot_key)
+                raw = mids.get(ticker)
+                if raw is None:
+                    continue
+                try:
+                    tick_price = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if tick_price <= 0:
+                    continue
+                if state.window_high is None or tick_price > state.window_high:
+                    state.window_high = tick_price
+                if state.window_low is None or tick_price < state.window_low:
+                    state.window_low = tick_price
+
+            for slot_key, state in list(self.states.items()):
+                if not state.position:
+                    continue
+                ticker = ticker_from_slot_key(slot_key)
+                raw = mids.get(ticker)
+                if raw is None:
+                    continue
+                try:
+                    price = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if price <= 0:
+                    continue
+                state.current_price = price
+                self._manage_position(slot_key, price, state)
+        except Exception as e:
+            print(f"[WS] Erreur traitement flux allMids : {e}")
+
+    def _is_ws_healthy(self):
+        """True si le WebSocket est abonne ET a recu un tick recemment
+        (moins de WS_STALE_AFTER_SEC secondes)."""
+        stale_after = self.cfg.get("WS_STALE_AFTER_SEC", 20)
+        return (
+            self._ws_subscribed
+            and self._last_ws_tick is not None
+            and (time.time() - self._last_ws_tick) < stale_after
+        )
+
+    def _refresh_funding_rates_if_due(self):
+        """v4.33 — Rafraichit le cache de funding rate (self.funding_rates),
+        au plus une fois toutes les FUNDING_REFRESH_SEC secondes (5 min par
+        defaut) — le funding ne bouge pas assez vite pour justifier un appel
+        a chaque cycle de 10s, et ca evite de solliciter l API inutilement.
+        Echoue silencieusement (log + conserve l ancien cache) en cas
+        d erreur reseau, pour ne jamais interrompre le reste du cycle."""
+        if not self.cfg.get("FUNDING_MODE_ENABLED", False):
+            return
+        if self.info is None:
+            return
+        now_ts = time.time()
+        refresh_sec = self.cfg.get("FUNDING_REFRESH_SEC", 300)
+        if (now_ts - self._funding_last_refresh) < refresh_sec:
+            return
+        try:
+            meta, ctxs = self.info.meta_and_asset_ctxs()
+            universe = meta.get("universe", [])
+            new_rates = {}
+            for asset, ctx in zip(universe, ctxs):
+                name = asset.get("name")
+                funding_raw = ctx.get("funding")
+                if name and funding_raw is not None:
+                    try:
+                        new_rates[name] = float(funding_raw)
+                    except (TypeError, ValueError):
+                        continue
+            if new_rates:
+                self.funding_rates = new_rates
+                self._funding_last_refresh = now_ts
+        except Exception as e:
+            print(f"[FUNDING] Erreur rafraichissement funding rate : {e} — cache precedent conserve.")
+
+    def _check_ws_health_alert(self):
+        """ALARME WebSocket — appelee une fois par cycle depuis _run.
+        Detecte les TRANSITIONS de sante (sain -> defaillant, defaillant ->
+        retabli) et emet un log bien visible a chaque changement d etat
+        (pas de spam a chaque cycle). C est ce log qui sert d alarme visible
+        dans le panneau LOG EN DIRECT du dashboard (niveau 'error' = rouge).
+
+        v3.2 — FIX : tente aussi activement une RECONNEXION toutes les 60s
+        tant que le WebSocket reste defaillant (auparavant, le code se
+        contentait de detecter/loguer la panne et attendait passivement une
+        reconnexion automatique du SDK qui peut ne jamais survenir). Cette
+        partie s execute a CHAQUE appel, contrairement a l alarme qui ne
+        reagit qu aux transitions — sinon une seule tentative aurait lieu au
+        moment de la panne, jamais repetee ensuite.
+        """
+        if self.info is None:
+            return  # pas de connexion Hyperliquid du tout (paper simule sans cle)
+        healthy = self._is_ws_healthy()
+
+        # v4.7 — Une coupure WebSocket CONTINUE de plus de 5 min est traitee
+        # comme un "arret" pour la fiabilite des indicateurs : au-dela de ce
+        # delai, on ne peut plus faire confiance aux donnees accumulees
+        # pendant la panne (le flux temps reel etant la source principale de
+        # verite des prix), donc on force une collecte entierement fraiche
+        # pour tous les actifs — exactement comme au redemarrage du process
+        # apres un arret de plus de INDICATOR_RESUME_MAX_GAP_SEC.
+        now_ts = time.time()
+        if not healthy:
+            if self._ws_unhealthy_since is None:
+                self._ws_unhealthy_since = now_ts
+                self._ws_fresh_collection_forced = False
+            elif not self._ws_fresh_collection_forced:
+                downtime = now_ts - self._ws_unhealthy_since
+                if downtime >= self.INDICATOR_RESUME_MAX_GAP_SEC:
+                    self.force_fresh_collection()
+                    self._ws_fresh_collection_forced = True
+                    msg = f"🔄 Coupure WebSocket de {downtime:.0f}s (> {self.INDICATOR_RESUME_MAX_GAP_SEC}s) — collecte des indicateurs relancee entierement a zero par securite."
+                    self.emit("log", {"msg": msg, "level": "warn"})
+                    self.emit("ws_event", {"kind": "fresh_collection_forced", "message": msg})
+        else:
+            self._ws_unhealthy_since = None
+            self._ws_fresh_collection_forced = False
+
+        if not healthy:
+            if self._last_ws_reconnect_attempt is None or (now_ts - self._last_ws_reconnect_attempt) >= 60:
+                self._last_ws_reconnect_attempt = now_ts
+                try:
+                    # v3.2 — FIX : un simple re-abonnement (self.info.subscribe)
+                    # sur le MEME objet Info ne recree pas de connexion
+                    # physique si le websocket sous-jacent est reellement mort
+                    # — il peut silencieusement echouer a vie. On recree donc
+                    # entierement la connexion (nouvel objet Info + Exchange,
+                    # nouveau websocket), exactement comme au demarrage initial.
+                    cfg = self.cfg
+                    new_info, new_exchange, conn_error = connect_hyperliquid(cfg["PRIVATE_KEY"], cfg["WALLET_ADDRESS"])
+                    if conn_error:
+                        raise RuntimeError(conn_error)
+                    self.info = new_info
+                    self.exchange = new_exchange
+                    self.info.subscribe({"type": "allMids"}, self._on_ws_allmids)
+                    self._ws_subscribed = True
+                    self._last_ws_tick = time.time()  # evite un "faux mort" immediat le temps du 1er tick
+                    msg = "🔄 Reconnexion WebSocket effectuee (nouvelle connexion etablie)."
+                    self.emit("log", {"msg": msg, "level": "warn"})
+                    self.emit("ws_event", {"kind": "reconnect_success", "message": msg})
+                except Exception as e:
+                    msg = f"🔄 Echec de la reconnexion WebSocket : {e} — nouvelle tentative dans 60s."
+                    self.emit("log", {"msg": msg, "level": "warn"})
+                    self.emit("ws_event", {"kind": "reconnect_failed", "message": msg})
+
+        if self._ws_was_healthy is None:
+            self._ws_was_healthy = healthy
+            return
+        if healthy == self._ws_was_healthy:
+            return
+        if healthy:
+            msg = "✅ WebSocket retabli — surveillance temps reel des positions active"
+            self.emit("log", {"msg": msg, "level": "ok"})
+            self.emit("ws_event", {"kind": "restored", "message": msg})
+        else:
+            stale_after = self.cfg.get("WS_STALE_AFTER_SEC", 20)
+            msg = f"🔴 ALARME — WebSocket hors service (aucun tick depuis {stale_after}s) — bascule sur surveillance par cycle ({self.cfg.get('CYCLE_INTERVAL')}s)"
+            self.emit("log", {"msg": msg, "level": "error"})
+            self.emit("ws_event", {"kind": "disconnected", "message": msg})
+        self._ws_was_healthy = healthy
+
+    def _maybe_manage_position_via_cycle(self, symbol, price, state):
+        """Le WebSocket (_on_ws_allmids) est desormais la source PRINCIPALE de
+        surveillance des positions ouvertes (Max Loss / SL securite / Trailing
+        TP / Quick Profit) : il verifie ces seuils a CHAQUE tick de prix recu,
+        bien plus reactif que le cycle. Tant que le WebSocket est actif et
+        recoit des ticks recemment, le cycle NE FAIT RIEN sur les positions
+        ouvertes — il se contente d afficher le prix.
+        Le cycle ne reprend la main que si le WebSocket n est pas abonne, ou
+        n a plus donne signe de vie depuis WS_STALE_AFTER_SEC secondes
+        (deconnexion silencieuse) : filet de secours pour ne jamais laisser
+        une position totalement sans surveillance active du bot.
+        """
+        if self._is_ws_healthy():
+            return  # le websocket gere deja cette position en temps reel
+        self._manage_position(symbol, price, state)
+
+    def _get_prices_with_timeout(self, timeout_sec):
+        """Recupere les prix via get_prices() avec un delai maximum.
+        get_prices() fait un appel reseau bloquant vers Hyperliquid sans
+        timeout expose par le SDK — en cas d accroc reseau, cet appel peut
+        rester bloque tres longtemps et geler tout le cycle du bot (plus
+        aucune collecte, plus aucun log — symptome observe en usage reel).
+        Ici, l appel tourne dans un thread separe : si le delai est depasse,
+        on ABANDONNE ce thread (il restera bloque en arriere-plan jusqu a ce
+        que l appel reseau finisse par echouer/reussir de son cote — sans
+        consequence puisqu on ignore son resultat) et on rend la main
+        immediatement au cycle, qui reessaiera au tour suivant avec un
+        thread neuf. Le bot ne se fige donc plus jamais indefiniment.
+        """
+        if self.info is None:
+            return self._sim_prices()
+        cfg = self.cfg
+        result = {}
+        def _worker():
+            try:
+                result["value"] = get_prices(self.info, cfg["SYMBOLS"], cfg)
+            except Exception as e:
+                result["error"] = e
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        t.join(timeout=timeout_sec)
+        if t.is_alive():
+            self.emit("log", {
+                "msg": f"⚠ Recuperation des prix bloquee depuis plus de {timeout_sec}s (coupure reseau probable) — cycle ignore, nouvelle tentative au prochain cycle",
+                "level": "error"
+            })
+            return {}
+        if "error" in result:
+            self.emit("log", {"msg": f"Erreur recuperation des prix : {result['error']}", "level": "warn"})
+            return {}
+        return result.get("value", {})
+
+    def _process_with_timeout(self, sym, price):
+        """Wrapper de securite autour de _process : execute le traitement
+        complet d un symbole (indicateurs, filtres, CPI, entree) dans un
+        thread separe avec un delai maximum (PROCESS_TIMEOUT_SEC).
+        - Si ce traitement ne termine pas a temps (gel du a une cause
+          quelconque — reseau, disque...), ce symbole est ignore pour ce
+          cycle, avec une alarme explicite.
+        - Si ce traitement leve une EXCEPTION (bug), celle-ci est desormais
+          capturee et loguee en detail (message + traceback complet) au lieu
+          d etre avalee silencieusement — fix v3.1 : la version precedente ne
+          capturait pas les exceptions (try/finally sans except), ce qui
+          masquait totalement l erreur reelle (le symbole disparaissait du
+          log sans aucune trace).
+        """
+        import traceback
+        timeout_sec = self.cfg.get("PROCESS_TIMEOUT_SEC", 12)
+        done = threading.Event()
+        error_holder = {}
+        def _worker():
+            try:
+                self._process(sym, price)
+            except Exception as e:
+                error_holder["error"] = e
+                error_holder["trace"] = traceback.format_exc()
+            finally:
+                done.set()
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        ticker = ticker_from_slot_key(sym)
+        if not done.wait(timeout=timeout_sec):
+            self.emit("log", {
+                "msg": f"⚠ [{ticker}] Traitement du cycle bloque depuis {timeout_sec}s — ignore pour ce cycle, nouvelle tentative au prochain",
+                "level": "error"
+            })
+            return
+        if "error" in error_holder:
+            print(error_holder["trace"])  # traceback complet dans la console/stdout
+            self.emit("log", {
+                "msg": f"🔴 ERREUR [{ticker}] {type(error_holder['error']).__name__}: {error_holder['error']}",
+                "level": "error"
+            })
+
+    def _run(self):
+        cfg = self.cfg
+        self.emit("log", {"msg": "Connexion a Hyperliquid...", "level": "info"})
+        # v3.2 : la cle API + le wallet Hyperliquid sont desormais OBLIGATOIRES,
+        # en mode paper COMME en mode live — plus de repli silencieux vers des
+        # prix simules (_sim_prices). Le paper trading doit s appuyer sur les
+        # vraies donnees de marche (prix + WebSocket), seule la passation
+        # d ordres reels reste desactivee en paper (voir place_order/close_order,
+        # tous deux gates par cfg["MODE"]=="live").
+        if not cfg["PRIVATE_KEY"] or not cfg["WALLET_ADDRESS"]:
+            self.emit("log", {
+                "msg": "ERREUR : cle API et/ou wallet Hyperliquid manquants — obligatoires desormais (paper ET live). Configurez HYPERBOT_PRIVATE_KEY / HYPERBOT_WALLET_ADDRESS (ou via l API /api/config/hyperliquid) puis redemarrez.",
+                "level": "error"
+            })
+            self.running = False
+            self.emit("stopped", {})
+            return
+
+        # v4.14 — SUR DEMANDE EXPLICITE : le moteur de collecte (WS + prix +
+        # indicateurs + gestion des positions ouvertes) doit tourner en
+        # continu, independamment du bouton Demarrer/Arreter du trading —
+        # seule une VRAIE panne doit l interrompre, avec reconnexion
+        # automatique. Avant ce fix, un echec de connexion initial faisait
+        # abandonner _run() DEFINITIVEMENT (self.running=False, return) sans
+        # aucune tentative de reconnexion — desormais on reessaie
+        # indefiniment, toutes les 30s, jusqu a ce que la connexion aboutisse.
+        retry_delay = 30
+        while True:
+            self.info, self.exchange, conn_error = connect_hyperliquid(cfg["PRIVATE_KEY"], cfg["WALLET_ADDRESS"])
+            if self.info is not None:
+                break
+            msg = f"Connexion Hyperliquid echouee — {conn_error} — nouvelle tentative dans {retry_delay}s."
+            self.emit("log", {"msg": msg, "level": "error"})
+            self.emit("ws_event", {"kind": "connect_failed", "message": msg})
+            time.sleep(retry_delay)
+        self.emit("log", {"msg": "Connexion etablie.", "level": "ok"})
+        self.emit("ws_event", {"kind": "connected", "message": "Connexion Hyperliquid etablie avec succes."})
+
+        # ── v3.1 : abonnement WebSocket temps reel (flux allMids) ─────────
+        # Objectif : verifier Max Loss / SL securite / Trailing TP a CHAQUE
+        # tick de prix recu, sans attendre le prochain cycle (CYCLE_INTERVAL).
+        # v3.2 : actif desormais systematiquement en paper ET en live, puisque
+        # la connexion Hyperliquid est obligatoire dans les deux modes — seul
+        # le PASSAGE D ORDRE reel reste reserve au mode live (voir plus bas et
+        # _on_ws_allmids -> _manage_position -> close_order).
+        # Repli automatique sur la surveillance par cycle (15s) si l abonnement
+        # echoue (SDK incompatible, pas de reseau, etc.) — aucune perte de
+        # fonctionnalite, juste moins reactif.
+        try:
+            self.info.subscribe({"type": "allMids"}, self._on_ws_allmids)
+            self._ws_subscribed = True
+            self.emit("log", {"msg": "WebSocket temps reel actif — surveillance Max Loss/TP en direct (independante du cycle)", "level": "ok"})
+        except Exception as e:
+            self._ws_subscribed = False
+            self.emit("log", {"msg": f"Echec abonnement WebSocket ({e}) — repli sur surveillance par cycle ({cfg['CYCLE_INTERVAL']}s)", "level": "warn"})
+
+        # ── Application reelle du levier configure (fix v3.1 : LEVERAGE ──
+        # existait dans CONFIG mais n etait jamais envoye a Hyperliquid) ──
+        if cfg["MODE"] == "live":
+            leverage = cfg.get("LEVERAGE", 1)
+            real_tickers_lev = list({ticker_from_slot_key(s) for s in cfg["SYMBOLS"]})
+            lev_errors = []
+            for t in real_tickers_lev:
+                try:
+                    self.exchange.update_leverage(leverage, t, is_cross=True)
+                except Exception as e:
+                    lev_errors.append(t)
+                    print(f"[LEVERAGE] Echec x{leverage} sur {t} : {e}")
+            if lev_errors:
+                self.emit("log", {"msg": f"Levier x{leverage} : echec sur {', '.join(lev_errors)} (verifiez manuellement sur Hyperliquid).", "level": "warn"})
+            else:
+                self.emit("log", {"msg": f"Levier x{leverage} applique (cross margin) sur : {', '.join(real_tickers_lev)}", "level": "ok"})
+
+        # ── Synchronisation capital réel Hyperliquid ──
+        if cfg["MODE"] == "live":
+            real_balance = sync_capital_from_hyperliquid(self.info, cfg["WALLET_ADDRESS"])
+            if real_balance is not None and real_balance > 0:
+                self.capital = real_balance
+                self.cfg["CAPITAL_USD"] = real_balance
+                self.emit("log", {"msg": f"Capital synchronise depuis Hyperliquid : ${real_balance:.2f}", "level": "ok"})
+            else:
+                self.emit("log", {"msg": "Sync capital echouee — capital local utilise.", "level": "warn"})
+
+            # ── Reconciliation : trades fermes par Hyperliquid pendant la deconnexion ──
+            saved_positions = self._load_saved_positions()
+            if saved_positions:
+                ghost_trades = reconcile_closed_positions(self.info, cfg["WALLET_ADDRESS"], saved_positions, cfg)
+                for gt in ghost_trades:
+                    sym = gt["symbol"]
+                    # Trouver la slot_key correspondant a ce ticker
+                    slot_key = next((s for s in self.states if ticker_from_slot_key(s) == sym), None)
+                    target = self.states.get(slot_key) if slot_key else None
+                    if target:
+                        target.trades += 1
+                        target.pnl    += gt["pnl"]
+                        if gt["win"]:
+                            target.wins += 1
+                        target.closed_trades.append(gt)
+                        self.cfg["CAPITAL_USD"] += gt["pnl"]
+                        level = "win" if gt["win"] else "loss"
+                        self.emit("trade", gt)
+                        self.emit("log", {"msg": f"[{sym}] {gt['reason']} pendant deconnexion @ ${gt['exit']:.2f} | PnL: ${gt['pnl']:.2f}", "level": level})
+
+            # ── Reprise des positions encore ouvertes apres crash ──
+            real_tickers = list({ticker_from_slot_key(s) for s in cfg["SYMBOLS"]})
+            recovered = recover_open_positions(self.info, cfg["WALLET_ADDRESS"], real_tickers, cfg)
+            if recovered:
+                self.emit("log", {"msg": f"{len(recovered)} position(s) recuperee(s) apres reprise.", "level": "warn"})
+                for ticker_sym, pos in recovered.items():
+                    # Trouver la slot_key correspondant a ce ticker
+                    slot_key = next((s for s in self.states if ticker_from_slot_key(s) == ticker_sym), None)
+                    if slot_key:
+                        self.states[slot_key].position = pos
+                        # v3.2 — FIX : recover_open_positions reconstruit la
+                        # position depuis l EXCHANGE reel (entry/sl/tp exacts),
+                        # mais ne connait pas la memoire du Trailing TP (pic de
+                        # profit, etage) — on la retrouve ici en croisant avec
+                        # notre propre sauvegarde (saved_positions, chargee plus
+                        # haut), pour ne pas "oublier" une progression deja faite.
+                        saved = saved_positions.get(slot_key) if saved_positions else None
+                        if saved:
+                            self.states[slot_key].peak_pnl_usd = saved.get("_peak_pnl_usd")
+                            self.states[slot_key].tp_stage = saved.get("_tp_stage", 0)
+                            self.states[slot_key].trailing_tp_active = saved.get("_trailing_tp_active", False)
+                            self.states[slot_key].tier0_armed = saved.get("_tier0_armed", False)  # v4.11
+                            self.states[slot_key].tier0_peak_pnl_usd = saved.get("_tier0_peak_pnl_usd")  # v4.11
+                            self.states[slot_key].absolute_peak_pnl_usd = saved.get("_absolute_peak_pnl_usd")  # v4.18
+                        self.emit("log", {"msg": f"[{ticker_sym}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} reintegree | SL ${pos['sl']:.2f} | TP ${pos['tp']:.2f}", "level": "warn"})
+                        ensure_sl_on_hyperliquid(self.exchange, self.info, cfg["WALLET_ADDRESS"], ticker_sym, pos, cfg)
+                        self.emit("log", {"msg": f"[{ticker_sym}] Verification SL Hyperliquid effectuee", "level": "ok"})
+            else:
+                self.emit("log", {"msg": "Aucune position ouverte a recuperer.", "level": "info"})
+            self._save_open_positions()
+        else:
+            # ── v3.2 : le mode PAPER beneficie desormais aussi de la ──────────
+            # persistance des positions (auparavant reservee au mode live).
+            # Sans ca, un redeploiement Railway pendant qu une position paper
+            # est ouverte la faisait disparaitre de la memoire du bot SANS
+            # jamais la clore proprement en base — elle restait alors
+            # eternellement "ouverte" dans le Bilan/l historique, meme si
+            # plus aucune gestion active ne s en occupait.
+            # Pas de reconciliation avec un exchange reel ici (ca n a pas de
+            # sens en simulation) : on restaure simplement telles quelles les
+            # positions sauvegardees lors du dernier arret/redemarrage.
+            saved_positions = self._load_saved_positions()
+            restored = 0
+            for slot_key, state in self.states.items():
+                pos = saved_positions.get(slot_key) if saved_positions else None
+                if pos and not state.position:
+                    ticker = ticker_from_slot_key(slot_key)
+                    # v3.2 — FIX : extrait l etat du Trailing TP (pic de profit,
+                    # etage) sauvegarde avec la position, pour ne pas "oublier"
+                    # qu elle avait deja depasse un pic avant le redemarrage.
+                    peak_pnl_usd = pos.pop("_peak_pnl_usd", None)
+                    tp_stage = pos.pop("_tp_stage", 0)
+                    trailing_tp_active = pos.pop("_trailing_tp_active", False)
+                    tier0_armed = pos.pop("_tier0_armed", False)  # v4.11
+                    tier0_peak_pnl_usd = pos.pop("_tier0_peak_pnl_usd", None)  # v4.11
+                    absolute_peak_pnl_usd = pos.pop("_absolute_peak_pnl_usd", None)  # v4.18
+                    state.position = pos
+                    state.peak_pnl_usd = peak_pnl_usd
+                    state.tp_stage = tp_stage
+                    state.trailing_tp_active = trailing_tp_active
+                    state.tier0_armed = tier0_armed
+                    state.tier0_peak_pnl_usd = tier0_peak_pnl_usd
+                    state.absolute_peak_pnl_usd = absolute_peak_pnl_usd
+                    restored += 1
+                    stage_info = f" | Trailing etage {tp_stage}, pic +${peak_pnl_usd:.2f}" if peak_pnl_usd is not None else ""
+                    self.emit("log", {"msg": f"[{ticker}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} restauree (paper, apres redemarrage){stage_info}", "level": "warn"})
+            if restored:
+                self.emit("log", {"msg": f"{restored} position(s) paper restauree(s) apres redemarrage.", "level": "warn"})
+
+        self._load_confidence_thresholds()
+        # v3.2 — REACTIVE : la collecte des indicateurs (notamment l EMA
+        # intermediaire, desormais calibree sur une vraie fenetre de 25-50
+        # min) est trop longue pour repartir de zero a chaque redemarrage
+        # anodin (redeploiement, coupure breve). Reprise rapide reactivee
+        # avec un seuil elargi a 10 minutes cumulees (voir
+        # INDICATOR_RESUME_MAX_GAP_SEC) : au-dela, collecte fraiche par
+        # securite (un trou de donnees trop long fausserait les indicateurs).
+        self._load_indicator_state_if_recent()
+        self._load_indicator_history()  # v4.22 — sans condition de delai
+        # (session de trading 24h retiree — voir jour calendaire UTC fixe,
+        # gere cote API pour les statistiques uniquement, sans blocage)
+
+        symbols_display = ", ".join(self._original_symbols)
+        self.emit("log", {"msg": f"Demarrage | {symbols_display} | ${cfg['CAPITAL_USD']}", "level": "ok"})
+        self.emit("log", {"msg": f"Plage horaire : {cfg['TRADE_HOUR_START']}h-{cfg['TRADE_HOUR_END']}h Paris", "level": "info"})
+
+        # v3.2 — signale la fin complete de l initialisation (reconciliation
+        # Hyperliquid en live deja faite, restauration paper deja faite) :
+        # permet a l API web de lancer un nettoyage automatique des
+        # signaux/trades orphelins juste apres, en connaissant avec
+        # certitude l etat REEL des positions a cet instant precis.
+        self.emit("startup_ready", {})
+
+        while self.running:
+            try:
+                self.cycle += 1
+                self._check_ws_health_alert()
+                self._refresh_funding_rates_if_due()  # v4.33
+                self._decay_confidence_thresholds()
+                prices = self._get_prices_with_timeout(cfg.get("PRICE_FETCH_TIMEOUT_SEC", 10))
+                in_hours = is_trading_hours(cfg)
+
+                # v3.2 — DIAGNOSTIC : verifie explicitement combien de prix (sur
+                # les 30 configures) sont reellement recuperes a chaque cycle, et
+                # lesquels manquent — permet de confirmer/infirmer un probleme de
+                # resolution de prix pour une partie des actifs (sans quoi ceux-la
+                # ne collectent jamais, silencieusement, indefiniment).
+                if self.cycle % 4 == 1:  # une fois toutes les ~4 cycles (~1 min), pas a chaque cycle
+                    missing_syms = [ticker_from_slot_key(s) for s in cfg["SYMBOLS"] if s not in prices]
+                    self.emit("log", {
+                        "msg": f"🔍 DIAGNOSTIC cycle {self.cycle} : {len(prices)}/{len(cfg['SYMBOLS'])} prix recuperes | in_hours={in_hours} | manquants: {missing_syms if missing_syms else 'aucun'}",
+                        "level": "warn"
+                    })
+
+                if not in_hours:
+                    self.emit("log", {"msg": f"Hors plage {cfg['TRADE_HOUR_START']}h-{cfg['TRADE_HOUR_END']}h — nouvelles entrees suspendues (positions actives conservees)", "level": "dim"})
+                    for sym in cfg["SYMBOLS"]:
+                        if sym in prices:
+                            self.states[sym].current_price = prices[sym]
+                    # Continuer a gerer les positions ouvertes (SL / Trailing TP)
+                    for sym in cfg["SYMBOLS"]:
+                        if sym in prices and self.states[sym].position:
+                            self._process_with_timeout(sym, prices[sym])
+                    self._save_open_positions()
+                    self._save_confidence_thresholds()
+                    self._save_indicator_state()
+                    self._send_snapshot()
+                    time.sleep(cfg["CYCLE_INTERVAL"])
+                    continue
+
+                if not prices:
+                    self.emit("log", {"msg": "Prix indisponibles", "level": "warn"})
+                    time.sleep(cfg["CYCLE_INTERVAL"])
+                    continue
+
+                self._pending_candidates = []
+                self._pending_accumulation_candidates = []
+                self._pending_funding_candidates = []
+                self._pending_spot_accum_candidates = []
+                for sym in cfg["SYMBOLS"]:
+                    if sym in prices:
+                        self._process_with_timeout(sym, prices[sym])
+                self._finalize_pending_candidates()
+                self._finalize_pending_accumulation_candidates()
+                self._finalize_pending_funding_candidates()
+                self._finalize_pending_spot_accum_candidates()
+
+                self._save_open_positions()
+                self._save_confidence_thresholds()
+                self._save_indicator_state()
+                self._send_snapshot()
+                time.sleep(cfg["CYCLE_INTERVAL"])
+            except Exception as e:
+                # v3.2 — FILET DE SECURITE CRITIQUE : sans ce try/except, une
+                # exception inattendue (ex: le bug "timezone" du 05/07/2026)
+                # tuait le thread _run() COMPLETEMENT et SILENCIEUSEMENT — le
+                # bot semblait actif (WebSocket + positions geres normalement)
+                # mais plus aucun cycle, plus aucune collecte, plus aucune
+                # nouvelle entree, sans la moindre trace visible dans l app.
+                # Desormais : erreur loguee bien visible + le cycle suivant
+                # continue normalement au lieu de mourir.
+                import traceback
+                err_msg = f"🔴 ERREUR CRITIQUE dans le cycle {self.cycle} : {type(e).__name__}: {e}"
+                print(f"[_run] {err_msg}")
+                print(traceback.format_exc())
+                self.emit("log", {"msg": err_msg + " — le cycle suivant va reprendre normalement.", "level": "error"})
+                time.sleep(cfg.get("CYCLE_INTERVAL", 10))
+
+        self.emit("stopped", {})
+
+    def _manage_position(self, symbol, price, state):
+        """Wrapper thread-safe : _manage_position_impl peut etre appelee soit
+        depuis le thread du cycle (_run), soit depuis le thread WebSocket
+        (_on_ws_allmids). Le lock evite qu une meme position soit traitee/
+        fermee deux fois en parallele (ex: MAX LOSS declenche par les deux
+        threads presque simultanement)."""
+        with self.lock:
+            self._manage_position_impl(symbol, price, state)
+
+    def _manage_position_impl(self, symbol, price, state):
+        """v4.10 — Moteur de risque ASYMETRIQUE, sur demande explicite :
+        - Le SL reste en % de E (perte $ PLAFONNEE, independante du levier) :
+          E=20$, SL=1% -> perte de 0.20$ a x1 COMME a x3. Ce qui change avec
+          le levier, c est UNIQUEMENT la distance de prix necessaire pour
+          l atteindre (1% a x1, 0.33% a x3 — de plus en plus proche a mesure
+          que le levier monte), jamais le montant $ perdu.
+        - Le TP reste en % de MOUVEMENT DE PRIX REEL (inchange) : le levier
+          y amplifie librement le gain $, sans plafond.
+        1) Stop Loss (-SL_PCT_OF_E % de E, defaut -1.0%) : sortie immediate
+           geree par le bot, perte $ plafonnee quel que soit le levier.
+        2) SL Hyperliquid : filet de securite uniquement (cas ou le bot
+           serait en retard/deconnecte) — ne devrait quasiment jamais se
+           declencher avant le Stop Loss ci-dessus en usage normal.
+        3) Trailing Take Profit (TTP), en % de MOUVEMENT DE PRIX REEL :
+           - Arme des que le PRIX bouge de TTP_ARM1_PRICE_PCT (defaut 1.2%)
+             dans le sens du trade. Seuil de sortie fixe a
+             TTP_LOCK1_PRICE_PCT (defaut 1.0%) tant que le PIC de mouvement
+             n a pas rejoint TTP_ARM2_PRICE_PCT.
+           - Des que le pic de mouvement atteint TTP_ARM2_PRICE_PCT (defaut
+             1.5%), le seuil de sortie devient pic - TTP_TRAIL_GAP_PRICE_PCT
+             (defaut 0.3%) et continue de suivre le pic a l infini (trailing
+             pur, sans plafond) — capture le maximum atteint des que le
+             profit cesse de progresser.
+        """
+        cfg    = self.cfg
+        ticker = ticker_from_slot_key(symbol)
+        pos    = state.position
+        if not pos:
+            return
+        mode = cfg["MODE"]
+        # v4.33 — SECURITE EXPLICITE : un trade "funding_contrarian" reste
+        # simule (paper) meme si le bot tourne globalement en mode live, tant
+        # que FUNDING_MODE_LIVE_ALLOWED n est pas active manuellement — ce
+        # mode est experimental, protege un capital deja fragilise pendant
+        # sa phase de validation. Ne change RIEN pour les autres strategies.
+        if pos.get("strategy") == "funding_contrarian" and not cfg.get("FUNDING_MODE_LIVE_ALLOWED", False):
+            mode = "paper"
+
+        # E = taille de l entree (avant levier) — base du SL (v4.10, perte $
+        # plafonnee) ; le TP, lui, raisonne en % de mouvement de prix pur.
+        E = pos["size"]
+        strat_tag = "🎯 " if pos.get("strategy") == "accumulation" else ""  # v4.8 — visible dans les logs de sortie
+
+        # ── PnL latent en $ ───────────────────────────────────────────────
+        if pos["type"] == "long":
+            pnl_pct = (price - pos["entry"]) / pos["entry"] * 100
+        else:
+            pnl_pct = (pos["entry"] - price) / pos["entry"] * 100
+        # le levier amplifie le PnL reel (notionnel = E x levier), essentiel
+        # pour que Stop Loss/TTP restent coherents avec le levier prudent
+        # applique par trade (voir _compute_prudent_leverage).
+        pnl_usd = E * pos.get("leverage", 1) * pnl_pct / 100
+
+        # v4.18 — Suivi du pic ABSOLU, des le premier cycle en profit, quel
+        # que soit le seuil de trailing atteint (ou pas) — purement
+        # informatif, n influence aucune decision de sortie ci-dessous.
+        if pnl_usd > 0 and (state.absolute_peak_pnl_usd is None or pnl_usd > state.absolute_peak_pnl_usd):
+            state.absolute_peak_pnl_usd = pnl_usd
+
+        # v4.43 — SUR DEMANDE EXPLICITE : gestion de sortie ENTIEREMENT
+        # DEDIEE pour Spot-Accumulation — different de tous les autres modes
+        # (pas de Stop Loss par defaut, objectif base sur la distance
+        # support-resistance, trailing avec ses propres seuils). Retourne
+        # immediatement apres, ne passe JAMAIS par la logique SL/TTP normale
+        # ci-dessous, qui ne s applique pas a ce mode.
+        if pos.get("strategy") == "spot_accumulation":
+            # 1) SL optionnel, en % du PnL (PAS % de E comme le reste du
+            #    bot) — desactive par defaut, une position perdante reste
+            #    ouverte indefiniment sauf si explicitement active.
+            if cfg.get("SPOT_ACCUM_SL_ENABLED", False):
+                sl_threshold_pnl = cfg.get("SPOT_ACCUM_SL_PCT_OF_PNL", 5.0)
+                if pnl_pct <= -sl_threshold_pnl:
+                    pnl, _, trade = state.close_position(price, "STOP LOSS")
+                    trade["symbol"] = symbol
+                    self.emit("trade", trade)
+                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum STOP LOSS (optionnel, {sl_threshold_pnl:.1f}% du PnL) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
+                    self._register_max_loss(ticker, pos.get("confidence"))
+                    self._save_open_positions()
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, symbol, pos, cfg)
+                    return
+
+            # v4.47/v4.54 — SUR DEMANDE EXPLICITE : fermeture si un
+            # RETOURNEMENT DE TENDANCE est CONFIRME. v4.54 corrige une vraie
+            # faille : l EMA200 ne se met a jour qu une fois toutes les
+            # ~2 min (echantillonnage par bougie), alors que l ancienne
+            # confirmation ne durait que 18 cycles (~3 min) — l EMA200
+            # elle-meme n avait quasiment pas bouge sur cette fenetre, ce
+            # n etait donc pas une vraie confirmation de retournement, juste
+            # du bruit de prix a court terme sous une ligne quasi figee.
+            # Corrige sur DEUX axes distincts, pas seulement la duree :
+            #   1) DUREE allongee a un niveau coherent avec la vitesse reelle
+            #      de l EMA200 (30 min par defaut, au lieu de 3 min).
+            #   2) QUALITE DES DONNEES : n accepte le signal que si l EMA200
+            #      est suffisamment MATURE (assez de bougies accumulees, pas
+            #      juste le minimum de 10) ET que la collecte est SAINE en ce
+            #      moment (pas de coupure WebSocket recente, pas de gap de
+            #      donnees) — un retournement calcule sur des donnees
+            #      fraichement redemarrees ou une collecte instable n est pas
+            #      fiable, meme si le compteur de cycles est au complet.
+            if cfg.get("SPOT_ACCUM_REVERSAL_EXIT_ENABLED", True):
+                min_maturity = cfg.get("SPOT_ACCUM_REVERSAL_MIN_EMA_MATURITY", 100)
+                data_mature = len(state.mtf_prices) >= min_maturity
+                data_healthy = self._is_ws_healthy() if self.info is not None else True
+                ema200_now = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+
+                if not data_mature or not data_healthy or ema200_now is None:
+                    # Donnees pas assez fiables pour juger d un retournement
+                    # — on n accumule ni ne remet a zero le compteur, on
+                    # attend simplement d avoir une lecture de confiance.
+                    reason_skip = "EMA200 pas assez mature" if not data_mature else ("collecte instable" if not data_healthy else "EMA200 indisponible")
+                    if state.spot_accum_reversal_count > 0:
+                        self.emit("log", {"msg": f"[{ticker}] 🌱 Retournement en cours d'evaluation suspendu ({reason_skip}) — compteur conserve a {state.spot_accum_reversal_count}", "level": "dim"})
+                elif price < ema200_now:
+                    state.spot_accum_reversal_count += 1
+                else:
+                    state.spot_accum_reversal_count = 0
+
+                confirm_needed = cfg.get("SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES", 180)  # ~30 min par defaut
+                if state.spot_accum_reversal_count >= confirm_needed:
+                    pnl, _, trade = state.close_position(price, "RETOURNEMENT CONFIRME")
+                    trade["symbol"] = symbol
+                    self.emit("trade", trade)
+                    if pnl > 0:
+                        self._register_win(ticker)
+                    else:
+                        self._register_max_loss(ticker, pos.get("confidence"))
+                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum RETOURNEMENT CONFIRME (prix sous l'EMA200 depuis {confirm_needed} cycles, donnees matures et saines) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "warn"})
+                    state.spot_accum_reversal_count = 0
+                    self._save_open_positions()
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, symbol, pos, cfg)
+                    return
+
+            # 2) Objectif : SPOT_ACCUM_TARGET_SR_PCT (80% par defaut) de la
+            #    distance support-resistance MESUREE A L ENTREE — fermeture
+            #    immediate des que le prix l atteint, meme si le trailing
+            #    n a pas encore suivi jusque-la.
+            target_price = pos.get("target_price")
+            if target_price is not None and price >= target_price:
+                pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
+                trade["symbol"] = symbol
+                self.emit("trade", trade)
+                self._register_win(ticker)
+                self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum OBJECTIF ATTEINT (80% distance S/R) @ ${price:.2f} | PnL: +${pnl:.2f}", "level": "win"})
+                self._save_open_positions()
+                if mode == "live" and self.exchange:
+                    close_order(self.exchange, symbol, pos, cfg)
+                return
+
+            # 3) Trailing : arme une fois le PnL >= SPOT_ACCUM_TTP_ARM_PCT
+            #    (3% par defaut) OU le prix atteint trailing_arm_price
+            #    (v4.49 — support + 70% de la distance support-resistance,
+            #    seuil structurel qui S ADDITIONNE au seuil de PnL — arme
+            #    des que L UN DES DEUX est atteint, celui qui arrive en
+            #    premier), puis suit le pic avec une marge de
+            #    SPOT_ACCUM_TTP_TOLERANCE_PCT (0.5% par defaut).
+            arm_pct = cfg.get("SPOT_ACCUM_TTP_ARM_PCT", 3.0)
+            tolerance_pct = cfg.get("SPOT_ACCUM_TTP_TOLERANCE_PCT", 0.5)
+            trailing_arm_price = pos.get("trailing_arm_price")
+            if not state.spot_accum_armed:
+                if pnl_pct >= arm_pct or (trailing_arm_price is not None and price >= trailing_arm_price):
+                    state.spot_accum_armed = True
+                    state.spot_accum_peak_pnl_pct = pnl_pct
+            else:
+                if state.spot_accum_peak_pnl_pct is None or pnl_pct > state.spot_accum_peak_pnl_pct:
+                    state.spot_accum_peak_pnl_pct = pnl_pct
+                elif pnl_pct <= state.spot_accum_peak_pnl_pct - tolerance_pct:
+                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
+                    trade["symbol"] = symbol
+                    self.emit("trade", trade)
+                    self._register_win(ticker)
+                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum TTP @ ${price:.2f} | pic +{state.spot_accum_peak_pnl_pct:.2f}% | PnL: +${pnl:.2f}", "level": "win"})
+                    self._save_open_positions()
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, symbol, pos, cfg)
+                    return
+            self._save_open_positions()
+            return
+
+        # ── 1. STOP LOSS — % de E, perte $ PLAFONNEE quel que soit le levier ──
+        # v4.10 — compare pnl_usd (deja amplifie par le levier via la formule
+        # ci-dessus) au plafond E*sl_pct/100 (LUI independant du levier) :
+        # le mouvement de prix necessaire pour toucher ce plafond $ diminue
+        # donc mecaniquement quand le levier monte, mais le $ perdu reste fixe.
+        # v4.24 — priorite au seuil MEMORISE sur la position (adaptatif ou
+        # fixe, fige au moment de l ouverture) — repli sur la config globale
+        # actuelle pour les positions ouvertes avant ce fix (champ absent).
+        sl_pct_of_e = pos.get("sl_pct_of_e", cfg.get("SL_PCT_OF_E", 1.0))
+        sl_usd = -E * sl_pct_of_e / 100
+        if pnl_usd <= sl_usd:
+            pnl, _, trade = state.close_position(price, "STOP LOSS")
+            trade["symbol"] = symbol
+            if mode == "live" and self.exchange:
+                close_order(self.exchange, ticker, pos, self.cfg)
+            self.emit("trade", trade)
+            peak_str = f" | pic atteint avant la chute : +${trade['peak_pnl_usd']:.2f}" if trade.get("peak_pnl_usd") else ""
+            self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (plafond -${-sl_usd:.2f} = {sl_pct_of_e:.2f}% de E, mouvement de prix requis a x{pos.get('leverage',1)} : {sl_pct_of_e/max(pos.get('leverage',1),1):.2f}%){peak_str}", "level": "loss"})
+            # v4.31 — SUR DEMANDE EXPLICITE, suite a une serie de 7+ pertes
+            # consecutives dans le MEME sens observee (ARB LONG) : la
+            # confirmation renforcee (voir plus bas) se declenche desormais
+            # APRES TOUTE fermeture dans un sens donne — gain OU perte — pas
+            # seulement apres un gain. Une perte prouve que la direction
+            # etait fausse, raison de plus d exiger une reconfirmation
+            # soutenue avant de retenter le meme pari.
+            if pos["type"] == "long":
+                state.post_win_confirm_long = True
+                state.confirm_count_long = 0
+            else:
+                state.post_win_confirm_short = True
+                state.confirm_count_short = 0
+            self._register_max_loss(ticker, pos.get("confidence"))
+            self._save_open_positions()  # sauvegarde en live ET en paper
+            self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
+            return
+
+        # ── 2. SL Hyperliquid — filet de securite (ne devrait presque jamais
+        #      se declencher en premier, le Stop Loss bot est plus serre) ────
+        sl_hit = (pos["type"] == "long" and price <= pos["sl"]) or \
+                 (pos["type"] == "short" and price >= pos["sl"])
+        if sl_hit:
+            pnl, _, trade = state.close_position(price, "SL SECURITE HYPERLIQUID")
+            trade["symbol"] = symbol
+            if mode == "live" and self.exchange:
+                close_order(self.exchange, ticker, pos, self.cfg)
+            self.emit("trade", trade)
+            peak_str = f" | pic atteint avant la chute : +${trade['peak_pnl_usd']:.2f}" if trade.get("peak_pnl_usd") else ""
+            self.emit("log", {"msg": f"[{ticker}] {strat_tag}SL SECURITE @ ${price:.2f} | PnL: ${pnl:.2f}{peak_str}", "level": "loss"})
+            # v4.31 — meme raisonnement que pour le STOP LOSS ci-dessus.
+            if pos["type"] == "long":
+                state.post_win_confirm_long = True
+                state.confirm_count_long = 0
+            else:
+                state.post_win_confirm_short = True
+                state.confirm_count_short = 0
+            self._register_max_loss(ticker, pos.get("confidence"))
+            self._save_open_positions()  # sauvegarde en live ET en paper
+            self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
+            return
+
+        # ── 3. Trailing Take Profit — % de MOUVEMENT DE PRIX REEL (v4.7) ────
+        # A la difference du SL (qui reste en % de E, plafonnant le $ perdu
+        # quel que soit le levier), le TP ne doit PAS etre reduit par le
+        # levier : ces seuils sont de vrais % de mouvement de PRIX, et c est
+        # le levier qui amplifie librement le $ gagne pour ce meme mouvement.
+        leverage = pos.get("leverage", 1)
+        # v4.24 — priorite aux seuils MEMORISES sur la position (adaptatifs
+        # ou fixes, figes a l ouverture) — repli sur la config globale pour
+        # les positions ouvertes avant ce fix.
+        arm1_price_pct  = pos.get("ttp_arm1_pct",  cfg.get("TTP_ARM1_PRICE_PCT", 1.0))
+        lock1_price_pct = pos.get("ttp_lock1_pct", cfg.get("TTP_LOCK1_PRICE_PCT", 0.8))
+        arm2_price_pct  = pos.get("ttp_arm2_pct",  cfg.get("TTP_ARM2_PRICE_PCT", 1.3))
+        gap_price_pct   = pos.get("ttp_gap_pct",   cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3))
+        # v4.56 — FIX BUG CRITIQUE : priorite au seuil MEMORISE sur la
+        # position (mis a l echelle si SL/TTP adaptatif etait actif a
+        # l ouverture) — repli sur la config globale FIXE pour les
+        # positions ouvertes avant ce fix (champ absent). Avant ce fix, ces
+        # deux valeurs restaient TOUJOURS fixes meme quand arm1_price_pct
+        # etait mis a l echelle par l adaptatif, inversant leur relation
+        # logique sur les actifs a faible ATR — armement/desarmement du
+        # tier0/tier1 en boucle, plusieurs fois par minute (observe sur TIA).
+        tier0_arm_pct   = pos.get("tier0_arm_pct", cfg.get("TTP_TIER0_ARM_PRICE_PCT", 0.5))
+        tier0_gap_pct   = pos.get("tier0_gap_pct", cfg.get("TTP_TIER0_GAP_PRICE_PCT", 0.42))
+
+        if state.tp_stage == 0:
+            # ── Promotion directe vers le tier 1 (arm1 atteint) — desactive
+            # le tier 0 au passage, le trailing principal prend le relai.
+            if pnl_pct >= arm1_price_pct:
+                state.tp_stage = 1
+                state.peak_pnl_usd = pnl_usd
+                state.tier0_armed = False
+                self.emit("log", {"msg": f"[{ticker}] Prix +{pnl_pct:.2f}% (+${pnl_usd:.2f} a x{leverage}) — TTP arme (sortie si repli a +{lock1_price_pct:.2f}% de mouvement de prix)", "level": "signal"})
+                # confirme sur ce cycle ; la verification de fermeture ne se
+                # fera qu a partir du PROCHAIN cycle (evite une fermeture
+                # instantanee si le seuil de sortie initial etait deja atteint
+                # ce meme cycle).
+                return
+
+            # ── v4.11 — Tier 0 : protection anticipee pour les trades qui
+            # n atteignent jamais arm1. S arme des que le prix atteint
+            # tier0_arm_pct, puis trail avec une marge plus large (tier0_gap_pct).
+            if not state.tier0_armed and pnl_pct >= tier0_arm_pct:
+                state.tier0_armed = True
+                state.tier0_peak_pnl_usd = pnl_usd
+                self.emit("log", {"msg": f"[{ticker}] Prix +{pnl_pct:.2f}% (+${pnl_usd:.2f} a x{leverage}) — protection anticipee armee (sortie si repli a plus de {tier0_gap_pct:.2f}% sous le pic)", "level": "signal"})
+                return
+
+            if state.tier0_armed:
+                if state.tier0_peak_pnl_usd is None or pnl_usd > state.tier0_peak_pnl_usd:
+                    state.tier0_peak_pnl_usd = pnl_usd
+                tier0_peak_pct = (state.tier0_peak_pnl_usd / (E * leverage) * 100) if E and leverage else 0
+                tier0_lock_pct = tier0_peak_pct - tier0_gap_pct
+
+                if pnl_pct <= tier0_lock_pct:
+                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
+                    trade["symbol"] = symbol
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, ticker, pos, self.cfg)
+                    self.emit("trade", trade)
+                    self._register_win(ticker)
+                    # v4.25 — apres un gain, exige une confirmation renforcee
+                    # (plusieurs cycles consecutifs) avant de rouvrir dans le MEME sens.
+                    if pos["type"] == "long":
+                        state.post_win_confirm_long = True
+                        state.confirm_count_long = 0
+                    else:
+                        state.post_win_confirm_short = True
+                        state.confirm_count_short = 0
+                    self.emit("log", {"msg": f"[{ticker}] {strat_tag}TTP SORTIE (protection anticipee) @ ${price:.2f} | pic +{tier0_peak_pct:.2f}% de mouvement (+${state.tier0_peak_pnl_usd:.2f} a x{leverage}) | PnL: +${pnl:.2f}", "level": "win"})
+                    self._save_open_positions()  # sauvegarde en live ET en paper
+                    self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
+                    return
+                else:
+                    self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Protection anticipee active | mouvement +{pnl_pct:.2f}% (+${pnl_usd:.2f} a x{leverage}) | pic +{tier0_peak_pct:.2f}% (sortie si repli a +{tier0_lock_pct:.2f}%)", "level": "dim"})
+                    return
+
+            # ni tier0 ni arm1 atteints : rien a faire, la fonction continue
+            # (log "rien de declenche" gere plus bas dans la fonction).
+
+        if state.tp_stage == 1:
+            # v4.11 — Reactivation defensive du tier 0 si le prix retombe
+            # jusqu a son seuil d armement pendant que tier 1 est actif — ne
+            # devrait normalement jamais arriver tant que lock1_price_pct
+            # reste superieur a tier0_arm_pct (tier 1 fermerait deja le trade
+            # avant), mais protege si les seuils sont reconfigures autrement.
+            if pnl_pct <= tier0_arm_pct:
+                state.tp_stage = 0
+                state.tier0_armed = True
+                state.tier0_peak_pnl_usd = state.peak_pnl_usd
+                self.emit("log", {"msg": f"[{ticker}] Repli sous {tier0_arm_pct:.2f}% — retour a la protection anticipee (tier 1 desarme)", "level": "warn"})
+                return
+
+            if state.peak_pnl_usd is None or pnl_usd > state.peak_pnl_usd:
+                state.peak_pnl_usd = pnl_usd
+            # Pic reconverti en % de mouvement de prix (le levier est fixe
+            # pour la duree du trade, cette reconversion est donc exacte).
+            peak_price_pct = (state.peak_pnl_usd / (E * leverage) * 100) if E and leverage else 0
+
+            # v4.60 — SUR DEMANDE EXPLICITE : des l armement (tier 1), le
+            # trailing devient IMMEDIATEMENT dynamique — sortie = pic - marge
+            # fixe, mis a jour a chaque nouveau pic, sans attendre un second
+            # palier (arm2). Exemple confirme : arme a 1%, pic 1.45% -> sortie
+            # a 0.95% ; pic 2% -> sortie a 1.5%. Remplace l ancien
+            # comportement (verrou fixe a lock1 tant que arm2 pas atteint).
+            # Applique a Normal/Accumulation/Funding — PAS Spot-Accumulation,
+            # qui a deja son propre trailing dynamique independant.
+            if cfg.get("TTP_DYNAMIC_FROM_ARM1", True):
+                dynamic_gap_pct = cfg.get("TTP_DYNAMIC_TRAIL_GAP_PCT", 0.5)
+                current_lock_pct = peak_price_pct - dynamic_gap_pct
+            # Tant que le pic n a pas atteint le 2e seuil (arm2), le seuil de
+            # sortie reste fixe a lock1. Des que le pic atteint/depasse arm2,
+            # le TTP se resserre en continu : sortie = pic - gap, a l infini.
+            elif peak_price_pct >= arm2_price_pct:
+                current_lock_pct = peak_price_pct - gap_price_pct
+            else:
+                current_lock_pct = lock1_price_pct
+
+            if pnl_pct <= current_lock_pct:
+                pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
+                trade["symbol"] = symbol
+                if mode == "live" and self.exchange:
+                    close_order(self.exchange, ticker, pos, self.cfg)
+                self.emit("trade", trade)
+                self._register_win(ticker)
+                # v4.25 — apres un gain, exige une confirmation renforcee
+                # (plusieurs cycles consecutifs) avant de rouvrir dans le MEME sens.
+                if pos["type"] == "long":
+                    state.post_win_confirm_long = True
+                    state.confirm_count_long = 0
+                else:
+                    state.post_win_confirm_short = True
+                    state.confirm_count_short = 0
+                self.emit("log", {"msg": f"[{ticker}] {strat_tag}TTP SORTIE @ ${price:.2f} | pic +{peak_price_pct:.2f}% de mouvement (+${state.peak_pnl_usd:.2f} a x{leverage}) | PnL: +${pnl:.2f}", "level": "win"})
+                self._save_open_positions()  # sauvegarde en live ET en paper
+                self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
+                return
+            else:
+                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} TTP actif | mouvement +{pnl_pct:.2f}% (+${pnl_usd:.2f} a x{leverage}) | pic +{peak_price_pct:.2f}% (sortie si repli a +{current_lock_pct:.2f}%)", "level": "dim"})
+                return
+
+        # ── 4. Rien de declenche — affichage du latent ──────────────────────
+        # v3.2 — FIX : ce log se declenchait a CHAQUE tick WebSocket (plusieurs
+        # fois par seconde), inondant le buffer de logs et poussant hors de
+        # vue les messages plus rares (collecte des autres actifs, alarmes...).
+        # Limite desormais a une fois toutes les 30 secondes par actif.
+        now_ts = time.time()
+        if state._last_status_log_ts is None or (now_ts - state._last_status_log_ts) >= 30:
+            state._last_status_log_ts = now_ts
+            self.emit("log", {"msg": f"[{ticker}] ${price:.2f} {pos['type'].upper()} | latent: ${pnl_usd:+.2f} ({pnl_pct:+.2f}% de prix) | Stop Loss: -${-sl_usd:.2f} ({sl_pct_of_e:.2f}% de E) | SL secu: ${pos['sl']:.2f}", "level": "dim"})
+
+    def _process(self, symbol, price):
+        cfg   = self.cfg
+        ticker = ticker_from_slot_key(symbol)   # vrai ticker API (ex: "BTC" depuis "BTC_0")
+        state = self.states[symbol]
+        # v3.2 — FIX : ne pas ecraser le prix avec la valeur REST (cycle,
+        # potentiellement vieille de 15s) si le WebSocket est sain — il
+        # fournit deja une valeur plus fraiche en continu pour les actifs en
+        # position. Sans ce garde-fou, les deux sources ecrivaient
+        # concurremment sur state.current_price depuis des threads
+        # differents, causant un "retour en arriere" brutal et confus du
+        # PnL affiche des qu un cycle REST arrivait apres plusieurs ticks
+        # WebSocket plus recents.
+        if not self._is_ws_healthy():
+            state.current_price = price
+        state.last_price_time = datetime.now()
+        state.price_history.append(price)
+        # v4.36 — Secours : met aussi a jour le plus haut/bas via le prix du
+        # CYCLE (REST), pas seulement le WebSocket — garantit que le suivi
+        # haut/bas continue meme si le WS est temporairement indisponible.
+        if state.window_high is None or price > state.window_high:
+            state.window_high = price
+        if state.window_low is None or price < state.window_low:
+            state.window_low = price
+
+        if len(state.price_history) >= 2:
+            vol = abs(list(state.price_history)[-1] - list(state.price_history)[-2])
+            state.vol_history.append(vol)
+
+        prices = list(state.price_history)
+        rsi = calc_rsi(prices, cfg["RSI_PERIOD"])
+
+        # EMA specifiques au symbole ou globales
+        ema_short = cfg.get("SYMBOL_EMA_SHORT", {}).get(ticker, cfg["EMA_SHORT"])
+        ema_long  = cfg.get("SYMBOL_EMA_LONG",  {}).get(ticker, cfg["EMA_LONG"])
+        ema_s = calc_ema(prices, ema_short)
+        ema_l = calc_ema(prices, ema_long)
+
+        # EMA intermediaire — tendance 25-50 minutes
+        # BTC/ETH : EMA50 swing (25 min) ou EMA60 scalp (30 min)
+        # Prix > EMA_MID → tendance haussiere de fond → bloquer SHORT
+        # Prix < EMA_MID → tendance baissiere de fond → bloquer LONG
+        ema_mid_period = cfg.get("SYMBOL_EMA_MID", {}).get(ticker, cfg.get("EMA_MID_PERIOD", 50))
+        ema_mid = calc_ema(prices, ema_mid_period) if ema_mid_period else None
+        macd, sig = calc_macd(prices, cfg["MACD_FAST"], cfg["MACD_SLOW"], cfg["MACD_SIGNAL"])
+        bb_up, bb_mid, bb_low = calc_bollinger(prices, cfg["BB_PERIOD"], cfg["BB_STD"])
+
+        # EMA 200 multi-timeframe — 1 point tous les MTF_CANDLE_SEC (2 min par
+        # defaut), pour couvrir 200 x 2min = 6h40 de tendance longue, QUEL
+        # QUE SOIT le CYCLE_INTERVAL utilise pour le reste du bot (verifs
+        # rapides toutes les 10s, mais la fenetre de tendance de fond doit
+        # rester longue terme, independamment de cette frequence).
+        # v4.13 — FIX : l ancien MTF_STEP=4 etait code en dur en supposant un
+        # CYCLE_INTERVAL de 30s (4x30s=2min/point, 200x2min=6h40) — avec le
+        # CYCLE_INTERVAL reel de 10s, ca ne donnait qu un point toutes les
+        # 40s, soit une fenetre reelle de ~2h13 seulement (3x plus courte que
+        # prevu). MTF_STEP est desormais calcule pour toujours viser
+        # MTF_CANDLE_SEC secondes par point, peu importe le CYCLE_INTERVAL.
+        MTF_CANDLE_SEC = 120  # 2 minutes par point -> 200 x 2min = 6h40 au total
+        MTF_STEP = max(1, round(MTF_CANDLE_SEC / cfg["CYCLE_INTERVAL"]))
+        # v4.39 — FIX BUG CRITIQUE : utilise desormais state.cycle_count (un
+        # compteur dedie, incremente ici) plutot que len(prices) — price_history
+        # est une deque PLAFONNEE (maxlen=500) dont la longueur se FIGE
+        # definitivement une fois pleine (surtout si restauree deja pleine
+        # depuis la sauvegarde), ce qui gelait SILENCIEUSEMENT l echantillonnage
+        # (bougies ET EMA200) des que ce reste fige n etait jamais 0.
+        state.cycle_count += 1
+        if state.cycle_count % MTF_STEP == 0:
+            state.mtf_prices.append(price)
+            # v4.36 — Cloture de la bougie ~2min en cours : capture le plus
+            # haut/bas REELLEMENT vu depuis le dernier point (alimente en
+            # direct par le WebSocket entre deux echantillonnages, secours
+            # REST sinon — voir _on_ws_allmids / plus haut dans _process),
+            # pas juste ce point de prix isole. Sert a un vrai calcul d ATR
+            # (Wilder, haut-bas-cloture) — voir plus bas.
+            candle_high = state.window_high if state.window_high is not None else price
+            candle_low  = state.window_low  if state.window_low  is not None else price
+            state.candle_history.append((candle_high, candle_low, price))
+            # Nouvelle fenetre : redemarre le suivi haut/bas a partir de ce
+            # point de cloture (qui devient l ouverture approximative de la
+            # bougie suivante).
+            state.window_high = price
+            state.window_low  = price
+        ema200 = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+        # v4.12 — FIX FAILLE : quand l EMA200 n est pas encore calculable
+        # (donnees insuffisantes, ex: juste apres un redemarrage), l ancien
+        # code mettait trend_up ET trend_down a True SIMULTANEMENT — la
+        # protection contre les trades a contre-tendance etait alors
+        # entierement contournee (les deux sens autorises sans aucun filtre).
+        # Desormais, si l EMA200 est indisponible, AUCUN des deux sens n est
+        # autorise tant que la donnee n est pas fiable — plus prudent qu un
+        # bypass complet, au prix d attendre la collecte plutot que de
+        # trader a l aveugle sur la tendance de fond.
+        trend_up   = ema200 is not None and price > ema200   # au dessus EMA200 = tendance haussiere
+        trend_down = ema200 is not None and price < ema200   # en dessous EMA200 = tendance baissiere
+
+        # Sauvegarde du MACD du cycle precedent pour detection crossover (Trailing TP)
+        state.prev_macd = state.current_macd
+        state.prev_sig  = state.current_sig
+
+        state.current_rsi  = rsi
+        state.current_macd = macd
+        state.current_sig  = sig
+
+        needed = max(cfg["RSI_PERIOD"]+1, ema_long, cfg["MACD_SLOW"]+cfg["MACD_SIGNAL"], cfg["BB_PERIOD"], cfg.get("SR_PERIOD", 0)+1, ema_mid_period or 0)
+        if any(v is None for v in [rsi, ema_s, ema_l, macd, sig, bb_up]):
+            state.collecting = True
+            self.emit("log", {"msg": f"[{ticker}] Collecte... ({len(prices)}/{needed})", "level": "dim"})
+            return
+        state.collecting = False
+
+        # Stocker l ATR% courant pour affichage dashboard — calcule a chaque cycle
+        # independamment de l etat (position ouverte ou non, filtre bloque ou non)
+        # v4.36 — vrai calcul (haut/bas/cloture), repli sur l ancien (cloture-
+        # a-cloture) tant que candle_history n a pas assez de bougies (~28 min).
+        _, _atr_pct_now = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
+        if _atr_pct_now is None:
+            _, _atr_pct_now = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+        state.current_atr_pct = _atr_pct_now
+
+        if state.position:
+            self._maybe_manage_position_via_cycle(symbol, price, state)
+            return
+
+        # v3.2 — Le blocage "session 23h45" est retire : les nouvelles entrees
+        # restent possibles jusqu a 23h59:59 UTC. Le decoupage en jours
+        # calendaires UTC (00h00-23h59:59) ne sert plus qu aux statistiques
+        # (voir api.py), avec attribution au jour d OUVERTURE du trade — les
+        # positions ouvertes a cheval sur minuit continuent normalement
+        # jusqu a leur fermeture naturelle, sans aucune interruption.
+
+        # ── v3.2 web : max_open_trades (pilote depuis l interface) — le filtre
+        #    active_coins est applique plus loin (apres le calcul de confiance),
+        #    pour permettre l auto-activation d un actif inactif si une
+        #    opportunite tres forte est detectee.
+        max_open = cfg.get("MAX_OPEN_TRADES")
+        if max_open is not None:
+            open_count = sum(1 for st in self.states.values() if st.position)
+            if open_count >= max_open:
+                self.emit("log", {"msg": f"[{ticker}] Max {max_open} positions ouvertes atteint — nouvelle entree suspendue", "level": "dim"})
+                return
+
+        # ── Plage horaire — bloque les NOUVELLES entrées en paper ET en live ──
+        if not is_trading_hours(cfg):
+            self.emit("log", {"msg": f"[{ticker}] Hors plage horaire — aucune nouvelle entree", "level": "dim"})
+            return
+
+        # Filtre volume
+        vol_ok = True
+        if len(state.vol_history) >= 10 and cfg["VOLUME_MIN_RATIO"] > 1.0:
+            avg_vol = sum(list(state.vol_history)[:-1]) / (len(state.vol_history) - 1)
+            cur_vol = list(state.vol_history)[-1]
+            vol_ok = cur_vol >= avg_vol * cfg["VOLUME_MIN_RATIO"]
+
+        # Filtre ATR — bloque les entrees en marche range (volatilite insuffisante)
+        atr_excluded = ticker in cfg.get("ATR_EXCLUDE_SYMBOLS", [])
+        if cfg.get("ATR_FILTER", False) and not atr_excluded:
+            atr_period  = cfg.get("ATR_PERIOD", 14)
+            # Seuil specifique au symbole ou seuil global
+            atr_min_pct = cfg.get("ATR_MIN_PCT_BY_SYMBOL", {}).get(ticker,
+                          cfg.get("ATR_MIN_PCT", 0.06))
+            # v4.36 — FIX CALIBRAGE : l ancien calc_atr(prices,...) mesurait
+            # la variation cloture-a-cloture sur des points espaces de
+            # CYCLE_INTERVAL (10s) — structurellement quasi nulle, ce qui
+            # bloquait la quasi-totalite des actifs en permanence (confirme
+            # par les logs : "ATR X% < seuil" sur pratiquement tous les
+            # actifs au meme cycle). Utilise desormais de vraies bougies
+            # haut/bas/cloture (~2 min, alimentees en direct par le
+            # WebSocket) — repli sur l ancien calcul tant que candle_history
+            # n a pas assez de bougies (~28 min apres un demarrage/redemarrage).
+            atr_pct = None
+            if len(state.candle_history) >= atr_period + 1:
+                _, atr_pct = calc_true_range_atr(list(state.candle_history), atr_period)
+            if atr_pct is None:
+                _, atr_pct = calc_atr(prices, atr_period)
+            if atr_pct is not None and atr_pct < atr_min_pct:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ATR {atr_pct:.3f}% < {atr_min_pct}% — marche en range, entree bloquee | RSI:{rsi:.1f}",
+                    "level": "dim"
+                })
+                return
+
+        # Pour les symboles or (PAXG) — respecter les horaires Forex + periode de chauffe
+        if ticker in cfg.get("FOREX_SYMBOLS", []):
+            forex_now = is_forex_open()
+
+            # Detection de la transition ferme → ouvert
+            if state.forex_was_open is not None and not state.forex_was_open and forex_now:
+                state.forex_reopen_time = datetime.now()
+                warmup = cfg.get("FOREX_WARMUP_MINUTES", 15)
+                self.emit("log", {
+                    "msg": f"[{ticker}] Forex reouvert — chauffe {warmup} min avant entrees",
+                    "level": "warn"
+                })
+
+            state.forex_was_open = forex_now
+
+            if not forex_now:
+                self.emit("log", {"msg": f"[{ticker}] Marche Forex ferme — {symbol} ignore", "level": "dim"})
+                return
+
+            # Verifier si la periode de chauffe est ecoulee
+            if state.forex_reopen_time is not None:
+                warmup_min = cfg.get("FOREX_WARMUP_MINUTES", 15)
+                elapsed = (datetime.now() - state.forex_reopen_time).total_seconds() / 60
+                remaining = warmup_min - elapsed
+                if remaining > 0:
+                    self.emit("log", {
+                        "msg": f"[{ticker}] Chauffe Forex : encore {remaining:.0f} min avant entrees — observation en cours",
+                        "level": "dim"
+                    })
+                    return
+                else:
+                    # Chauffe terminee — on ne reinitialise pas forex_reopen_time
+                    # pour ne pas redeclencher la chauffe au prochain cycle
+                    pass
+        else:
+            # ── Cryptos (tout ce qui n est pas dans FOREX_SYMBOLS) ───────────
+            # Heures creuses + blackout CPI : bloquent uniquement les NOUVELLES
+            # entrees. Les positions deja ouvertes continuent d etre gerees
+            # normalement par _manage_position. PAXG/or n est pas concerne ici
+            # (deja gere ci-dessus par la logique Forex).
+            # CRYPTO_OFFPEAK_ENABLED / CPI_BLACKOUT_ENABLED : bascules pilotees
+            # depuis l interface web (filter_hours / filter_macro) — v3.2 web.
+            if cfg.get("CRYPTO_OFFPEAK_ENABLED", True) and is_crypto_offpeak(cfg):
+                self.emit("log", {
+                    "msg": f"[{ticker}] Heures creuses crypto ({cfg.get('CRYPTO_OFFPEAK_HOUR_START_UTC',2)}h-{cfg.get('CRYPTO_OFFPEAK_HOUR_END_UTC',6)}h UTC) — nouvelles entrees suspendues",
+                    "level": "dim"
+                })
+                return
+
+            if cfg.get("CPI_BLACKOUT_ENABLED", True):
+                self._refresh_cpi_events_if_needed()
+                cpi_blackout, cpi_event = self._is_cpi_blackout()
+                if cpi_blackout:
+                    self.emit("log", {
+                        "msg": f"[{ticker}] Blackout CPI ({cpi_event.strftime('%d/%m %H:%M UTC')}) — nouvelles entrees suspendues",
+                        "level": "warn"
+                    })
+                    return
+
+        ema_bull = ema_s > ema_l
+        ema_bear = ema_s < ema_l
+
+        # v4.15 — Des que la condition retombe (ema_bull/ema_bear devient
+        # faux) apres une fermeture dans ce sens, on considere qu un futur
+        # retour a True sera un VRAI nouveau croisement, pas la continuation
+        # du signal deja traite — le flag "perime" est leve.
+        if state.long_signal_stale and not ema_bull:
+            state.long_signal_stale = False
+        if state.short_signal_stale and not ema_bear:
+            state.short_signal_stale = False
+
+        # Filtre pivot — detection du croisement EMA frais (cycle N-1 → cycle N)
+        # Pour un LONG : EMA courte vient de passer AU-DESSUS de EMA longue
+        # Pour un SHORT : EMA courte vient de passer EN-DESSOUS de EMA longue
+        # Evite d entrer sur un croisement ancien — on veut le pivot tout frais
+        require_pivot = ticker in cfg.get("PIVOT_CONFIRM_SYMBOLS", [])
+        pivot_bull = True  # par defaut : pas de filtre pivot
+        pivot_bear = True
+
+        if require_pivot and state.prev_ema_s is not None and state.prev_ema_l is not None:
+            prev_bull = state.prev_ema_s > state.prev_ema_l
+            prev_bear = state.prev_ema_s < state.prev_ema_l
+            # Croisement haussier frais : etait baissier avant, haussier maintenant
+            pivot_bull = (not prev_bull) and ema_bull
+            # Croisement baissier frais : etait haussier avant, baissier maintenant
+            pivot_bear = (not prev_bear) and ema_bear
+
+        # Compteur de cycles consecutifs dans le sens de la tendance EMA
+        if ema_bull:
+            state.consec_bull += 1
+            state.consec_bear  = 0
+        elif ema_bear:
+            state.consec_bear += 1
+            state.consec_bull  = 0
+        else:
+            state.consec_bull  = 0
+            state.consec_bear  = 0
+
+        # Nombre minimum de cycles consecutifs requis par symbole
+        # PAXG : 2 cycles consecutifs dans le sens de la tendance avant entree
+        # Evite les faux croisements EMA de courte duree sur l or
+        min_consec = cfg.get("CONSEC_CONFIRM_SYMBOLS", {}).get(ticker, 1)
+
+        # Support / Resistance — calcule desormais pour TOUS les profils
+        # (avant : uniquement pour confirmer un breakout en scalp). Sert
+        # aussi au nouveau filtre "marge suffisante pour Quick Profit"
+        # (voir plus bas) : LONG bloque si la resistance est trop proche
+        # pour laisser la place a un Quick Profit, SHORT bloque si le
+        # support est trop proche.
+        is_scalp = cfg.get("PROFILE") == "scalp"
+        sr_period = cfg.get("SR_PERIOD", 50)
+        support, resistance = calc_support_resistance(prices, sr_period)
+
+        # v4.21 — SUR DEMANDE EXPLICITE : trace des indicateurs pour affichage
+        # en graphe (RSI, MACD, EMA200, ATR, support/resistance). Purement
+        # informatif, n influence aucune decision — voir _process pour le
+        # detail des memes calculs utilises pour trader.
+        # v4.36 — vrai calcul (haut/bas/cloture), repli sur l ancien si pas
+        # encore assez de bougies (~28 min apres un demarrage).
+        _, atr_pct_snapshot = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
+        if atr_pct_snapshot is None:
+            _, atr_pct_snapshot = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+        state.indicator_history.append({
+            "ts": time.time(),
+            "price": price,
+            "rsi": round(rsi, 2) if rsi is not None else None,
+            "macd": round(macd, 6) if macd is not None else None,
+            "macd_signal": round(sig, 6) if sig is not None else None,
+            "ema200": round(ema200, 6) if ema200 is not None else None,
+            "atr_pct": round(atr_pct_snapshot, 4) if atr_pct_snapshot is not None else None,
+            "support": round(support, 6) if support is not None else None,
+            "resistance": round(resistance, 6) if resistance is not None else None,
+        })
+
+        # Sauvegarder les EMA pour le prochain cycle
+        state.prev_ema_s = ema_s
+        state.prev_ema_l = ema_l
+
+        # ── Filtre Momentum Instantane — "ce qui se passe MAINTENANT" ──────
+        # Les EMA moyennent le passe (12-26 cycles = 6-13 min) et peuvent
+        # generer un signal qui contredit le mouvement TRES recent.
+        # On calcule le % de variation sur les MOMENTUM_PERIOD derniers cycles
+        # (defaut 4 cycles = 2 min). Si ce mouvement recent est fortement
+        # oppose au signal (au-dela de MOMENTUM_THRESHOLD_PCT), on bloque
+        # l entree — "maintenant" prevaut sur la moyenne.
+        # Applique a TOUS les actifs, SWING et SCALP.
+        momentum_period    = cfg.get("MOMENTUM_PERIOD", 4)
+        momentum_threshold = cfg.get("MOMENTUM_THRESHOLD_PCT", 0.15)
+        momentum_pct = None
+        if len(prices) > momentum_period:
+            ref_price = prices[-(momentum_period+1)]
+            if ref_price > 0:
+                momentum_pct = (price - ref_price) / ref_price * 100
+
+        # v4.16 — SUR DEMANDE EXPLICITE : le mode Accumulation tourne EN
+        # PARALLELE de la logique normale ci-dessous, evalue independamment
+        # a CHAQUE cycle — plus seulement en repli quand la logique normale
+        # ne trouve rien. Les deux systemes peuvent donc chacun proposer un
+        # candidat sur le meme actif au meme cycle (garde-fou anti-double-
+        # ouverture dans _finalize_open : un seul slot par actif, le premier
+        # candidat finalise gagne).
+        self._check_accumulation_signal(
+            symbol, ticker, price, support, resistance, rsi, momentum_pct,
+            ema200, trend_up, trend_down, prices, state
+        )
+
+        # v4.33 — Mode Funding Contrarian, lui aussi EN PARALLELE, evalue
+        # independamment chaque cycle — meme garde-fou anti-double-ouverture
+        # dans _finalize_open (un seul slot par actif).
+        self._check_funding_contrarian_signal(symbol, ticker, price, rsi, prices, state)
+
+        # v4.43 — Mode Spot-Accumulation, lui aussi EN PARALLELE.
+        self._check_spot_accumulation_signal(symbol, ticker, price, support, resistance, rsi, trend_up, prices, state)
+
+        # v4.19 — Respect des niveaux, FUSIONNE dans la logique principale
+        # (pas juste Accumulation) : un LONG a besoin d un rebond pres du
+        # support OU d une cassure nette de la resistance ; un SHORT
+        # l inverse. Si REQUIRE_LEVEL_RESPECT est desactive, les deux
+        # variables restent True (aucune restriction ajoutee — comportement
+        # d avant ce changement).
+        if cfg.get("REQUIRE_LEVEL_RESPECT", True):
+            level_proximity_pct = cfg.get("ENTRY_LEVEL_PROXIMITY_PCT", 1.0)
+            long_level_ok = (
+                (support is not None and 0 <= (price - support) / support * 100 <= level_proximity_pct)
+                or (resistance is not None and price > resistance)
+            )
+            short_level_ok = (
+                (resistance is not None and 0 <= (resistance - price) / price * 100 <= level_proximity_pct)
+                or (support is not None and price < support)
+            )
+        else:
+            long_level_ok = True
+            short_level_ok = True
+
+        # Seuils RSI specifiques au symbole
+        rsi_oversold   = cfg.get("SYMBOL_RSI_OVERSOLD",  {}).get(ticker, cfg["RSI_OVERSOLD"])
+        rsi_overbought = cfg.get("SYMBOL_RSI_OVERBOUGHT", {}).get(ticker, cfg["RSI_OVERBOUGHT"])
+
+        # v3.2 — Mode RSI DETECTE AUTOMATIQUEMENT via l ADX (force de la
+        # tendance), au lieu d un mode fixe par symbole :
+        # "reversal" : RSI < oversold (survente) pour LONG — parie sur un
+        #              retournement/oscillation. Adapte a un marche en RANGE
+        #              (ADX faible — pas de direction nette soutenue).
+        # "trend"    : RSI > 50 pour LONG, RSI < 50 pour SHORT — suit le
+        #              momentum en cours. Adapte a un marche DIRECTIONNEL
+        #              (ADX eleve — vraie tendance en cours).
+        # Un override manuel via SYMBOL_RSI_MODE reste prioritaire si
+        # configure explicitement pour un actif (force le mode quel que
+        # soit l ADX) — sinon, detection automatique a chaque cycle.
+        manual_mode = cfg.get("SYMBOL_RSI_MODE", {}).get(ticker)
+        adx = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
+        state.current_adx = adx
+        if manual_mode:
+            rsi_mode = manual_mode
+        elif adx is not None:
+            # v4.32 — SUR DEMANDE EXPLICITE, suite a une repetition de trades
+            # LONG observee sur ARB : ajoute une HYSTERESIS autour du seuil
+            # ADX pour eviter que le mode trend/reversal ne bascule a chaque
+            # cycle des que l ADX oscille juste autour de 25 (plausible sur
+            # un actif choppy) — chaque bascule change les regles d entree
+            # (RSI>50 en trend vs survente/surachat en reversal), ce qui
+            # peut lui-meme contribuer a l instabilite observee. Zone
+            # ambigue (a +/- ADX_HYSTERESIS_MARGIN du seuil) : garde le
+            # dernier mode retenu au lieu de trancher sur un seul cycle.
+            adx_trend_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
+            hysteresis_margin = cfg.get("ADX_HYSTERESIS_MARGIN", 3.0)
+            if adx >= adx_trend_threshold + hysteresis_margin:
+                rsi_mode = "trend"
+            elif adx < adx_trend_threshold - hysteresis_margin:
+                rsi_mode = "reversal"
+            else:
+                # Zone ambigue : conserve le dernier mode retenu (par defaut
+                # le plus restrictif, "reversal", si jamais encore determine).
+                rsi_mode = state.last_rsi_mode or "reversal"
+            state.last_rsi_mode = rsi_mode
+        else:
+            # v4.32 — FIX FAILLE (meme type que EMA200/support-resistance
+            # deja corriges) : quand l ADX n est pas encore calculable, le
+            # repli etait "trend" — le mode le PLUS PERMISSIF des deux (RSI>50
+            # suffit, contre RSI en survente/surachat pour "reversal"). Corrige
+            # pour repartir sur le mode le plus restrictif par prudence, en
+            # attendant une donnee fiable.
+            rsi_mode = "reversal"  # ADX pas encore calculable — repli PRUDENT (etait "trend" par erreur)
+        if rsi_mode == "trend":
+            rsi_buy  = rsi > 50   # momentum haussier confirme
+            rsi_sell = rsi < 50   # momentum baissier confirme
+        else:
+            rsi_buy  = rsi < rsi_oversold
+            rsi_sell = rsi > rsi_overbought
+        macd_bull = macd > sig
+        macd_bear = macd < sig
+        bb_low_ok = price <= bb_low
+        bb_up_ok  = price >= bb_up
+
+        # v4.20 — SUR DEMANDE EXPLICITE, suite a un lot de trades fouettes
+        # par le bruit (pics de 0.01% a 0.66% avant SL) : deux gardes-fous
+        # supplementaires, cumulatifs avec le respect des niveaux (v4.19).
+        #
+        # 1) CONFIRMATION DE DIRECTION : le MACD doit desormais confirmer la
+        #    direction pour TOUS les actifs (pas seulement ceux listes dans
+        #    SYMBOL_REQUIRE_MACD_BB) — un second indicateur independant qui
+        #    doit etre d accord avec RSI+EMA, pas juste eux seuls.
+        direction_confirmed_long  = True
+        direction_confirmed_short = True
+        if cfg.get("REQUIRE_DIRECTION_CONFIRM", True):
+            direction_confirmed_long  = macd_bull
+            direction_confirmed_short = macd_bear
+
+        # 2) COHERENCE D AMPLITUDE : le mouvement de prix recent (ATR) doit
+        #    etre d un ordre de grandeur coherent avec le SL/TTP configures.
+        #    Trop CALME (< MIN_RATIO x SL) -> le marche n a probablement pas
+        #    assez d amplitude pour atteindre le TTP, le trade stagne. Trop
+        #    AGITE (> MAX_RATIO x SL) -> le bruit normal suffit a lui seul a
+        #    toucher le SL avant qu un vrai mouvement ne se developpe —
+        #    exactement le symptome observe (pics minuscules puis SL rapide).
+        amplitude_coherent = True
+        if cfg.get("REQUIRE_AMPLITUDE_COHERENCE", True):
+            # v4.36 — vrai calcul (haut/bas/cloture), repli sur l ancien si
+            # pas encore assez de bougies.
+            _, atr_pct_now = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
+            if atr_pct_now is None:
+                _, atr_pct_now = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+            sl_pct_ref = cfg.get("SL_PCT_OF_E", 1.0)
+            min_ratio  = cfg.get("MIN_AMPLITUDE_TO_SL_RATIO", 0.5)
+            max_ratio  = cfg.get("MAX_AMPLITUDE_TO_SL_RATIO", 2.5)
+            if atr_pct_now is not None:
+                amplitude_coherent = (sl_pct_ref * min_ratio) <= atr_pct_now <= (sl_pct_ref * max_ratio)
+            # Si l ATR n est pas encore calculable, on reste prudent et on
+            # bloque (coherent avec la posture adoptee pour EMA200/support-
+            # resistance : mieux vaut attendre une donnee fiable).
+            else:
+                amplitude_coherent = False
+
+        # v4.37 — SUR DEMANDE EXPLICITE, desactive par defaut : bloque un
+        # LONG si le support est proche ET en dessous de l EMA200 (marche
+        # sans separation nette de sa moyenne longue), un SHORT si la
+        # resistance est proche ET au dessus. Vise les marches en range pur,
+        # ou support ET resistance s agglutinent autour de la moyenne.
+        sr_ema_long_ok = True
+        sr_ema_short_ok = True
+        if cfg.get("REQUIRE_SR_EMA200_SEPARATION", False) and ema200 is not None and ema200 > 0:
+            sr_proximity = cfg.get("SR_EMA200_PROXIMITY_PCT", 0.5)
+            if support is not None and support < ema200:
+                dist_support_ema200 = (ema200 - support) / ema200 * 100
+                if dist_support_ema200 <= sr_proximity:
+                    sr_ema_long_ok = False
+            if resistance is not None and resistance > ema200:
+                dist_resistance_ema200 = (resistance - ema200) / ema200 * 100
+                if dist_resistance_ema200 <= sr_proximity:
+                    sr_ema_short_ok = False
+
+        long_level_ok  = long_level_ok and direction_confirmed_long and amplitude_coherent and sr_ema_long_ok
+        short_level_ok = short_level_ok and direction_confirmed_short and amplitude_coherent and sr_ema_short_ok
+
+        # v4.25/v4.26 — SUR DEMANDE EXPLICITE, suite a une repetition observee
+        # de trades LONG sur un actif choppy (ARB : re-declenchement "frais"
+        # techniquement toutes les 40-70 min, mais pas un vrai signal nouveau
+        # en substance) : apres un GAIN dans un sens donne, la reouverture
+        # dans ce MEME sens exige que TOUTES les conditions d entree soient
+        # reunies sur PLUSIEURS CYCLES CONSECUTIFS (pas juste 1) — un signal
+        # qui hesite (vrai un cycle, faux le suivant) fait repartir le
+        # compteur a zero, forcant une vraie confirmation soutenue.
+        # v4.26 — FIX : un signal jamais soutenu 18 cycles d affilee ne doit
+        # PAS bloquer l actif indefiniment (risque reel : l actif ne trade
+        # plus jamais dans ce sens). Passe un delai maximum d attente
+        # (POST_WIN_MAX_WAIT_CYCLES), on consulte un second indicateur
+        # independant (Bollinger — prix a un extreme de bande, confirmation
+        # statistique alternative) pour trancher, puis la contrainte est
+        # levee dans tous les cas — jamais bloque plus longtemps que ce delai.
+        confirm_cycles_needed = cfg.get("POST_WIN_CONFIRM_CYCLES", 18)
+        max_wait_cycles       = cfg.get("POST_WIN_MAX_WAIT_CYCLES", 90)
+
+        if state.post_win_confirm_long:
+            state.post_win_wait_long += 1
+            if long_level_ok:
+                state.confirm_count_long += 1
+            else:
+                state.confirm_count_long = 0
+
+            if state.confirm_count_long >= confirm_cycles_needed:
+                # Confirmation soutenue atteinte normalement — voie principale
+                state.post_win_confirm_long = False
+                state.confirm_count_long = 0
+                state.post_win_wait_long = 0
+            elif state.post_win_wait_long >= max_wait_cycles:
+                # v4.27 — FIX : Bollinger devient reellement DECISIF, pas un
+                # simple filtre de plus — s il confirme, il TRANCHE et
+                # autorise directement (sans exiger en plus les autres
+                # conditions ce cycle precis), c est justement le but de
+                # "consulter un autre indicateur pour decider".
+                fallback_ok = bb_low_ok  # prix a/sous la bande basse = extreme statistique favorable a un LONG
+                state.post_win_confirm_long = False
+                state.confirm_count_long = 0
+                state.post_win_wait_long = 0
+                if fallback_ok:
+                    self.emit("log", {"msg": f"[{ticker}] LONG — confirmation post-gain jamais soutenue apres {max_wait_cycles} cycles, Bollinger favorable — TRANCHE, trade autorise", "level": "warn"})
+                    long_level_ok = True
+                else:
+                    self.emit("log", {"msg": f"[{ticker}] LONG — confirmation post-gain jamais soutenue apres {max_wait_cycles} cycles, Bollinger pas plus favorable — pas de trade ce cycle, contrainte levee pour la suite", "level": "warn"})
+                    long_level_ok = False
+            else:
+                if long_level_ok:
+                    self.emit("log", {"msg": f"[{ticker}] LONG qualifie mais en attente de confirmation post-gain ({state.confirm_count_long}/{confirm_cycles_needed} cycles consecutifs, {state.post_win_wait_long}/{max_wait_cycles} max)", "level": "dim"})
+                long_level_ok = False
+
+        if state.post_win_confirm_short:
+            state.post_win_wait_short += 1
+            if short_level_ok:
+                state.confirm_count_short += 1
+            else:
+                state.confirm_count_short = 0
+
+            if state.confirm_count_short >= confirm_cycles_needed:
+                state.post_win_confirm_short = False
+                state.confirm_count_short = 0
+                state.post_win_wait_short = 0
+            elif state.post_win_wait_short >= max_wait_cycles:
+                fallback_ok = bb_up_ok  # prix a/sur la bande haute = extreme statistique favorable a un SHORT
+                state.post_win_confirm_short = False
+                state.confirm_count_short = 0
+                state.post_win_wait_short = 0
+                if fallback_ok:
+                    self.emit("log", {"msg": f"[{ticker}] SHORT — confirmation post-gain jamais soutenue apres {max_wait_cycles} cycles, Bollinger favorable — TRANCHE, trade autorise", "level": "warn"})
+                    short_level_ok = True
+                else:
+                    self.emit("log", {"msg": f"[{ticker}] SHORT — confirmation post-gain jamais soutenue apres {max_wait_cycles} cycles, Bollinger pas plus favorable — pas de trade ce cycle, contrainte levee pour la suite", "level": "warn"})
+                    short_level_ok = False
+            else:
+                if short_level_ok:
+                    self.emit("log", {"msg": f"[{ticker}] SHORT qualifie mais en attente de confirmation post-gain ({state.confirm_count_short}/{confirm_cycles_needed} cycles consecutifs, {state.post_win_wait_short}/{max_wait_cycles} max)", "level": "dim"})
+                short_level_ok = False
+
+        # v4.58 — SUR DEMANDE EXPLICITE : mode SIMPLIFIE — remplace TOUT ce
+        # qui precede (fraicheur, respect des niveaux, MACD/EMA200 par
+        # symbole, coherence d amplitude, separation EMA200, confirmation
+        # post-trade) par les 3 conditions communes aux 3 modes (tendance +
+        # ADX, proximite 1-5% avec cassure en alternative, amplitude S/R
+        # suffisante). Le RSI reste demande separement (rsi_buy/rsi_sell,
+        # deja calcules plus haut, inchange) comme filtre leger en plus.
+        # ACTIVE PAR DEFAUT — repasser a False pour retrouver l ancien
+        # comportement complet (aucun code retire, juste court-circuite).
+        if cfg.get("UNIFIED_SIMPLIFIED_MODE", True):
+            long_level_ok = (
+                self._unified_trend_confirmed(prices, trend_up)
+                and self._unified_proximity_ok(price, support, resistance, "long")
+                and self._unified_sr_amplitude_ok(support, resistance)
+            )
+            short_level_ok = (
+                self._unified_trend_confirmed(prices, trend_down)
+                and self._unified_proximity_ok(price, support, resistance, "short")
+                and self._unified_sr_amplitude_ok(support, resistance)
+            )
+
+        # Pour certains symboles (SOL), MACD + BB sont OBLIGATOIRES pour entrer
+        require_macd_bb  = ticker in cfg.get("SYMBOL_REQUIRE_MACD_BB", [])
+
+        # Pour certains symboles (BTC), l EMA200 est OBLIGATOIRE pour confirmer la direction
+        # Long uniquement si prix > EMA200 | Short uniquement si prix < EMA200
+        require_ema200 = ticker in cfg.get("SYMBOL_REQUIRE_EMA200", [])
+
+        signal = None
+        reasons = []
+
+        # v4.40 — SUR DEMANDE EXPLICITE : instantane complet de l etat de
+        # TOUTES les portes d entree, capture a CHAQUE cycle (ecrase le
+        # precedent) — expose a la demande via /api/entry-diagnostics/{ticker},
+        # pour comprendre en direct pourquoi un actif ne trade pas, au lieu
+        # de devoir chasser les bons logs dans une fenetre horaire expiree.
+        # v4.58 — SUR DEMANDE EXPLICITE : detail des 3 sous-conditions
+        # unifiees, pour un diagnostic fiable (les anciens messages
+        # "rebond/cassure" ne refletent plus la vraie raison de blocage
+        # quand UNIFIED_SIMPLIFIED_MODE est actif).
+        unified_active = cfg.get("UNIFIED_SIMPLIFIED_MODE", True)
+        if unified_active:
+            trend_confirmed_long = self._unified_trend_confirmed(prices, trend_up)
+            trend_confirmed_short = self._unified_trend_confirmed(prices, trend_down)
+            proximity_long_ok = self._unified_proximity_ok(price, support, resistance, "long")
+            proximity_short_ok = self._unified_proximity_ok(price, support, resistance, "short")
+            amplitude_ok = self._unified_sr_amplitude_ok(support, resistance)
+        else:
+            trend_confirmed_long = trend_confirmed_short = proximity_long_ok = proximity_short_ok = amplitude_ok = None
+
+        state.last_gate_snapshot = {
+            "ts": time.time(),
+            "price": price,
+            "rsi": round(rsi, 2) if rsi is not None else None,
+            "rsi_mode": rsi_mode,
+            "rsi_buy": rsi_buy,
+            "rsi_sell": rsi_sell,
+            "ema_bull": ema_bull,
+            "ema_bear": ema_bear,
+            "trend_up": trend_up,
+            "trend_down": trend_down,
+            "long_signal_stale": state.long_signal_stale,
+            "short_signal_stale": state.short_signal_stale,
+            "unified_mode_active": unified_active,
+            "unified_trend_confirmed_long": trend_confirmed_long,
+            "unified_trend_confirmed_short": trend_confirmed_short,
+            "unified_proximity_long_ok": proximity_long_ok,
+            "unified_proximity_short_ok": proximity_short_ok,
+            "unified_amplitude_ok": amplitude_ok,
+            "direction_confirmed_long": direction_confirmed_long,
+            "direction_confirmed_short": direction_confirmed_short,
+            "amplitude_coherent": amplitude_coherent,
+            "sr_ema_long_ok": sr_ema_long_ok,
+            "sr_ema_short_ok": sr_ema_short_ok,
+            "post_win_confirm_long": state.post_win_confirm_long,
+            "post_win_confirm_short": state.post_win_confirm_short,
+            "confirm_count_long": state.confirm_count_long,
+            "confirm_count_short": state.confirm_count_short,
+            "post_win_wait_long": state.post_win_wait_long,
+            "post_win_wait_short": state.post_win_wait_short,
+            "long_level_ok_final": long_level_ok,
+            "short_level_ok_final": short_level_ok,
+            "would_enter_long": bool(rsi_buy and ema_bull and trend_up and not state.long_signal_stale and long_level_ok),
+            "would_enter_short": bool(rsi_sell and ema_bear and trend_down and not state.short_signal_stale and short_level_ok),
+        }
+
+        # v4.15 — diagnostics (hors chaine if/elif principale, pour ne pas la
+        # perturber) : signale quand un signal qualifierait sur tous les
+        # autres criteres, seule la fraicheur (croisement pas encore
+        # renouvele depuis la derniere fermeture dans ce sens) le bloque.
+        if rsi_buy and ema_bull and trend_up and state.long_signal_stale:
+            self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG qualifie mais signal pas encore renouvele depuis la derniere fermeture — attente d une retombee puis d un nouveau croisement EMA", "level": "dim"})
+        if rsi_sell and ema_bear and trend_down and state.short_signal_stale:
+            self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT qualifie mais signal pas encore renouvele depuis la derniere fermeture — attente d une retombee puis d un nouveau croisement EMA", "level": "dim"})
+        if unified_active:
+            # v4.58 — messages de diagnostic COHERENTS avec la vraie logique
+            # active (evite le message trompeur "ni rebond ni cassure" qui
+            # decrivait l ancienne logique, plus utilisee pour la decision).
+            if rsi_buy and ema_bull and trend_up and not state.long_signal_stale and not long_level_ok:
+                raisons = []
+                if not trend_confirmed_long: raisons.append("tendance/ADX pas assez forte")
+                if not proximity_long_ok: raisons.append("hors fenetre 1-5% du support (et pas de cassure)")
+                if not amplitude_ok: raisons.append("fourchette S/R trop etroite")
+                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG qualifie mais base commune non reunie : {', '.join(raisons) if raisons else 'raison inconnue'}", "level": "dim"})
+            if rsi_sell and ema_bear and trend_down and not state.short_signal_stale and not short_level_ok:
+                raisons = []
+                if not trend_confirmed_short: raisons.append("tendance/ADX pas assez forte")
+                if not proximity_short_ok: raisons.append("hors fenetre 1-5% de la resistance (et pas de cassure)")
+                if not amplitude_ok: raisons.append("fourchette S/R trop etroite")
+                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT qualifie mais base commune non reunie : {', '.join(raisons) if raisons else 'raison inconnue'}", "level": "dim"})
+        else:
+            if rsi_buy and ema_bull and trend_up and not state.long_signal_stale and not long_level_ok:
+                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG qualifie mais ni rebond sur support ni cassure de resistance — pas de raison structurelle, signal ignore", "level": "dim"})
+            if rsi_sell and ema_bear and trend_down and not state.short_signal_stale and not short_level_ok:
+                self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT qualifie mais ni rebond sur resistance ni cassure de support — pas de raison structurelle, signal ignore", "level": "dim"})
+
+        if rsi_buy and ema_bull and trend_up and not state.long_signal_stale and long_level_ok:
+            # v3.2 — FIX : ce filtre ne s applique qu en mode "reversal". En
+            # mode "trend" (suivi de tendance), un RSI eleve (85-97) est
+            # justement la MEILLEURE confirmation du signal — pas un danger a
+            # eviter. Applique sans distinction, ce filtre bloquait exactement
+            # les signaux les plus forts du mode trend, contredisant sa propre
+            # logique et asphyxiant le nombre de trades pris.
+            rsi_extreme_high = cfg.get("RSI_EXTREME_HIGH", 85)
+            if rsi_mode == "reversal" and rsi > rsi_extreme_high:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG bloque — zone de surachat extreme (RSI > {rsi_extreme_high}), risque de retournement",
+                    "level": "dim"
+                })
+                return
+            # Filtre EMA intermediaire — tendance 25-50 min
+            # Bloquer LONG si prix sous EMA_MID (tendance baissiere de fond)
+            if ema_mid is not None and price < ema_mid:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG bloque — prix sous EMA{ema_mid_period} ${ema_mid:.2f} (tendance baissiere 25-50 min)",
+                    "level": "dim"
+                })
+                return
+            # Filtre Momentum Instantane — bloque LONG si le marche vient
+            # de chuter fortement MAINTENANT (contredit le signal haussier)
+            if momentum_pct is not None and momentum_pct <= -momentum_threshold:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG bloque — momentum instantane {momentum_pct:+.2f}% (baisse en cours MAINTENANT)",
+                    "level": "dim"
+                })
+                return
+            # Filtre cycles consecutifs — PAXG : 2 cycles haussiers requis
+            if state.consec_bull < min_consec:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} signal potentiel — tendance haussiere {state.consec_bull}/{min_consec} cycles confirmes",
+                    "level": "dim"
+                })
+                return
+            # Filtre pivot — croisement EMA frais obligatoire si configure
+            if require_pivot and not pivot_bull:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} signal potentiel — pivot EMA non confirme, attente croisement frais",
+                    "level": "dim"
+                })
+                return
+            # Filtre EMA200 obligatoire : bloquer les longs si prix < EMA200
+            if require_ema200 and ema200 is not None and price <= ema200:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG bloque — prix sous EMA200 (${ema200:.2f}), tendance baissiere",
+                    "level": "dim"
+                })
+                return
+            # Filtre MACD + BB obligatoire si configure pour ce symbole
+            if require_macd_bb and not (macd_bull and bb_low_ok):
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} signal potentiel — MACD/BB insuffisants (obligatoires pour {symbol})",
+                    "level": "dim"
+                })
+                return
+            # Filtre Support/Resistance — SCALP uniquement
+            # LONG valide seulement si le prix CASSE au-dessus de la resistance recente
+            if is_scalp and resistance is not None and price <= resistance:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} signal potentiel — prix sous resistance ${resistance:.2f}, pas de breakout",
+                    "level": "dim"
+                })
+                return
+            # Filtre Confiance — dernier filtre, score 0-100% des confirmations
+            # optionnelles disponibles. Seuil dynamique par actif (v3.1).
+            confidence, conf_breakdown = self._score_confidence(
+                "long", macd_bull, macd_bear, bb_low_ok, bb_up_ok, vol_ok,
+                ema200, ema_mid, price, momentum_pct, momentum_threshold,
+                state.consec_bull, min_consec, cfg,
+                support=support, resistance=resistance
+            )
+            conf_threshold = self._get_confidence_threshold(ticker)
+            if confidence < conf_threshold:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG bloque — confiance {confidence:.0f}% < seuil requis {conf_threshold:.0f}%",
+                    "level": "dim"
+                })
+                return
+            # v4.0 — Filtre marge Resistance : bloque un LONG si la resistance
+            # recente (plus haut des 50 derniers cycles) est trop proche pour
+            # laisser assez de place au 1er seuil du TTP avant de s y heurter.
+            # Estimation conservatrice (sans levier) : si la marge suffit pour
+            # x1, elle suffit d autant plus pour un levier plus eleve. Le seuil
+            # TTP etant deja exprime en % de E (mouvement de prix a x1), on
+            # l utilise directement, sans conversion via CAPITAL/POSITION_PCT.
+            if resistance is not None and price <= resistance and cfg.get("SR_MIN_ROOM_FILTER", True):
+                min_room_pct = cfg.get("TTP_ARM1_PRICE_PCT", 1.0)
+                room_pct = (resistance - price) / price * 100
+                if room_pct < min_room_pct:
+                    self.emit("log", {
+                        "msg": f"[{ticker}] ${price:.2f} LONG bloque — resistance ${resistance:.2f} trop proche ({room_pct:.2f}% < {min_room_pct:.2f}% necessaire pour le TTP)",
+                        "level": "dim"
+                    })
+                    return
+            if not self._gate_active_or_auto_activate(ticker, confidence, "long"):
+                return
+            signal = "long"
+            adx_str = f"ADX {adx:.0f}" if adx is not None else "ADX ?"
+            reasons = [f"RSI {rsi:.1f}", f"EMA{ema_short}/{ema_long} hausse", f"{adx_str} ({rsi_mode})", f"confiance {confidence:.0f}%"]
+            if resistance is not None and price > resistance:
+                reasons.append(f"breakout resistance ${resistance:.2f}")
+            if macd_bull:
+                reasons.append("MACD hausse")
+            if bb_low_ok:
+                reasons.append("BB bas OK")
+            if ema200:
+                reasons.append(f"EMA200 ↑ ${ema200:.0f}")
+            if ema_mid:
+                reasons.append(f"EMA{ema_mid_period} ↑ ${ema_mid:.0f}")
+            if is_scalp and resistance is not None:
+                reasons.append(f"breakout R ${resistance:.2f}")
+            if momentum_pct is not None:
+                reasons.append(f"momentum {momentum_pct:+.2f}%")
+        elif rsi_sell and ema_bear and trend_down and not state.short_signal_stale and short_level_ok:
+            # v3.2 — FIX : meme correction que pour LONG — ce filtre ne
+            # s applique qu en mode "reversal". En mode "trend", un RSI tres
+            # bas (5-20) est la meilleure confirmation de la continuation
+            # baissiere, pas un danger.
+            rsi_extreme_low = cfg.get("RSI_EXTREME_LOW", 15)
+            if rsi_mode == "reversal" and rsi < rsi_extreme_low:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT bloque — zone de survente extreme (RSI < {rsi_extreme_low}), risque de rebond",
+                    "level": "dim"
+                })
+                return
+            # Filtre EMA intermediaire — tendance 25-50 min
+            # Bloquer SHORT si prix au-dessus EMA_MID (tendance haussiere de fond)
+            if ema_mid is not None and price > ema_mid:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT bloque — prix au-dessus EMA{ema_mid_period} ${ema_mid:.2f} (tendance haussiere 25-50 min)",
+                    "level": "dim"
+                })
+                return
+            # Filtre Momentum Instantane — bloque SHORT si le marche vient
+            # de monter fortement MAINTENANT (contredit le signal baissier)
+            # C est le cas BTC observe : signal SHORT alors que le prix
+            # est en hausse nette sur les derniers cycles
+            if momentum_pct is not None and momentum_pct >= momentum_threshold:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT bloque — momentum instantane {momentum_pct:+.2f}% (hausse en cours MAINTENANT)",
+                    "level": "dim"
+                })
+                return
+            # Filtre cycles consecutifs — PAXG : 2 cycles baissiers requis
+            if state.consec_bear < min_consec:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} signal potentiel — tendance baissiere {state.consec_bear}/{min_consec} cycles confirmes",
+                    "level": "dim"
+                })
+                return
+            # Filtre pivot — croisement EMA frais obligatoire si configure
+            if require_pivot and not pivot_bear:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} signal potentiel — pivot EMA non confirme, attente croisement frais",
+                    "level": "dim"
+                })
+                return
+            # Filtre EMA200 obligatoire : bloquer les shorts si prix > EMA200
+            if require_ema200 and ema200 is not None and price >= ema200:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT bloque — prix sur EMA200 (${ema200:.2f}), tendance haussiere",
+                    "level": "dim"
+                })
+                return
+            if require_macd_bb and not (macd_bear and bb_up_ok):
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} signal potentiel — MACD/BB insuffisants (obligatoires pour {symbol})",
+                    "level": "dim"
+                })
+                return
+            # Filtre Support/Resistance — SCALP uniquement
+            # SHORT valide seulement si le prix CASSE en-dessous du support recent
+            if is_scalp and support is not None and price >= support:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} signal potentiel — prix au-dessus support ${support:.2f}, pas de breakout",
+                    "level": "dim"
+                })
+                return
+            # Filtre Confiance — dernier filtre, score 0-100% des confirmations
+            # optionnelles disponibles. Seuil dynamique par actif (v3.1).
+            confidence, conf_breakdown = self._score_confidence(
+                "short", macd_bull, macd_bear, bb_low_ok, bb_up_ok, vol_ok,
+                ema200, ema_mid, price, momentum_pct, momentum_threshold,
+                state.consec_bear, min_consec, cfg,
+                support=support, resistance=resistance
+            )
+            conf_threshold = self._get_confidence_threshold(ticker)
+            if confidence < conf_threshold:
+                self.emit("log", {
+                    "msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT bloque — confiance {confidence:.0f}% < seuil requis {conf_threshold:.0f}%",
+                    "level": "dim"
+                })
+                return
+            # v4.0 — Filtre marge Support : bloque un SHORT si le support
+            # recent (plus bas des 50 derniers cycles) est trop proche pour
+            # laisser assez de place au 1er seuil du TTP avant de s y heurter.
+            if support is not None and price >= support and cfg.get("SR_MIN_ROOM_FILTER", True):
+                min_room_pct = cfg.get("TTP_ARM1_PRICE_PCT", 1.0)
+                room_pct = (price - support) / price * 100
+                if room_pct < min_room_pct:
+                    self.emit("log", {
+                        "msg": f"[{ticker}] ${price:.2f} SHORT bloque — support ${support:.2f} trop proche ({room_pct:.2f}% < {min_room_pct:.2f}% necessaire pour le TTP)",
+                        "level": "dim"
+                    })
+                    return
+            if not self._gate_active_or_auto_activate(ticker, confidence, "short"):
+                return
+            signal = "short"
+            adx_str = f"ADX {adx:.0f}" if adx is not None else "ADX ?"
+            reasons = [f"RSI {rsi:.1f}", f"EMA{ema_short}/{ema_long} baisse", f"{adx_str} ({rsi_mode})", f"confiance {confidence:.0f}%"]
+            if support is not None and price < support:
+                reasons.append(f"breakdown support ${support:.2f}")
+            if macd_bear:
+                reasons.append("MACD baisse")
+            if bb_up_ok:
+                reasons.append("BB haut OK")
+            if ema200:
+                reasons.append(f"EMA200 ↓ ${ema200:.0f}")
+            if ema_mid:
+                reasons.append(f"EMA{ema_mid_period} ↓ ${ema_mid:.0f}")
+            if is_scalp and support is not None:
+                reasons.append(f"breakout S ${support:.2f}")
+            if momentum_pct is not None:
+                reasons.append(f"momentum {momentum_pct:+.2f}%")
+        else:
+            self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} ATTENDRE", "level": "dim"})
+            return
+
+        if not vol_ok and cfg["VOLUME_MIN_RATIO"] > 1.0:
+            self.emit("log", {"msg": f"[{ticker}] Signal ignore - volume faible", "level": "dim"})
+            return
+
+        # v3.2 — Nouvelle approche "meilleur score de confiance" : au lieu
+        # d executer immediatement (ce qui favorise arbitrairement le premier
+        # actif rencontre dans l ordre de balayage des 30 symboles), on met
+        # ce candidat valide en file d attente. Une fois TOUS les symboles du
+        # cycle evalues, _run() classe tous les candidats par confiance
+        # decroissante et remplit les slots disponibles (MAX_OPEN_TRADES)
+        # en priorite avec les meilleurs — les autres sont laisses de cote
+        # pour ce cycle (ils resteront candidats aux cycles suivants si le
+        # signal persiste).
+        self._pending_candidates.append({
+            "symbol": symbol, "ticker": ticker, "state": state, "signal": signal,
+            "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": rsi_mode,
+            "reasons": reasons, "prices": prices, "conf_breakdown": conf_breakdown,
+        })
+
+    def _check_accumulation_signal(self, symbol, ticker, price, support, resistance,
+                                    rsi, momentum_pct, ema200, trend_up, trend_down,
+                                    prices, state):
+        """v4.16 — Mode ACCUMULATION : strategie independante de la logique
+        RSI/tendance habituelle. LONG si le prix est proche du SUPPORT
+        recent, SHORT si proche de la RESISTANCE recente — logique de
+        rebond/rejet sur un niveau cle, pas de suivi de tendance. Tourne EN
+        PARALLELE de la logique normale, evaluee independamment a CHAQUE
+        cycle (plus seulement en repli quand la logique normale ne trouve
+        rien) — sur demande explicite. Alimente
+        self._pending_accumulation_candidates, plafond et execution geres
+        separement (voir _finalize_pending_accumulation_candidates). Comme
+        un seul slot existe par actif, un garde-fou dans _finalize_open
+        evite qu un candidat normal et un candidat Accumulation sur le meme
+        actif n ouvrent tous les deux le meme cycle.
+        """
+        cfg = self.cfg
+        if not cfg.get("ACCUMULATION_ENABLED", False):
+            return
+        if support is None or resistance is None or support <= 0:
+            return
+        if not self._gate_active_or_auto_activate(ticker, 100, "accumulation"):
+            return  # actif desactive (Marches) ou exclu manuellement — jamais de trade, quel que soit le mode
+
+        proximity_pct = cfg.get("ACCUMULATION_PROXIMITY_PCT", 1.0)
+        momentum_threshold = cfg.get("MOMENTUM_THRESHOLD_PCT", 0.15)
+        require_trend = cfg.get("ACCUMULATION_REQUIRE_TREND_CONFIRM", False)
+
+        dist_to_support    = (price - support) / support * 100
+        dist_to_resistance = (resistance - price) / price * 100
+
+        # v4.58 — SUR DEMANDE EXPLICITE : direction desormais basee sur les
+        # 3 conditions communes aux 3 modes (tendance + ADX, proximite 1-5%
+        # AVEC cassure conservee en alternative — sur demande explicite,
+        # Accumulation garde sa logique de cassure contrairement a
+        # Spot-Accumulation), amplitude S/R suffisante. Remplace l ancienne
+        # logique base sur ACCUMULATION_PROXIMITY_PCT seul (garde la
+        # variable pour compatibilite mais ne l utilise plus si le mode
+        # unifie est actif). Tout ce qui suit (MACD, ancienne coherence
+        # d amplitude, separation EMA200, confirmation post-trade) reste
+        # inchange, applique EN PLUS de ces 3 conditions.
+        direction = None
+        if cfg.get("UNIFIED_SIMPLIFIED_MODE", True):
+            if not self._unified_sr_amplitude_ok(support, resistance):
+                return
+            if self._unified_trend_confirmed(prices, trend_up) and self._unified_proximity_ok(price, support, resistance, "long"):
+                if momentum_pct is None or momentum_pct >= -momentum_threshold:
+                    direction = "long"
+            elif self._unified_trend_confirmed(prices, trend_down) and self._unified_proximity_ok(price, support, resistance, "short"):
+                if momentum_pct is None or momentum_pct <= momentum_threshold:
+                    direction = "short"
+        else:
+            if 0 <= dist_to_support <= proximity_pct:
+                # Sens coherent : le mouvement tres recent ne doit pas s effondrer
+                # a travers le support (sinon ce n est plus un rebond, c est une
+                # cassure en cours) — reutilise le meme filtre momentum que la
+                # logique normale.
+                if momentum_pct is None or momentum_pct >= -momentum_threshold:
+                    if not require_trend or trend_up:
+                        direction = "long"
+            elif 0 <= dist_to_resistance <= proximity_pct:
+                if momentum_pct is None or momentum_pct <= momentum_threshold:
+                    if not require_trend or trend_down:
+                        direction = "short"
+
+        if direction is None:
+            return
+
+        # v4.37 — SUR DEMANDE EXPLICITE, desactive par defaut (meme switch
+        # que le mode normal) : bloque un LONG si le support est proche ET
+        # en dessous de l EMA200, un SHORT si la resistance est proche ET
+        # au dessus — marche en range pur, sans separation nette de sa
+        # moyenne longue.
+        if cfg.get("REQUIRE_SR_EMA200_SEPARATION", False) and ema200 is not None and ema200 > 0:
+            sr_proximity = cfg.get("SR_EMA200_PROXIMITY_PCT", 0.5)
+            if direction == "long" and support < ema200:
+                if (ema200 - support) / ema200 * 100 <= sr_proximity:
+                    return
+            if direction == "short" and resistance > ema200:
+                if (resistance - ema200) / ema200 * 100 <= sr_proximity:
+                    return
+
+        # v4.35 — SUR DEMANDE EXPLICITE : Accumulation herite desormais des
+        # memes renforcements que le mode normal (jusqu ici absents, alors
+        # que le mode normal les a tous recus suite a l enquete ARB) —
+        # confirmation MACD, coherence d amplitude ATR, et confirmation
+        # post-trade soutenue. Calcules ici localement (auto-suffisant, la
+        # fonction est appelee avant que macd/amplitude ne soient calcules
+        # plus loin dans _process pour la logique normale).
+        if cfg.get("REQUIRE_DIRECTION_CONFIRM", True):
+            macd, macd_sig = calc_macd(prices, cfg.get("MACD_FAST", 12), cfg.get("MACD_SLOW", 26), cfg.get("MACD_SIGNAL", 9))
+            if macd is not None and macd_sig is not None:
+                macd_confirmed = (macd > macd_sig) if direction == "long" else (macd < macd_sig)
+                if not macd_confirmed:
+                    return
+
+        if cfg.get("REQUIRE_AMPLITUDE_COHERENCE", True):
+            # v4.36 — vrai calcul (haut/bas/cloture), repli sur l ancien.
+            _, atr_pct_now = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
+            if atr_pct_now is None:
+                _, atr_pct_now = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+            sl_pct_ref = cfg.get("SL_PCT_OF_E", 1.0)
+            min_ratio  = cfg.get("MIN_AMPLITUDE_TO_SL_RATIO", 0.5)
+            max_ratio  = cfg.get("MAX_AMPLITUDE_TO_SL_RATIO", 2.5)
+            if atr_pct_now is None or not ((sl_pct_ref * min_ratio) <= atr_pct_now <= (sl_pct_ref * max_ratio)):
+                return
+
+        # Confirmation post-trade soutenue (18 cycles, secours Bollinger a 30
+        # min) — reutilise le MEME etat que le mode normal (post_win_confirm_*,
+        # partage par actif+sens, pas par strategie : un test rate en normal
+        # doit aussi freiner Accumulation sur le meme actif/sens, et inversement).
+        confirm_cycles_needed = cfg.get("POST_WIN_CONFIRM_CYCLES", 18)
+        max_wait_cycles = cfg.get("POST_WIN_MAX_WAIT_CYCLES", 180)
+        if direction == "long" and state.post_win_confirm_long:
+            state.post_win_wait_long += 1
+            state.confirm_count_long += 1
+            if state.confirm_count_long >= confirm_cycles_needed:
+                state.post_win_confirm_long = False
+                state.confirm_count_long = 0
+                state.post_win_wait_long = 0
+            elif state.post_win_wait_long >= max_wait_cycles:
+                bb_up, _, bb_low = calc_bollinger(prices, cfg.get("BB_PERIOD", 20), cfg.get("BB_STD", 2.0))
+                fallback_ok = bb_low is not None and price <= bb_low
+                state.post_win_confirm_long = False
+                state.confirm_count_long = 0
+                state.post_win_wait_long = 0
+                if not fallback_ok:
+                    return
+            else:
+                return
+        if direction == "short" and state.post_win_confirm_short:
+            state.post_win_wait_short += 1
+            state.confirm_count_short += 1
+            if state.confirm_count_short >= confirm_cycles_needed:
+                state.post_win_confirm_short = False
+                state.confirm_count_short = 0
+                state.post_win_wait_short = 0
+            elif state.post_win_wait_short >= max_wait_cycles:
+                bb_up, _, bb_low = calc_bollinger(prices, cfg.get("BB_PERIOD", 20), cfg.get("BB_STD", 2.0))
+                fallback_ok = bb_up is not None and price >= bb_up
+                state.post_win_confirm_short = False
+                state.confirm_count_short = 0
+                state.post_win_wait_short = 0
+                if not fallback_ok:
+                    return
+            else:
+                return
+
+        # ── Score de confiance dedie (proximite + position RSI + momentum) ──
+        # Plus le prix est proche du niveau, plus le RSI confirme (survente
+        # pres du support, surachat pres de la resistance), plus le momentum
+        # va franchement dans le sens du rebond attendu -> plus de confiance.
+        # Alimente le meme calcul de levier prudent que le bot normal.
+        dist = dist_to_support if direction == "long" else dist_to_resistance
+        confidence = 65.0
+        if dist <= proximity_pct / 2:
+            confidence += 10.0
+        if direction == "long" and rsi is not None and rsi <= 40:
+            confidence += 10.0
+        elif direction == "short" and rsi is not None and rsi >= 60:
+            confidence += 10.0
+        if momentum_pct is not None:
+            if direction == "long" and momentum_pct > 0:
+                confidence += 5.0
+            elif direction == "short" and momentum_pct < 0:
+                confidence += 5.0
+        confidence = min(confidence, 90.0)
+
+        threshold = self._get_confidence_threshold(ticker)
+        if confidence < threshold:
+            return
+
+        level_label = "support" if direction == "long" else "resistance"
+        level_price = support if direction == "long" else resistance
+        reasons = [
+            f"🎯 Accumulation : prix a {dist:.2f}% du {level_label} (${level_price:.2f})",
+            f"RSI {rsi:.1f}" if rsi is not None else "RSI ?",
+        ]
+        if momentum_pct is not None:
+            reasons.append(f"momentum {momentum_pct:+.2f}%")
+        if require_trend:
+            reasons.append("tendance EMA200 confirmee")
+
+        self._pending_accumulation_candidates.append({
+            "symbol": symbol, "ticker": ticker, "state": state, "signal": direction,
+            "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": "accumulation",
+            "reasons": reasons, "prices": prices, "conf_breakdown": {},
+            "strategy": "accumulation",
+        })
+
+    def _check_funding_contrarian_signal(self, symbol, ticker, price, rsi, prices, state):
+        """v4.33 — Mode FUNDING CONTRARIAN : source de signal FONDAMENTALEMENT
+        DIFFERENTE de RSI/MACD/EMA (deja integres dans les prix par des
+        acteurs plus rapides que ce bot). Le funding rate reflete un vrai
+        desequilibre de position entre traders a effet de levier — quand il
+        est extreme, ca signale un positionnement sur-leverage dans un sens,
+        propice a un retour a la moyenne : SHORT si funding tres positif
+        (trop de LONG en levier paient les SHORT), LONG si tres negatif
+        (l inverse). AUCUNE garantie que cet avantage soit reel ici — a
+        valider par les resultats reels (voir strategy="funding_contrarian"
+        dans l historique), pas suppose d avance.
+        SECURITE EXPLICITE : reste cantonne au paper trading tant que
+        FUNDING_MODE_LIVE_ALLOWED n est pas active manuellement (voir
+        _finalize_open), meme si le bot tourne par ailleurs en mode live.
+        """
+        cfg = self.cfg
+        if not cfg.get("FUNDING_MODE_ENABLED", False):
+            return
+        if not self._gate_active_or_auto_activate(ticker, 100, "funding_contrarian"):
+            return  # actif desactive (Marches) ou exclu manuellement
+
+        hourly_rate = self.funding_rates.get(ticker)
+        if hourly_rate is None:
+            return  # pas encore de donnee de funding pour cet actif
+
+        annual_pct = hourly_rate * 24 * 365 * 100  # annualise, en %
+        threshold = cfg.get("FUNDING_ANNUAL_THRESHOLD_PCT", 25.0)
+
+        direction = None
+        if annual_pct >= threshold:
+            direction = "short"  # positionnement LONG sur-leverage -> contrarian SHORT
+        elif annual_pct <= -threshold:
+            direction = "long"   # positionnement SHORT sur-leverage -> contrarian LONG
+
+        if direction is None:
+            return
+
+        # ── Score de confiance dedie : plus le funding est extreme, plus la
+        # confiance est elevee (positionnement d autant plus deforme) ──────
+        excess = abs(annual_pct) - threshold
+        confidence = 65.0 + min(excess / threshold * 25.0, 25.0)  # jusqu a 90% pour un exces de 100% du seuil
+        confidence = min(confidence, 90.0)
+
+        conf_threshold = self._get_confidence_threshold(ticker)
+        if confidence < conf_threshold:
+            return
+
+        reasons = [
+            f"💰 Funding Contrarian : {annual_pct:+.1f}% annualise (seuil ±{threshold:.0f}%)",
+            f"RSI {rsi:.1f}" if rsi is not None else "RSI ?",
+        ]
+
+        self._pending_funding_candidates.append({
+            "symbol": symbol, "ticker": ticker, "state": state, "signal": direction,
+            "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": "funding_contrarian",
+            "reasons": reasons, "prices": prices, "conf_breakdown": {},
+            "strategy": "funding_contrarian",
+        })
+
+    def _check_spot_accumulation_signal(self, symbol, ticker, price, support, resistance,
+                                          rsi, trend_up, prices, state):
+        """v4.43 — SUR DEMANDE EXPLICITE : mode SPOT-ACCUMULATION — achat
+        d actif dans l esprit spot ("tant que l actif existe on peut esperer
+        une hausse ou garder ses actifs"). LONG uniquement, avec la tendance
+        generale haussiere (EMA200) ET a au moins SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT
+        au-dessus du support — on achete une tendance deja engagee, pas un
+        rebond pres d un plancher (contrairement a Accumulation classique).
+        AUCUNE garantie de fonctionnement — a valider par les resultats.
+        v4.55 — SUR DEMANDE EXPLICITE : capture un diagnostic detaille
+        (state.spot_accum_gate_snapshot) a CHAQUE etape, expose via
+        /api/entry-diagnostics (qui ne couvrait jusqu ici que le mode
+        normal) — pour voir precisement quelle clause bloque, sans deviner.
+        """
+        cfg = self.cfg
+        snap = {"ts": time.time(), "enabled": cfg.get("SPOT_ACCUM_ENABLED", False)}
+        state.spot_accum_gate_snapshot = snap
+        if not cfg.get("SPOT_ACCUM_ENABLED", False):
+            snap["blocker"] = "mode desactive"
+            return
+        if not self._gate_active_or_auto_activate(ticker, 100, "spot_accumulation"):
+            snap["blocker"] = "actif non selectionne pour ce mode"
+            return
+
+        snap["trend_up"] = trend_up
+        if not trend_up:
+            snap["blocker"] = "pas de tendance haussiere (EMA200)"
+            return  # exige la tendance generale haussiere (EMA200)
+        if support is None or resistance is None or support <= 0:
+            snap["blocker"] = "support/resistance indisponible"
+            return
+
+        # v4.53 — SUR DEMANDE EXPLICITE : confirmation ADX de la tendance
+        # (pas seulement prix > EMA200, qui peut etre franchi de justesse) —
+        # meme seuil que le reste du bot (ADX_TREND_THRESHOLD, 25 par
+        # defaut), calcule ici localement (pas encore disponible a ce point
+        # du cycle pour la logique normale).
+        if cfg.get("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", True):
+            adx_local = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
+            adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
+            snap["adx"] = round(adx_local, 1) if adx_local is not None else None
+            snap["adx_threshold"] = adx_threshold
+            if adx_local is None or adx_local < adx_threshold:
+                snap["blocker"] = f"ADX {snap['adx']} < {adx_threshold} (tendance pas assez forte)"
+                return  # tendance pas assez forte pour etre consideree "claire"
+
+        # v4.53 — SUR DEMANDE EXPLICITE : la fourchette support-resistance
+        # doit avoir une amplitude minimale (ex: support=100 -> resistance
+        # >= 103 pour 3%) — evite d entrer dans un range trop plat, ou meme
+        # atteindre l objectif ne rapporterait quasiment rien.
+        min_sr_amplitude_pct = cfg.get("SPOT_ACCUM_MIN_SR_AMPLITUDE_PCT", 3.0)
+        sr_amplitude_pct = (resistance - support) / support * 100
+        snap["sr_amplitude_pct"] = round(sr_amplitude_pct, 2)
+        snap["min_sr_amplitude_pct"] = min_sr_amplitude_pct
+        if sr_amplitude_pct < min_sr_amplitude_pct:
+            snap["blocker"] = f"fourchette S/R trop etroite ({sr_amplitude_pct:.2f}% < {min_sr_amplitude_pct}%)"
+            return  # fourchette trop etroite, pas assez de marge de mouvement
+
+        min_above_pct = cfg.get("SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT", 1.0)
+        # v4.50 — FIX : aucun plafond n existait avant — l entree pouvait se
+        # produire n importe ou entre le minimum et la resistance (parfois
+        # a 50-75% de la fourchette), contrairement a l intention reelle du
+        # mode ("ouvrir pres du support"). Ajoute une borne haute explicite.
+        max_above_pct = cfg.get("SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT", 5.0)
+        dist_above_support_pct = (price - support) / support * 100
+        snap["dist_above_support_pct"] = round(dist_above_support_pct, 2)
+        snap["window"] = f"{min_above_pct}-{max_above_pct}%"
+        if dist_above_support_pct < min_above_pct or dist_above_support_pct > max_above_pct:
+            snap["blocker"] = f"hors fenetre ({dist_above_support_pct:.2f}% pas entre {min_above_pct}-{max_above_pct}%)"
+            return  # hors de la fenetre visee (trop pres du support, ou trop loin)
+        if price >= resistance:
+            snap["blocker"] = "prix deja au-dessus de la resistance"
+            return  # deja au-dessus de la resistance recente, entree trop tardive
+
+        # ── Score de confiance dedie : plus on est loin du support (dans la
+        # zone visee) sans depasser la resistance, plus la confiance est
+        # elevee — une vraie continuation de tendance, pas un exces ──────
+        sr_range = resistance - support
+        position_in_range_pct = ((price - support) / sr_range * 100) if sr_range > 0 else 50.0
+        confidence = 65.0 + min(max(position_in_range_pct - min_above_pct, 0) / 50.0 * 20.0, 20.0)
+        confidence = min(confidence, 85.0)
+        snap["confidence"] = round(confidence, 1)
+
+        conf_threshold = self._get_confidence_threshold(ticker)
+        snap["confidence_threshold"] = conf_threshold
+        if confidence < conf_threshold:
+            snap["blocker"] = f"confiance {confidence:.0f}% < seuil {conf_threshold:.0f}%"
+            return
+
+        snap["blocker"] = None  # rien ne bloque, candidat genere ce cycle
+
+        reasons = [
+            f"🌱 Spot-Accumulation : {dist_above_support_pct:.2f}% au-dessus du support, tendance haussiere confirmee",
+            f"RSI {rsi:.1f}" if rsi is not None else "RSI ?",
+        ]
+
+        self._pending_spot_accum_candidates.append({
+            "symbol": symbol, "ticker": ticker, "state": state, "signal": "long",
+            "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": "spot_accumulation",
+            "reasons": reasons, "prices": prices, "conf_breakdown": {},
+            "strategy": "spot_accumulation",
+            "support_at_entry": support, "resistance_at_entry": resistance,
+        })
+
+    def _finalize_open(self, cand):
+        """v3.2 — Execution reelle d un candidat retenu (voir _process et la
+        file d attente _pending_candidates). Contient exactement la logique
+        d ouverture qui etait auparavant executee immediatement en fin de
+        _process — inchangee, juste deplacee pour s executer apres le
+        classement par confiance de fin de cycle."""
+        cfg = self.cfg
+        # v4.14 — SUR DEMANDE EXPLICITE : bloque UNIQUEMENT l ouverture de
+        # NOUVEAUX trades quand le trading est desactive (bouton Arreter) —
+        # les positions deja ouvertes continuent d etre gerees normalement
+        # ailleurs (_manage_position_impl, jamais gate par trading_enabled).
+        if not self.trading_enabled:
+            return
+        symbol, ticker, state, signal, price, confidence, rsi, rsi_mode, reasons, prices, conf_breakdown = (
+            cand["symbol"], cand["ticker"], cand["state"], cand["signal"], cand["price"],
+            cand["confidence"], cand["rsi"], cand["rsi_mode"], cand["reasons"], cand["prices"],
+            cand.get("conf_breakdown", {})
+        )
+        strategy = cand.get("strategy", "normal")  # v4.8 — "normal" ou "accumulation"
+
+        # v4.16 — SUR DEMANDE EXPLICITE : le mode Accumulation tourne
+        # desormais en PARALLELE de la logique normale, evaluee independamment
+        # chaque cycle (plus seulement en repli quand la logique normale ne
+        # trouve rien). Consequence : les deux systemes peuvent proposer un
+        # candidat sur le MEME actif au MEME cycle — un seul slot par actif
+        # existant, le premier a etre finalise (normal, traite en premier)
+        # gagne ; l autre est simplement abandonne ce cycle, sans erreur.
+        if state.position:
+            self.emit("log", {"msg": f"[{ticker}] Candidat {strategy} abandonne — slot deja pris ce cycle par l autre strategie.", "level": "dim"})
+            return
+
+        # v4.9 — Cooldown de reentree dans le MEME sens : si le dernier trade
+        # ferme sur cet actif allait deja dans cette direction et que le
+        # delai minimum n est pas ecoule, on abandonne ce candidat (silence,
+        # il pourra retenter au prochain cycle si le signal persiste apres
+        # le cooldown). Un signal OPPOSE (retournement) n est jamais bloque.
+        cooldown_sec = cfg.get("REENTRY_COOLDOWN_SEC", 900)
+        if (cooldown_sec and state.last_closed_at is not None
+                and state.last_closed_direction == signal):
+            elapsed = time.time() - state.last_closed_at
+            if elapsed < cooldown_sec:
+                remaining = int(cooldown_sec - elapsed)
+                self.emit("log", {
+                    "msg": f"[{ticker}] {signal.upper()} ignore — cooldown de reentree dans le meme sens ({remaining}s restantes sur {cooldown_sec}s)",
+                    "level": "dim"
+                })
+                return
+
+        # ── v4.1 — Dimensionnement par LOT (batch) ──────────────────────────
+        # E est calcule UNE SEULE FOIS au debut d un lot (des qu aucune
+        # position n est ouverte), a partir de l equite totale du moment
+        # (CAPITAL_USD + PnL realise de la session), puis reste FIGE a cette
+        # valeur pour toutes les positions ouvertes durant ce lot — jusqu a
+        # MAX_OPEN_TRADES positions simultanees (5 par defaut). Des que le lot
+        # se vide entierement (toutes les positions fermees), un nouveau lot
+        # commence et E est recalcule sur la base du capital disponible a ce
+        # moment-la : "chaque fois que le capital le permet".
+        open_count = sum(1 for s in self.states.values() if s.position)
+        total_pnl = sum(s.pnl for s in self.states.values())
+        equity = cfg["CAPITAL_USD"] + total_pnl
+        capital_engaged = sum(s.position["size"] for s in self.states.values() if s.position)
+        capital_available = equity - capital_engaged
+
+        if capital_available <= 0:
+            self.emit("log", {"msg": f"[{ticker}] Capital insuffisant (${capital_available:.2f})", "level": "warn"})
+            return
+
+        if open_count == 0 or self.batch_entry_size is None:
+            self.batch_entry_size = equity * cfg["POSITION_SIZE_PCT"] / 100
+            save_batch_entry_size(self.batch_entry_size)
+            self.emit("log", {"msg": f"Nouveau lot — E fige a ${self.batch_entry_size:.2f} ({cfg['POSITION_SIZE_PCT']:.0f}% de ${equity:.2f}) pour jusqu a {cfg.get('MAX_OPEN_TRADES', 5)} trades simultanes", "level": "info"})
+
+        size = min(self.batch_entry_size, capital_available)
+        # v4.46 — SUR DEMANDE EXPLICITE : taille INDEPENDANTE par mode, si
+        # definie — contourne le batch_entry_size PARTAGE (fige pour tout le
+        # lot, tous modes confondus) et calcule une taille dediee depuis
+        # l equity actuelle. None (par defaut) = aucun changement.
+        mode_size_key = {
+            "accumulation": "ACCUMULATION_POSITION_SIZE_PCT",
+            "funding_contrarian": "FUNDING_POSITION_SIZE_PCT",
+            "spot_accumulation": "SPOT_ACCUM_POSITION_SIZE_PCT",
+        }.get(strategy)
+        if mode_size_key:
+            mode_pct = cfg.get(mode_size_key)
+            if mode_pct is not None:
+                size = min(equity * mode_pct / 100, capital_available)
+        if size <= 0:
+            self.emit("log", {"msg": f"[{ticker}] Capital insuffisant pour E=${self.batch_entry_size:.2f} (disponible ${capital_available:.2f})", "level": "warn"})
+            return
+
+        # v3.2 — le levier prudent doit etre connu AVANT le calcul du SL de
+        # securite, puisque le notionnel reel (taille x levier) determine le
+        # % de mouvement correspondant a un montant $ donne.
+        # v4.43 — SUR DEMANDE EXPLICITE : Spot-Accumulation force TOUJOURS le
+        # levier a x1 — coherent avec l esprit spot et l absence de SL (pas
+        # de risque de liquidation, meme sur un mouvement tres defavorable).
+        if strategy == "spot_accumulation":
+            leverage = 1
+        else:
+            leverage = self._compute_prudent_leverage(ticker, confidence, rsi_mode)
+        notional = size * leverage
+
+        # ── v4.24 — SL/TTP adaptatifs a l ATR reel (optionnel) ───────────────
+        # v4.41 — SUR DEMANDE EXPLICITE : chaque valeur peut desormais etre
+        # surchargee PAR ACTIF (ex: SL_PCT_OF_E_BY_SYMBOL={"SUSHI": 0.5}) —
+        # tous les actifs ne se comportent pas de la meme facon (fluctuation
+        # intra-bougie differente, voir calc_avg_candle_fluctuation). Repli
+        # sur la valeur globale si aucune surcharge definie pour cet actif.
+        # v4.42 — SUR DEMANDE EXPLICITE : le mode Accumulation peut desormais
+        # avoir son PROPRE jeu de seuils SL/TTP (LONG et SHORT confondus, un
+        # seul jeu pour les deux sens), separe du mode normal — via les cles
+        # ACCUMULATION_SL_PCT_OF_E / ACCUMULATION_TTP_*. Tant qu aucune de
+        # ces cles n est explicitement definie (valeur None par defaut),
+        # Accumulation continue de se comporter EXACTEMENT comme avant
+        # (retombe sur les memes valeurs que le mode normal, y compris ses
+        # eventuelles surcharges par actif) — aucun changement de
+        # comportement tant que vous ne reglez rien.
+        if strategy == "accumulation":
+            sl_pct_of_e   = cfg.get("ACCUMULATION_SL_PCT_OF_E")
+            if sl_pct_of_e is None:
+                sl_pct_of_e = cfg.get("SL_PCT_OF_E_BY_SYMBOL", {}).get(ticker, cfg.get("SL_PCT_OF_E", 1.0))
+            ttp_arm1_pct  = cfg.get("ACCUMULATION_TTP_ARM1_PRICE_PCT")
+            if ttp_arm1_pct is None:
+                ttp_arm1_pct = cfg.get("TTP_ARM1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM1_PRICE_PCT", 1.0))
+            ttp_lock1_pct = cfg.get("ACCUMULATION_TTP_LOCK1_PRICE_PCT")
+            if ttp_lock1_pct is None:
+                ttp_lock1_pct = cfg.get("TTP_LOCK1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_LOCK1_PRICE_PCT", 0.8))
+            ttp_arm2_pct  = cfg.get("ACCUMULATION_TTP_ARM2_PRICE_PCT")
+            if ttp_arm2_pct is None:
+                ttp_arm2_pct = cfg.get("TTP_ARM2_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM2_PRICE_PCT", 1.3))
+            ttp_gap_pct   = cfg.get("ACCUMULATION_TTP_TRAIL_GAP_PRICE_PCT")
+            if ttp_gap_pct is None:
+                ttp_gap_pct = cfg.get("TTP_TRAIL_GAP_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3))
+        elif strategy == "funding_contrarian":
+            # v4.45 — SUR DEMANDE EXPLICITE : meme mecanisme que Accumulation,
+            # pour que les 4 modes soient tous reglables independamment.
+            sl_pct_of_e   = cfg.get("FUNDING_SL_PCT_OF_E")
+            if sl_pct_of_e is None:
+                sl_pct_of_e = cfg.get("SL_PCT_OF_E_BY_SYMBOL", {}).get(ticker, cfg.get("SL_PCT_OF_E", 1.0))
+            ttp_arm1_pct  = cfg.get("FUNDING_TTP_ARM1_PRICE_PCT")
+            if ttp_arm1_pct is None:
+                ttp_arm1_pct = cfg.get("TTP_ARM1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM1_PRICE_PCT", 1.0))
+            ttp_lock1_pct = cfg.get("FUNDING_TTP_LOCK1_PRICE_PCT")
+            if ttp_lock1_pct is None:
+                ttp_lock1_pct = cfg.get("TTP_LOCK1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_LOCK1_PRICE_PCT", 0.8))
+            ttp_arm2_pct  = cfg.get("FUNDING_TTP_ARM2_PRICE_PCT")
+            if ttp_arm2_pct is None:
+                ttp_arm2_pct = cfg.get("TTP_ARM2_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM2_PRICE_PCT", 1.3))
+            ttp_gap_pct   = cfg.get("FUNDING_TTP_TRAIL_GAP_PRICE_PCT")
+            if ttp_gap_pct is None:
+                ttp_gap_pct = cfg.get("TTP_TRAIL_GAP_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3))
+        else:
+            sl_pct_of_e   = cfg.get("SL_PCT_OF_E_BY_SYMBOL", {}).get(ticker, cfg.get("SL_PCT_OF_E", 1.0))
+            ttp_arm1_pct  = cfg.get("TTP_ARM1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM1_PRICE_PCT", 1.0))
+            ttp_lock1_pct = cfg.get("TTP_LOCK1_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_LOCK1_PRICE_PCT", 0.8))
+            ttp_arm2_pct  = cfg.get("TTP_ARM2_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_ARM2_PRICE_PCT", 1.3))
+            ttp_gap_pct   = cfg.get("TTP_TRAIL_GAP_PRICE_PCT_BY_SYMBOL", {}).get(ticker, cfg.get("TTP_TRAIL_GAP_PRICE_PCT", 0.3))
+        # v4.56 — FIX BUG CRITIQUE : tier0_arm_pct/tier0_gap_pct doivent
+        # aussi etre calcules ICI (a l ouverture) pour pouvoir etre mis a
+        # l echelle par le SL/TTP adaptatif ci-dessous et memorises sur la
+        # position — avant ce fix, ils n existaient qu en lecture directe
+        # de la config globale FIXE dans _manage_position_impl, jamais mis
+        # a l echelle, causant un armement/desarmement en boucle sur les
+        # actifs a faible ATR (voir le commentaire plus bas).
+        tier0_arm_pct = cfg.get("TTP_TIER0_ARM_PRICE_PCT", 0.5)
+        tier0_gap_pct = cfg.get("TTP_TIER0_GAP_PRICE_PCT", 0.42)
+        # Calcule les seuils de CE trade precis a partir de l ATR actuel,
+        # en conservant les MEMES proportions que les reglages (fixes ou
+        # par-actif ci-dessus) — toujours en %. Si desactive (par defaut) ou
+        # ATR indisponible, retombe integralement sur les valeurs fixes.
+        adaptive_used = False
+        if cfg.get("SL_TTP_ADAPTIVE_ENABLED", False):
+            # v4.36 — vrai calcul (haut/bas/cloture), repli sur l ancien.
+            _, atr_pct_entry = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
+            if atr_pct_entry is None:
+                _, atr_pct_entry = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+            if atr_pct_entry is not None and atr_pct_entry > 0:
+                sl_min = cfg.get("SL_PCT_MIN", 0.3)
+                sl_max = cfg.get("SL_PCT_MAX", 3.0)
+                # v4.41 — multiplicateur ATR aussi surchargeable par actif.
+                # v4.42 — et par strategie (Accumulation) si defini.
+                # v4.45 — et Funding Contrarian, sur le meme modele.
+                if strategy == "accumulation" and cfg.get("ACCUMULATION_SL_ATR_MULTIPLIER") is not None:
+                    sl_atr_mult = cfg.get("ACCUMULATION_SL_ATR_MULTIPLIER")
+                elif strategy == "funding_contrarian" and cfg.get("FUNDING_SL_ATR_MULTIPLIER") is not None:
+                    sl_atr_mult = cfg.get("FUNDING_SL_ATR_MULTIPLIER")
+                else:
+                    sl_atr_mult = cfg.get("SL_ATR_MULTIPLIER_BY_SYMBOL", {}).get(ticker, cfg.get("SL_ATR_MULTIPLIER", 1.0))
+                sl_dynamic = max(sl_min, min(sl_max, atr_pct_entry * sl_atr_mult))
+                # Proportions conservees telles que definies par les reglages fixes actuels
+                ratio_arm1  = (ttp_arm1_pct  / sl_pct_of_e) if sl_pct_of_e else 1.0
+                ratio_lock1 = (ttp_lock1_pct / sl_pct_of_e) if sl_pct_of_e else 0.8
+                ratio_arm2  = (ttp_arm2_pct  / sl_pct_of_e) if sl_pct_of_e else 1.3
+                ratio_gap   = (ttp_gap_pct   / sl_pct_of_e) if sl_pct_of_e else 0.3
+                # v4.56 — FIX BUG CRITIQUE : tier0_arm_pct/tier0_gap_pct
+                # restaient FIXES (jamais mis a l echelle) alors que
+                # ttp_arm1_pct l etait — sur un actif a faible ATR,
+                # ttp_arm1_pct pouvait finir SOUS le tier0_arm_pct fixe
+                # (0.5% par defaut), inversant leur relation logique :
+                # le trade s armait en tier 1 a, par exemple, 0.30%, puis
+                # etait IMMEDIATEMENT redescendu en tier 0 des le cycle
+                # suivant (0.30% <= 0.5%) — armement/desarmement en boucle,
+                # plusieurs fois par minute (observe sur TIA). Applique
+                # desormais le MEME ratio de mise a l echelle.
+                ratio_tier0_arm = (tier0_arm_pct / sl_pct_of_e) if sl_pct_of_e else 0.5
+                ratio_tier0_gap = (tier0_gap_pct / sl_pct_of_e) if sl_pct_of_e else 0.42
+                sl_pct_of_e   = round(sl_dynamic, 4)
+                ttp_arm1_pct  = round(sl_dynamic * ratio_arm1, 4)
+                ttp_lock1_pct = round(sl_dynamic * ratio_lock1, 4)
+
+                ttp_arm2_pct  = round(sl_dynamic * ratio_arm2, 4)
+                ttp_gap_pct   = round(sl_dynamic * ratio_gap, 4)
+                tier0_arm_pct = round(sl_dynamic * ratio_tier0_arm, 4)
+                tier0_gap_pct = round(sl_dynamic * ratio_tier0_gap, 4)
+                adaptive_used = True
+
+        # ── v4.10 — le SL Hyperliquid (filet de securite) est un MULTIPLE du
+        # Stop Loss du bot (EXCHANGE_SAFETY_SL_MULT, defaut x2), lui-meme en
+        # % de E (perte $ plafonnee). Comme les deux sont exprimes en % de E
+        # (donc de CETTE position precise), le filet de securite reste
+        # toujours proportionnel au Stop Loss reel, quelle que soit la
+        # taille ou le levier utilises — d ou la conversion via le notionnel
+        # (taille x levier) pour obtenir le % de mouvement de prix correct.
+        safety_sl_usd = size * sl_pct_of_e / 100 * cfg.get("EXCHANGE_SAFETY_SL_MULT", 2.0)
+        safety_sl_pct = (safety_sl_usd / notional * 100) if notional > 0 else 2.0
+        sl_p = price * (1 - safety_sl_pct/100) if signal == "long" else price * (1 + safety_sl_pct/100)
+        # tp_p conserve uniquement a titre informatif / pour le bouton manuel TP
+        # du dashboard — plus jamais envoye a Hyperliquid ni utilise pour fermer
+        # automatiquement (remplace par le Trailing TP en $ de _manage_position).
+        tp_pct = cfg.get("SYMBOL_TP_PCT", {}).get(ticker, cfg["TAKE_PROFIT_PCT"])
+        tp_p = price * (1 + tp_pct/100) if signal == "long" else price * (1 - tp_pct/100)
+
+        # v4.8 — FIX : "label"/"action" DOIT rester exactement "LONG"/"SHORT"
+        # (sans prefixe) car c est la valeur utilisee pour retrouver le trade
+        # a sa fermeture (db.get_open_trade_id_by_coin_action, correspondance
+        # EXACTE coin+action). Le tag Accumulation est affiche separement
+        # dans les logs (strat_tag_log) et transmis via le champ "strategy".
+        label = "LONG" if signal == "long" else "SHORT"
+        strat_tag_log = "🎯 ACCUMULATION " if strategy == "accumulation" else ("💰 FUNDING " if strategy == "funding_contrarian" else "")
+        # v4.36 — vrai calcul (haut/bas/cloture), repli sur l ancien.
+        _, atr_at_entry = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
+        if atr_at_entry is None:
+            _, atr_at_entry = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
+        atr_str = f"ATR {atr_at_entry:.3f}%" if atr_at_entry else "ATR ?"
+        lev_str = f"x{leverage}" if leverage > 1 else "x1"
+
+        stop_loss_usd_here = size * sl_pct_of_e / 100
+        adaptive_tag = " 🎚️ADAPTATIF" if adaptive_used else ""
+        self.emit("log", {"msg": f"[{ticker}] {strat_tag_log}{label} @ ${price:.2f} | RSI:{rsi:.1f}({rsi_mode}) | {atr_str} | {' | '.join(reasons)} | ${size:.2f} {lev_str} | Stop Loss -${stop_loss_usd_here:.2f} ({sl_pct_of_e:.2f}% de E{adaptive_tag}) | TTP arme des {ttp_arm1_pct:.2f}% | SL secu {safety_sl_pct:.2f}% [PERP]", "level": "signal"})
+
+        # v4.33 — SECURITE EXPLICITE : un candidat "funding_contrarian" ne
+        # passe JAMAIS d ordre reel tant que FUNDING_MODE_LIVE_ALLOWED n est
+        # pas active manuellement — meme si le bot tourne par ailleurs en
+        # mode live. Les autres strategies (normal, accumulation) ne sont pas
+        # affectees.
+        funding_live_blocked = strategy == "funding_contrarian" and not cfg.get("FUNDING_MODE_LIVE_ALLOWED", False)
+        if funding_live_blocked and cfg["MODE"] == "live":
+            self.emit("log", {"msg": f"[{ticker}] 💰 Trade Funding Contrarian simule (paper) malgre le mode live global — deverrouillez FUNDING_MODE_LIVE_ALLOWED pour l autoriser en reel.", "level": "warn"})
+
+        if cfg["MODE"] == "live" and self.exchange and not funding_live_blocked:
+            # v3.2 — applique le levier PRUDENT specifique a ce trade sur
+            # Hyperliquid (remplace/surcharge le levier uniforme applique au
+            # demarrage) — chaque trade peut donc avoir un levier different
+            # selon sa confiance/mode/etat de penalite.
+            try:
+                self.exchange.update_leverage(leverage, ticker, is_cross=True)
+            except Exception as e:
+                self.emit("log", {"msg": f"[{ticker}] Echec application levier prudent x{leverage} : {e} — poursuite avec le levier deja en place.", "level": "warn"})
+            # tp_price=None : plus d ordre TP fixe sur Hyperliquid, la prise de
+            # profit est entierement geree par le bot (Quick Profit / Trailing)
+            ok = place_order(self.exchange, ticker, signal == "long", size, price, cfg, sl_price=sl_p, tp_price=None, leverage=leverage)
+            if not ok:
+                self.emit("log", {"msg": f"[{ticker}] Ordre non execute", "level": "warn"})
+                return
+
+        state.open_position(signal, price, sl_p, tp_p, size, confidence=confidence, leverage=leverage, strategy=strategy)
+        # v4.24 — memorise les seuils REELLEMENT appliques a CE trade (fixes
+        # ou adaptatifs a l ATR) — _manage_position_impl les relit ici en
+        # priorite, avec repli sur les valeurs fixes globales si absents
+        # (positions ouvertes avant ce fix, ou mode adaptatif desactive).
+        state.position["sl_pct_of_e"]   = sl_pct_of_e
+        state.position["ttp_arm1_pct"]  = ttp_arm1_pct
+        state.position["ttp_lock1_pct"] = ttp_lock1_pct
+        state.position["ttp_arm2_pct"]  = ttp_arm2_pct
+        state.position["ttp_gap_pct"]   = ttp_gap_pct
+        state.position["adaptive_sl_ttp"] = adaptive_used
+        # v4.56 — memorise les seuils tier0 REELLEMENT appliques a CE trade
+        # (mis a l echelle si adaptatif) — _manage_position_impl les relit
+        # ici en priorite, exactement comme sl_pct_of_e/ttp_arm1_pct.
+        state.position["tier0_arm_pct"] = tier0_arm_pct
+        state.position["tier0_gap_pct"] = tier0_gap_pct
+        # v4.43 — SUR DEMANDE EXPLICITE : Spot-Accumulation memorise le
+        # support/resistance mesures a l ENTREE (pas recalcules plus tard,
+        # la structure de marche a pu changer) pour calculer l objectif a
+        # SPOT_ACCUM_TARGET_SR_PCT (80% par defaut) de cette distance —
+        # reinitialise aussi le suivi du trailing pour CETTE position.
+        if strategy == "spot_accumulation":
+            support_at_entry = cand.get("support_at_entry")
+            resistance_at_entry = cand.get("resistance_at_entry")
+            target_pct = cfg.get("SPOT_ACCUM_TARGET_SR_PCT", 80.0)
+            target_price = None
+            if support_at_entry is not None and resistance_at_entry is not None:
+                # v4.43 — FIX : calcule depuis le SUPPORT, pas depuis
+                # l entree — sinon l objectif peut depasser la resistance
+                # elle-meme si l entree est deja significativement au-dessus
+                # du support (verifie numeriquement : entree=105,
+                # support=100, resistance=120 -> ancienne formule donnait
+                # 121$, au-dela de la resistance !).
+                target_price = support_at_entry + (target_pct / 100.0) * (resistance_at_entry - support_at_entry)
+                # v4.43 — Protection : si l entree est deja proche de la
+                # resistance, l objectif a 80% peut tomber SOUS le prix
+                # d entree — fermerait la position immediatement apres
+                # ouverture. Dans ce cas, pas d objectif fixe : on retombe
+                # uniquement sur le trailing (3%/0.5%) pour cette position.
+                if target_price <= price:
+                    target_price = None
+            # v4.49 — SUR DEMANDE EXPLICITE : second seuil de declenchement
+            # du trailing, base sur la STRUCTURE du marche (pas juste un %
+            # de PnL fixe) — support + 70% de la distance support-resistance
+            # (= 30% avant la resistance, memes points). S ADDITIONNE au
+            # seuil de PnL existant (SPOT_ACCUM_TTP_ARM_PCT, 3% par defaut) :
+            # le trailing s arme des que L UN DES DEUX est atteint, celui
+            # qui arrive en premier. Meme protection anti-depassement.
+            trailing_arm_price = None
+            if support_at_entry is not None and resistance_at_entry is not None:
+                arm_pct = cfg.get("SPOT_ACCUM_TRAILING_ARM_SR_PCT", 70.0)
+                trailing_arm_price = support_at_entry + (arm_pct / 100.0) * (resistance_at_entry - support_at_entry)
+                if trailing_arm_price <= price:
+                    trailing_arm_price = None
+            state.position["support_at_entry"] = support_at_entry
+            state.position["resistance_at_entry"] = resistance_at_entry
+            state.position["target_price"] = target_price
+            state.position["trailing_arm_price"] = trailing_arm_price
+            state.spot_accum_armed = False
+            state.spot_accum_peak_pnl_pct = None
+        self._save_open_positions()  # v3.2 : sauvegarde en live ET en paper
+
+        # ── v4.7 web : evenement structure pour l API (table trades / signaux) ──
+        # tp1/tp2 sont deduits des seuils du TTP (arm1/arm2), DESORMAIS de
+        # vrais % de mouvement de prix (v4.7) — plus besoin de les convertir
+        # via le notionnel/levier comme avant, ce sont deja des % de prix.
+        arm1_price_pct = cfg.get("TTP_ARM1_PRICE_PCT", 1.0)
+        arm2_price_pct = cfg.get("TTP_ARM2_PRICE_PCT", 1.3)
+        tp1_price = price * (1 + arm1_price_pct/100) if signal == "long" else price * (1 - arm1_price_pct/100)
+        tp2_price = price * (1 + arm2_price_pct/100) if signal == "long" else price * (1 - arm2_price_pct/100)
+        self.emit("trade_opened", {
+            "coin": ticker,
+            "action": label,
+            "confidence": round(confidence, 1),
+            "leverage": leverage,
+            "position_size_pct": cfg["POSITION_SIZE_PCT"],
+            "size_usd": round(size, 4),  # v4.28 — taille reelle en $ de CE trade (E)
+            # v4.30 — seuils SL/TTP REELLEMENT appliques (fixes ou adaptatifs a l ATR)
+            "sl_pct_used": sl_pct_of_e,
+            "ttp_arm1_pct_used": ttp_arm1_pct,
+            "adaptive_sl_ttp": adaptive_used,
+            "strategy": strategy,  # v4.8 — "normal" ou "accumulation"
+            # v4.10 — ratio informatif "mouvement de prix TP / % de E du SL" :
+            # a levier x1 c est le vrai ratio gain/risque $. Au-dela, le gain
+            # $ est amplifie par le levier (TP en % de prix) alors que la
+            # perte $ reste plafonnee (SL en % de E) — ce chiffre SOUS-ESTIME
+            # donc le vrai ratio $ reel des que le levier depasse x1 (le
+            # ratio reel s ameliore avec le levier, puisque seul le gain grossit).
+            "risk_reward": round(arm1_price_pct / sl_pct_of_e, 2) if sl_pct_of_e else None,
+            "timeframe": cfg.get("PROFILE", "swing"),
+            "entry": price,
+            "stop_loss": sl_p,
+            "take_profit1": tp1_price,
+            "take_profit2": tp2_price,
+            "rsi": round(rsi, 1) if rsi is not None else None,
+            "entry_reasons": " | ".join(reasons),
+            "confidence_breakdown": json.dumps(conf_breakdown),
+        })
+
+    def _finalize_pending_candidates(self):
+        """v3.2 — Appelee une fois par cycle, APRES avoir evalue tous les
+        symboles : classe les candidats valides par confiance decroissante
+        et remplit les slots disponibles (MAX_OPEN_TRADES) en priorite avec
+        les meilleurs scores. Les candidats laisses de cote ce cycle (faute
+        de place) resteront candidats aux cycles suivants si leur signal
+        persiste toujours.
+        v4.8 — MAX_OPEN_TRADES ne compte desormais que les positions de
+        strategie "normal" : le mode Accumulation a son propre plafond
+        independant (voir _finalize_pending_accumulation_candidates),
+        les deux pools de slots ne se disputent plus la meme limite."""
+        if not self._pending_candidates:
+            return
+        cfg = self.cfg
+        self._pending_candidates.sort(key=lambda c: c["confidence"], reverse=True)
+        max_open = cfg.get("MAX_OPEN_TRADES")
+        for cand in self._pending_candidates:
+            open_count = sum(1 for st in self.states.values() if st.position and st.position.get("strategy", "normal") == "normal")
+            if max_open is not None and open_count >= max_open:
+                self.emit("log", {
+                    "msg": f"[{cand['ticker']}] Slot plein ({open_count}/{max_open}) — candidat a {cand['confidence']:.0f}% laisse de cote ce cycle (meilleurs scores prioritaires).",
+                    "level": "dim"
+                })
+                continue
+            self._finalize_open(cand)
+        self._pending_candidates = []
+
+    def _finalize_pending_accumulation_candidates(self):
+        """v4.8 — Equivalent de _finalize_pending_candidates, mais pour les
+        candidats du mode Accumulation : plafond independant
+        (ACCUMULATION_MAX_TRADES), classes eux aussi par confiance
+        decroissante."""
+        if not self._pending_accumulation_candidates:
+            return
+        cfg = self.cfg
+        self._pending_accumulation_candidates.sort(key=lambda c: c["confidence"], reverse=True)
+        max_acc = cfg.get("ACCUMULATION_MAX_TRADES", 3)
+        for cand in self._pending_accumulation_candidates:
+            open_count = sum(1 for st in self.states.values() if st.position and st.position.get("strategy") == "accumulation")
+            if open_count >= max_acc:
+                self.emit("log", {
+                    "msg": f"[{cand['ticker']}] 🎯 Slot Accumulation plein ({open_count}/{max_acc}) — candidat a {cand['confidence']:.0f}% laisse de cote ce cycle.",
+                    "level": "dim"
+                })
+                continue
+            self._finalize_open(cand)
+        self._pending_accumulation_candidates = []
+
+    def _finalize_pending_funding_candidates(self):
+        """v4.33 — Equivalent de _finalize_pending_candidates, pour les
+        candidats du mode Funding Contrarian : plafond independant
+        (FUNDING_MODE_MAX_TRADES)."""
+        if not self._pending_funding_candidates:
+            return
+        cfg = self.cfg
+        self._pending_funding_candidates.sort(key=lambda c: c["confidence"], reverse=True)
+        max_funding = cfg.get("FUNDING_MODE_MAX_TRADES", 3)
+        for cand in self._pending_funding_candidates:
+            open_count = sum(1 for st in self.states.values() if st.position and st.position.get("strategy") == "funding_contrarian")
+            if open_count >= max_funding:
+                self.emit("log", {
+                    "msg": f"[{cand['ticker']}] 💰 Slot Funding Contrarian plein ({open_count}/{max_funding}) — candidat a {cand['confidence']:.0f}% laisse de cote ce cycle.",
+                    "level": "dim"
+                })
+                continue
+            self._finalize_open(cand)
+        self._pending_funding_candidates = []
+
+    def _finalize_pending_spot_accum_candidates(self):
+        """v4.43 — Equivalent de _finalize_pending_candidates, pour les
+        candidats Spot-Accumulation : plafond independant (SPOT_ACCUM_MAX_TRADES)."""
+        if not self._pending_spot_accum_candidates:
+            return
+        cfg = self.cfg
+        self._pending_spot_accum_candidates.sort(key=lambda c: c["confidence"], reverse=True)
+        max_spot = cfg.get("SPOT_ACCUM_MAX_TRADES", 3)
+        for cand in self._pending_spot_accum_candidates:
+            open_count = sum(1 for st in self.states.values() if st.position and st.position.get("strategy") == "spot_accumulation")
+            if open_count >= max_spot:
+                self.emit("log", {
+                    "msg": f"[{cand['ticker']}] 🌱 Slot Spot-Accumulation plein ({open_count}/{max_spot}) — candidat a {cand['confidence']:.0f}% laisse de cote ce cycle.",
+                    "level": "dim"
+                })
+                continue
+            self._finalize_open(cand)
+        self._pending_spot_accum_candidates = []
 
 
-@app.post("/api/cleanup")
-def cleanup(email: str = Depends(require_user)):
-    print(f"[AUDIT] /api/cleanup appele par {email} a {datetime.now(timezone.utc).isoformat()}")
-    # v3.2 — FIX : le bouton de l interface attend un champ "message" (via
-    # alert(r.message)), jamais renvoye jusqu ici (d ou l impression que le
-    # bouton "ne faisait rien"). Utilise desormais cleanup_signals, qui
-    # cible specifiquement les doublons/orphelins "ouverts" (voir db.py) —
-    # les trades reellement fermes (historique du Bilan) ne sont jamais
-    # touches par ce nettoyage.
-    # Retrouve l ID exact (pas juste le coin) de chaque position reellement
-    # ouverte en memoire, pour proteger UNIQUEMENT cette ligne precise —
-    # les eventuels AUTRES doublons du meme coin restent nettoyables.
-    protected_ids = _compute_protected_trade_ids()
-    duplicates, stale = db.cleanup_signals(stale_hours=24, protected_ids=protected_ids)
-    old_closed = db.delete_trades_older_than(30)
-    total = duplicates + stale + old_closed
-    if total == 0:
-        message = "Rien a nettoyer — aucun signal en double ou orphelin trouve."
-    else:
-        parts = []
-        if duplicates:
-            parts.append(f"{duplicates} doublon(s) ouvert(s)")
-        if stale:
-            parts.append(f"{stale} signal(aux) orphelin(s) (>24h sans fermeture)")
-        if old_closed:
-            parts.append(f"{old_closed} trade(s) ferme(s) de plus de 30 jours")
-        message = "Nettoyage termine : " + ", ".join(parts) + "."
-    return {"ok": True, "message": message, "duplicates": duplicates, "stale": stale, "old_closed": old_closed}
-
-
-@app.post("/api/reset-all")
-def reset_all(email: str = Depends(require_user)):
-    print(f"[AUDIT] /api/reset-all appele par {email} a {datetime.now(timezone.utc).isoformat()}")
-    if bot.trading_enabled:
-        raise HTTPException(400, "Arretez le bot avant une reinitialisation complete")
-    # v3.2 — FIX : preserve les identifiants Hyperliquid/Finnhub (wallet, cle
-    # privee, cle Finnhub) avant de tout effacer, puis les restaure apres —
-    # ce ne sont pas des "donnees de trading" a effacer par une remise a
-    # zero du portefeuille/historique, ce sont des identifiants de connexion.
-    # Un utilisateur ayant clique par erreur sur ce bouton (juste en dessous
-    # du nettoyage des doublons) se retrouvait auparavant a devoir tout
-    # ressaisir sans comprendre pourquoi.
-    preserved_keys = ("PRIVATE_KEY", "WALLET_ADDRESS", "FINNHUB_API_KEY")
-    preserved = {k: cfg.get(k) for k in preserved_keys if cfg.get(k)}
-    db.clear_all_trades()
-    db.clear_config_overrides()
-    for state in bot.states.values():
-        state.position = None
-        state.pnl = 0.0
-        state.trades = 0
-        state.wins = 0
-        state.closed_trades.clear()
-    cfg.clear()
-    cfg.update(be.CONFIG)
-    if _env_active_coins:
-        cfg["ACTIVE_COINS"] = [c.strip().upper() for c in _env_active_coins.split(",") if c.strip()]
-    # Reapplique les identifiants preserves (prioritaires sur be.CONFIG au
-    # cas ou ils avaient ete saisis via le formulaire web, pas une variable
-    # d environnement) et les repersiste en base pour survivre eux aussi
-    # aux prochains redemarrages.
-    for k, v in preserved.items():
-        cfg[k] = v
-        db.set_config_override(k, v)
-    be.apply_profile(cfg, cfg.get("PROFILE", "swing"))
-    # cfg["SYMBOLS"] doit rester sous forme de slot_keys ("BTC_0", ...) pour
-    # rester coherent avec les cles de bot.states (jamais reconstruit ici) —
-    # be.CONFIG contient les tickers "nus", il faut donc reappliquer la forme
-    # slot_key existante plutot que la forme d origine.
-    cfg["SYMBOLS"] = list(bot.states.keys())
-    bot.cfg = cfg
-    bot.capital = cfg["CAPITAL_USD"]
-    bot.sessions = 0
-    bot.total_pnl_all = 0.0
-    bot.batch_entry_size = None
-    bot.clear_all_persisted_files()
-    be.save_capital(bot.capital, 0, 0.0)
-    be.save_batch_entry_size(None)
-    db.set_meta("reset_at", db.now_iso())
-    db.set_meta("initial_balance", str(bot.capital))
-    db.set_meta("total_running_seconds", "0")
-    db.set_meta("running_since", "")
-    log_buffer.clear()
-    return {"ok": True, "message": "Reinitialisation complete effectuee : signaux, trades, historique et portefeuille remis a zero."}
-
-
-# ─────────────────────────────────────────────────────────────────────────
-#  FICHIERS STATIQUES (index.html)
-# ─────────────────────────────────────────────────────────────────────────
-_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
-
-
-@app.get("/", response_class=HTMLResponse)
-def index():
-    with open(_HTML_PATH, "r", encoding="utf-8") as f:
-        return f.read()
-
-
-@app.get("/health")
-def health():
-    return {
-        "ok": True,
-        "bot_running": bot.running,  # v4.14 — moteur (collecte/WS), toujours actif independamment du trading
-        "trading_enabled": bot.trading_enabled,
-        "version": be.BOT_VERSION,
-        "build": be.BOT_BUILD,
-        "data_dir": _DATA_DIR,
-        "data_dir_configured": _DATA_DIR_CONFIGURED,
-        "boot_count": BOOT_COUNT,
-        "persistence_note": (
-            "boot_count doit augmenter (1, 2, 3...) a chaque redeploiement. "
-            "S il repart toujours a 1, le Volume Railway n est pas monte "
-            "correctement (voir HYPERBOT_DATA_DIR)."
-        ),
-    }
+# ─────────────────────────────────────────────
+#  DASHBOARD TKINTER
+# ─────────────────────────────────────────────
