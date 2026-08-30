@@ -512,6 +512,14 @@ CONFIG = {
     "TTP_LOCK1_PRICE_PCT":     0.8,
     "TTP_ARM2_PRICE_PCT":      1.3,
     "TTP_TRAIL_GAP_PRICE_PCT": 0.3,
+    # v4.60 — SUR DEMANDE EXPLICITE : des l armement (tier 1), le trailing
+    # devient IMMEDIATEMENT dynamique (sortie = pic - marge fixe, mis a jour
+    # a chaque nouveau pic) au lieu d attendre un second palier (arm2).
+    # Applique a Normal/Accumulation/Funding — PAS Spot-Accumulation (deja
+    # dynamique par nature). ACTIF par defaut ; repasser a False pour
+    # retrouver l ancien comportement (verrou fixe a lock1 avant arm2).
+    "TTP_DYNAMIC_FROM_ARM1": True,
+    "TTP_DYNAMIC_TRAIL_GAP_PCT": 0.5,
 
     # v4.11 — Protection anticipee ("tier 0"), sur demande explicite : les
     # trades n atteignant JAMAIS TTP_ARM1_PRICE_PCT (1.0% par defaut)
@@ -3837,10 +3845,21 @@ class BotEngine:
             # pour la duree du trade, cette reconversion est donc exacte).
             peak_price_pct = (state.peak_pnl_usd / (E * leverage) * 100) if E and leverage else 0
 
+            # v4.60 — SUR DEMANDE EXPLICITE : des l armement (tier 1), le
+            # trailing devient IMMEDIATEMENT dynamique — sortie = pic - marge
+            # fixe, mis a jour a chaque nouveau pic, sans attendre un second
+            # palier (arm2). Exemple confirme : arme a 1%, pic 1.45% -> sortie
+            # a 0.95% ; pic 2% -> sortie a 1.5%. Remplace l ancien
+            # comportement (verrou fixe a lock1 tant que arm2 pas atteint).
+            # Applique a Normal/Accumulation/Funding — PAS Spot-Accumulation,
+            # qui a deja son propre trailing dynamique independant.
+            if cfg.get("TTP_DYNAMIC_FROM_ARM1", True):
+                dynamic_gap_pct = cfg.get("TTP_DYNAMIC_TRAIL_GAP_PCT", 0.5)
+                current_lock_pct = peak_price_pct - dynamic_gap_pct
             # Tant que le pic n a pas atteint le 2e seuil (arm2), le seuil de
             # sortie reste fixe a lock1. Des que le pic atteint/depasse arm2,
             # le TTP se resserre en continu : sortie = pic - gap, a l infini.
-            if peak_price_pct >= arm2_price_pct:
+            elif peak_price_pct >= arm2_price_pct:
                 current_lock_pct = peak_price_pct - gap_price_pct
             else:
                 current_lock_pct = lock1_price_pct
