@@ -655,6 +655,19 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "pnl_pct": round(pnl_pct, 3),
                 "peak_pnl": round(peak_pnl_usd, 4) if peak_pnl_usd is not None else None,
                 "peak_pnl_pct": peak_pnl_pct,
+                # v4.61 — SUR DEMANDE EXPLICITE : diagnostic precis du
+                # mecanisme de trailing REELLEMENT actif sur ce trade, pour
+                # eviter de devoir deviner ou chercher dans les logs bruts
+                # (cas observe : pic affiche de 1.32% sans sortie declenchee
+                # malgre un trailing dynamique cense s armer a 1%).
+                "tp_stage": state.tp_stage,  # 0=aucun, 1=arme (tier1)
+                "tier0_armed": state.tier0_armed,
+                "peak_source": "tier1" if state.peak_pnl_usd is not None else ("tier0" if state.tier0_peak_pnl_usd is not None else "absolu (aucun tier arme)"),
+                "computed_exit_threshold_pct": (
+                    round(peak_pnl_pct - cfg.get("TTP_DYNAMIC_TRAIL_GAP_PCT", 0.5), 3)
+                    if state.tp_stage == 1 and peak_pnl_pct is not None and cfg.get("TTP_DYNAMIC_FROM_ARM1", True)
+                    else None
+                ),
                 # v4.30 — seuils SL/TTP REELLEMENT appliques a CE trade (fixes
                 # ou adaptatifs a l ATR, figes a l ouverture) — voir bot_engine.py
                 # _finalize_open, stockes sur la position elle-meme.
