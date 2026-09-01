@@ -662,6 +662,8 @@ def _open_positions() -> List[Dict[str, Any]]:
                 # malgre un trailing dynamique cense s armer a 1%).
                 "tp_stage": state.tp_stage,  # 0=aucun, 1=arme (tier1)
                 "spot_accum_armed": state.spot_accum_armed,  # v4.62 — FIX : Spot-Accum a son propre armement, separe de tp_stage
+                "spot_accum_arm_pct_used": cfg.get("SPOT_ACCUM_TTP_ARM_PCT"),  # v4.63 — seuil REELLEMENT lu, pour verifier sans deviner
+                "spot_accum_peak_pnl_pct_internal": round(state.spot_accum_peak_pnl_pct, 3) if state.spot_accum_peak_pnl_pct is not None else None,
                 "tier0_armed": state.tier0_armed,
                 "peak_source": "tier1" if state.peak_pnl_usd is not None else ("tier0" if state.tier0_peak_pnl_usd is not None else "absolu (aucun tier arme)"),
                 "computed_exit_threshold_pct": (
