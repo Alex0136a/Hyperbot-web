@@ -333,6 +333,16 @@ CONFIG = {
     "SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES": 180,      # ~30 min a 10s/cycle (etait 18 = ~3 min)
     "SPOT_ACCUM_REVERSAL_MIN_EMA_MATURITY": 100,    # bougies mtf minimum (sur 200 max) pour faire confiance a l EMA200
 
+    # v4.64 — SUR DEMANDE EXPLICITE : meme mecanisme de retournement
+    # confirme que Spot-Accumulation, applique a Accumulation (LONG ET
+    # SHORT, contrairement a Spot-Accum qui est LONG uniquement) — sortie
+    # possible BIEN AVANT le SL, des qu un vrai changement de tendance est
+    # confirme (pas un simple creux passager, voir garde-fous qualite des
+    # donnees). ACTIF par defaut.
+    "ACCUMULATION_REVERSAL_EXIT_ENABLED": True,
+    "ACCUMULATION_REVERSAL_CONFIRM_CYCLES": 180,      # ~30 min a 10s/cycle
+    "ACCUMULATION_REVERSAL_MIN_EMA_MATURITY": 100,
+
     # v4.44 — SUR DEMANDE EXPLICITE : liste d actifs DEDIEE par mode
     # (independante de la liste globale ACTIVE_COINS geree dans Marches).
     # None = herite de la liste globale (aucun changement de comportement
@@ -1790,6 +1800,9 @@ class SymbolState:
         # l EMA200 (retournement de tendance) — remis a zero des que le prix
         # repasse au-dessus.
         self.spot_accum_reversal_count = 0
+        # v4.64 — SUR DEMANDE EXPLICITE : meme mecanisme de retournement
+        # confirme, applique a Accumulation (LONG et SHORT).
+        self.accumulation_reversal_count = 0
         # v4.55 — instantane diagnostic de chaque clause d entree
         # Spot-Accumulation, expose via /api/entry-diagnostics.
         self.spot_accum_gate_snapshot = {}
@@ -3579,6 +3592,49 @@ class BotEngine:
         # informatif, n influence aucune decision de sortie ci-dessous.
         if pnl_usd > 0 and (state.absolute_peak_pnl_usd is None or pnl_usd > state.absolute_peak_pnl_usd):
             state.absolute_peak_pnl_usd = pnl_usd
+
+        # v4.64 — SUR DEMANDE EXPLICITE : sortie sur RETOURNEMENT DE TENDANCE
+        # CONFIRME pour Accumulation — independante du SL, peut se declencher
+        # BIEN AVANT que le SL ne soit touche. Fonctionne dans LES DEUX SENS
+        # (LONG : sort si le prix repasse durablement SOUS l EMA200 ; SHORT :
+        # sort si le prix repasse durablement AU-DESSUS). Ne fait RIEN
+        # d autre : si aucun retournement n est confirme, la fonction
+        # continue normalement vers la gestion SL/TTP habituelle plus bas —
+        # ce bloc n intervient que pour fermer plus tot, jamais pour bloquer
+        # les autres mecanismes de sortie.
+        if pos.get("strategy") == "accumulation" and cfg.get("ACCUMULATION_REVERSAL_EXIT_ENABLED", True):
+            min_maturity = cfg.get("ACCUMULATION_REVERSAL_MIN_EMA_MATURITY", 100)
+            data_mature = len(state.mtf_prices) >= min_maturity
+            data_healthy = self._is_ws_healthy() if self.info is not None else True
+            ema200_now = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+
+            if not data_mature or not data_healthy or ema200_now is None:
+                reason_skip = "EMA200 pas assez mature" if not data_mature else ("collecte instable" if not data_healthy else "EMA200 indisponible")
+                if state.accumulation_reversal_count > 0:
+                    self.emit("log", {"msg": f"[{ticker}] 🎯 Retournement en cours d'evaluation suspendu ({reason_skip}) — compteur conserve a {state.accumulation_reversal_count}", "level": "dim"})
+            else:
+                is_long = pos.get("type") == "long"
+                reversed_now = (price < ema200_now) if is_long else (price > ema200_now)
+                if reversed_now:
+                    state.accumulation_reversal_count += 1
+                else:
+                    state.accumulation_reversal_count = 0
+
+            confirm_needed = cfg.get("ACCUMULATION_REVERSAL_CONFIRM_CYCLES", 180)
+            if state.accumulation_reversal_count >= confirm_needed:
+                pnl, _, trade = state.close_position(price, "RETOURNEMENT CONFIRME")
+                trade["symbol"] = symbol
+                self.emit("trade", trade)
+                if pnl > 0:
+                    self._register_win(ticker)
+                else:
+                    self._register_max_loss(ticker, pos.get("confidence"))
+                self.emit("log", {"msg": f"[{ticker}] 🎯 Accumulation RETOURNEMENT CONFIRME (tendance opposee depuis {confirm_needed} cycles, donnees matures et saines) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "warn"})
+                state.accumulation_reversal_count = 0
+                self._save_open_positions()
+                if mode == "live" and self.exchange:
+                    close_order(self.exchange, symbol, pos, cfg)
+                return
 
         # v4.43 — SUR DEMANDE EXPLICITE : gestion de sortie ENTIEREMENT
         # DEDIEE pour Spot-Accumulation — different de tous les autres modes
