@@ -661,6 +661,7 @@ def _open_positions() -> List[Dict[str, Any]]:
                 # (cas observe : pic affiche de 1.32% sans sortie declenchee
                 # malgre un trailing dynamique cense s armer a 1%).
                 "tp_stage": state.tp_stage,  # 0=aucun, 1=arme (tier1)
+                "spot_accum_armed": state.spot_accum_armed,  # v4.62 — FIX : Spot-Accum a son propre armement, separe de tp_stage
                 "tier0_armed": state.tier0_armed,
                 "peak_source": "tier1" if state.peak_pnl_usd is not None else ("tier0" if state.tier0_peak_pnl_usd is not None else "absolu (aucun tier arme)"),
                 "computed_exit_threshold_pct": (
