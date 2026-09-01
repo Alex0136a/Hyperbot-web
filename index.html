@@ -1932,6 +1932,10 @@ Confirmer ?`
                 }
                 const r = await apiCall("/api/reset-all","POST",null,token);
                 alert(r.message);
+                // v4.65 — meme correctif que le reset simple : vider les
+                // caches locaux (Performance, historique par mode).
+                setStrategyPerf({});
+                setModeHistory({});
                 loadData();
               }catch(e){alert("Erreur: "+e.message);}
             }} style={{width:"100%",background:"transparent",border:"1px solid #dc2626",borderRadius:7,padding:"9px",color:"#dc2626",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer"}}>
@@ -2412,6 +2416,15 @@ Confirmer ?`
                   }
                   await apiCall("/api/paper/reset","POST",null,token);
                   addLog("🔄 Portefeuille réinitialisé à 100 USDC", "system");
+                  // v4.65 — SUR DEMANDE EXPLICITE : le reset vide bien la
+                  // base cote serveur, mais les panneaux "Performance" et
+                  // l historique par mode restent en cache local (charges a
+                  // la demande, pas rafraichis automatiquement par
+                  // loadData()) — d ou l impression que "ca ne se
+                  // reinitialise pas" alors que les donnees sont bien
+                  // effacees en base. Vide ces caches explicitement.
+                  setStrategyPerf({});
+                  setModeHistory({});
                   loadData();
                 } catch(e) {
                   addLog(`❌ Échec de la réinitialisation : ${e.message}`, "error");
