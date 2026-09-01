@@ -2278,6 +2278,14 @@ class BotEngine:
                 snapshot["_tier0_armed"] = st.tier0_armed  # v4.11
                 snapshot["_tier0_peak_pnl_usd"] = st.tier0_peak_pnl_usd  # v4.11
                 snapshot["_absolute_peak_pnl_usd"] = st.absolute_peak_pnl_usd  # v4.18
+                # v4.63 — FIX BUG CRITIQUE : spot_accum_armed/spot_accum_peak_pnl_pct
+                # n etaient JAMAIS sauvegardes — a chaque redemarrage du bot,
+                # TOUS les trades Spot-Accum ouverts perdaient leur etat
+                # d armement silencieusement, sans se rearmer automatiquement
+                # si le prix avait entre-temps refluee sous le seuil (observe :
+                # pic +2.64% affiche, jamais arme apres plusieurs redemarrages).
+                snapshot["_spot_accum_armed"] = st.spot_accum_armed
+                snapshot["_spot_accum_peak_pnl_pct"] = st.spot_accum_peak_pnl_pct
                 positions[sym] = snapshot
         try:
             with open(self.POSITIONS_FILE, "w") as f:
@@ -3351,6 +3359,8 @@ class BotEngine:
                             self.states[slot_key].tier0_armed = saved.get("_tier0_armed", False)  # v4.11
                             self.states[slot_key].tier0_peak_pnl_usd = saved.get("_tier0_peak_pnl_usd")  # v4.11
                             self.states[slot_key].absolute_peak_pnl_usd = saved.get("_absolute_peak_pnl_usd")  # v4.18
+                            self.states[slot_key].spot_accum_armed = saved.get("_spot_accum_armed", False)  # v4.63
+                            self.states[slot_key].spot_accum_peak_pnl_pct = saved.get("_spot_accum_peak_pnl_pct")  # v4.63
                         self.emit("log", {"msg": f"[{ticker_sym}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} reintegree | SL ${pos['sl']:.2f} | TP ${pos['tp']:.2f}", "level": "warn"})
                         ensure_sl_on_hyperliquid(self.exchange, self.info, cfg["WALLET_ADDRESS"], ticker_sym, pos, cfg)
                         self.emit("log", {"msg": f"[{ticker_sym}] Verification SL Hyperliquid effectuee", "level": "ok"})
@@ -3383,6 +3393,8 @@ class BotEngine:
                     tier0_armed = pos.pop("_tier0_armed", False)  # v4.11
                     tier0_peak_pnl_usd = pos.pop("_tier0_peak_pnl_usd", None)  # v4.11
                     absolute_peak_pnl_usd = pos.pop("_absolute_peak_pnl_usd", None)  # v4.18
+                    spot_accum_armed = pos.pop("_spot_accum_armed", False)  # v4.63
+                    spot_accum_peak_pnl_pct = pos.pop("_spot_accum_peak_pnl_pct", None)  # v4.63
                     state.position = pos
                     state.peak_pnl_usd = peak_pnl_usd
                     state.tp_stage = tp_stage
@@ -3390,6 +3402,8 @@ class BotEngine:
                     state.tier0_armed = tier0_armed
                     state.tier0_peak_pnl_usd = tier0_peak_pnl_usd
                     state.absolute_peak_pnl_usd = absolute_peak_pnl_usd
+                    state.spot_accum_armed = spot_accum_armed
+                    state.spot_accum_peak_pnl_pct = spot_accum_peak_pnl_pct
                     restored += 1
                     stage_info = f" | Trailing etage {tp_stage}, pic +${peak_pnl_usd:.2f}" if peak_pnl_usd is not None else ""
                     self.emit("log", {"msg": f"[{ticker}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} restauree (paper, apres redemarrage){stage_info}", "level": "warn"})
