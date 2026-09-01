@@ -2051,30 +2051,21 @@ def reset_all(email: str = Depends(require_user)):
     preserved_keys = ("PRIVATE_KEY", "WALLET_ADDRESS", "FINNHUB_API_KEY")
     preserved = {k: cfg.get(k) for k in preserved_keys if cfg.get(k)}
     db.clear_all_trades()
-    db.clear_config_overrides()
+    # v4.65 — SUR DEMANDE EXPLICITE : "on ne touche pas aux reglages" — ce
+    # bouton effacait AUSSI tous les reglages personnalises
+    # (db.clear_config_overrides() + remise a zero complete de cfg), ce qui
+    # contredit frontalement l intention exprimee. Retire : seules les
+    # DONNEES DE TRADING (trades, positions, portefeuille) sont effacees
+    # desormais, la configuration (SL/TTP par mode, ADX, listes d actifs,
+    # tous les reglages avances) reste intacte.
     for state in bot.states.values():
         state.position = None
         state.pnl = 0.0
         state.trades = 0
         state.wins = 0
         state.closed_trades.clear()
-    cfg.clear()
-    cfg.update(be.CONFIG)
-    if _env_active_coins:
-        cfg["ACTIVE_COINS"] = [c.strip().upper() for c in _env_active_coins.split(",") if c.strip()]
-    # Reapplique les identifiants preserves (prioritaires sur be.CONFIG au
-    # cas ou ils avaient ete saisis via le formulaire web, pas une variable
-    # d environnement) et les repersiste en base pour survivre eux aussi
-    # aux prochains redemarrages.
     for k, v in preserved.items():
         cfg[k] = v
-        db.set_config_override(k, v)
-    be.apply_profile(cfg, cfg.get("PROFILE", "swing"))
-    # cfg["SYMBOLS"] doit rester sous forme de slot_keys ("BTC_0", ...) pour
-    # rester coherent avec les cles de bot.states (jamais reconstruit ici) —
-    # be.CONFIG contient les tickers "nus", il faut donc reappliquer la forme
-    # slot_key existante plutot que la forme d origine.
-    cfg["SYMBOLS"] = list(bot.states.keys())
     bot.cfg = cfg
     bot.capital = cfg["CAPITAL_USD"]
     bot.sessions = 0
