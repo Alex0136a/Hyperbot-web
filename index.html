@@ -2257,7 +2257,7 @@ Confirmer ?`
                       tp_stage/tier0_armed utilises par les 3 autres modes. */}
                       <div style={{fontSize:9,color:"#64748b",marginTop:4}}>
                         {isSpotAccum ? (
-                          <>Trailing : {trade.spot_accum_armed?"armé (2% de PnL ou seuil structurel atteint)":"pas encore armé"}</>
+                          <>Trailing : {trade.spot_accum_armed?`armé (pic interne +${trade.spot_accum_peak_pnl_pct_internal}%)`:`pas encore armé (seuil actif : ${trade.spot_accum_arm_pct_used}% de PnL, PnL actuel : ${trade.pnl_pct}%)`}</>
                         ) : (
                           <>
                             Trailing : {trade.tp_stage===1?"tier1 armé":trade.tier0_armed?"tier0 (protection anticipée)":"aucun tier armé"}
