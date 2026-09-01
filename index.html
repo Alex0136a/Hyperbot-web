@@ -2250,13 +2250,21 @@ Confirmer ?`
                         {trade.peak_pnl_pct!=null ? <span style={{color:"#c084fc",fontSize:10}}>🏔️ pic +{trade.peak_pnl_pct.toFixed(2)}%</span>
                           : trade.peak_pnl!=null && <span style={{color:"#c084fc",fontSize:10}}>🏔️ pic +{trade.peak_pnl.toFixed(2)}$</span>}
                       </div>
-                      {/* v4.61 — diagnostic precis du trailing : quel palier est
-                      reellement arme, d ou vient le pic affiche, et quel serait
-                      le seuil de sortie calcule si tier1 est actif. */}
+                      {/* v4.61/v4.63 — diagnostic precis du trailing : quel
+                      palier est reellement arme, d ou vient le pic affiche, et
+                      quel serait le seuil de sortie calcule. v4.63 FIX : Spot-
+                      Accum a son propre armement (spot_accum_armed), separe de
+                      tp_stage/tier0_armed utilises par les 3 autres modes. */}
                       <div style={{fontSize:9,color:"#64748b",marginTop:4}}>
-                        Trailing : {trade.tp_stage===1?"tier1 armé":trade.tier0_armed?"tier0 (protection anticipée)":"aucun tier armé"}
-                        {" · pic issu de : "}{trade.peak_source}
-                        {trade.computed_exit_threshold_pct!=null && ` · sortie calculée à +${trade.computed_exit_threshold_pct}%`}
+                        {isSpotAccum ? (
+                          <>Trailing : {trade.spot_accum_armed?"armé (2% de PnL ou seuil structurel atteint)":"pas encore armé"}</>
+                        ) : (
+                          <>
+                            Trailing : {trade.tp_stage===1?"tier1 armé":trade.tier0_armed?"tier0 (protection anticipée)":"aucun tier armé"}
+                            {" · pic issu de : "}{trade.peak_source}
+                            {trade.computed_exit_threshold_pct!=null && ` · sortie calculée à +${trade.computed_exit_threshold_pct}%`}
+                          </>
+                        )}
                       </div>
                       {isSpotAccum && (
                         <div style={{display:"flex",alignItems:"center",gap:6,marginTop:8,paddingTop:8,borderTop:"1px solid #1e2d4a",flexWrap:"wrap"}}>
