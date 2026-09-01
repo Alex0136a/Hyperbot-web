@@ -2190,7 +2190,13 @@ Confirmer ?`
                           <span style={{background:trade.action==="LONG"?"#052e16":"#2d0a0a",color:trade.action==="LONG"?"#34d399":"#f87171",padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:700}}>{trade.action}</span>
                           <span style={{marginLeft:6,color:"#e2e8f0",fontSize:12,fontWeight:700}}>{trade.coin}/USDC</span>
                           <span style={{marginLeft:6,color:"#94a3b8",fontSize:10}}>x{trade.leverage}</span>
-                          {(trade.tp_stage===1 || trade.tier0_armed) && (
+                          {trade.strategy==="spot_accumulation" ? (
+                            trade.spot_accum_armed && (
+                              <span style={{marginLeft:6,background:"#052e16",color:"#34d399",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>
+                                🚩 ARMÉ
+                              </span>
+                            )
+                          ) : (trade.tp_stage===1 || trade.tier0_armed) && (
                             <span style={{marginLeft:6,background:trade.tp_stage===1?"#052e16":"#1a2e05",color:trade.tp_stage===1?"#34d399":"#a3e635",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>
                               🚩 {trade.tp_stage===1?"ARMÉ":"ARMÉ (anticipé)"}
                             </span>
@@ -2430,7 +2436,13 @@ Confirmer ?`
                       <span style={{color:"#94a3b8",fontSize:10}}>x{trade.leverage}</span>
                       {trade.strategy==="accumulation" && <span style={{background:"#1a0a2e",color:"#c084fc",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>🎯 ACCUMULATION</span>}
                       {trade.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>💰 FUNDING</span>}
-                      {(trade.tp_stage===1 || trade.tier0_armed) && (
+                      {trade.strategy==="spot_accumulation" ? (
+                        trade.spot_accum_armed && (
+                          <span style={{background:"#052e16",color:"#34d399",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>
+                            🚩 ARMÉ
+                          </span>
+                        )
+                      ) : (trade.tp_stage===1 || trade.tier0_armed) && (
                         <span style={{background:trade.tp_stage===1?"#052e16":"#1a2e05",color:trade.tp_stage===1?"#34d399":"#a3e635",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>
                           🚩 {trade.tp_stage===1?"ARMÉ":"ARMÉ (anticipé)"}
                         </span>
