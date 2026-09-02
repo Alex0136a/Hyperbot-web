@@ -832,6 +832,8 @@ ADVANCED_SETTINGS = {
     "FUNDING_TTP_LOCK1_PRICE_PCT":     {"label": "Funding - TTP verrou initial (% de prix)", "default": None},
     "FUNDING_TTP_ARM2_PRICE_PCT":      {"label": "Funding - TTP palier 2 (% de prix)", "default": None},
     "FUNDING_TTP_TRAIL_GAP_PRICE_PCT": {"label": "Funding - TTP marge de repli (% de prix)", "default": None},
+    "ACCUMULATION_TTP_DYNAMIC_TRAIL_GAP_PCT": {"label": "Accumulation - marge du trailing dynamique dès l'armement (%)", "default": None},
+    "FUNDING_TTP_DYNAMIC_TRAIL_GAP_PCT": {"label": "Funding - marge du trailing dynamique dès l'armement (%)", "default": None},
     "FUNDING_SL_ATR_MULTIPLIER":       {"label": "Funding - multiplicateur ATR (mode adaptatif)", "default": None},
 }
 
