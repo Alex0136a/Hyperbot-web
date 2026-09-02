@@ -782,6 +782,7 @@ ADVANCED_SETTINGS = {
     "ACCUMULATION_PROXIMITY_PCT":  {"label": "Accumulation - proximite support/resistance (%)", "default": 1.0},
     "SL_ATR_MULTIPLIER":       {"label": "SL/TTP adaptatif - multiplicateur ATR", "default": 1.0},
     "SL_PCT_MIN":              {"label": "SL/TTP adaptatif - plancher de securite (%)", "default": 0.3},
+    "TTP_MIN_ARM_PCT_FLOOR":   {"label": "TTP - plancher strict d'armement, anti trades microscopiques (%)", "default": 0.3},
     "SL_PCT_MAX":              {"label": "SL/TTP adaptatif - plafond de securite (%)", "default": 3.0},
     "FUNDING_ANNUAL_THRESHOLD_PCT": {"label": "Funding Contrarian - seuil annualise (%)", "default": 25.0},
     "FUNDING_MODE_MAX_TRADES":      {"label": "Funding Contrarian - trades simultanes max", "default": 3},
