@@ -71,6 +71,9 @@ const ACCUM_OVERRIDE_KEYS = new Set([
   "FUNDING_TTP_ARM2_PRICE_PCT",
   "FUNDING_TTP_TRAIL_GAP_PRICE_PCT",
   "FUNDING_SL_ATR_MULTIPLIER",
+  // v4.67 — gap du trailing dynamique, surchargeable par mode
+  "ACCUMULATION_TTP_DYNAMIC_TRAIL_GAP_PCT",
+  "FUNDING_TTP_DYNAMIC_TRAIL_GAP_PCT",
 ]);
 // v4.43 — sous-onglets Paper Trading par mode
 const PAPER_SUBTABS = [
@@ -101,6 +104,7 @@ const MODE_SETTINGS_FIELDS = {
     {key:"ACCUMULATION_TTP_LOCK1_PRICE_PCT", label:"TTP verrou initial (% de prix)"},
     {key:"ACCUMULATION_TTP_ARM2_PRICE_PCT", label:"TTP palier 2 (% de prix)"},
     {key:"ACCUMULATION_TTP_TRAIL_GAP_PRICE_PCT", label:"TTP marge de repli (% de prix)"},
+    {key:"ACCUMULATION_TTP_DYNAMIC_TRAIL_GAP_PCT", label:"TTP marge du trailing dynamique dès l'armement (%)"},
   ],
   funding_contrarian: [
     {key:"FUNDING_POSITION_SIZE_PCT", label:"Taille par trade (% du capital)"},
@@ -109,6 +113,7 @@ const MODE_SETTINGS_FIELDS = {
     {key:"FUNDING_TTP_LOCK1_PRICE_PCT", label:"TTP verrou initial (% de prix)"},
     {key:"FUNDING_TTP_ARM2_PRICE_PCT", label:"TTP palier 2 (% de prix)"},
     {key:"FUNDING_TTP_TRAIL_GAP_PRICE_PCT", label:"TTP marge de repli (% de prix)"},
+    {key:"FUNDING_TTP_DYNAMIC_TRAIL_GAP_PCT", label:"TTP marge du trailing dynamique dès l'armement (%)"},
   ],
   spot_accumulation: [
     {key:"SPOT_ACCUM_POSITION_SIZE_PCT", label:"Taille par trade (% du capital)"},
