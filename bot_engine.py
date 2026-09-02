@@ -364,6 +364,11 @@ CONFIG = {
     "SL_TTP_ADAPTIVE_ENABLED": False,
     "SL_ATR_MULTIPLIER":       1.0,   # SL = ATR% x ce multiplicateur
     "SL_PCT_MIN":              0.3,   # plancher de securite (evite un SL quasi nul si ATR tres faible)
+    # v4.66 — SUR DEMANDE EXPLICITE : plancher STRICT et DIRECT sur les
+    # seuils d armement (tier0/tier1), independant du ratio de mise a
+    # l echelle — evite les trades microscopiques sur les actifs a tres
+    # faible ATR. tier0 utilise la moitie de cette valeur (ratio ~0.5).
+    "TTP_MIN_ARM_PCT_FLOOR":   0.3,
     "SL_PCT_MAX":              3.0,   # plafond de securite (evite un SL demesure si ATR tres eleve)
 
     # Tous les symboles sont des perpétuels — SPOT_SYMBOLS vide
@@ -5473,6 +5478,16 @@ class BotEngine:
                 ttp_gap_pct   = round(sl_dynamic * ratio_gap, 4)
                 tier0_arm_pct = round(sl_dynamic * ratio_tier0_arm, 4)
                 tier0_gap_pct = round(sl_dynamic * ratio_tier0_gap, 4)
+                # v4.66 — SUR DEMANDE EXPLICITE : plancher STRICT et DIRECT
+                # sur les seuils d armement eux-memes (pas seulement sur
+                # sl_dynamic dont ils derivent par ratio) — evite les trades
+                # microscopiques (pic 0.06%, gain $0.00-0.01) observes sur
+                # des actifs a tres faible ATR (INJ, TIA, POL). Le plancher
+                # sur sl_dynamic seul ne suffisait pas car applique AVANT la
+                # multiplication par un ratio < 1 (tier0 ~0.5x, par exemple).
+                min_arm_pct = cfg.get("TTP_MIN_ARM_PCT_FLOOR", 0.3)
+                tier0_arm_pct = max(tier0_arm_pct, min_arm_pct * 0.5)
+                ttp_arm1_pct = max(ttp_arm1_pct, min_arm_pct)
                 adaptive_used = True
 
         # ── v4.10 — le SL Hyperliquid (filet de securite) est un MULTIPLE du
