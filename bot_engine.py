@@ -369,6 +369,13 @@ CONFIG = {
     # l echelle — evite les trades microscopiques sur les actifs a tres
     # faible ATR. tier0 utilise la moitie de cette valeur (ratio ~0.5).
     "TTP_MIN_ARM_PCT_FLOOR":   0.3,
+    # v4.68 — SUR DEMANDE EXPLICITE : ratios FIXES du tier0 par rapport au SL
+    # adaptatif — remplacent un calcul de ratio fragile (derive de 2 valeurs
+    # independantes qui pouvaient diverger fortement entre modes, ex:
+    # Funding avec un SL tres bas). 0.5 et 0.42 correspondent aux reglages
+    # de base historiques (TTP_TIER0_ARM/GAP_PRICE_PCT face a SL_PCT_OF_E=1.0%).
+    "TIER0_ARM_RATIO_OF_SL":  0.5,
+    "TIER0_GAP_RATIO_OF_SL":  0.42,
     "SL_PCT_MAX":              3.0,   # plafond de securite (evite un SL demesure si ATR tres eleve)
 
     # Tous les symboles sont des perpétuels — SPOT_SYMBOLS vide
@@ -5483,8 +5490,19 @@ class BotEngine:
                 # suivant (0.30% <= 0.5%) — armement/desarmement en boucle,
                 # plusieurs fois par minute (observe sur TIA). Applique
                 # desormais le MEME ratio de mise a l echelle.
-                ratio_tier0_arm = (tier0_arm_pct / sl_pct_of_e) if sl_pct_of_e else 0.5
-                ratio_tier0_gap = (tier0_gap_pct / sl_pct_of_e) if sl_pct_of_e else 0.42
+                # v4.68 — FIX BUG CRITIQUE : le ratio etait CALCULE depuis
+                # tier0_arm_pct (TOUJOURS la valeur GLOBALE, jamais
+                # surchargeable par mode) divise par sl_pct_of_e (qui, LUI,
+                # peut etre une surcharge par mode tres differente, ex:
+                # FUNDING_SL_PCT_OF_E=0.2% contre le defaut global 0.5% pour
+                # tier0) — un SL Funding delibrement bas gonflait le ratio a
+                # 2.5 au lieu de ~0.5, poussant tier0_arm final a 0.75-2.00%
+                # au lieu de rester une fraction raisonnable du SL adaptatif
+                # (observe : pic +0.58% jamais arme). Utilise desormais un
+                # ratio FIXE et VOULU, jamais derive de deux valeurs
+                # independantes qui peuvent diverger entre modes.
+                ratio_tier0_arm = cfg.get("TIER0_ARM_RATIO_OF_SL", 0.5)
+                ratio_tier0_gap = cfg.get("TIER0_GAP_RATIO_OF_SL", 0.42)
                 sl_pct_of_e   = round(sl_dynamic, 4)
                 ttp_arm1_pct  = round(sl_dynamic * ratio_arm1, 4)
                 ttp_lock1_pct = round(sl_dynamic * ratio_lock1, 4)
