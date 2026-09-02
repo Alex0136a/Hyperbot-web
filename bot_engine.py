@@ -535,6 +535,11 @@ CONFIG = {
     # retrouver l ancien comportement (verrou fixe a lock1 avant arm2).
     "TTP_DYNAMIC_FROM_ARM1": True,
     "TTP_DYNAMIC_TRAIL_GAP_PCT": 0.5,
+    # v4.67 — SUR DEMANDE EXPLICITE : surcharges par mode du gap dynamique
+    # (None = herite du reglage global ci-dessus, aucun changement de
+    # comportement tant que rien n est personnalise).
+    "ACCUMULATION_TTP_DYNAMIC_TRAIL_GAP_PCT": None,
+    "FUNDING_TTP_DYNAMIC_TRAIL_GAP_PCT": None,
 
     # v4.11 — Protection anticipee ("tier 0"), sur demande explicite : les
     # trades n atteignant JAMAIS TTP_ARM1_PRICE_PCT (1.0% par defaut)
@@ -3929,7 +3934,17 @@ class BotEngine:
             # Applique a Normal/Accumulation/Funding — PAS Spot-Accumulation,
             # qui a deja son propre trailing dynamique independant.
             if cfg.get("TTP_DYNAMIC_FROM_ARM1", True):
-                dynamic_gap_pct = cfg.get("TTP_DYNAMIC_TRAIL_GAP_PCT", 0.5)
+                # v4.67 — SUR DEMANDE EXPLICITE : le gap du trailing dynamique
+                # peut desormais aussi etre surcharge PAR MODE (Accumulation,
+                # Funding) — avant ce fix, un seul reglage global s appliquait
+                # partout, empechant d ajuster le "combien on redonne depuis
+                # le pic" independamment par mode, alors que le SL l etait deja.
+                if pos.get("strategy") == "accumulation" and cfg.get("ACCUMULATION_TTP_DYNAMIC_TRAIL_GAP_PCT") is not None:
+                    dynamic_gap_pct = cfg.get("ACCUMULATION_TTP_DYNAMIC_TRAIL_GAP_PCT")
+                elif pos.get("strategy") == "funding_contrarian" and cfg.get("FUNDING_TTP_DYNAMIC_TRAIL_GAP_PCT") is not None:
+                    dynamic_gap_pct = cfg.get("FUNDING_TTP_DYNAMIC_TRAIL_GAP_PCT")
+                else:
+                    dynamic_gap_pct = cfg.get("TTP_DYNAMIC_TRAIL_GAP_PCT", 0.5)
                 current_lock_pct = peak_price_pct - dynamic_gap_pct
             # Tant que le pic n a pas atteint le 2e seuil (arm2), le seuil de
             # sortie reste fixe a lock1. Des que le pic atteint/depasse arm2,
