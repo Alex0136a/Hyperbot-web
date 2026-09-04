@@ -760,6 +760,7 @@ PROFILE_SWING = {
     # sur Spot-Accum). N affecte PAS le mode normal.
     "SPOT_ACCUM_TREND_STABILITY_CYCLES": 24,
     "ACCUMULATION_TREND_STABILITY_CYCLES": 24,
+    "NORMAL_TREND_STABILITY_CYCLES": 24,
     # v4.58 — SUR DEMANDE EXPLICITE : 3 conditions de BASE PARTAGEES par les
     # 3 modes (normal, Accumulation, Spot-Accumulation) — remplacent une
     # grande partie de la complexite empilee ces dernieres iterations
@@ -768,6 +769,12 @@ PROFILE_SWING = {
     # post-trade) pour le mode NORMAL. Accumulation garde en plus sa logique
     # de cassure (breakout) et sa confirmation post-trade existante.
     "UNIFIED_REQUIRE_ADX_CONFIRM":     True,
+    "UNIFIED_SIMPLIFIED_MODE":         True,   # v4.58 — base commune remplace l ancienne complexite (mode normal)
+    # v4.76 — SUR DEMANDE EXPLICITE : simplification COMPLETE du mode normal
+    # (retire RSI/EMA croisee/fraicheur de la decision finale, ne garde que
+    # les 3 conditions communes + stabilite) — alignement total avec
+    # Accumulation/Spot-Accumulation.
+    "UNIFIED_FULL_SIMPLIFIED_MODE":    True,
     "UNIFIED_MIN_ABOVE_SUPPORT_PCT":   1.0,
     "UNIFIED_MAX_ABOVE_SUPPORT_PCT":   5.0,
     "UNIFIED_MIN_SR_AMPLITUDE_PCT":    2.0,
@@ -4661,13 +4668,17 @@ class BotEngine:
         # ACTIVE PAR DEFAUT — repasser a False pour retrouver l ancien
         # comportement complet (aucun code retire, juste court-circuite).
         if cfg.get("UNIFIED_SIMPLIFIED_MODE", True):
+            # v4.76 — SUR DEMANDE EXPLICITE : meme stabilite de tendance que
+            # Spot-Accum/Accumulation, etendue au mode normal (cluster de
+            # 19 entrees groupees observe le 04/09, sans cette protection).
+            normal_stability_cycles = cfg.get("NORMAL_TREND_STABILITY_CYCLES", 24)
             long_level_ok = (
-                self._unified_trend_confirmed(prices, trend_up)
+                self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", normal_stability_cycles)
                 and self._unified_proximity_ok(price, support, resistance, "long")
                 and self._unified_sr_amplitude_ok(support, resistance)
             )
             short_level_ok = (
-                self._unified_trend_confirmed(prices, trend_down)
+                self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", normal_stability_cycles)
                 and self._unified_proximity_ok(price, support, resistance, "short")
                 and self._unified_sr_amplitude_ok(support, resistance)
             )
@@ -4733,8 +4744,8 @@ class BotEngine:
             "post_win_wait_short": state.post_win_wait_short,
             "long_level_ok_final": long_level_ok,
             "short_level_ok_final": short_level_ok,
-            "would_enter_long": bool(rsi_buy and ema_bull and trend_up and not state.long_signal_stale and long_level_ok),
-            "would_enter_short": bool(rsi_sell and ema_bear and trend_down and not state.short_signal_stale and short_level_ok),
+            "would_enter_long": bool(long_level_ok) if cfg.get("UNIFIED_FULL_SIMPLIFIED_MODE", True) else bool(rsi_buy and ema_bull and trend_up and not state.long_signal_stale and long_level_ok),
+            "would_enter_short": bool(short_level_ok) if cfg.get("UNIFIED_FULL_SIMPLIFIED_MODE", True) else bool(rsi_sell and ema_bear and trend_down and not state.short_signal_stale and short_level_ok),
         }
 
         # v4.15 — diagnostics (hors chaine if/elif principale, pour ne pas la
@@ -4767,7 +4778,20 @@ class BotEngine:
             if rsi_sell and ema_bear and trend_down and not state.short_signal_stale and not short_level_ok:
                 self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT qualifie mais ni rebond sur resistance ni cassure de support — pas de raison structurelle, signal ignore", "level": "dim"})
 
-        if rsi_buy and ema_bull and trend_up and not state.long_signal_stale and long_level_ok:
+        # v4.76 — SUR DEMANDE EXPLICITE : simplification COMPLETE — retire
+        # RSI, croisement EMA courte/longue et fraicheur du signal de la
+        # decision finale, qui ne repose plus QUE sur long_level_ok/
+        # short_level_ok (deja les 3 conditions communes + stabilite
+        # ci-dessus) — alignement total avec Accumulation/Spot-Accum.
+        # ACTIF par defaut ; aucun code retire, juste court-circuite.
+        if cfg.get("UNIFIED_FULL_SIMPLIFIED_MODE", True):
+            long_entry_ok = long_level_ok
+            short_entry_ok = short_level_ok
+        else:
+            long_entry_ok = rsi_buy and ema_bull and trend_up and not state.long_signal_stale and long_level_ok
+            short_entry_ok = rsi_sell and ema_bear and trend_down and not state.short_signal_stale and short_level_ok
+
+        if long_entry_ok:
             # v3.2 — FIX : ce filtre ne s applique qu en mode "reversal". En
             # mode "trend" (suivi de tendance), un RSI eleve (85-97) est
             # justement la MEILLEURE confirmation du signal — pas un danger a
@@ -4883,7 +4907,7 @@ class BotEngine:
                 reasons.append(f"breakout R ${resistance:.2f}")
             if momentum_pct is not None:
                 reasons.append(f"momentum {momentum_pct:+.2f}%")
-        elif rsi_sell and ema_bear and trend_down and not state.short_signal_stale and short_level_ok:
+        elif short_entry_ok:
             # v3.2 — FIX : meme correction que pour LONG — ce filtre ne
             # s applique qu en mode "reversal". En mode "trend", un RSI tres
             # bas (5-20) est la meilleure confirmation de la continuation
