@@ -1720,7 +1720,7 @@ Confirmer ?`
           <div style={{background:"#0f1629",border:"1px solid #34d399",borderRadius:10,padding:16,marginBottom:14}}>
             <div style={{fontSize:13,fontWeight:700,color:"#34d399",marginBottom:4}}>🌱 Spot-Accumulation</div>
             <div style={{fontSize:10,color:"#94a3b8",marginBottom:14}}>
-              Achat d'actif dans l'esprit spot — LONG uniquement, avec la tendance générale haussière (EMA200) et au moins 2% au-dessus du support. Toujours levier x1. Objectif : atteindre 80% de la distance support-résistance mesurée à l'entrée, avec un trailing armé dès +3% de PnL (marge de repli 0.5% depuis le pic).
+              Achat d'actif dans l'esprit spot — LONG uniquement, avec la tendance générale haussière (EMA200 + ADX confirmé) et entre 1% et 5% au-dessus du support (fourchette S/R d'au moins 2% d'amplitude). Toujours levier x1. Objectif : atteindre 80% de la distance support-résistance mesurée à l'entrée, avec un trailing armé dès +1% de PnL (marge de repli 0.5% depuis le pic).
             </div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #1e2d4a"}}>
               <div>
@@ -1741,7 +1741,7 @@ Confirmer ?`
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0"}}>
               <div>
                 <div style={{fontSize:11,color:"#f87171",fontWeight:700}}>⚠️ Activer un Stop Loss (% du PnL)</div>
-                <div style={{fontSize:10,color:"#94a3b8"}}>Par défaut, AUCUN SL — une position perdante reste ouverte indéfiniment. Active ce switch pour fermer automatiquement si le PnL tombe sous le seuil réglé dans Paramètres (5% par défaut).</div>
+                <div style={{fontSize:10,color:"#94a3b8"}}>Un plafond dur (-5% du PnL) ferme toujours la position, quoi qu'il arrive. Ce switch ajoute un SL <b>conditionnel</b> supplémentaire, plus resserré (1.5% par défaut, réglable) — il ne ferme la position QUE si un retournement de tendance est aussi en cours à cet instant (pas juste le seuil de perte atteint seul).</div>
               </div>
               <button onClick={async()=>{
                 const v=!spotAccumSlEnabled;
