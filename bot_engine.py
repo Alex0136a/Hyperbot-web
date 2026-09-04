@@ -327,6 +327,10 @@ CONFIG = {
     # ACTIF par defaut (contrairement au SL conditionnel ci-dessus).
     "SPOT_ACCUM_HARD_SL_ENABLED": True,
     "SPOT_ACCUM_HARD_SL_PCT": 5.0,
+    # v4.71 — SUR DEMANDE EXPLICITE : TP conditionnel sur retournement
+    # INSTANTANE — symetrique au SL conditionnel. DESACTIVE par defaut.
+    "SPOT_ACCUM_TP_ON_REVERSAL_ENABLED": False,
+    "SPOT_ACCUM_TP_ON_REVERSAL_PCT": 1.5,
     # v4.47/v4.54 — SUR DEMANDE EXPLICITE : fermeture si un retournement de
     # tendance est CONFIRME (prix sous l EMA200 de facon soutenue) — activee
     # par defaut. v4.54 corrige DEUX axes : la duree (l EMA200 ne bouge que
@@ -3761,6 +3765,30 @@ class BotEngine:
                         self._register_max_loss(ticker, pos.get("confidence"))
                     self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum RETOURNEMENT CONFIRME (prix sous l'EMA200 depuis {confirm_needed} cycles, donnees matures et saines) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "warn"})
                     state.spot_accum_reversal_count = 0
+                    self._save_open_positions()
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, symbol, pos, cfg)
+                    return
+
+            # v4.71 — SUR DEMANDE EXPLICITE : TP conditionnel sur
+            # retournement INSTANTANE (symetrique au SL conditionnel plus
+            # haut) — si le gain depasse un seuil minimum ET qu un
+            # retournement est en cours a l instant present (meme
+            # verification rapide que le SL conditionnel, pas la
+            # confirmation soutenue de 30 min), prend le profit
+            # IMMEDIATEMENT plutot que d attendre que le trailing (TTP)
+            # rattrape le repli. DESACTIVE par defaut (contrairement au
+            # plafond dur, mais comme le SL conditionnel).
+            if cfg.get("SPOT_ACCUM_TP_ON_REVERSAL_ENABLED", False):
+                tp_reversal_threshold = cfg.get("SPOT_ACCUM_TP_ON_REVERSAL_PCT", 1.5)
+                ema200_tp_instant = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+                reversal_tp_now = ema200_tp_instant is not None and price < ema200_tp_instant
+                if pnl_pct >= tp_reversal_threshold and reversal_tp_now:
+                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
+                    trade["symbol"] = symbol
+                    self.emit("trade", trade)
+                    self._register_win(ticker)
+                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum TP SUR RETOURNEMENT (gain {pnl_pct:.2f}% >= {tp_reversal_threshold:.1f}%, retournement en cours) @ ${price:.2f} | PnL: +${pnl:.2f}", "level": "win"})
                     self._save_open_positions()
                     if mode == "live" and self.exchange:
                         close_order(self.exchange, symbol, pos, cfg)
