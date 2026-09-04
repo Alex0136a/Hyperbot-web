@@ -418,6 +418,7 @@ def _public_config() -> Dict[str, Any]:
         "funding_mode_live_allowed": cfg.get("FUNDING_MODE_LIVE_ALLOWED", False),
         "require_sr_ema200_separation": cfg.get("REQUIRE_SR_EMA200_SEPARATION", False),
         "unified_simplified_mode": cfg.get("UNIFIED_SIMPLIFIED_MODE", True),
+        "unified_full_simplified_mode": cfg.get("UNIFIED_FULL_SIMPLIFIED_MODE", True),
         "unified_require_adx_confirm": cfg.get("UNIFIED_REQUIRE_ADX_CONFIRM", True),
         "ttp_dynamic_from_arm1": cfg.get("TTP_DYNAMIC_FROM_ARM1", True),
         "spot_accum_enabled": cfg.get("SPOT_ACCUM_ENABLED", False),
@@ -772,6 +773,7 @@ ADVANCED_SETTINGS = {
     "ADX_PERIOD":              {"label": "ADX - periode",                    "default": 14},
     "ADX_TREND_THRESHOLD":     {"label": "ADX - seuil Trend/Reversal",       "default": 25.0},
     "SPOT_ACCUM_TREND_STABILITY_CYCLES":   {"label": "Spot-Accum - stabilité tendance requise avant entrée (cycles ~10s)", "default": 24},
+    "NORMAL_TREND_STABILITY_CYCLES":       {"label": "Normal - stabilité tendance requise avant entrée (cycles ~10s)", "default": 24},
     "ACCUMULATION_TREND_STABILITY_CYCLES": {"label": "Accumulation - stabilité tendance requise avant entrée (cycles ~10s)", "default": 24},
     "SR_PERIOD":               {"label": "Support/Resistance - periode (cycles)", "default": 50},
     "SL_PCT_OF_E":                {"label": "Stop Loss (% de E)", "default": 1.0},
@@ -1063,6 +1065,7 @@ class FiltersBody(BaseModel):
     funding_mode_live_allowed: Optional[bool] = None
     require_sr_ema200_separation: Optional[bool] = None
     unified_simplified_mode: Optional[bool] = None
+    unified_full_simplified_mode: Optional[bool] = None
     unified_require_adx_confirm: Optional[bool] = None
     ttp_dynamic_from_arm1: Optional[bool] = None
     spot_accum_enabled: Optional[bool] = None
@@ -1115,6 +1118,8 @@ def put_filters(body: FiltersBody, email: str = Depends(require_user)):
     # mode normal, et s ajoutent a Accumulation. ACTIF par defaut.
     if body.unified_simplified_mode is not None:
         _apply_and_persist("UNIFIED_SIMPLIFIED_MODE", body.unified_simplified_mode)
+    if body.unified_full_simplified_mode is not None:
+        _apply_and_persist("UNIFIED_FULL_SIMPLIFIED_MODE", body.unified_full_simplified_mode)
     if body.unified_require_adx_confirm is not None:
         _apply_and_persist("UNIFIED_REQUIRE_ADX_CONFIRM", body.unified_require_adx_confirm)
     if body.ttp_dynamic_from_arm1 is not None:
