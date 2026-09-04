@@ -753,6 +753,13 @@ PROFILE_SWING = {
     # precis, en priorite sur cette detection automatique.
     "ADX_PERIOD":               14,
     "ADX_TREND_THRESHOLD":      25.0,
+    # v4.75 — SUR DEMANDE EXPLICITE : la tendance doit etre STABLE depuis ce
+    # nombre de cycles consecutifs (~10s/cycle, 24 = ~4 min) avant d etre
+    # consideree valide a l entree — evite d entrer juste avant/pendant un
+    # retournement deja amorce (observe : pics de 0.14-0.48% suivis d un SL
+    # sur Spot-Accum). N affecte PAS le mode normal.
+    "SPOT_ACCUM_TREND_STABILITY_CYCLES": 24,
+    "ACCUMULATION_TREND_STABILITY_CYCLES": 24,
     # v4.58 — SUR DEMANDE EXPLICITE : 3 conditions de BASE PARTAGEES par les
     # 3 modes (normal, Accumulation, Spot-Accumulation) — remplacent une
     # grande partie de la complexite empilee ces dernieres iterations
@@ -1831,6 +1838,9 @@ class SymbolState:
         # v4.64 — SUR DEMANDE EXPLICITE : meme mecanisme de retournement
         # confirme, applique a Accumulation (LONG et SHORT).
         self.accumulation_reversal_count = 0
+        # v4.75 — compteurs de stabilite de la tendance (cycles consecutifs).
+        self.trend_up_streak = 0
+        self.trend_down_streak = 0
         # v4.55 — instantane diagnostic de chaque clause d entree
         # Spot-Accumulation, expose via /api/entry-diagnostics.
         self.spot_accum_gate_snapshot = {}
@@ -2773,14 +2783,23 @@ class BotEngine:
             return 2
         return 1
 
-    def _unified_trend_confirmed(self, prices, trend_ok):
+    def _unified_trend_confirmed(self, prices, trend_ok, state=None, streak_attr=None, min_stability_cycles=None):
         """v4.58 — SUR DEMANDE EXPLICITE : verification de tendance PARTAGEE
         par les 3 modes (normal, Accumulation, Spot-Accumulation) — EMA200
         (trend_ok, deja calcule par l appelant) ET ADX >= seuil (tendance
-        REELLEMENT forte, pas juste un franchissement de justesse)."""
+        REELLEMENT forte, pas juste un franchissement de justesse).
+        v4.75 — SUR DEMANDE EXPLICITE : parametres optionnels state/
+        streak_attr/min_stability_cycles — si fournis, exige EN PLUS que la
+        tendance soit STABLE depuis au moins ce nombre de cycles (pas juste
+        vraie a l instant). Laisse None (par defaut) = comportement
+        INCHANGE — seul Accumulation les fournit explicitement, le mode
+        normal continue de fonctionner exactement comme avant."""
         if not trend_ok:
             return False
         cfg = self.cfg
+        if min_stability_cycles is not None and state is not None and streak_attr is not None:
+            if getattr(state, streak_attr, 0) < min_stability_cycles:
+                return False
         if not cfg.get("UNIFIED_REQUIRE_ADX_CONFIRM", True):
             return True
         adx = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
@@ -3694,37 +3713,27 @@ class BotEngine:
                         close_order(self.exchange, symbol, pos, cfg)
                     return
 
-            # 1) SL optionnel, en % du PnL (PAS % de E comme le reste du
+            # 1) SL simple, en % du PnL (PAS % de E comme le reste du
             #    bot) — desactive par defaut, une position perdante reste
             #    ouverte indefiniment sauf si explicitement active.
-            # v4.69 — SUR DEMANDE EXPLICITE : le SL ne stoppe desormais le
-            # trade QUE SI un retournement est EGALEMENT en cours (prix sous
-            # l EMA200 A L INSTANT PRESENT, verification simple et rapide,
-            # PAS la confirmation soutenue de 30 min du mecanisme de
-            # retournement dedie plus bas) — sans retournement, le SL seul
-            # ne ferme JAMAIS la position, meme si la perte depasse le seuil.
+            # v4.74 — SUR DEMANDE EXPLICITE : retour a un seuil SIMPLE et
+            # INCONDITIONNEL — la version conditionnelle (exigeant aussi un
+            # retournement instantane) est retiree, jugee pas satisfaisante
+            # a l usage. Le retournement confirme (30 min soutenues, voir
+            # plus bas) reste le mecanisme dedie pour les sorties liees a
+            # un changement de tendance, independamment de ce SL.
             if cfg.get("SPOT_ACCUM_SL_ENABLED", False):
                 sl_threshold_pnl = cfg.get("SPOT_ACCUM_SL_PCT_OF_PNL", 1.5)
-                ema200_instant = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
-                # v4.72 — SUR DEMANDE EXPLICITE : marge de distance minimale
-                # pour filtrer le bruit — un simple franchissement technique
-                # de l EMA200 (le prix peut osciller tout pres de cette
-                # ligne sans vrai retournement) ne suffit plus, il faut etre
-                # CLAIREMENT de l autre cote (par defaut 0.15%).
-                reversal_margin_pct = cfg.get("SPOT_ACCUM_INSTANT_REVERSAL_MARGIN_PCT", 0.15)
-                reversal_now = ema200_instant is not None and price < ema200_instant * (1 - reversal_margin_pct / 100)
-                if pnl_pct <= -sl_threshold_pnl and reversal_now:
+                if pnl_pct <= -sl_threshold_pnl:
                     pnl, _, trade = state.close_position(price, "STOP LOSS")
                     trade["symbol"] = symbol
                     self.emit("trade", trade)
-                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum STOP LOSS (optionnel, {sl_threshold_pnl:.1f}% du PnL, avec retournement en cours) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
+                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum STOP LOSS ({sl_threshold_pnl:.1f}% du PnL) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
                     self._register_max_loss(ticker, pos.get("confidence"))
                     self._save_open_positions()
                     if mode == "live" and self.exchange:
                         close_order(self.exchange, symbol, pos, cfg)
                     return
-                elif pnl_pct <= -sl_threshold_pnl:
-                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum perte au-dela du seuil SL ({pnl_pct:.2f}%) mais PAS de retournement en cours — position maintenue", "level": "dim"})
 
             # v4.47/v4.54 — SUR DEMANDE EXPLICITE : fermeture si un
             # RETOURNEMENT DE TENDANCE est CONFIRME. v4.54 corrige une vraie
@@ -4147,6 +4156,22 @@ class BotEngine:
         # trader a l aveugle sur la tendance de fond.
         trend_up   = ema200 is not None and price > ema200   # au dessus EMA200 = tendance haussiere
         trend_down = ema200 is not None and price < ema200   # en dessous EMA200 = tendance baissiere
+
+        # v4.75 — SUR DEMANDE EXPLICITE : compteur de STABILITE de la
+        # tendance — combien de cycles CONSECUTIFS trend_up/trend_down est
+        # reste vrai. Utilise a l ENTREE (Spot-Accum, Accumulation) pour
+        # exiger une tendance qui tient depuis un moment, pas juste vraie a
+        # l instant du signal (evite d entrer juste avant un retournement
+        # deja amorce — observe : pics de 0.14-0.48% suivis d un SL).
+        if trend_up:
+            state.trend_up_streak = getattr(state, "trend_up_streak", 0) + 1
+            state.trend_down_streak = 0
+        elif trend_down:
+            state.trend_down_streak = getattr(state, "trend_down_streak", 0) + 1
+            state.trend_up_streak = 0
+        else:
+            state.trend_up_streak = 0
+            state.trend_down_streak = 0
 
         # Sauvegarde du MACD du cycle precedent pour detection crossover (Trailing TP)
         state.prev_macd = state.current_macd
@@ -5037,10 +5062,13 @@ class BotEngine:
         if cfg.get("UNIFIED_SIMPLIFIED_MODE", True):
             if not self._unified_sr_amplitude_ok(support, resistance):
                 return
-            if self._unified_trend_confirmed(prices, trend_up) and self._unified_proximity_ok(price, support, resistance, "long"):
+            # v4.75 — SUR DEMANDE EXPLICITE : extension de la stabilite de
+            # tendance a Accumulation (meme principe que Spot-Accum).
+            accum_stability_cycles = cfg.get("ACCUMULATION_TREND_STABILITY_CYCLES", 24)
+            if self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", accum_stability_cycles) and self._unified_proximity_ok(price, support, resistance, "long"):
                 if momentum_pct is None or momentum_pct >= -momentum_threshold:
                     direction = "long"
-            elif self._unified_trend_confirmed(prices, trend_down) and self._unified_proximity_ok(price, support, resistance, "short"):
+            elif self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", accum_stability_cycles) and self._unified_proximity_ok(price, support, resistance, "short"):
                 if momentum_pct is None or momentum_pct <= momentum_threshold:
                     direction = "short"
         else:
@@ -5269,6 +5297,15 @@ class BotEngine:
         if not trend_up:
             snap["blocker"] = "pas de tendance haussiere (EMA200)"
             return  # exige la tendance generale haussiere (EMA200)
+        # v4.75 — SUR DEMANDE EXPLICITE : la tendance doit aussi etre STABLE
+        # depuis un moment (pas juste vraie a l instant du signal) — evite
+        # d entrer juste avant/pendant un retournement deja amorce.
+        min_stability_cycles = cfg.get("SPOT_ACCUM_TREND_STABILITY_CYCLES", 24)
+        snap["trend_up_streak"] = state.trend_up_streak
+        snap["min_stability_cycles"] = min_stability_cycles
+        if state.trend_up_streak < min_stability_cycles:
+            snap["blocker"] = f"tendance trop recente ({state.trend_up_streak}/{min_stability_cycles} cycles)"
+            return
         if support is None or resistance is None or support <= 0:
             snap["blocker"] = "support/resistance indisponible"
             return
