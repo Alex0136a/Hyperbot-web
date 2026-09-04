@@ -425,6 +425,7 @@ def _public_config() -> Dict[str, Any]:
         "spot_accum_require_adx_confirm": cfg.get("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", True),
         "accumulation_reversal_exit_enabled": cfg.get("ACCUMULATION_REVERSAL_EXIT_ENABLED", True),
         "spot_accum_hard_sl_enabled": cfg.get("SPOT_ACCUM_HARD_SL_ENABLED", True),
+        "spot_accum_tp_on_reversal_enabled": cfg.get("SPOT_ACCUM_TP_ON_REVERSAL_ENABLED", False),
         "accumulation_active_coins": cfg.get("ACCUMULATION_ACTIVE_COINS"),
         "funding_active_coins": cfg.get("FUNDING_ACTIVE_COINS"),
         "spot_accum_active_coins": cfg.get("SPOT_ACCUM_ACTIVE_COINS"),
@@ -804,6 +805,7 @@ ADVANCED_SETTINGS = {
     "SPOT_ACCUM_TRAILING_ARM_SR_PCT":   {"label": "Spot-Accum - armement trailing (% distance support-résistance)", "default": 70.0},
     "SPOT_ACCUM_SL_PCT_OF_PNL":         {"label": "Spot-Accum - SL conditionnel (% du PnL, ne ferme QUE si retournement en cours)", "default": 1.5},
     "SPOT_ACCUM_HARD_SL_PCT":           {"label": "Spot-Accum - plafond dur (% du PnL, ferme sans condition)", "default": 5.0},
+    "SPOT_ACCUM_TP_ON_REVERSAL_PCT":    {"label": "Spot-Accum - TP sur retournement instantané (% du PnL)", "default": 1.5},
     "SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES":    {"label": "Spot-Accum - retournement confirmé (cycles, ~10s chacun)", "default": 180},
     "SPOT_ACCUM_REVERSAL_MIN_EMA_MATURITY":  {"label": "Spot-Accum - maturité EMA200 minimale (bougies)", "default": 100},
     "ACCUMULATION_REVERSAL_CONFIRM_CYCLES":    {"label": "Accumulation - retournement confirmé (cycles, ~10s chacun)", "default": 180},
@@ -1068,6 +1070,7 @@ class FiltersBody(BaseModel):
     spot_accum_require_adx_confirm: Optional[bool] = None
     accumulation_reversal_exit_enabled: Optional[bool] = None
     spot_accum_hard_sl_enabled: Optional[bool] = None
+    spot_accum_tp_on_reversal_enabled: Optional[bool] = None
 
 
 @app.put("/api/config/filters")
@@ -1130,6 +1133,8 @@ def put_filters(body: FiltersBody, email: str = Depends(require_user)):
         _apply_and_persist("ACCUMULATION_REVERSAL_EXIT_ENABLED", body.accumulation_reversal_exit_enabled)
     if body.spot_accum_hard_sl_enabled is not None:
         _apply_and_persist("SPOT_ACCUM_HARD_SL_ENABLED", body.spot_accum_hard_sl_enabled)
+    if body.spot_accum_tp_on_reversal_enabled is not None:
+        _apply_and_persist("SPOT_ACCUM_TP_ON_REVERSAL_ENABLED", body.spot_accum_tp_on_reversal_enabled)
     return {"ok": True}
 
 
