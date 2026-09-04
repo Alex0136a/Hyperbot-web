@@ -321,7 +321,12 @@ CONFIG = {
     # deux est atteint) — base sur la structure du marche, pas un % de PnL.
     "SPOT_ACCUM_TRAILING_ARM_SR_PCT": 70.0,    # = support + ce % de la distance support-resistance
     "SPOT_ACCUM_SL_ENABLED": False,            # AUCUN SL par defaut — interrupteur explicite pour en ajouter un
-    "SPOT_ACCUM_SL_PCT_OF_PNL": 5.0,           # si active : ferme si le PnL tombe a -5% (valeur, pas negative — le signe est applique automatiquement)
+    "SPOT_ACCUM_SL_PCT_OF_PNL": 1.5,            # SL conditionnel (ne ferme QUE si retournement instantane en cours)
+    # v4.70 — SUR DEMANDE EXPLICITE : plafond dur en dernier recours — ferme
+    # QUOI QU IL ARRIVE au-dela de ce seuil, sans condition de retournement.
+    # ACTIF par defaut (contrairement au SL conditionnel ci-dessus).
+    "SPOT_ACCUM_HARD_SL_ENABLED": True,
+    "SPOT_ACCUM_HARD_SL_PCT": 5.0,
     # v4.47/v4.54 — SUR DEMANDE EXPLICITE : fermeture si un retournement de
     # tendance est CONFIRME (prix sous l EMA200 de facon soutenue) — activee
     # par defaut. v4.54 corrige DEUX axes : la duree (l EMA200 ne bouge que
@@ -3660,21 +3665,54 @@ class BotEngine:
         # immediatement apres, ne passe JAMAIS par la logique SL/TTP normale
         # ci-dessous, qui ne s applique pas a ce mode.
         if pos.get("strategy") == "spot_accumulation":
-            # 1) SL optionnel, en % du PnL (PAS % de E comme le reste du
-            #    bot) — desactive par defaut, une position perdante reste
-            #    ouverte indefiniment sauf si explicitement active.
-            if cfg.get("SPOT_ACCUM_SL_ENABLED", False):
-                sl_threshold_pnl = cfg.get("SPOT_ACCUM_SL_PCT_OF_PNL", 5.0)
-                if pnl_pct <= -sl_threshold_pnl:
+            # 0) v4.70 — SUR DEMANDE EXPLICITE : PLAFOND DUR en dernier
+            #    recours — ferme QUOI QU IL ARRIVE au-dela de ce seuil,
+            #    INDEPENDANT du retournement (contrairement au SL
+            #    conditionnel ci-dessous). Complete les 2 mecanismes
+            #    existants (SL conditionnel + retournement confirme) qui,
+            #    ENSEMBLE, ne garantissaient aucune perte maximale absolue
+            #    (une perte pouvait continuer de se creuser tant qu aucun
+            #    des deux n etait satisfait). ACTIF par defaut (-5%),
+            #    contrairement au SL conditionnel qui reste desactive par
+            #    defaut.
+            if cfg.get("SPOT_ACCUM_HARD_SL_ENABLED", True):
+                hard_sl_pct = cfg.get("SPOT_ACCUM_HARD_SL_PCT", 5.0)
+                if pnl_pct <= -hard_sl_pct:
                     pnl, _, trade = state.close_position(price, "STOP LOSS")
                     trade["symbol"] = symbol
                     self.emit("trade", trade)
-                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum STOP LOSS (optionnel, {sl_threshold_pnl:.1f}% du PnL) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
+                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum PLAFOND DUR atteint ({hard_sl_pct:.1f}% du PnL, sans condition de retournement) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
                     self._register_max_loss(ticker, pos.get("confidence"))
                     self._save_open_positions()
                     if mode == "live" and self.exchange:
                         close_order(self.exchange, symbol, pos, cfg)
                     return
+
+            # 1) SL optionnel, en % du PnL (PAS % de E comme le reste du
+            #    bot) — desactive par defaut, une position perdante reste
+            #    ouverte indefiniment sauf si explicitement active.
+            # v4.69 — SUR DEMANDE EXPLICITE : le SL ne stoppe desormais le
+            # trade QUE SI un retournement est EGALEMENT en cours (prix sous
+            # l EMA200 A L INSTANT PRESENT, verification simple et rapide,
+            # PAS la confirmation soutenue de 30 min du mecanisme de
+            # retournement dedie plus bas) — sans retournement, le SL seul
+            # ne ferme JAMAIS la position, meme si la perte depasse le seuil.
+            if cfg.get("SPOT_ACCUM_SL_ENABLED", False):
+                sl_threshold_pnl = cfg.get("SPOT_ACCUM_SL_PCT_OF_PNL", 1.5)
+                ema200_instant = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+                reversal_now = ema200_instant is not None and price < ema200_instant
+                if pnl_pct <= -sl_threshold_pnl and reversal_now:
+                    pnl, _, trade = state.close_position(price, "STOP LOSS")
+                    trade["symbol"] = symbol
+                    self.emit("trade", trade)
+                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum STOP LOSS (optionnel, {sl_threshold_pnl:.1f}% du PnL, avec retournement en cours) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
+                    self._register_max_loss(ticker, pos.get("confidence"))
+                    self._save_open_positions()
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, symbol, pos, cfg)
+                    return
+                elif pnl_pct <= -sl_threshold_pnl:
+                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum perte au-dela du seuil SL ({pnl_pct:.2f}%) mais PAS de retournement en cours — position maintenue", "level": "dim"})
 
             # v4.47/v4.54 — SUR DEMANDE EXPLICITE : fermeture si un
             # RETOURNEMENT DE TENDANCE est CONFIRME. v4.54 corrige une vraie
