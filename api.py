@@ -1066,6 +1066,58 @@ def put_strategy_mode(body: StrategyModeBody, email: str = Depends(require_user)
     return {"ok": True, "strategy": body.strategy, "value": body.value}
 
 
+class StrategyGoLiveBody(BaseModel):
+    strategy: str  # "normal" | "accumulation" | "funding_contrarian" | "spot_accumulation"
+
+
+@app.post("/api/config/strategy-go-live")
+def post_strategy_go_live(body: StrategyGoLiveBody, email: str = Depends(require_user)):
+    """v4.88 — SUR DEMANDE EXPLICITE : bascule un mode precis en LIVE, en
+    une seule action combinee (le frontend demande deja confirmation avant
+    d appeler cet endpoint, vu son caractere irreversible) :
+      1) Ferme TOUTES les positions actuellement ouvertes pour ce mode
+      2) Efface l historique (trades fermes) de ce mode uniquement
+      3) Si des identifiants Hyperliquid sont configures, synchronise le
+         capital reel du compte (remplace le capital local — attention,
+         ce capital est PARTAGE entre tous les modes, meme ceux restes en
+         paper, car le bot n a qu un seul pot de capital)
+      4) Force enfin ce mode sur "live" via STRATEGY_MODE_OVERRIDE
+    """
+    valid_strategies = ("normal", "accumulation", "funding_contrarian", "spot_accumulation")
+    if body.strategy not in valid_strategies:
+        raise HTTPException(400, f"Mode inconnu : {body.strategy}")
+
+    closed_count = bot._close_all_trades_for_strategy(body.strategy)
+    deleted_count = db.clear_trades_by_strategy(body.strategy)
+
+    capital_synced = False
+    new_capital = None
+    if bot.info is not None and cfg.get("WALLET_ADDRESS"):
+        real_balance = be.sync_capital_from_hyperliquid(bot.info, cfg["WALLET_ADDRESS"])
+        if real_balance is not None and real_balance > 0:
+            bot.capital = real_balance
+            cfg["CAPITAL_USD"] = real_balance
+            capital_synced = True
+            new_capital = real_balance
+            _push_log("ok", f"💰 Capital synchronise depuis Hyperliquid suite au passage de {body.strategy} en live : ${real_balance:.2f} (partage entre tous les modes)")
+
+    current = cfg.get("STRATEGY_MODE_OVERRIDE") or {}
+    current = dict(current)
+    current[body.strategy] = "live"
+    _apply_and_persist("STRATEGY_MODE_OVERRIDE", current)
+
+    _push_log("warn", f"🔴 Mode {body.strategy} bascule en LIVE — {closed_count} position(s) fermee(s), {deleted_count} trade(s) d historique efface(s).")
+
+    return {
+        "ok": True,
+        "strategy": body.strategy,
+        "closed_positions": closed_count,
+        "deleted_history": deleted_count,
+        "capital_synced": capital_synced,
+        "new_capital": new_capital,
+    }
+
+
 class ModeCoinResetBody(BaseModel):
     mode: str
 
