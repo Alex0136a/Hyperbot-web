@@ -1095,11 +1095,12 @@ def post_strategy_go_live(body: StrategyGoLiveBody, email: str = Depends(require
     if bot.info is not None and cfg.get("WALLET_ADDRESS"):
         real_balance = be.sync_capital_from_hyperliquid(bot.info, cfg["WALLET_ADDRESS"])
         if real_balance is not None and real_balance > 0:
-            bot.capital = real_balance
-            cfg["CAPITAL_USD"] = real_balance
+            # v4.89 — FIX : alimente le pot LIVE separe, plus jamais le
+            # capital paper partage — les deux ne se melangent plus.
+            bot.live_capital_base = real_balance
             capital_synced = True
             new_capital = real_balance
-            _push_log("ok", f"💰 Capital synchronise depuis Hyperliquid suite au passage de {body.strategy} en live : ${real_balance:.2f} (partage entre tous les modes)")
+            _push_log("ok", f"💰 Capital LIVE synchronise depuis Hyperliquid suite au passage de {body.strategy} en live : ${real_balance:.2f} (capital paper des autres modes inchange)")
 
     current = cfg.get("STRATEGY_MODE_OVERRIDE") or {}
     current = dict(current)
