@@ -790,6 +790,7 @@ ADVANCED_SETTINGS = {
     "SL_ATR_MULTIPLIER":       {"label": "SL/TTP adaptatif - multiplicateur ATR", "default": 1.0},
     "SL_PCT_MIN":              {"label": "SL/TTP adaptatif - plancher de securite (%)", "default": 0.3},
     "TTP_MIN_ARM_PCT_FLOOR":   {"label": "TTP - plancher strict d'armement, anti trades microscopiques (%)", "default": 0.3},
+    "TTP_MAX_GIVEBACK_PCT_OF_PEAK": {"label": "TTP - plafond de redonnage maximum du pic, même tendance intacte (%)", "default": 20.0},
     "TIER0_ARM_RATIO_OF_SL":   {"label": "TTP - ratio fixe tier0 armement / SL", "default": 0.5},
     "TIER0_GAP_RATIO_OF_SL":   {"label": "TTP - ratio fixe tier0 marge de repli / SL", "default": 0.42},
     "SL_PCT_MAX":              {"label": "SL/TTP adaptatif - plafond de securite (%)", "default": 3.0},
