@@ -419,6 +419,7 @@ def _public_config() -> Dict[str, Any]:
         "require_sr_ema200_separation": cfg.get("REQUIRE_SR_EMA200_SEPARATION", False),
         "unified_simplified_mode": cfg.get("UNIFIED_SIMPLIFIED_MODE", True),
         "unified_full_simplified_mode": cfg.get("UNIFIED_FULL_SIMPLIFIED_MODE", True),
+        "ttp_trend_hold_filter_enabled": cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True),
         "unified_require_adx_confirm": cfg.get("UNIFIED_REQUIRE_ADX_CONFIRM", True),
         "ttp_dynamic_from_arm1": cfg.get("TTP_DYNAMIC_FROM_ARM1", True),
         "spot_accum_enabled": cfg.get("SPOT_ACCUM_ENABLED", False),
@@ -1066,6 +1067,7 @@ class FiltersBody(BaseModel):
     require_sr_ema200_separation: Optional[bool] = None
     unified_simplified_mode: Optional[bool] = None
     unified_full_simplified_mode: Optional[bool] = None
+    ttp_trend_hold_filter_enabled: Optional[bool] = None
     unified_require_adx_confirm: Optional[bool] = None
     ttp_dynamic_from_arm1: Optional[bool] = None
     spot_accum_enabled: Optional[bool] = None
@@ -1120,6 +1122,8 @@ def put_filters(body: FiltersBody, email: str = Depends(require_user)):
         _apply_and_persist("UNIFIED_SIMPLIFIED_MODE", body.unified_simplified_mode)
     if body.unified_full_simplified_mode is not None:
         _apply_and_persist("UNIFIED_FULL_SIMPLIFIED_MODE", body.unified_full_simplified_mode)
+    if body.ttp_trend_hold_filter_enabled is not None:
+        _apply_and_persist("TTP_TREND_HOLD_FILTER_ENABLED", body.ttp_trend_hold_filter_enabled)
     if body.unified_require_adx_confirm is not None:
         _apply_and_persist("UNIFIED_REQUIRE_ADX_CONFIRM", body.unified_require_adx_confirm)
     if body.ttp_dynamic_from_arm1 is not None:
