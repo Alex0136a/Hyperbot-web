@@ -553,6 +553,12 @@ CONFIG = {
     # retrouver l ancien comportement (verrou fixe a lock1 avant arm2).
     "TTP_DYNAMIC_FROM_ARM1": True,
     "TTP_DYNAMIC_TRAIL_GAP_PCT": 0.5,
+    # v4.77 — SUR DEMANDE EXPLICITE : avant de fermer via le trailing, verifie
+    # si la tendance de fond (EMA200) tient toujours — si oui, un simple
+    # repli de la marge (0.5% par defaut) depuis le pic ne suffit pas a
+    # justifier une sortie, la position est maintenue. ACTIF par defaut.
+    # Applique a Normal/Accumulation/Funding (pas Spot-Accum, deja separe).
+    "TTP_TREND_HOLD_FILTER_ENABLED": True,
     # v4.67 — SUR DEMANDE EXPLICITE : surcharges par mode du gap dynamique
     # (None = herite du reglage global ci-dessus, aucun changement de
     # comportement tant que rien n est personnalise).
@@ -4037,24 +4043,48 @@ class BotEngine:
                 current_lock_pct = lock1_price_pct
 
             if pnl_pct <= current_lock_pct:
-                pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
-                trade["symbol"] = symbol
-                if mode == "live" and self.exchange:
-                    close_order(self.exchange, ticker, pos, self.cfg)
-                self.emit("trade", trade)
-                self._register_win(ticker)
-                # v4.25 — apres un gain, exige une confirmation renforcee
-                # (plusieurs cycles consecutifs) avant de rouvrir dans le MEME sens.
-                if pos["type"] == "long":
-                    state.post_win_confirm_long = True
-                    state.confirm_count_long = 0
+                # v4.77 — SUR DEMANDE EXPLICITE : avant de fermer via le
+                # trailing, verifie si la TENDANCE DE FOND tient toujours
+                # (EMA200 dans le bon sens, verification simple et rapide —
+                # pas l ADX, juste la direction a l instant present). Si la
+                # tendance est toujours intacte, un simple repli de 0.5%
+                # depuis le pic ne suffit pas a justifier une sortie —
+                # laisse le trade courir, le pic continue d etre suivi.
+                # Applique a Normal/Accumulation/Funding (pas Spot-Accum,
+                # qui a son propre trailing independant).
+                trend_still_intact = False  # par defaut si le filtre est desactive : comportement d origine (ferme normalement)
+                if cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
+                    ema200_hold = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+                    if ema200_hold is not None:
+                        if pos["type"] == "long":
+                            trend_still_intact = price > ema200_hold
+                        else:
+                            trend_still_intact = price < ema200_hold
+                    else:
+                        trend_still_intact = False  # donnee indisponible -> ne bloque pas la sortie normale
+                if trend_still_intact:
+                    self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Repli a {pnl_pct:.2f}% (verrou {current_lock_pct:.2f}%) mais tendance de fond toujours intacte — position maintenue", "level": "dim"})
+                    self._save_open_positions()
+                    return
                 else:
-                    state.post_win_confirm_short = True
-                    state.confirm_count_short = 0
-                self.emit("log", {"msg": f"[{ticker}] {strat_tag}TTP SORTIE @ ${price:.2f} | pic +{peak_price_pct:.2f}% de mouvement (+${state.peak_pnl_usd:.2f} a x{leverage}) | PnL: +${pnl:.2f}", "level": "win"})
-                self._save_open_positions()  # sauvegarde en live ET en paper
-                self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
-                return
+                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
+                    trade["symbol"] = symbol
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, ticker, pos, self.cfg)
+                    self.emit("trade", trade)
+                    self._register_win(ticker)
+                    # v4.25 — apres un gain, exige une confirmation renforcee
+                    # (plusieurs cycles consecutifs) avant de rouvrir dans le MEME sens.
+                    if pos["type"] == "long":
+                        state.post_win_confirm_long = True
+                        state.confirm_count_long = 0
+                    else:
+                        state.post_win_confirm_short = True
+                        state.confirm_count_short = 0
+                    self.emit("log", {"msg": f"[{ticker}] {strat_tag}TTP SORTIE @ ${price:.2f} | pic +{peak_price_pct:.2f}% de mouvement (+${state.peak_pnl_usd:.2f} a x{leverage}) | PnL: +${pnl:.2f}", "level": "win"})
+                    self._save_open_positions()  # sauvegarde en live ET en paper
+                    self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
+                    return
             else:
                 self.emit("log", {"msg": f"[{ticker}] ${price:.2f} TTP actif | mouvement +{pnl_pct:.2f}% (+${pnl_usd:.2f} a x{leverage}) | pic +{peak_price_pct:.2f}% (sortie si repli a +{current_lock_pct:.2f}%)", "level": "dim"})
                 return
