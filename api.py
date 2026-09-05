@@ -1594,6 +1594,15 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             blocker_spot_accum = "pas encore de donnees"
         else:
             blocker_spot_accum = spot_snap.get("blocker", "pas encore de donnees")
+        # v4.80 — SUR DEMANDE EXPLICITE : meme diagnostic pour Accumulation,
+        # qui n en avait aucun jusqu ici.
+        accum_snap = state.accumulation_gate_snapshot or {}
+        if has_position and state.position.get("strategy") == "accumulation":
+            blocker_accumulation = "position deja ouverte"
+        elif not accum_snap:
+            blocker_accumulation = "pas encore de donnees"
+        else:
+            blocker_accumulation = accum_snap.get("blocker", "pas encore de donnees")
         results.append({
             "ticker": ticker,
             "has_position": has_position,
@@ -1602,6 +1611,8 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             "blocker_short": blocker_short,
             "blocker_spot_accum": blocker_spot_accum,
             "spot_accum_detail": spot_snap if spot_snap else None,
+            "blocker_accumulation": blocker_accumulation,
+            "accumulation_detail": accum_snap if accum_snap else None,
         })
     results.sort(key=lambda r: r["ticker"])
     return {"results": results}
