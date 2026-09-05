@@ -3999,6 +3999,23 @@ class BotEngine:
                 tier0_lock_pct = tier0_peak_pct - tier0_gap_pct
 
                 if pnl_pct <= tier0_lock_pct:
+                    # v4.82 — SUR DEMANDE EXPLICITE : meme filtre "la
+                    # tendance tient toujours" que le tier1 (v4.77), etendu
+                    # au tier0 — c est justement le tier0 (armement plus bas,
+                    # 0.15-0.5% typiquement) qui produisait les sorties a
+                    # pic microscopique (0.06-0.09%) signalees. Sans ce
+                    # filtre, un simple repli de la marge tier0 (souvent
+                    # tres fine) suffisait a fermer, meme en pleine tendance
+                    # intacte.
+                    trend_still_intact_t0 = False
+                    if cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
+                        ema200_hold_t0 = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+                        if ema200_hold_t0 is not None:
+                            trend_still_intact_t0 = (price > ema200_hold_t0) if pos["type"] == "long" else (price < ema200_hold_t0)
+                    if trend_still_intact_t0:
+                        self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Repli tier0 a {pnl_pct:.2f}% (verrou {tier0_lock_pct:.2f}%) mais tendance de fond toujours intacte — position maintenue", "level": "dim"})
+                        self._save_open_positions()
+                        return
                     pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
                     trade["symbol"] = symbol
                     if mode == "live" and self.exchange:
@@ -5815,11 +5832,24 @@ class BotEngine:
         state.position["ttp_arm2_pct"]  = ttp_arm2_pct
         state.position["ttp_gap_pct"]   = ttp_gap_pct
         state.position["adaptive_sl_ttp"] = adaptive_used
+        # v4.81 — FIX BUG CRITIQUE : le plancher (v4.66) ne vivait QUE dans
+        # la branche adaptative — si l ATR etait indisponible a l ouverture
+        # (candle_history pas encore assez fourni, cas observe : 62/100
+        # bougies), tout le recalcul adaptatif etait saute, y COMPRIS le
+        # plancher, laissant passer des seuils tier0/arm1 microscopiques
+        # (pics de 0.06-0.09% observes sur des trades pourtant ouverts
+        # APRES le deploiement du plancher). Applique desormais le plancher
+        # de facon INCONDITIONNELLE, juste avant la memorisation finale sur
+        # la position — protege quel que soit le chemin de calcul emprunte.
+        min_arm_pct_final = cfg.get("TTP_MIN_ARM_PCT_FLOOR", 0.3)
+        tier0_arm_pct = max(tier0_arm_pct, min_arm_pct_final * 0.5)
+        ttp_arm1_pct  = max(ttp_arm1_pct, min_arm_pct_final)
         # v4.56 — memorise les seuils tier0 REELLEMENT appliques a CE trade
         # (mis a l echelle si adaptatif) — _manage_position_impl les relit
         # ici en priorite, exactement comme sl_pct_of_e/ttp_arm1_pct.
         state.position["tier0_arm_pct"] = tier0_arm_pct
         state.position["tier0_gap_pct"] = tier0_gap_pct
+        state.position["ttp_arm1_pct"]  = ttp_arm1_pct
         # v4.43 — SUR DEMANDE EXPLICITE : Spot-Accumulation memorise le
         # support/resistance mesures a l ENTREE (pas recalcules plus tard,
         # la structure de marche a pu changer) pour calculer l objectif a
