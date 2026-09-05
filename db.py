@@ -347,6 +347,28 @@ def clear_all_trades():
     print("".join(traceback.format_stack()[:-1]))
 
 
+def clear_trades_by_strategy(strategy):
+    """v4.88 — SUR DEMANDE EXPLICITE : efface UNIQUEMENT l historique d une
+    strategie precise (utilise au moment de basculer un mode en live, pour
+    repartir sur un historique propre pour ce mode-la sans toucher aux
+    autres). Les trades sans champ strategy (anciens trades, avant son
+    introduction) sont consideres "normal"."""
+    import traceback
+    with _lock, _connect() as conn:
+        if strategy == "normal":
+            rows = conn.execute("SELECT COUNT(*) AS c FROM trades WHERE strategy = ? OR strategy IS NULL", (strategy,)).fetchone()
+            count_before = rows["c"]
+            conn.execute("DELETE FROM trades WHERE strategy = ? OR strategy IS NULL", (strategy,))
+        else:
+            rows = conn.execute("SELECT COUNT(*) AS c FROM trades WHERE strategy = ?", (strategy,)).fetchone()
+            count_before = rows["c"]
+            conn.execute("DELETE FROM trades WHERE strategy = ?", (strategy,))
+        conn.commit()
+    print(f"[AUDIT] clear_trades_by_strategy('{strategy}') appelee a {now_iso()} — {count_before} trade(s) supprime(s). Pile d appel :")
+    print("".join(traceback.format_stack()[:-1]))
+    return count_before
+
+
 # ── Config persistante (survit aux redemarrages) ────────────────────────
 def get_config_override(key, default=None):
     with _lock, _connect() as conn:
