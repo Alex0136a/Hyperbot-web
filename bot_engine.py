@@ -567,6 +567,15 @@ CONFIG = {
     # 0.80), peu importe la tendance. Applique aux 3 mecanismes qui
     # partagent le filtre de tendance (tier0, tier1, Spot-Accum).
     "TTP_MAX_GIVEBACK_PCT_OF_PEAK": 20.0,
+    # v4.85 — SUR DEMANDE EXPLICITE : le plafond de redonnage ci-dessus ne
+    # s applique qu au-dela de ce pic minimum — sur un petit pic, ce plafond
+    # serait trop serre et irait a l encontre de la protection de tendance.
+    "TTP_MAX_GIVEBACK_MIN_PEAK_PCT": 2.5,
+    # v4.86 — SUR DEMANDE EXPLICITE : SECOND plafond, plus large, applique
+    # LUI sous le pic minimum ci-dessus — sans ca, un petit gain pouvait
+    # techniquement repasser en perte et rester ouvert indefiniment tant
+    # que la tendance ne cassait pas franchement.
+    "TTP_MAX_GIVEBACK_PCT_SMALL_PEAK": 50.0,
     # v4.67 — SUR DEMANDE EXPLICITE : surcharges par mode du gap dynamique
     # (None = herite du reglage global ci-dessus, aucun changement de
     # comportement tant que rien n est personnalise).
@@ -3896,10 +3905,17 @@ class BotEngine:
                         if ema200_hold_sa is not None:
                             trend_still_intact_sa = price > ema200_hold_sa  # Spot-Accum est LONG uniquement
                     if trend_still_intact_sa:
-                        # v4.84 — meme plafond de redonnage que tier0/tier1.
-                        max_giveback_pct_sa = cfg.get("TTP_MAX_GIVEBACK_PCT_OF_PEAK", 20.0)
+                        # v4.84/v4.85/v4.86 — meme systeme a 2 paliers que tier0/tier1.
+                        min_peak_for_cap_sa = cfg.get("TTP_MAX_GIVEBACK_MIN_PEAK_PCT", 2.5)
+                        giveback_cap_triggered_sa = False
+                        if state.spot_accum_peak_pnl_pct >= min_peak_for_cap_sa:
+                            max_giveback_pct_sa = cfg.get("TTP_MAX_GIVEBACK_PCT_OF_PEAK", 20.0)
+                        else:
+                            max_giveback_pct_sa = cfg.get("TTP_MAX_GIVEBACK_PCT_SMALL_PEAK", 50.0)
                         giveback_floor_sa = state.spot_accum_peak_pnl_pct * (1 - max_giveback_pct_sa / 100)
-                        if pnl_pct > giveback_floor_sa:
+                        if pnl_pct <= giveback_floor_sa:
+                            giveback_cap_triggered_sa = True
+                        if not giveback_cap_triggered_sa:
                             self.emit("log", {"msg": f"[{ticker}] 🌱 Repli Spot-Accum a {pnl_pct:.2f}% (pic {state.spot_accum_peak_pnl_pct:.2f}%) mais tendance de fond toujours intacte — position maintenue", "level": "dim"})
                             self._save_open_positions()
                             return
@@ -4044,10 +4060,17 @@ class BotEngine:
                         if ema200_hold_t0 is not None:
                             trend_still_intact_t0 = (price > ema200_hold_t0) if pos["type"] == "long" else (price < ema200_hold_t0)
                     if trend_still_intact_t0:
-                        # v4.84 — meme plafond de redonnage que le tier1.
-                        max_giveback_pct_t0 = cfg.get("TTP_MAX_GIVEBACK_PCT_OF_PEAK", 20.0)
+                        # v4.84/v4.85/v4.86 — meme systeme a 2 paliers que le tier1.
+                        min_peak_for_cap_t0 = cfg.get("TTP_MAX_GIVEBACK_MIN_PEAK_PCT", 2.5)
+                        giveback_cap_triggered_t0 = False
+                        if tier0_peak_pct >= min_peak_for_cap_t0:
+                            max_giveback_pct_t0 = cfg.get("TTP_MAX_GIVEBACK_PCT_OF_PEAK", 20.0)
+                        else:
+                            max_giveback_pct_t0 = cfg.get("TTP_MAX_GIVEBACK_PCT_SMALL_PEAK", 50.0)
                         giveback_floor_t0 = tier0_peak_pct * (1 - max_giveback_pct_t0 / 100)
-                        if pnl_pct > giveback_floor_t0:
+                        if pnl_pct <= giveback_floor_t0:
+                            giveback_cap_triggered_t0 = True
+                        if not giveback_cap_triggered_t0:
                             self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Repli tier0 a {pnl_pct:.2f}% (verrou {tier0_lock_pct:.2f}%) mais tendance de fond toujours intacte — position maintenue", "level": "dim"})
                             self._save_open_positions()
                             return
@@ -4146,33 +4169,51 @@ class BotEngine:
                     else:
                         trend_still_intact = False  # donnee indisponible -> ne bloque pas la sortie normale
                 if trend_still_intact:
-                    # v4.84 — SUR DEMANDE EXPLICITE : plafond de redonnage
-                    # maximum, MEME tendance intacte — sans ca, un trade
-                    # pouvait redonner 74% de son pic (observe sur LINK)
-                    # sans jamais fermer tant que le prix restait au-dessus
-                    # de l EMA200. Ferme quand meme si le PnL retombe sous
-                    # 20% du pic (peak * 0.80), peu importe la tendance.
-                    max_giveback_pct = cfg.get("TTP_MAX_GIVEBACK_PCT_OF_PEAK", 20.0)
+                    # v4.84/v4.85 — SUR DEMANDE EXPLICITE : plafond de
+                    # redonnage maximum, MEME tendance intacte — sans ca, un
+                    # trade pouvait redonner 74% de son pic (observe sur
+                    # LINK) sans jamais fermer tant que le prix restait
+                    # au-dessus de l EMA200. Ferme quand meme si le PnL
+                    # retombe sous 20% du pic (peak * 0.80), peu importe la
+                    # tendance. v4.85 : ne s applique QU AU-DELA d un pic
+                    # minimum (2.5% par defaut) — sur un petit pic, ce
+                    # plafond serait trop serre et genererait des sorties
+                    # prematurees, allant a l encontre de la protection de
+                    # tendance elle-meme. v4.86 — SUR DEMANDE EXPLICITE :
+                    # ajoute un SECOND plafond, plus large (50% par defaut),
+                    # qui s applique LUI meme sous le pic minimum — sans ca,
+                    # un petit gain pouvait techniquement repasser en perte
+                    # et rester ouvert indefiniment tant que l EMA200 ne
+                    # cassait pas franchement.
+                    giveback_cap_triggered = False
+                    min_peak_for_cap = cfg.get("TTP_MAX_GIVEBACK_MIN_PEAK_PCT", 2.5)
+                    if peak_price_pct >= min_peak_for_cap:
+                        max_giveback_pct = cfg.get("TTP_MAX_GIVEBACK_PCT_OF_PEAK", 20.0)
+                    else:
+                        max_giveback_pct = cfg.get("TTP_MAX_GIVEBACK_PCT_SMALL_PEAK", 50.0)
                     giveback_floor = peak_price_pct * (1 - max_giveback_pct / 100)
                     if pnl_pct <= giveback_floor:
-                        pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
-                        trade["symbol"] = symbol
-                        if mode == "live" and self.exchange:
-                            close_order(self.exchange, ticker, pos, self.cfg)
-                        self.emit("trade", trade)
-                        self._register_win(ticker)
-                        if pos["type"] == "long":
-                            state.post_win_confirm_long = True
-                            state.confirm_count_long = 0
-                        else:
-                            state.post_win_confirm_short = True
-                            state.confirm_count_short = 0
-                        self.emit("log", {"msg": f"[{ticker}] {strat_tag}TTP SORTIE (plafond de redonnage {max_giveback_pct:.0f}% du pic atteint, tendance ignoree) @ ${price:.2f} | pic +{peak_price_pct:.2f}% | PnL: +${pnl:.2f}", "level": "win"})
+                        giveback_cap_triggered = True
+                    if not giveback_cap_triggered:
+                        self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Repli a {pnl_pct:.2f}% (verrou {current_lock_pct:.2f}%) mais tendance de fond toujours intacte — position maintenue", "level": "dim"})
                         self._save_open_positions()
-                        self._persist_capital_snapshot()
                         return
-                    self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Repli a {pnl_pct:.2f}% (verrou {current_lock_pct:.2f}%) mais tendance de fond toujours intacte — position maintenue", "level": "dim"})
+                    # Plafond de redonnage atteint malgre la tendance intacte : ferme quand meme.
+                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
+                    trade["symbol"] = symbol
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, ticker, pos, self.cfg)
+                    self.emit("trade", trade)
+                    self._register_win(ticker)
+                    if pos["type"] == "long":
+                        state.post_win_confirm_long = True
+                        state.confirm_count_long = 0
+                    else:
+                        state.post_win_confirm_short = True
+                        state.confirm_count_short = 0
+                    self.emit("log", {"msg": f"[{ticker}] {strat_tag}TTP SORTIE (plafond de redonnage {cfg.get('TTP_MAX_GIVEBACK_PCT_OF_PEAK', 20.0):.0f}% du pic atteint, tendance ignoree) @ ${price:.2f} | pic +{peak_price_pct:.2f}% | PnL: +${pnl:.2f}", "level": "win"})
                     self._save_open_positions()
+                    self._persist_capital_snapshot()
                     return
                 else:
                     pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
