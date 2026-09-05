@@ -416,6 +416,9 @@ def _public_config() -> Dict[str, Any]:
         "sl_ttp_adaptive_enabled": cfg.get("SL_TTP_ADAPTIVE_ENABLED", False),
         "funding_mode_enabled": cfg.get("FUNDING_MODE_ENABLED", False),
         "funding_mode_live_allowed": cfg.get("FUNDING_MODE_LIVE_ALLOWED", False),
+        "strategy_mode_override": cfg.get("STRATEGY_MODE_OVERRIDE", {
+            "normal": None, "accumulation": None, "funding_contrarian": None, "spot_accumulation": None,
+        }),
         "require_sr_ema200_separation": cfg.get("REQUIRE_SR_EMA200_SEPARATION", False),
         "unified_simplified_mode": cfg.get("UNIFIED_SIMPLIFIED_MODE", True),
         "unified_full_simplified_mode": cfg.get("UNIFIED_FULL_SIMPLIFIED_MODE", True),
@@ -1039,6 +1042,28 @@ def put_mode_coins(body: ModeCoinBody, email: str = Depends(require_user)):
         current.remove(ticker)
     _apply_and_persist(key, current)
     return {"ok": True, "mode": body.mode, "active_coins": current}
+
+
+class StrategyModeBody(BaseModel):
+    strategy: str  # "normal" | "accumulation" | "funding_contrarian" | "spot_accumulation"
+    value: Optional[str] = None  # "paper" | "live" | None (suit le mode global)
+
+
+@app.put("/api/config/strategy-mode")
+def put_strategy_mode(body: StrategyModeBody, email: str = Depends(require_user)):
+    """v4.87 — SUR DEMANDE EXPLICITE : bascule un mode precis entre paper et
+    live, independamment du mode global du bot et des 3 autres modes.
+    value=None retire la personnalisation (retombe sur le mode global)."""
+    valid_strategies = ("normal", "accumulation", "funding_contrarian", "spot_accumulation")
+    if body.strategy not in valid_strategies:
+        raise HTTPException(400, f"Mode inconnu : {body.strategy}")
+    if body.value is not None and body.value not in ("paper", "live"):
+        raise HTTPException(400, "value doit etre 'paper', 'live', ou absent")
+    current = cfg.get("STRATEGY_MODE_OVERRIDE") or {}
+    current = dict(current)
+    current[body.strategy] = body.value
+    _apply_and_persist("STRATEGY_MODE_OVERRIDE", current)
+    return {"ok": True, "strategy": body.strategy, "value": body.value}
 
 
 class ModeCoinResetBody(BaseModel):
