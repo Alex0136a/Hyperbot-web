@@ -1878,6 +1878,9 @@ class SymbolState:
         # v4.55 — instantane diagnostic de chaque clause d entree
         # Spot-Accumulation, expose via /api/entry-diagnostics.
         self.spot_accum_gate_snapshot = {}
+        # v4.80 — SUR DEMANDE EXPLICITE : meme diagnostic detaille pour
+        # Accumulation, qui n en avait aucun jusqu ici.
+        self.accumulation_gate_snapshot = {}
         # v4.21 — Historique des valeurs d indicateurs calculees (RSI, MACD,
         # EMA200, ATR, support/resistance) a chaque cycle, pour affichage en
         # graphe cote interface (diagnostic/surveillance). Purement
@@ -5126,11 +5129,16 @@ class BotEngine:
         actif n ouvrent tous les deux le meme cycle.
         """
         cfg = self.cfg
+        snap = {"ts": time.time(), "enabled": cfg.get("ACCUMULATION_ENABLED", False)}
+        state.accumulation_gate_snapshot = snap
         if not cfg.get("ACCUMULATION_ENABLED", False):
+            snap["blocker"] = "mode desactive"
             return
         if support is None or resistance is None or support <= 0:
+            snap["blocker"] = "support/resistance indisponible"
             return
         if not self._gate_active_or_auto_activate(ticker, 100, "accumulation"):
+            snap["blocker"] = "actif non selectionne pour ce mode"
             return  # actif desactive (Marches) ou exclu manuellement — jamais de trade, quel que soit le mode
 
         proximity_pct = cfg.get("ACCUMULATION_PROXIMITY_PCT", 1.0)
@@ -5152,18 +5160,34 @@ class BotEngine:
         # inchange, applique EN PLUS de ces 3 conditions.
         direction = None
         if cfg.get("UNIFIED_SIMPLIFIED_MODE", True):
-            if not self._unified_sr_amplitude_ok(support, resistance):
+            snap["unified_mode_active"] = True
+            amp_ok = self._unified_sr_amplitude_ok(support, resistance)
+            snap["amplitude_ok"] = amp_ok
+            if not amp_ok:
+                snap["blocker"] = "fourchette S/R trop etroite"
                 return
             # v4.75 — SUR DEMANDE EXPLICITE : extension de la stabilite de
             # tendance a Accumulation (meme principe que Spot-Accum).
             accum_stability_cycles = cfg.get("ACCUMULATION_TREND_STABILITY_CYCLES", 24)
-            if self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", accum_stability_cycles) and self._unified_proximity_ok(price, support, resistance, "long"):
+            trend_long_ok = self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", accum_stability_cycles)
+            trend_short_ok = self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", accum_stability_cycles)
+            prox_long_ok = self._unified_proximity_ok(price, support, resistance, "long")
+            prox_short_ok = self._unified_proximity_ok(price, support, resistance, "short")
+            snap["trend_up_streak"] = state.trend_up_streak
+            snap["trend_down_streak"] = state.trend_down_streak
+            snap["stability_cycles_required"] = accum_stability_cycles
+            snap["trend_long_ok"] = trend_long_ok
+            snap["trend_short_ok"] = trend_short_ok
+            snap["proximity_long_ok"] = prox_long_ok
+            snap["proximity_short_ok"] = prox_short_ok
+            if trend_long_ok and prox_long_ok:
                 if momentum_pct is None or momentum_pct >= -momentum_threshold:
                     direction = "long"
-            elif self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", accum_stability_cycles) and self._unified_proximity_ok(price, support, resistance, "short"):
+            elif trend_short_ok and prox_short_ok:
                 if momentum_pct is None or momentum_pct <= momentum_threshold:
                     direction = "short"
         else:
+            snap["unified_mode_active"] = False
             if 0 <= dist_to_support <= proximity_pct:
                 # Sens coherent : le mouvement tres recent ne doit pas s effondrer
                 # a travers le support (sinon ce n est plus un rebond, c est une
@@ -5178,7 +5202,17 @@ class BotEngine:
                         direction = "short"
 
         if direction is None:
+            if snap.get("unified_mode_active"):
+                raisons = []
+                if not (snap.get("trend_long_ok") or snap.get("trend_short_ok")):
+                    raisons.append(f"tendance pas assez stable/forte ({state.trend_up_streak}↑/{state.trend_down_streak}↓ sur {accum_stability_cycles} cycles requis)")
+                if not (snap.get("proximity_long_ok") or snap.get("proximity_short_ok")):
+                    raisons.append("hors fenetre 1-5% (et pas de cassure)")
+                snap["blocker"] = ", ".join(raisons) if raisons else "momentum defavorable ou direction non alignee"
+            else:
+                snap["blocker"] = "hors zone de proximite support/resistance"
             return
+        snap["blocker"] = None  # rien ne bloque a ce stade, candidat en cours d evaluation
 
         # v4.37 — SUR DEMANDE EXPLICITE, desactive par defaut (meme switch
         # que le mode normal) : bloque un LONG si le support est proche ET
