@@ -2093,24 +2093,48 @@ Confirmer ?`
                     <span style={{fontSize:10,color:"#94a3b8",fontWeight:700}}>MODE DE CE VOLET :</span>
                     {["paper","live"].map(v=>(
                       <button key={v} onClick={async()=>{
-                        try{
-                          await apiCall("/api/config/strategy-mode","PUT",{strategy:paperSubTab,value:v},token);
-                          loadData();
-                        }catch(err){ alert("Erreur : "+err.message); }
+                        if (v === "live") {
+                          // v4.88 — SUR DEMANDE EXPLICITE : bascule en live
+                          // = action irreversible (ferme les trades du mode,
+                          // efface son historique) — confirmation obligatoire.
+                          const confirmMsg = `Basculer ${stMeta.label} en LIVE va :\n\n` +
+                            `• Fermer immediatement tous les trades ouverts de ce mode\n` +
+                            `• Effacer definitivement son historique (statistiques remises a zero)\n` +
+                            `• Synchroniser le capital reel depuis Hyperliquid (partage avec les autres modes)\n\n` +
+                            `Cette action est IRREVERSIBLE. Continuer ?`;
+                          if (!confirm(confirmMsg)) return;
+                          try{
+                            const r = await apiCall("/api/config/strategy-go-live","POST",{strategy:paperSubTab},token);
+                            alert(`${stMeta.label} est maintenant en LIVE.\n\n${r.closed_positions} trade(s) ferme(s), ${r.deleted_history} trade(s) d'historique efface(s).${r.capital_synced?`\nCapital synchronise : $${r.new_capital.toFixed(2)}`:"\n(Capital non synchronise — verifiez vos identifiants Hyperliquid.)"}`);
+                            setStrategyPerf({});
+                            setModeHistory({});
+                            loadData();
+                          }catch(err){ alert("Erreur : "+err.message); }
+                        } else {
+                          try{
+                            await apiCall("/api/config/strategy-mode","PUT",{strategy:paperSubTab,value:v},token);
+                            loadData();
+                          }catch(err){ alert("Erreur : "+err.message); }
+                        }
                       }} style={{background:effectiveModeForTab===v?(v==="live"?"#2d0a0a":"#052e16"):"#0f1629",border:effectiveModeForTab===v?`1px solid ${v==="live"?"#f87171":"#34d399"}`:"1px solid #1e2d4a",borderRadius:5,padding:"5px 12px",color:effectiveModeForTab===v?(v==="live"?"#f87171":"#34d399"):"#475569",fontSize:10,fontWeight:700,cursor:"pointer"}}>
                         {v==="live"?"🔴 LIVE":"🎮 PAPER"}
                       </button>
                     ))}
                     {strategyOverride && (
-                      <button onClick={async()=>{
-                        try{
-                          await apiCall("/api/config/strategy-mode","PUT",{strategy:paperSubTab,value:null},token);
-                          loadData();
-                        }catch(err){ alert("Erreur : "+err.message); }
-                      }} title="Réinitialiser (suivre le mode global)"
-                        style={{background:"#1e2d4a",border:"1px solid #334155",borderRadius:5,padding:"5px 8px",color:"#94a3b8",fontSize:10,cursor:"pointer"}}>
-                        ↺ suivre le global
-                      </button>
+                      <>
+                        <span style={{fontSize:9,color:effectiveModeForTab==="live"?"#f87171":"#34d399",fontWeight:700}}>
+                          ✅ Forcé sur {effectiveModeForTab==="live"?"🔴 LIVE":"🎮 PAPER"} pour ce mode
+                        </span>
+                        <button onClick={async()=>{
+                          try{
+                            await apiCall("/api/config/strategy-mode","PUT",{strategy:paperSubTab,value:null},token);
+                            loadData();
+                          }catch(err){ alert("Erreur : "+err.message); }
+                        }} title="Retirer cette personnalisation et revenir au mode global"
+                          style={{background:"#1e2d4a",border:"1px solid #334155",borderRadius:5,padding:"5px 8px",color:"#94a3b8",fontSize:10,cursor:"pointer"}}>
+                          ↺ Retirer la personnalisation
+                        </button>
+                      </>
                     )}
                     {!strategyOverride && (
                       <span style={{fontSize:9,color:"#475569"}}>(suit le mode global : {config?.trading_mode==="live"?"🔴 LIVE":"🎮 PAPER"})</span>
