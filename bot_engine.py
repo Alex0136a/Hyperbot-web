@@ -1065,6 +1065,27 @@ def calc_support_resistance(prices, period=50):
     resistance = max(window)
     return support, resistance
 
+def calc_support_resistance_from_candles(candles, period=100):
+    """v4.78 — SUR DEMANDE EXPLICITE : support/resistance calcules a partir
+    des VRAIES bougies (haut/bas), pas des prix bruts echantillonnes au
+    rythme du cycle (~10s) — l ancien calcul (calc_support_resistance
+    ci-dessus) ne couvrait qu environ 8 minutes avec ses reglages par
+    defaut, bien trop court pour representer des niveaux structurels
+    reels (confirme visuellement : un vrai support/resistance se lit sur
+    des heures, pas des minutes). Les bougies sont echantillonnees toutes
+    les MTF_CANDLE_SEC (2 min par defaut), donc period=100 couvre environ
+    3h20 — period=200 (maximum disponible) couvre environ 6h40.
+    Retourne (support, resistance) ou (None, None) si insuffisant.
+    """
+    if len(candles) < period:
+        return None, None
+    window = list(candles)[-period:]
+    highs = [c[0] for c in window]
+    lows  = [c[1] for c in window]
+    resistance = max(highs)
+    support    = min(lows)
+    return support, resistance
+
 # ─────────────────────────────────────────────
 #  CONNEXION HYPERLIQUID
 # ─────────────────────────────────────────────
@@ -2435,6 +2456,7 @@ class BotEngine:
                     "price_history": list(st.price_history),
                     "vol_history": list(st.vol_history),
                     "mtf_prices": list(st.mtf_prices),
+                    "candle_history": list(st.candle_history),  # v4.79 — FIX : jamais sauvegarde avant
                     "collecting": st.collecting,
                     "consec_bull": st.consec_bull,
                     "consec_bear": st.consec_bear,
@@ -2475,6 +2497,11 @@ class BotEngine:
                 st.price_history = deque(data.get("price_history", []), maxlen=500)
                 st.vol_history = deque(data.get("vol_history", []), maxlen=50)
                 st.mtf_prices = deque(data.get("mtf_prices", []), maxlen=200)
+                # v4.79 — FIX : candle_history n etait jamais restaure —
+                # chaque redemarrage (meme rapide, dans la fenetre de reprise)
+                # effacait silencieusement l historique de bougies utilise
+                # pour le support/resistance et l ATR reel.
+                st.candle_history = deque([tuple(c) for c in data.get("candle_history", [])], maxlen=200)
                 st.collecting = data.get("collecting", True)
                 st.consec_bull = data.get("consec_bull", 0)
                 st.consec_bear = data.get("consec_bear", 0)
@@ -4407,7 +4434,18 @@ class BotEngine:
         # support est trop proche.
         is_scalp = cfg.get("PROFILE") == "scalp"
         sr_period = cfg.get("SR_PERIOD", 50)
-        support, resistance = calc_support_resistance(prices, sr_period)
+        # v4.78 — SUR DEMANDE EXPLICITE : privilegie desormais les VRAIES
+        # bougies (haut/bas, jusqu a ~6h40 d historique) au lieu des prix
+        # bruts echantillonnes au cycle (~8 min seulement avec les reglages
+        # par defaut) — confirme visuellement (graphique Hyperliquid) que
+        # l ancien calcul etait bien trop court pour representer des
+        # niveaux structurels reels. Repli automatique sur l ancien calcul
+        # tant que candle_history n a pas encore assez de bougies
+        # accumulees (redemarrage recent).
+        sr_period_candles = cfg.get("SR_PERIOD_CANDLES", 100)
+        support, resistance = calc_support_resistance_from_candles(state.candle_history, sr_period_candles)
+        if support is None or resistance is None:
+            support, resistance = calc_support_resistance(prices, sr_period)
 
         # v4.21 — SUR DEMANDE EXPLICITE : trace des indicateurs pour affichage
         # en graphe (RSI, MACD, EMA200, ATR, support/resistance). Purement
