@@ -1793,6 +1793,16 @@ class SymbolState:
         self.trades        = 0
         self.wins          = 0
         self.pnl           = 0.0
+        # v4.89 — SUR DEMANDE EXPLICITE : ne JAMAIS melanger capital virtuel
+        # (paper) et capital reel (live) — avant ce fix, self.pnl melangeait
+        # les deux, faussant le dimensionnement des trades des DEUX cotes
+        # des qu un mode passait en live pendant qu un autre restait en
+        # paper. self.pnl reste calcule (= paper_pnl + live_pnl) pour la
+        # compatibilite avec l affichage existant, mais le dimensionnement
+        # des trades utilise desormais UNIQUEMENT le pot qui correspond au
+        # mode effectif de CE trade precis.
+        self.paper_pnl     = 0.0
+        self.live_pnl      = 0.0
         self.closed_trades = []
         self.current_price = 0.0
         self.current_rsi   = None
@@ -2012,6 +2022,16 @@ class SymbolState:
         # le desynchronisant du solde reel Hyperliquid.
         pnl_usd = p["size"] * p.get("leverage", 1) * pnl_pct / 100
         self.pnl    += pnl_usd
+        # v4.89 — SUR DEMANDE EXPLICITE : alimente EXCLUSIVEMENT le pot qui
+        # correspond au mode REEL de CE trade precis (memorise sur la
+        # position a son ouverture, voir _finalize_open) — jamais melange
+        # avec l autre pot. Repli sur "paper" si absent (positions ouvertes
+        # avant ce fix).
+        trade_mode = p.get("effective_mode", "paper")
+        if trade_mode == "live":
+            self.live_pnl += pnl_usd
+        else:
+            self.paper_pnl += pnl_usd
         self.trades += 1
         win = pnl_usd > 0
         if win:
@@ -2047,6 +2067,7 @@ class SymbolState:
             "pnl": pnl_usd, "reason": reason, "win": win,
             "ts": datetime.now().timestamp(),
             "strategy": p.get("strategy", "normal"),  # v4.8
+            "trade_mode": trade_mode,  # v4.89 — paper ou live REEL de ce trade precis
             "peak_pnl_usd": peak_pnl_usd_at_close,  # v4.15
             "peak_pnl_pct": peak_pnl_pct_at_close,  # v4.17
         }
@@ -2304,6 +2325,11 @@ class BotEngine:
         self._all_symbols = slot_keys[:]
         # Chargement capital persistant — interets composes
         self.capital, self.sessions, self.total_pnl_all = load_capital(cfg["CAPITAL_USD"])
+        # v4.89 — SUR DEMANDE EXPLICITE : pot de capital LIVE, SEPARE du
+        # capital paper ci-dessus — synchronise depuis Hyperliquid des
+        # qu un mode passe en live (voir sync_capital_from_hyperliquid).
+        # Repli sur CAPITAL_USD tant qu aucune synchronisation n a eu lieu.
+        self.live_capital_base = cfg["CAPITAL_USD"]
         self.cfg["CAPITAL_USD"] = self.capital
         # v4.1 — E fige par lot de trades (voir _enter_position) : None tant
         # qu aucun lot n est en cours, recalcule au prochain trade ouvert.
@@ -3475,14 +3501,17 @@ class BotEngine:
                 self.emit("log", {"msg": f"Levier x{leverage} applique (cross margin) sur : {', '.join(real_tickers_lev)}", "level": "ok"})
 
         # ── Synchronisation capital réel Hyperliquid ──
+        # v4.89 — SUR DEMANDE EXPLICITE : alimente desormais un pot SEPARE
+        # (self.live_capital_base), plus jamais self.capital/CAPITAL_USD qui
+        # restent reserves au paper — evite d ecraser le capital virtuel de
+        # session avec un solde reel des qu UN SEUL mode tourne en live.
         if cfg["MODE"] == "live":
             real_balance = sync_capital_from_hyperliquid(self.info, cfg["WALLET_ADDRESS"])
             if real_balance is not None and real_balance > 0:
-                self.capital = real_balance
-                self.cfg["CAPITAL_USD"] = real_balance
-                self.emit("log", {"msg": f"Capital synchronise depuis Hyperliquid : ${real_balance:.2f}", "level": "ok"})
+                self.live_capital_base = real_balance
+                self.emit("log", {"msg": f"Capital LIVE synchronise depuis Hyperliquid : ${real_balance:.2f} (capital paper inchange)", "level": "ok"})
             else:
-                self.emit("log", {"msg": "Sync capital echouee — capital local utilise.", "level": "warn"})
+                self.emit("log", {"msg": "Sync capital LIVE echouee — capital local utilise pour le pot live.", "level": "warn"})
 
             # ── Reconciliation : trades fermes par Hyperliquid pendant la deconnexion ──
             saved_positions = self._load_saved_positions()
@@ -5742,9 +5771,25 @@ class BotEngine:
         # commence et E est recalcule sur la base du capital disponible a ce
         # moment-la : "chaque fois que le capital le permet".
         open_count = sum(1 for s in self.states.values() if s.position)
-        total_pnl = sum(s.pnl for s in self.states.values())
-        equity = cfg["CAPITAL_USD"] + total_pnl
-        capital_engaged = sum(s.position["size"] for s in self.states.values() if s.position)
+        # v4.89 — SUR DEMANDE EXPLICITE : ne JAMAIS melanger capital virtuel
+        # (paper) et capital reel (live) dans le dimensionnement — chaque
+        # trade utilise EXCLUSIVEMENT le pot qui correspond a son propre
+        # mode effectif. base_capital_live est synchronise depuis
+        # Hyperliquid (voir sync_capital_from_hyperliquid) ; si jamais
+        # synchronise, repli sur CAPITAL_USD (comportement d origine, cas
+        # ou aucun mode n a encore ete bascule en live).
+        mode_for_sizing = self._effective_mode(strategy)
+        if mode_for_sizing == "live":
+            total_pnl = sum(s.live_pnl for s in self.states.values())
+            base_capital = getattr(self, "live_capital_base", cfg["CAPITAL_USD"])
+        else:
+            total_pnl = sum(s.paper_pnl for s in self.states.values())
+            base_capital = cfg["CAPITAL_USD"]
+        equity = base_capital + total_pnl
+        capital_engaged = sum(
+            s.position["size"] for s in self.states.values()
+            if s.position and s.position.get("effective_mode", "paper") == mode_for_sizing
+        )
         capital_available = equity - capital_engaged
 
         if capital_available <= 0:
@@ -5985,6 +6030,12 @@ class BotEngine:
                 return
 
         state.open_position(signal, price, sl_p, tp_p, size, confidence=confidence, leverage=leverage, strategy=strategy)
+        # v4.89 — SUR DEMANDE EXPLICITE : memorise le mode REEL (paper/live)
+        # de CE trade precis au moment de son ouverture — close_position le
+        # relit pour alimenter le bon pot (paper_pnl vs live_pnl), jamais
+        # melanges. effective_mode_open deja calcule plus haut (utilise pour
+        # decider si un ordre reel est passe).
+        state.position["effective_mode"] = effective_mode_open
         # v4.24 — memorise les seuils REELLEMENT appliques a CE trade (fixes
         # ou adaptatifs a l ATR) — _manage_position_impl les relit ici en
         # priorite, avec repli sur les valeurs fixes globales si absents
