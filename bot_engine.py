@@ -2829,6 +2829,28 @@ class BotEngine:
         base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
         return self.confidence_thresholds.get(ticker, base)
 
+    def _close_all_trades_for_strategy(self, strategy):
+        """v4.88 — SUR DEMANDE EXPLICITE : ferme TOUTES les positions
+        actuellement ouvertes pour une strategie precise (utilise juste
+        avant de basculer ce mode en live, sur confirmation explicite de
+        l utilisateur) — au prix courant, motif "MANUEL (bascule live)".
+        Ne touche a aucune autre strategie. Retourne le nombre de trades
+        fermes."""
+        closed_count = 0
+        for slot_key, state in list(self.states.items()):
+            pos = state.position
+            if pos and pos.get("strategy", "normal") == strategy:
+                price = state.current_price or pos.get("entry")
+                if price is None:
+                    continue
+                pnl, _, trade = state.close_position(price, "MANUEL (bascule live)")
+                trade["symbol"] = slot_key
+                self.emit("trade", trade)
+                closed_count += 1
+        if closed_count:
+            self._save_open_positions()
+        return closed_count
+
     def _effective_mode(self, strategy):
         """v4.87 — SUR DEMANDE EXPLICITE : chaque mode (normal, accumulation,
         funding_contrarian, spot_accumulation) peut desormais basculer
