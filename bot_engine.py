@@ -271,6 +271,18 @@ CONFIG = {
     # protege un capital de trading deja fragilise pendant la phase de test.
     "FUNDING_MODE_ENABLED": False,
     "FUNDING_MODE_LIVE_ALLOWED": False,  # reste paper-only tant que non deverrouille explicitement
+    # v4.87 — SUR DEMANDE EXPLICITE : chaque mode peut desormais basculer
+    # INDEPENDAMMENT entre paper et live. None = suit le mode global du bot
+    # (aucun changement de comportement tant que rien n est personnalise).
+    # "paper" ou "live" = force cette valeur pour ce mode precis, quel que
+    # soit le mode global. Le garde-fou FUNDING_MODE_LIVE_ALLOWED ci-dessus
+    # reste actif EN PLUS pour funding_contrarian, jamais retire.
+    "STRATEGY_MODE_OVERRIDE": {
+        "normal": None,
+        "accumulation": None,
+        "funding_contrarian": None,
+        "spot_accumulation": None,
+    },
     "FUNDING_ANNUAL_THRESHOLD_PCT": 25.0,  # funding annualise au-dela duquel le positionnement est juge "extreme"
     "FUNDING_MODE_MAX_TRADES": 3,          # plafond de trades simultanes, independant des autres modes
     "FUNDING_REFRESH_SEC": 300,            # frequence de rafraichissement du funding (5 min, evite de spammer l API)
@@ -2817,6 +2829,21 @@ class BotEngine:
         base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
         return self.confidence_thresholds.get(ticker, base)
 
+    def _effective_mode(self, strategy):
+        """v4.87 — SUR DEMANDE EXPLICITE : chaque mode (normal, accumulation,
+        funding_contrarian, spot_accumulation) peut desormais basculer
+        INDEPENDAMMENT entre paper et live, via STRATEGY_MODE_OVERRIDE.
+        None (par defaut pour normal/accumulation/spot_accumulation) = suit
+        le mode global du bot — aucun changement de comportement tant que
+        rien n est personnalise. Le garde-fou Funding existant
+        (FUNDING_MODE_LIVE_ALLOWED) s applique TOUJOURS en plus, meme si
+        cette fonction renvoie "live" pour funding_contrarian — double
+        protection, pas de retrait de securite existante."""
+        override = self.cfg.get("STRATEGY_MODE_OVERRIDE", {}).get(strategy)
+        if override in ("paper", "live"):
+            return override
+        return self.cfg["MODE"]
+
     def _compute_prudent_leverage(self, ticker, confidence, rsi_mode):
         """v3.2 — Levier prudent, calcule INDIVIDUELLEMENT pour chaque trade
         (plus une valeur fixe globale). Trois garde-fous cumulatifs :
@@ -3670,12 +3697,20 @@ class BotEngine:
         pos    = state.position
         if not pos:
             return
-        mode = cfg["MODE"]
+        # v4.87 — SUR DEMANDE EXPLICITE : chaque mode peut desormais
+        # basculer independamment entre paper et live (voir
+        # _effective_mode). Remplace la lecture directe de cfg["MODE"] par
+        # la resolution par-strategie — aucun changement de comportement
+        # pour un mode qui n a pas ete personnalise (retombe sur le mode
+        # global, exactement comme avant).
+        mode = self._effective_mode(pos.get("strategy", "normal"))
         # v4.33 — SECURITE EXPLICITE : un trade "funding_contrarian" reste
         # simule (paper) meme si le bot tourne globalement en mode live, tant
         # que FUNDING_MODE_LIVE_ALLOWED n est pas active manuellement — ce
         # mode est experimental, protege un capital deja fragilise pendant
         # sa phase de validation. Ne change RIEN pour les autres strategies.
+        # Ce garde-fou reste actif MEME si STRATEGY_MODE_OVERRIDE force
+        # "live" pour funding_contrarian — double protection, jamais retiree.
         if pos.get("strategy") == "funding_contrarian" and not cfg.get("FUNDING_MODE_LIVE_ALLOWED", False):
             mode = "paper"
 
@@ -5903,11 +5938,15 @@ class BotEngine:
         # pas active manuellement — meme si le bot tourne par ailleurs en
         # mode live. Les autres strategies (normal, accumulation) ne sont pas
         # affectees.
+        # v4.87 — SUR DEMANDE EXPLICITE : chaque mode peut desormais
+        # basculer independamment entre paper et live — voir _effective_mode.
+        # Le garde-fou Funding ci-dessous reste actif en plus, inchange.
+        effective_mode_open = self._effective_mode(strategy)
         funding_live_blocked = strategy == "funding_contrarian" and not cfg.get("FUNDING_MODE_LIVE_ALLOWED", False)
-        if funding_live_blocked and cfg["MODE"] == "live":
-            self.emit("log", {"msg": f"[{ticker}] 💰 Trade Funding Contrarian simule (paper) malgre le mode live global — deverrouillez FUNDING_MODE_LIVE_ALLOWED pour l autoriser en reel.", "level": "warn"})
+        if funding_live_blocked and effective_mode_open == "live":
+            self.emit("log", {"msg": f"[{ticker}] 💰 Trade Funding Contrarian simule (paper) malgre le mode live — deverrouillez FUNDING_MODE_LIVE_ALLOWED pour l autoriser en reel.", "level": "warn"})
 
-        if cfg["MODE"] == "live" and self.exchange and not funding_live_blocked:
+        if effective_mode_open == "live" and self.exchange and not funding_live_blocked:
             # v3.2 — applique le levier PRUDENT specifique a ce trade sur
             # Hyperliquid (remplace/surcharge le levier uniforme applique au
             # demarrage) — chaque trade peut donc avoir un levier different
