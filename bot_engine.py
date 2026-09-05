@@ -3873,6 +3873,24 @@ class BotEngine:
                 if state.spot_accum_peak_pnl_pct is None or pnl_pct > state.spot_accum_peak_pnl_pct:
                     state.spot_accum_peak_pnl_pct = pnl_pct
                 elif pnl_pct <= state.spot_accum_peak_pnl_pct - tolerance_pct:
+                    # v4.83 — SUR DEMANDE EXPLICITE : meme filtre "la
+                    # tendance tient toujours" que tier0/tier1 (v4.77/v4.82),
+                    # etendu a Spot-Accum — le seuil structurel (support +
+                    # 70% de la fourchette) peut armer le trailing a un PnL
+                    # minuscule sur une fourchette etroite, rendant le pic
+                    # memorise (et donc la marge de sortie) lui aussi
+                    # minuscule. Sans ce filtre, un simple repli de 0.5%
+                    # depuis ce pic deja tres bas suffisait a fermer, meme
+                    # en pleine tendance haussiere intacte.
+                    trend_still_intact_sa = False
+                    if cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
+                        ema200_hold_sa = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+                        if ema200_hold_sa is not None:
+                            trend_still_intact_sa = price > ema200_hold_sa  # Spot-Accum est LONG uniquement
+                    if trend_still_intact_sa:
+                        self.emit("log", {"msg": f"[{ticker}] 🌱 Repli Spot-Accum a {pnl_pct:.2f}% (pic {state.spot_accum_peak_pnl_pct:.2f}%) mais tendance de fond toujours intacte — position maintenue", "level": "dim"})
+                        self._save_open_positions()
+                        return
                     pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
                     trade["symbol"] = symbol
                     self.emit("trade", trade)
