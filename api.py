@@ -2083,16 +2083,30 @@ def get_bilan_live(email: str = Depends(require_user)):
     elif not cfg.get("WALLET_ADDRESS"):
         hyperliquid_error = "Adresse de wallet non configuree (WALLET_ADDRESS)."
     else:
+        # v4.92 — FIX : appelle directement l API Hyperliquid ici (au lieu de
+        # passer par sync_capital_from_hyperliquid, qui avale l exception et
+        # se contente d un print() cote serveur) — pour renvoyer le VRAI
+        # message d erreur jusqu a l interface, sans devoir aller chercher
+        # dans les logs Railway.
         try:
-            fresh_balance = be.sync_capital_from_hyperliquid(bot.info, cfg["WALLET_ADDRESS"])
-            if fresh_balance is not None and fresh_balance > 0:
-                live_capital_base = fresh_balance
-                bot.live_capital_base = fresh_balance
-                hyperliquid_reachable = True
+            raw_state = bot.info.user_state(cfg["WALLET_ADDRESS"])
+            margin_summary = raw_state.get("marginSummary") if isinstance(raw_state, dict) else None
+            if margin_summary is None:
+                hyperliquid_error = f"Reponse Hyperliquid sans 'marginSummary' — reponse brute : {str(raw_state)[:300]}"
+            elif "accountValue" not in margin_summary:
+                hyperliquid_error = f"'marginSummary' sans 'accountValue' — contenu : {str(margin_summary)[:300]}"
             else:
-                hyperliquid_error = "sync_capital_from_hyperliquid a renvoye une valeur nulle ou invalide (voir logs serveur pour le detail exact)."
+                fresh_balance = float(margin_summary["accountValue"])
+                if fresh_balance > 0:
+                    live_capital_base = fresh_balance
+                    bot.live_capital_base = fresh_balance
+                    hyperliquid_reachable = True
+                else:
+                    hyperliquid_error = f"Solde recupere mais nul ou negatif : ${fresh_balance}"
         except Exception as e:
-            hyperliquid_error = f"Exception lors de la synchronisation : {e}"
+            import traceback
+            hyperliquid_error = f"{type(e).__name__}: {e}"
+            print(f"[BILAN-LIVE] Erreur complete :\n{traceback.format_exc()}")
 
     total_pnl_realized_live = sum(s.live_pnl for s in bot.states.values())
 
