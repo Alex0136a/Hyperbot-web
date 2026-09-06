@@ -2069,7 +2069,24 @@ def get_bilan_live(email: str = Depends(require_user)):
     closed_all = db.get_all_closed_trades()
     closed_live = [r for r in closed_all if r.get("trade_mode") == "live"]
 
+    # v4.91 — SUR DEMANDE EXPLICITE : tente de recuperer le VRAI solde
+    # Hyperliquid a CHAQUE consultation de cet onglet (pas seulement au
+    # moment de basculer un mode en live) — pour reference, meme si aucun
+    # mode n est encore live. Repli sur la derniere valeur connue
+    # (live_capital_base) si la recuperation echoue (pas d identifiants
+    # configures, ou API Hyperliquid indisponible).
     live_capital_base = getattr(bot, "live_capital_base", cfg.get("CAPITAL_USD", 0))
+    hyperliquid_reachable = False
+    if bot.info is not None and cfg.get("WALLET_ADDRESS"):
+        try:
+            fresh_balance = be.sync_capital_from_hyperliquid(bot.info, cfg["WALLET_ADDRESS"])
+            if fresh_balance is not None and fresh_balance > 0:
+                live_capital_base = fresh_balance
+                bot.live_capital_base = fresh_balance
+                hyperliquid_reachable = True
+        except Exception:
+            pass  # repli silencieux sur la derniere valeur connue
+
     total_pnl_realized_live = sum(s.live_pnl for s in bot.states.values())
 
     open_positions = _open_positions()
@@ -2083,6 +2100,7 @@ def get_bilan_live(email: str = Depends(require_user)):
 
     return {
         "hyperliquid_capital": round(live_capital_base, 2),
+        "hyperliquid_reachable": hyperliquid_reachable,
         "total_capital_live": round(total_capital_live, 2),
         "open_pnl": open_pnl_live,
         "open_count": len(open_positions_live),
