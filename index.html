@@ -656,6 +656,21 @@ function App() {
     setEntryDiagLoading(false);
   }, [token]);
 
+  const [precisionCheck, setPrecisionCheck] = useState(null);
+  const [precisionCheckLoading, setPrecisionCheckLoading] = useState(false);
+  const loadPrecisionCheck = useCallback(async () => {
+    if (!token) return;
+    setPrecisionCheckLoading(true);
+    try {
+      const r = await apiCall("/api/hyperliquid/precision-check", "GET", null, token);
+      setPrecisionCheck(r);
+    } catch(e) {
+      alert("Erreur : " + e.message);
+      setPrecisionCheck(null);
+    }
+    setPrecisionCheckLoading(false);
+  }, [token]);
+
   const loadStrategyPerformance = useCallback(async (strategy) => {
     if (!token) return;
     setStrategyPerfLoading(true);
@@ -1409,6 +1424,41 @@ Confirmer ?`
                   style={{width:"100%",height:320,background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:10,color:"#e2e8f0",fontFamily:"monospace",fontSize:11,resize:"vertical"}}
                   onClick={e=>e.target.select()}
                 />
+              </>
+            )}
+          </div>
+
+          {/* v4.101 — SUR DEMANDE EXPLICITE : verifie proactivement la
+          precision reelle de TOUS les actifs actifs en une seule fois, au
+          lieu de decouvrir les problemes un par un via des echecs reels. */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:16}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={{fontSize:13,fontWeight:700,color:"#a78bfa"}}>🎯 Précision Hyperliquid par actif (à la demande)</div>
+              <button onClick={loadPrecisionCheck} disabled={precisionCheckLoading}
+                style={{background:"#a78bfa22",border:"1px solid #a78bfa",borderRadius:6,padding:"7px 14px",color:"#a78bfa",fontSize:11,cursor:"pointer",fontWeight:700}}>
+                {precisionCheckLoading?"Chargement...":"🔄 Vérifier tous les actifs"}
+              </button>
+            </div>
+            {!precisionCheck ? (
+              <div style={{fontSize:11,color:"#94a3b8"}}>Récupère la précision réelle (szDecimals) exigée par Hyperliquid pour chaque actif actif, en une seule fois — permet de repérer un actif manquant des métadonnées avant qu'un ordre réel n'échoue.</div>
+            ) : (
+              <>
+                <div style={{fontSize:11,color:"#94a3b8",marginBottom:8}}>
+                  {precisionCheck.total_active_coins} actifs actifs · {precisionCheck.perp_assets_in_metadata} actifs connus côté perps sur Hyperliquid
+                </div>
+                {precisionCheck.missing_from_metadata.length > 0 && (
+                  <div style={{background:"#2d0a0a",border:"1px solid #f87171",borderRadius:6,padding:10,marginBottom:10,fontSize:11,color:"#f87171"}}>
+                    ⚠️ Actifs absents des métadonnées Hyperliquid (risque d'échec certain) : {precisionCheck.missing_from_metadata.join(", ")}
+                  </div>
+                )}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(90px,1fr))",gap:6}}>
+                  {precisionCheck.assets.map(a=>(
+                    <div key={a.ticker} style={{background:a.found_in_metadata?"#0a0e1a":"#2d0a0a",border:`1px solid ${a.found_in_metadata?"#1e2d4a":"#f87171"}`,borderRadius:6,padding:8,fontSize:10}}>
+                      <div style={{fontWeight:700,color:"#fff"}}>{a.ticker}</div>
+                      <div style={{color:a.found_in_metadata?"#94a3b8":"#f87171"}}>{a.found_in_metadata?`${a.sz_decimals} déc.`:"absent !"}</div>
+                    </div>
+                  ))}
+                </div>
               </>
             )}
           </div>
