@@ -420,6 +420,9 @@ def _public_config() -> Dict[str, Any]:
         "strategy_mode_override": cfg.get("STRATEGY_MODE_OVERRIDE", {
             "normal": None, "accumulation": None, "funding_contrarian": None, "spot_accumulation": None,
         }),
+        "strategy_trading_enabled": cfg.get("STRATEGY_TRADING_ENABLED", {
+            "normal": True, "accumulation": True, "funding_contrarian": True, "spot_accumulation": True,
+        }),
         "require_sr_ema200_separation": cfg.get("REQUIRE_SR_EMA200_SEPARATION", False),
         "unified_simplified_mode": cfg.get("UNIFIED_SIMPLIFIED_MODE", True),
         "unified_full_simplified_mode": cfg.get("UNIFIED_FULL_SIMPLIFIED_MODE", True),
@@ -1066,6 +1069,28 @@ def put_strategy_mode(body: StrategyModeBody, email: str = Depends(require_user)
     current[body.strategy] = body.value
     _apply_and_persist("STRATEGY_MODE_OVERRIDE", current)
     return {"ok": True, "strategy": body.strategy, "value": body.value}
+
+
+class StrategyTradingEnabledBody(BaseModel):
+    strategy: str  # "normal" | "accumulation" | "funding_contrarian" | "spot_accumulation"
+    enabled: bool
+
+
+@app.put("/api/config/strategy-trading-enabled")
+def put_strategy_trading_enabled(body: StrategyTradingEnabledBody, email: str = Depends(require_user)):
+    """v4.106 — SUR DEMANDE EXPLICITE : Marche/Arret INDEPENDANT par mode —
+    enabled=False bloque UNIQUEMENT l ouverture de nouveaux trades pour ce
+    mode precis ; les positions deja ouvertes de ce mode continuent d etre
+    gerees normalement (SL/TTP/retournement) jusqu a leur fermeture."""
+    valid_strategies = ("normal", "accumulation", "funding_contrarian", "spot_accumulation")
+    if body.strategy not in valid_strategies:
+        raise HTTPException(400, f"Mode inconnu : {body.strategy}")
+    current = cfg.get("STRATEGY_TRADING_ENABLED") or {}
+    current = dict(current)
+    current[body.strategy] = body.enabled
+    _apply_and_persist("STRATEGY_TRADING_ENABLED", current)
+    _push_log("ok" if body.enabled else "warn", f"{'▶️' if body.enabled else '⏸️'} Mode {body.strategy} {'redemarre' if body.enabled else 'arrete'} — {'nouveaux trades autorises' if body.enabled else 'nouveaux trades bloques, positions ouvertes gerees normalement'}.")
+    return {"ok": True, "strategy": body.strategy, "enabled": body.enabled}
 
 
 class StrategyGoLiveBody(BaseModel):
