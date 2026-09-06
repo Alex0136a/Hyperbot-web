@@ -2077,15 +2077,22 @@ def get_bilan_live(email: str = Depends(require_user)):
     # configures, ou API Hyperliquid indisponible).
     live_capital_base = getattr(bot, "live_capital_base", cfg.get("CAPITAL_USD", 0))
     hyperliquid_reachable = False
-    if bot.info is not None and cfg.get("WALLET_ADDRESS"):
+    hyperliquid_error = None
+    if bot.info is None:
+        hyperliquid_error = "Connexion Hyperliquid non etablie (bot.info absent) — verifiez que le bot a bien demarre."
+    elif not cfg.get("WALLET_ADDRESS"):
+        hyperliquid_error = "Adresse de wallet non configuree (WALLET_ADDRESS)."
+    else:
         try:
             fresh_balance = be.sync_capital_from_hyperliquid(bot.info, cfg["WALLET_ADDRESS"])
             if fresh_balance is not None and fresh_balance > 0:
                 live_capital_base = fresh_balance
                 bot.live_capital_base = fresh_balance
                 hyperliquid_reachable = True
-        except Exception:
-            pass  # repli silencieux sur la derniere valeur connue
+            else:
+                hyperliquid_error = "sync_capital_from_hyperliquid a renvoye une valeur nulle ou invalide (voir logs serveur pour le detail exact)."
+        except Exception as e:
+            hyperliquid_error = f"Exception lors de la synchronisation : {e}"
 
     total_pnl_realized_live = sum(s.live_pnl for s in bot.states.values())
 
@@ -2101,6 +2108,7 @@ def get_bilan_live(email: str = Depends(require_user)):
     return {
         "hyperliquid_capital": round(live_capital_base, 2),
         "hyperliquid_reachable": hyperliquid_reachable,
+        "hyperliquid_error": hyperliquid_error,
         "total_capital_live": round(total_capital_live, 2),
         "open_pnl": open_pnl_live,
         "open_count": len(open_positions_live),
