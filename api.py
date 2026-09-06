@@ -2059,6 +2059,53 @@ def get_bilan(email: str = Depends(require_user)):
     }
 
 
+@app.get("/api/hyperliquid/precision-check")
+def get_precision_check(email: str = Depends(require_user)):
+    """v4.101 — SUR DEMANDE EXPLICITE : verifie PROACTIVEMENT la precision
+    reelle (szDecimals) de TOUS les actifs actuellement actifs, en une
+    seule requete — au lieu de decouvrir les problemes de precision un par
+    un via des echecs d ordres reels en production. Pour chaque actif,
+    montre : szDecimals reel, un exemple de prix/taille formates avec la
+    fonction du bot, et un avertissement si l actif semble absent des
+    metadonnees Hyperliquid (cas ou un ordre echouerait a coup sur)."""
+    if bot.info is None:
+        raise HTTPException(503, "Connexion Hyperliquid non etablie — le bot doit etre demarre.")
+
+    try:
+        perp_map, spot_map = be._get_sz_decimals_map(bot.info)
+    except Exception as e:
+        raise HTTPException(503, f"Echec recuperation metadonnees Hyperliquid : {e}")
+
+    active_coins = cfg.get("ACTIVE_COINS", [])
+    results = []
+    for ticker in active_coins:
+        sz_dec = perp_map.get(ticker)
+        row = {
+            "ticker": ticker,
+            "found_in_metadata": sz_dec is not None,
+            "sz_decimals": sz_dec if sz_dec is not None else 4,
+        }
+        if sz_dec is None:
+            row["warning"] = "Actif absent des metadonnees perp Hyperliquid — un ordre reel echouerait probablement (repli sur 4 decimales par defaut, potentiellement incorrect)."
+        else:
+            # Exemple concret avec un prix fictif typique, pour verifier que
+            # le formatage produit un resultat coherent (pas de test reel
+            # contre l API, juste une verification de calcul).
+            sample_price = 1.23456789
+            row["example_formatted_price"] = be.format_price_hl(sample_price, sz_dec, False)
+            row["example_formatted_size"] = be.format_size_hl(1.23456789, sz_dec)
+        results.append(row)
+
+    missing = [r["ticker"] for r in results if not r["found_in_metadata"]]
+    return {
+        "total_active_coins": len(active_coins),
+        "perp_assets_in_metadata": len(perp_map),
+        "spot_assets_in_metadata": len(spot_map),
+        "missing_from_metadata": missing,
+        "assets": results,
+    }
+
+
 @app.get("/api/bilan-live")
 def get_bilan_live(email: str = Depends(require_user)):
     """v4.90 — SUR DEMANDE EXPLICITE : bilan DEDIE au capital LIVE (reel,
