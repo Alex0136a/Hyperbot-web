@@ -2411,7 +2411,12 @@ Confirmer ?`
           </div>
 
 
-          {/* MODE BANNER + SETTINGS */}
+          {/* MODE BANNER + SETTINGS — v4.95 SUR DEMANDE EXPLICITE : ce
+          panneau ne concerne QUE le mode Normal (voir les libelles "— mode
+          normal" sur chaque champ) — n a plus de raison de s afficher sur
+          les autres onglets (Tous, Accumulation, Funding, Spot-Accum), qui
+          ont chacun leur propre panneau "Reglages dedies a ce mode". */}
+          {paperSubTab==="normal" && (
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:16}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
               <div>
@@ -2498,6 +2503,7 @@ Confirmer ?`
               </button>
             </div>
           </div>
+          )}
 
           {/* TRADES OUVERTS */}
           {/* v4.48 — FIX : n affiche ce panneau global (tous modes melanges)
