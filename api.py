@@ -2083,34 +2083,58 @@ def get_bilan_live(email: str = Depends(require_user)):
     elif not cfg.get("WALLET_ADDRESS"):
         hyperliquid_error = "Adresse de wallet non configuree (WALLET_ADDRESS)."
     else:
-        # v4.92 — FIX : appelle directement l API Hyperliquid ici (au lieu de
-        # passer par sync_capital_from_hyperliquid, qui avale l exception et
-        # se contente d un print() cote serveur) — pour renvoyer le VRAI
-        # message d erreur jusqu a l interface, sans devoir aller chercher
-        # dans les logs Railway.
+        # v4.94 — FIX BUG CRITIQUE : documentation Hyperliquid confirmee par
+        # recherche — "For API users, unified account and portfolio margin
+        # shows all balances and holds in the spot clearinghouse state.
+        # Individual perp dex user states are not meaningful." En mode
+        # compte UNIFIE (celui de l utilisateur), marginSummary.accountValue
+        # (endpoint perps) renvoie systematiquement $0, MEME avec des fonds
+        # reels — le vrai solde se trouve dans le solde SPOT en USDC.
+        # Interroge desormais LES DEUX endpoints et utilise le plus eleve
+        # des deux (couvre a la fois les comptes Standard/Manual, ou les
+        # fonds perps sont reellement separes, et les comptes Unified/
+        # Portfolio Margin, ou le solde perps est toujours a 0 par design).
         try:
-            raw_state = bot.info.user_state(cfg["WALLET_ADDRESS"])
-            margin_summary = raw_state.get("marginSummary") if isinstance(raw_state, dict) else None
-            if margin_summary is None:
-                hyperliquid_error = f"Reponse Hyperliquid sans 'marginSummary' — reponse brute : {str(raw_state)[:300]}"
-            elif "accountValue" not in margin_summary:
-                hyperliquid_error = f"'marginSummary' sans 'accountValue' — contenu : {str(margin_summary)[:300]}"
-            else:
-                fresh_balance = float(margin_summary["accountValue"])
-                # v4.93 — FIX : un solde de $0 est une VRAIE valeur legitime
-                # (compte vide, jamais approvisionne) — ne doit pas etre
-                # traite comme un echec de synchronisation. Seul un solde
-                # negatif (anormal) est traite comme suspect.
-                if fresh_balance >= 0:
-                    live_capital_base = fresh_balance
-                    bot.live_capital_base = fresh_balance
-                    hyperliquid_reachable = True
-                    if fresh_balance == 0:
-                        wallet_display = cfg["WALLET_ADDRESS"]
-                        wallet_masked = f"{wallet_display[:6]}...{wallet_display[-4:]}" if len(wallet_display) > 12 else wallet_display
-                        hyperliquid_error = f"Le compte Hyperliquid associe a l'adresse {wallet_masked} a un solde PERPS de $0 — verifiez (1) que c'est bien la bonne adresse, et (2) que vos fonds sont dans la section Perpetuals (pas seulement Spot)."
+            perps_balance = 0.0
+            perps_error = None
+            try:
+                raw_state = bot.info.user_state(cfg["WALLET_ADDRESS"])
+                margin_summary = raw_state.get("marginSummary") if isinstance(raw_state, dict) else None
+                if margin_summary and "accountValue" in margin_summary:
+                    perps_balance = float(margin_summary["accountValue"])
                 else:
-                    hyperliquid_error = f"Solde recupere mais negatif (anormal) : ${fresh_balance}"
+                    perps_error = f"Reponse perps inattendue : {str(raw_state)[:200]}"
+            except Exception as e:
+                perps_error = f"{type(e).__name__}: {e}"
+
+            spot_balance = 0.0
+            spot_error = None
+            try:
+                spot_state = bot.info.spot_user_state(cfg["WALLET_ADDRESS"])
+                balances = spot_state.get("balances", []) if isinstance(spot_state, dict) else []
+                usdc_entry = next((b for b in balances if b.get("coin") == "USDC"), None)
+                if usdc_entry:
+                    spot_balance = float(usdc_entry.get("total", 0))
+                else:
+                    spot_error = f"Pas d'entree USDC dans le solde spot : {str(balances)[:200]}"
+            except Exception as e:
+                spot_error = f"{type(e).__name__}: {e}"
+
+            fresh_balance = max(perps_balance, spot_balance)
+            balance_source = "perps" if perps_balance >= spot_balance else "spot (compte probablement en mode Unifié)"
+
+            if perps_error and spot_error:
+                hyperliquid_error = f"Echec des deux endpoints — perps: {perps_error} | spot: {spot_error}"
+            elif fresh_balance >= 0:
+                live_capital_base = fresh_balance
+                bot.live_capital_base = fresh_balance
+                hyperliquid_reachable = True
+                if fresh_balance == 0:
+                    wallet_display = cfg["WALLET_ADDRESS"]
+                    wallet_masked = f"{wallet_display[:6]}...{wallet_display[-4:]}" if len(wallet_display) > 12 else wallet_display
+                    hyperliquid_error = f"Solde $0 sur les DEUX comptes (perps ET spot) pour l'adresse {wallet_masked} — verifiez que c'est bien la bonne adresse."
+                else:
+                    hyperliquid_error = f"Source du solde utilise : {balance_source} (perps: ${perps_balance:.2f}, spot USDC: ${spot_balance:.2f})"
         except Exception as e:
             import traceback
             hyperliquid_error = f"{type(e).__name__}: {e}"
