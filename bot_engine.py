@@ -5948,6 +5948,17 @@ class BotEngine:
             mode_pct = cfg.get(mode_size_key)
             if mode_pct is not None:
                 size = min(equity * mode_pct / 100, capital_available)
+        # v4.102 — SUR DEMANDE EXPLICITE : pour Spot-Accum specifiquement,
+        # remplace le pourcentage fixe (mode_pct) par un dimensionnement
+        # DYNAMIQUE — toujours diviser le capital disponible par le nombre
+        # de trades simultanes autorises, pour ce mode. Garantit que TOUT
+        # le capital est utilise (ni sous-utilise, ni sur-engage), quel que
+        # soit le reglage de "trades simultanes max" — evite aussi les
+        # echecs "notionnel sous le minimum Hyperliquid de $10" observes
+        # avec un pourcentage fixe trop petit pour le capital actuel.
+        if strategy == "spot_accumulation":
+            max_spot_trades = max(cfg.get("SPOT_ACCUM_MAX_TRADES", 3), 1)
+            size = min(equity / max_spot_trades, capital_available)
         if size <= 0:
             self.emit("log", {"msg": f"[{ticker}] Capital insuffisant pour E=${self.batch_entry_size:.2f} (disponible ${capital_available:.2f})", "level": "warn"})
             return
