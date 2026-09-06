@@ -1,4 +1,3 @@
-
 """
 ╔═══════════════════════════════════════════════════════╗
 ║       HyperBot — Pro Edition                          ║
@@ -4081,7 +4080,11 @@ class BotEngine:
             #    n a pas encore suivi jusque-la.
             target_price = pos.get("target_price")
             if target_price is not None and price >= target_price:
-                pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
+                # v4.107 — SUR DEMANDE EXPLICITE : motif distinct de "TRAILING
+                # TAKE PROFIT" — permet de voir dans l historique lequel des
+                # 2 mecanismes a reellement ferme le trade (objectif atteint
+                # vs repli depuis le pic).
+                pnl, _, trade = state.close_position(price, "OBJECTIF ATTEINT")
                 trade["symbol"] = symbol
                 self.emit("trade", trade)
                 self._register_win(ticker)
