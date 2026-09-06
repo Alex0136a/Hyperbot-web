@@ -2129,6 +2129,7 @@ def get_bilan_live(email: str = Depends(require_user)):
 
     return {
         "hyperliquid_capital": round(live_capital_base, 2),
+        "configured_wallet_address": cfg.get("WALLET_ADDRESS", ""),
         "hyperliquid_reachable": hyperliquid_reachable,
         "hyperliquid_error": hyperliquid_error,
         "total_capital_live": round(total_capital_live, 2),
