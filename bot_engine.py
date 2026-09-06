@@ -3957,6 +3957,7 @@ class BotEngine:
         # immediatement apres, ne passe JAMAIS par la logique SL/TTP normale
         # ci-dessous, qui ne s applique pas a ce mode.
         if pos.get("strategy") == "spot_accumulation":
+
             # 0) v4.70 — SUR DEMANDE EXPLICITE : PLAFOND DUR en dernier
             #    recours — ferme QUOI QU IL ARRIVE au-dela de ce seuil,
             #    INDEPENDANT du retournement (contrairement au SL
@@ -4112,16 +4113,19 @@ class BotEngine:
                         if ema200_hold_sa is not None:
                             trend_still_intact_sa = price > ema200_hold_sa  # Spot-Accum est LONG uniquement
                     if trend_still_intact_sa:
-                        # v4.84/v4.85/v4.86 — meme systeme a 2 paliers que tier0/tier1.
+                        # v4.103 — SUR DEMANDE EXPLICITE : le plafond pour
+                        # les PETITS pics (< min_peak_for_cap) est retire —
+                        # juge nuisible, laisse le TTP de base et le
+                        # retournement confirme gerer seuls cette zone. Le
+                        # plafond pour les GROS pics (>= min_peak_for_cap,
+                        # 20% par defaut) reste actif, inchange.
                         min_peak_for_cap_sa = cfg.get("TTP_MAX_GIVEBACK_MIN_PEAK_PCT", 2.5)
                         giveback_cap_triggered_sa = False
                         if state.spot_accum_peak_pnl_pct >= min_peak_for_cap_sa:
                             max_giveback_pct_sa = cfg.get("TTP_MAX_GIVEBACK_PCT_OF_PEAK", 20.0)
-                        else:
-                            max_giveback_pct_sa = cfg.get("TTP_MAX_GIVEBACK_PCT_SMALL_PEAK", 50.0)
-                        giveback_floor_sa = state.spot_accum_peak_pnl_pct * (1 - max_giveback_pct_sa / 100)
-                        if pnl_pct <= giveback_floor_sa:
-                            giveback_cap_triggered_sa = True
+                            giveback_floor_sa = state.spot_accum_peak_pnl_pct * (1 - max_giveback_pct_sa / 100)
+                            if pnl_pct <= giveback_floor_sa:
+                                giveback_cap_triggered_sa = True
                         if not giveback_cap_triggered_sa:
                             self.emit("log", {"msg": f"[{ticker}] 🌱 Repli Spot-Accum a {pnl_pct:.2f}% (pic {state.spot_accum_peak_pnl_pct:.2f}%) mais tendance de fond toujours intacte — position maintenue", "level": "dim"})
                             self._save_open_positions()
@@ -4267,16 +4271,17 @@ class BotEngine:
                         if ema200_hold_t0 is not None:
                             trend_still_intact_t0 = (price > ema200_hold_t0) if pos["type"] == "long" else (price < ema200_hold_t0)
                     if trend_still_intact_t0:
-                        # v4.84/v4.85/v4.86 — meme systeme a 2 paliers que le tier1.
+                        # v4.103 — SUR DEMANDE EXPLICITE : plafond des
+                        # PETITS pics retire (juge nuisible) — laisse le TTP
+                        # de base et le retournement confirme gerer seuls.
+                        # Le plafond des GROS pics reste actif, inchange.
                         min_peak_for_cap_t0 = cfg.get("TTP_MAX_GIVEBACK_MIN_PEAK_PCT", 2.5)
                         giveback_cap_triggered_t0 = False
                         if tier0_peak_pct >= min_peak_for_cap_t0:
                             max_giveback_pct_t0 = cfg.get("TTP_MAX_GIVEBACK_PCT_OF_PEAK", 20.0)
-                        else:
-                            max_giveback_pct_t0 = cfg.get("TTP_MAX_GIVEBACK_PCT_SMALL_PEAK", 50.0)
-                        giveback_floor_t0 = tier0_peak_pct * (1 - max_giveback_pct_t0 / 100)
-                        if pnl_pct <= giveback_floor_t0:
-                            giveback_cap_triggered_t0 = True
+                            giveback_floor_t0 = tier0_peak_pct * (1 - max_giveback_pct_t0 / 100)
+                            if pnl_pct <= giveback_floor_t0:
+                                giveback_cap_triggered_t0 = True
                         if not giveback_cap_triggered_t0:
                             self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Repli tier0 a {pnl_pct:.2f}% (verrou {tier0_lock_pct:.2f}%) mais tendance de fond toujours intacte — position maintenue", "level": "dim"})
                             self._save_open_positions()
@@ -4386,21 +4391,18 @@ class BotEngine:
                     # minimum (2.5% par defaut) — sur un petit pic, ce
                     # plafond serait trop serre et genererait des sorties
                     # prematurees, allant a l encontre de la protection de
-                    # tendance elle-meme. v4.86 — SUR DEMANDE EXPLICITE :
-                    # ajoute un SECOND plafond, plus large (50% par defaut),
-                    # qui s applique LUI meme sous le pic minimum — sans ca,
-                    # un petit gain pouvait techniquement repasser en perte
-                    # et rester ouvert indefiniment tant que l EMA200 ne
-                    # cassait pas franchement.
+                    # tendance elle-meme. v4.103 — SUR DEMANDE EXPLICITE :
+                    # le plafond des PETITS pics (v4.86) est retire — juge
+                    # nuisible, laisse le TTP de base et le retournement
+                    # confirme gerer seuls cette zone. Le plafond des GROS
+                    # pics reste actif, inchange.
                     giveback_cap_triggered = False
                     min_peak_for_cap = cfg.get("TTP_MAX_GIVEBACK_MIN_PEAK_PCT", 2.5)
                     if peak_price_pct >= min_peak_for_cap:
                         max_giveback_pct = cfg.get("TTP_MAX_GIVEBACK_PCT_OF_PEAK", 20.0)
-                    else:
-                        max_giveback_pct = cfg.get("TTP_MAX_GIVEBACK_PCT_SMALL_PEAK", 50.0)
-                    giveback_floor = peak_price_pct * (1 - max_giveback_pct / 100)
-                    if pnl_pct <= giveback_floor:
-                        giveback_cap_triggered = True
+                        giveback_floor = peak_price_pct * (1 - max_giveback_pct / 100)
+                        if pnl_pct <= giveback_floor:
+                            giveback_cap_triggered = True
                     if not giveback_cap_triggered:
                         self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Repli a {pnl_pct:.2f}% (verrou {current_lock_pct:.2f}%) mais tendance de fond toujours intacte — position maintenue", "level": "dim"})
                         self._save_open_positions()
@@ -6117,8 +6119,24 @@ class BotEngine:
         # toujours proportionnel au Stop Loss reel, quelle que soit la
         # taille ou le levier utilises — d ou la conversion via le notionnel
         # (taille x levier) pour obtenir le % de mouvement de prix correct.
-        safety_sl_usd = size * sl_pct_of_e / 100 * cfg.get("EXCHANGE_SAFETY_SL_MULT", 2.0)
-        safety_sl_pct = (safety_sl_usd / notional * 100) if notional > 0 else 2.0
+        # v4.105 — FIX BUG CRITIQUE : Spot-Accum n avait AUCUN traitement
+        # dedie ici, retombant sur sl_pct_of_e generique (adaptatif ATR,
+        # souvent 0.3-3%) — completement deconnecte de son PROPRE plafond
+        # dur (SPOT_ACCUM_HARD_SL_PCT, 5% du PnL par defaut). A leverage x1,
+        # ce filet Hyperliquid pouvait etre PLUS SERRE que le plafond dur
+        # interne, fermant la position REELLE avant que le bot n ait la
+        # moindre raison de le faire — desynchronisation confirmee (trades
+        # fermes sur Hyperliquid, restes ouverts dans le suivi du bot).
+        # Utilise desormais explicitement le plafond dur de Spot-Accum
+        # (avec la meme marge EXCHANGE_SAFETY_SL_MULT), garantissant que le
+        # filet Hyperliquid reste TOUJOURS plus large que ce que la logique
+        # interne du bot utiliserait pour fermer en premier.
+        if strategy == "spot_accumulation":
+            spot_accum_reference_sl_pct = cfg.get("SPOT_ACCUM_HARD_SL_PCT", 5.0)
+            safety_sl_pct = spot_accum_reference_sl_pct * cfg.get("EXCHANGE_SAFETY_SL_MULT", 2.0)
+        else:
+            safety_sl_usd = size * sl_pct_of_e / 100 * cfg.get("EXCHANGE_SAFETY_SL_MULT", 2.0)
+            safety_sl_pct = (safety_sl_usd / notional * 100) if notional > 0 else 2.0
         sl_p = price * (1 - safety_sl_pct/100) if signal == "long" else price * (1 + safety_sl_pct/100)
         # tp_p conserve uniquement a titre informatif / pour le bouton manuel TP
         # du dashboard — plus jamais envoye a Hyperliquid ni utilise pour fermer
