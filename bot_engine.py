@@ -1198,7 +1198,15 @@ def connect_hyperliquid(private_key, wallet_address):
         # pour s abonner au flux temps reel (allMids) utilise par la
         # surveillance Max Loss / Trailing TP en direct (voir _on_ws_allmids).
         info = Info(constants.MAINNET_API_URL, skip_ws=False)
-        exchange = Exchange(account, constants.MAINNET_API_URL, vault_address=wallet_address)
+        # v4.99 — FIX BUG CRITIQUE : wallet_address est un compte NORMAL,
+        # pas un vault Hyperliquid (fonctionnalite distincte, pools de fonds
+        # partages) — le passer en tant que vault_address causait un rejet
+        # systematique de TOUS les ordres reels ("Vault not registered"),
+        # meme apres correction du bug limit_px. account_address est le bon
+        # parametre pour "trader au nom de cette adresse", que la cle privee
+        # signataire soit celle du compte principal ou celle d un "agent"
+        # (wallet API separe autorise a trader pour ce compte).
+        exchange = Exchange(account, constants.MAINNET_API_URL, account_address=wallet_address)
         return info, exchange, None
     except Exception as e:
         import traceback
