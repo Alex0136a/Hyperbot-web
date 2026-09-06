@@ -1511,7 +1511,7 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
             "coin":        ticker,
             "is_buy":      is_buy,
             "sz":          sz,
-            "px":          format_price_hl(price * 1.01 if is_buy else price * 0.99, sz_decimals, False),
+            "limit_px":    format_price_hl(price * 1.01 if is_buy else price * 0.99, sz_decimals, False),
             "order_type":  {"limit": {"tif": "Ioc"}},
             "reduce_only": False,
         }
@@ -1615,7 +1615,7 @@ def _build_sl_order(symbol, position, sl_price, cfg, sz_decimals=4, is_spot_asse
         "coin":        coin_field,
         "is_buy":      close_side,
         "sz":          sz,
-        "px":          limit_px,
+        "limit_px":    limit_px,
         "order_type":  {"trigger": {"triggerPx": trigger_px, "isMarket": True, "tpsl": "sl"}},
         "reduce_only": True,
     }
@@ -1649,7 +1649,7 @@ def _build_tp_order(symbol, position, tp_price, cfg, sz_decimals=4, is_spot_asse
         "coin":        coin_field,
         "is_buy":      close_side,
         "sz":          sz,
-        "px":          limit_px,
+        "limit_px":    limit_px,
         "order_type":  {"trigger": {"triggerPx": trigger_px, "isMarket": True, "tpsl": "tp"}},
         "reduce_only": True,
     }
