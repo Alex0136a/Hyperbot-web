@@ -6130,6 +6130,7 @@ class BotEngine:
             "ttp_arm1_pct_used": ttp_arm1_pct,
             "adaptive_sl_ttp": adaptive_used,
             "strategy": strategy,  # v4.8 — "normal" ou "accumulation"
+            "trade_mode": effective_mode_open,  # v4.90 — mode reel (paper/live) de CE trade
             # v4.10 — ratio informatif "mouvement de prix TP / % de E du SL" :
             # a levier x1 c est le vrai ratio gain/risque $. Au-dela, le gain
             # $ est amplifie par le levier (TP en % de prix) alors que la
