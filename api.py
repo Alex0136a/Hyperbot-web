@@ -2097,12 +2097,20 @@ def get_bilan_live(email: str = Depends(require_user)):
                 hyperliquid_error = f"'marginSummary' sans 'accountValue' — contenu : {str(margin_summary)[:300]}"
             else:
                 fresh_balance = float(margin_summary["accountValue"])
-                if fresh_balance > 0:
+                # v4.93 — FIX : un solde de $0 est une VRAIE valeur legitime
+                # (compte vide, jamais approvisionne) — ne doit pas etre
+                # traite comme un echec de synchronisation. Seul un solde
+                # negatif (anormal) est traite comme suspect.
+                if fresh_balance >= 0:
                     live_capital_base = fresh_balance
                     bot.live_capital_base = fresh_balance
                     hyperliquid_reachable = True
+                    if fresh_balance == 0:
+                        wallet_display = cfg["WALLET_ADDRESS"]
+                        wallet_masked = f"{wallet_display[:6]}...{wallet_display[-4:]}" if len(wallet_display) > 12 else wallet_display
+                        hyperliquid_error = f"Le compte Hyperliquid associe a l'adresse {wallet_masked} a un solde PERPS de $0 — verifiez (1) que c'est bien la bonne adresse, et (2) que vos fonds sont dans la section Perpetuals (pas seulement Spot)."
                 else:
-                    hyperliquid_error = f"Solde recupere mais nul ou negatif : ${fresh_balance}"
+                    hyperliquid_error = f"Solde recupere mais negatif (anormal) : ${fresh_balance}"
         except Exception as e:
             import traceback
             hyperliquid_error = f"{type(e).__name__}: {e}"
