@@ -1390,6 +1390,9 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
             api_ticker = cfg.get("SPOT_TICKER_MAP", {}).get(ticker, ticker)
             result = exchange.market_open(api_ticker, is_buy, sz)
             entry_ok = result and result.get("status") == "ok"
+            spot_err_msg = None
+            if not entry_ok:
+                spot_err_msg = str(result)[:300] if result else "Aucune reponse de l'exchange (spot)"
 
             if entry_ok:
                 position_mock = {"type": "long" if is_buy else "short", "entry": price, "size": size_usd}
@@ -1415,7 +1418,7 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
                     if not prot_ok:
                         print(f"[ORDER] SL/TP spot {ticker} non poses — protection interne uniquement")
 
-            return entry_ok
+            return entry_ok, spot_err_msg
 
         # ── PERP : entree + SL + TP en groupe atomique normalTpsl ──
         notional_usd = size_usd * max(leverage, 1)
@@ -1453,12 +1456,18 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
 
         if result and result.get("status") == "ok":
             statuses = result.get("response", {}).get("data", {}).get("statuses", [])
-            return bool(statuses and "error" not in statuses[0])
-        return False
+            if statuses and "error" in statuses[0]:
+                err_msg = statuses[0]["error"]
+                print(f"[ORDER] Erreur place_order {ticker} : {err_msg}")
+                return False, err_msg
+            return bool(statuses), None
+        err_msg = str(result)[:300] if result else "Aucune reponse de l'exchange"
+        print(f"[ORDER] Echec place_order {ticker} : {err_msg}")
+        return False, err_msg
 
     except Exception as e:
         print(f"[ORDER] Erreur place_order {ticker} : {e}")
-        return False
+        return False, str(e)
 
 def close_order(exchange, symbol, position, cfg):
     """Ferme une position — perp ou spot selon le symbole."""
@@ -6024,9 +6033,9 @@ class BotEngine:
                 self.emit("log", {"msg": f"[{ticker}] Echec application levier prudent x{leverage} : {e} — poursuite avec le levier deja en place.", "level": "warn"})
             # tp_price=None : plus d ordre TP fixe sur Hyperliquid, la prise de
             # profit est entierement geree par le bot (Quick Profit / Trailing)
-            ok = place_order(self.exchange, ticker, signal == "long", size, price, cfg, sl_price=sl_p, tp_price=None, leverage=leverage)
+            ok, order_err = place_order(self.exchange, ticker, signal == "long", size, price, cfg, sl_price=sl_p, tp_price=None, leverage=leverage)
             if not ok:
-                self.emit("log", {"msg": f"[{ticker}] Ordre non execute", "level": "warn"})
+                self.emit("log", {"msg": f"[{ticker}] Ordre non execute — {order_err or 'raison inconnue'}", "level": "warn"})
                 return
 
         state.open_position(signal, price, sl_p, tp_p, size, confidence=confidence, leverage=leverage, strategy=strategy)
