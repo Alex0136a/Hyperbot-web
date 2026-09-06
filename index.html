@@ -2906,6 +2906,9 @@ Confirmer ?`
           <div style={{background:"#1a0a0a",border:"1px solid #4a1e1e",borderRadius:12,padding:16,marginBottom:12}}>
             <div style={{fontSize:11,color:"#f87171",letterSpacing:1,marginBottom:12,fontWeight:700}}>🔴 CAPITAL HYPERLIQUID (RÉEL)</div>
             <div style={{fontSize:28,fontWeight:800,color:"#fff"}}>${bilanLive.hyperliquid_capital.toFixed(2)}</div>
+            <div style={{fontSize:10,marginTop:4,color:bilanLive.hyperliquid_reachable?"#34d399":"#f87171"}}>
+              {bilanLive.hyperliquid_reachable ? "✅ Solde synchronisé en direct" : "⚠️ Connexion Hyperliquid indisponible — dernière valeur connue affichée"}
+            </div>
             <div style={{fontSize:11,color:"#94a3b8",marginTop:4}}>Capital total (avec PnL) : <span style={{color:"#fff",fontWeight:700}}>${bilanLive.total_capital_live.toFixed(2)}</span></div>
             <div style={{fontSize:11,marginTop:2,color:bilanLive.performance_pct>=0?"#34d399":"#f87171"}}>
               Performance : {bilanLive.performance_pct>=0?"+":""}{bilanLive.performance_pct.toFixed(2)}%
