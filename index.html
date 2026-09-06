@@ -2912,6 +2912,9 @@ Confirmer ?`
             {bilanLive.hyperliquid_error && (
               <div style={{fontSize:9,color:"#f87171",marginTop:2,fontFamily:"monospace"}}>{bilanLive.hyperliquid_error}</div>
             )}
+            <div style={{fontSize:10,color:"#94a3b8",marginTop:6,fontFamily:"monospace",wordBreak:"break-all"}}>
+              Adresse configurée : <span style={{color:"#fbbf24"}}>{bilanLive.configured_wallet_address || "(aucune)"}</span>
+            </div>
             <div style={{fontSize:11,color:"#94a3b8",marginTop:4}}>Capital total (avec PnL) : <span style={{color:"#fff",fontWeight:700}}>${bilanLive.total_capital_live.toFixed(2)}</span></div>
             <div style={{fontSize:11,marginTop:2,color:bilanLive.performance_pct>=0?"#34d399":"#f87171"}}>
               Performance : {bilanLive.performance_pct>=0?"+":""}{bilanLive.performance_pct.toFixed(2)}%
