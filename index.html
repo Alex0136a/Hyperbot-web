@@ -2192,6 +2192,31 @@ Confirmer ?`
                       <span style={{fontSize:9,color:"#475569"}}>(suit le mode global : {config?.trading_mode==="live"?"🔴 LIVE":"🎮 PAPER"})</span>
                     )}
                   </div>
+
+                  {/* v4.106 — SUR DEMANDE EXPLICITE : Marche/Arret
+                  INDEPENDANT par mode, juste apres PAPER/LIVE — seules les
+                  NOUVELLES ouvertures sont bloquees, les positions deja
+                  ouvertes de ce mode continuent normalement jusqu a
+                  fermeture. */}
+                  {(() => {
+                    const modeEnabled = config?.strategy_trading_enabled?.[paperSubTab] ?? true;
+                    return (
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,background:"#0a0e1a",border:`1px solid ${modeEnabled?"#1e2d4a":"#f87171"}`,borderRadius:8,padding:10}}>
+                        <span style={{fontSize:10,color:"#94a3b8",fontWeight:700}}>ÉTAT DE CE VOLET :</span>
+                        <button onClick={async()=>{
+                          try{
+                            await apiCall("/api/config/strategy-trading-enabled","PUT",{strategy:paperSubTab,enabled:!modeEnabled},token);
+                            loadData();
+                          }catch(err){ alert("Erreur : "+err.message); }
+                        }} style={{background:modeEnabled?"#052e16":"#2d0a0a",border:`1px solid ${modeEnabled?"#34d399":"#f87171"}`,borderRadius:5,padding:"5px 14px",color:modeEnabled?"#34d399":"#f87171",fontSize:10,fontWeight:700,cursor:"pointer"}}>
+                          {modeEnabled?"▶️ EN MARCHE":"⏸️ ARRÊTÉ"}
+                        </button>
+                        <span style={{fontSize:9,color:"#475569"}}>
+                          {modeEnabled?"(clic pour arrêter les nouvelles ouvertures de ce mode)":"(nouvelles ouvertures bloquées — trades déjà ouverts gérés normalement)"}
+                        </span>
+                      </div>
+                    );
+                  })()}
                   <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
                     <button onClick={()=>loadStrategyPerformance(paperSubTab)} disabled={strategyPerfLoading}
                       style={{background:"#1e3a5f22",border:"1px solid #60a5fa",borderRadius:6,padding:"7px 14px",color:"#60a5fa",fontSize:11,cursor:"pointer",fontWeight:700}}>
