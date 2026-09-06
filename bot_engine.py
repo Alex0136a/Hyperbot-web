@@ -1,3 +1,4 @@
+
 """
 ╔═══════════════════════════════════════════════════════╗
 ║       HyperBot — Pro Edition                          ║
@@ -282,6 +283,16 @@ CONFIG = {
         "accumulation": None,
         "funding_contrarian": None,
         "spot_accumulation": None,
+    },
+    # v4.106 — SUR DEMANDE EXPLICITE : bouton Marche/Arret INDEPENDANT par
+    # mode — True = ouvre normalement de nouveaux trades pour ce mode,
+    # False = bloque UNIQUEMENT les nouvelles ouvertures (les positions
+    # deja ouvertes de ce mode continuent normalement jusqu a fermeture).
+    "STRATEGY_TRADING_ENABLED": {
+        "normal": True,
+        "accumulation": True,
+        "funding_contrarian": True,
+        "spot_accumulation": True,
     },
     "FUNDING_ANNUAL_THRESHOLD_PCT": 25.0,  # funding annualise au-dela duquel le positionnement est juge "extreme"
     "FUNDING_MODE_MAX_TRADES": 3,          # plafond de trades simultanes, independant des autres modes
@@ -5867,6 +5878,16 @@ class BotEngine:
             cand.get("conf_breakdown", {})
         )
         strategy = cand.get("strategy", "normal")  # v4.8 — "normal" ou "accumulation"
+        # v4.106 — SUR DEMANDE EXPLICITE : chaque mode peut desormais etre
+        # arrete INDEPENDAMMENT des autres (bouton Marche/Arret par mode) —
+        # meme principe que le bouton global (self.trading_enabled) :
+        # bloque UNIQUEMENT l ouverture de NOUVEAUX trades pour ce mode
+        # precis, les positions deja ouvertes de ce mode continuent d etre
+        # gerees normalement jusqu a leur fermeture (_manage_position_impl
+        # n est jamais gate par ce flag). True par defaut (aucun changement
+        # de comportement tant que rien n est desactive).
+        if not cfg.get("STRATEGY_TRADING_ENABLED", {}).get(strategy, True):
+            return
 
         # v4.16 — SUR DEMANDE EXPLICITE : le mode Accumulation tourne
         # desormais en PARALLELE de la logique normale, evaluee independamment
