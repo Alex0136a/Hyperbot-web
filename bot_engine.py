@@ -1161,25 +1161,31 @@ def format_size_hl(size, sz_decimals):
     return math.floor(size * factor) / factor
 
 def format_price_hl(price, sz_decimals, is_spot=False):
-    """v4.98 — SUR DEMANDE EXPLICITE : precision de prix Hyperliquid —
-    max (6 ou 8 selon spot/perp) - szDecimals decimales. Les prix entiers
-    sont toujours valides. NOTE : la doc Hyperliquid mentionne aussi une
-    regle de '5 chiffres significatifs', mais leur propre exemple
-    officiel (97000.5 valide pour BTC, szDecimals=5) suggere qu elle n
-    est pas la contrainte pratiquement bloquante pour ces ordres de
-    grandeur — plutot que de repliquer une regle ambigue au risque de
-    sur-tronquer a tort, seule la regle de decimales (confirmee sans
-    ambiguite) est appliquee. Utilise une TRONCATURE (jamais un arrondi
-    vers le haut), coherente avec les implementations officielles du SDK
-    (Rust/Elixir) — un arrondi standard pourrait decaler un prix de
-    protection (SL) dans le mauvais sens.
+    """v4.100 — FIX BUG CRITIQUE : la version precedente (v4.98) omettait
+    volontairement la regle des "5 chiffres significatifs", jugee a tort
+    non-bloquante suite a un exemple ambigu de la doc (97000.5 valide pour
+    BTC) — mais des echecs reels confirmes ("Price must be divisible by
+    tick size") sur SOL/INJ prouvent que cette regle EST bien appliquee et
+    peut etre PLUS restrictive que la seule limite de decimales. Applique
+    desormais les DEUX contraintes documentees (5 chiffres significatifs
+    ET max decimales par rapport a szDecimals), en gardant la plus stricte
+    des deux. Troncature (jamais un arrondi vers le haut), coherente avec
+    les implementations officielles du SDK.
     """
     if price == int(price):
         return price
+    from decimal import Decimal, ROUND_DOWN
     max_decimals = max((8 if is_spot else 6) - sz_decimals, 0)
-    factor = 10 ** max_decimals
-    import math
-    return math.floor(price * factor) / factor
+    d = Decimal(str(price))
+    # Contrainte 1 : 5 chiffres significatifs
+    exponent = d.adjusted()
+    sig_fig_exp = exponent - 4  # 5 chiffres significatifs -> garde jusqu a cette position
+    # Contrainte 2 : max_decimals par rapport a szDecimals
+    max_dec_exp = -max_decimals
+    # La plus stricte des deux = l exposant le PLUS GRAND (arrondit le plus tot)
+    final_exp = max(sig_fig_exp, max_dec_exp)
+    quantizer = Decimal(1).scaleb(final_exp)
+    return float(d.quantize(quantizer, rounding=ROUND_DOWN))
 
 def connect_hyperliquid(private_key, wallet_address):
     """Retourne (info, exchange, error_detail). error_detail est None en cas
@@ -1506,6 +1512,15 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
 
         # ── PERP : entree + SL + TP en groupe atomique normalTpsl ──
         notional_usd = size_usd * max(leverage, 1)
+        # v4.100 — SUR DEMANDE EXPLICITE : Hyperliquid exige un notionnel
+        # minimum de $10 par ordre — verifie AVANT de tenter l appel API,
+        # pour eviter un echec systematique et donner un message clair
+        # plutot qu attendre le rejet de l exchange (observe : GMX avec
+        # $5.49 de notionnel, bien en dessous du minimum).
+        if notional_usd < 10.0:
+            err_msg = f"Notionnel ${notional_usd:.2f} sous le minimum Hyperliquid de $10 — augmentez la taille par trade ou le levier."
+            print(f"[ORDER] {ticker} : {err_msg}")
+            return False, err_msg
         sz = format_size_hl(max(notional_usd / price, 0), sz_decimals)
         close_side = not is_buy
         # v4.5 — pos_mock["size"] doit etre le NOTIONNEL reel (deja leverage)
