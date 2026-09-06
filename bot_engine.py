@@ -1118,6 +1118,69 @@ def calc_support_resistance_from_candles(candles, period=100):
 # ─────────────────────────────────────────────
 #  CONNEXION HYPERLIQUID
 # ─────────────────────────────────────────────
+_SZ_DECIMALS_CACHE = {"perp": None, "spot": None, "fetched_at": 0}
+
+def _get_sz_decimals_map(info):
+    """v4.97 — SUR DEMANDE EXPLICITE : Hyperliquid exige une precision de
+    taille (szDecimals) DIFFERENTE PAR ACTIF (de 0 a 8 selon l actif) — un
+    arrondi fixe applique a tous les actifs (l ancien comportement) produit
+    des ordres rejetes des que l actif exige une precision differente de
+    celle codee en dur. Recupere et met en cache les vraies valeurs depuis
+    l API (universe[].szDecimals pour les perps, tokens[].szDecimals pour
+    le spot), rafraichi toutes les 10 minutes (les specs d un actif
+    changent tres rarement, pas besoin de requeter a chaque ordre)."""
+    import time as _time
+    now = _time.time()
+    if _SZ_DECIMALS_CACHE["perp"] is not None and (now - _SZ_DECIMALS_CACHE["fetched_at"]) < 600:
+        return _SZ_DECIMALS_CACHE["perp"], _SZ_DECIMALS_CACHE["spot"]
+    perp_map, spot_map = {}, {}
+    try:
+        meta = info.meta()
+        for asset in meta.get("universe", []):
+            perp_map[asset["name"]] = asset.get("szDecimals", 4)
+    except Exception as e:
+        print(f"[SZDECIMALS] Echec recuperation meta perp : {e}")
+    try:
+        spot_meta = info.spot_meta()
+        for token in spot_meta.get("tokens", []):
+            spot_map[token["name"]] = token.get("szDecimals", 4)
+    except Exception as e:
+        print(f"[SZDECIMALS] Echec recuperation meta spot : {e}")
+    _SZ_DECIMALS_CACHE["perp"] = perp_map
+    _SZ_DECIMALS_CACHE["spot"] = spot_map
+    _SZ_DECIMALS_CACHE["fetched_at"] = now
+    return perp_map, spot_map
+
+def format_size_hl(size, sz_decimals):
+    """Tronque (jamais arrondi vers le haut) a la precision exacte exigee
+    par Hyperliquid pour cet actif — un arrondi standard pourrait produire
+    une taille legerement SUPERIEURE a ce qui est reellement disponible/
+    autorise."""
+    factor = 10 ** sz_decimals
+    import math
+    return math.floor(size * factor) / factor
+
+def format_price_hl(price, sz_decimals, is_spot=False):
+    """v4.98 — SUR DEMANDE EXPLICITE : precision de prix Hyperliquid —
+    max (6 ou 8 selon spot/perp) - szDecimals decimales. Les prix entiers
+    sont toujours valides. NOTE : la doc Hyperliquid mentionne aussi une
+    regle de '5 chiffres significatifs', mais leur propre exemple
+    officiel (97000.5 valide pour BTC, szDecimals=5) suggere qu elle n
+    est pas la contrainte pratiquement bloquante pour ces ordres de
+    grandeur — plutot que de repliquer une regle ambigue au risque de
+    sur-tronquer a tort, seule la regle de decimales (confirmee sans
+    ambiguite) est appliquee. Utilise une TRONCATURE (jamais un arrondi
+    vers le haut), coherente avec les implementations officielles du SDK
+    (Rust/Elixir) — un arrondi standard pourrait decaler un prix de
+    protection (SL) dans le mauvais sens.
+    """
+    if price == int(price):
+        return price
+    max_decimals = max((8 if is_spot else 6) - sz_decimals, 0)
+    factor = 10 ** max_decimals
+    import math
+    return math.floor(price * factor) / factor
+
 def connect_hyperliquid(private_key, wallet_address):
     """Retourne (info, exchange, error_detail). error_detail est None en cas
     de succes, sinon un message texte precis (type + message de l exception)
@@ -1383,10 +1446,23 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
     notionnel reel doit etre size_usd x leverage.
     """
     ticker = ticker_from_slot_key(symbol)
+    # v4.98 — SUR DEMANDE EXPLICITE : recupere la VRAIE precision (szDecimals)
+    # de cet actif precis depuis l API Hyperliquid (mise en cache 10 min),
+    # au lieu d un arrondi fixe (4 ou 6 decimales) applique aveuglement a
+    # tous les actifs — cause probable d une partie des "Ordre non execute"
+    # observes (Hyperliquid rejette immediatement un ordre dont la taille
+    # ou le prix ne respecte pas la precision exacte exigee pour CET actif).
+    asset_is_spot = is_spot(symbol, cfg)
     try:
-        if is_spot(symbol, cfg):
+        perp_map, spot_map = _get_sz_decimals_map(exchange.info)
+        sz_decimals = spot_map.get(ticker, 4) if asset_is_spot else perp_map.get(ticker, 4)
+    except Exception as e:
+        print(f"[SZDECIMALS] Repli sur 4 decimales par defaut pour {ticker} : {e}")
+        sz_decimals = 4
+    try:
+        if asset_is_spot:
             # Spot n a pas de notion de levier — inchange.
-            sz = max(round(size_usd / price, 6), 0.0001)
+            sz = format_size_hl(max(size_usd / price, 0), sz_decimals)
             api_ticker = cfg.get("SPOT_TICKER_MAP", {}).get(ticker, ticker)
             result = exchange.market_open(api_ticker, is_buy, sz)
             entry_ok = result and result.get("status") == "ok"
@@ -1399,14 +1475,14 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
                 protective_orders = []
 
                 if sl_price is not None:
-                    sl_order = _build_sl_order(ticker, position_mock, sl_price, cfg)
+                    sl_order = _build_sl_order(ticker, position_mock, sl_price, cfg, sz_decimals, True)
                     if sl_order:
                         protective_orders.append(sl_order)
                     else:
                         print(f"[ORDER] SL spot {ticker} : asset ID inconnu — protection interne uniquement")
 
                 if tp_price is not None:
-                    tp_order = _build_tp_order(ticker, position_mock, tp_price, cfg)
+                    tp_order = _build_tp_order(ticker, position_mock, tp_price, cfg, sz_decimals, True)
                     if tp_order:
                         protective_orders.append(tp_order)
                     else:
@@ -1422,7 +1498,7 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
 
         # ── PERP : entree + SL + TP en groupe atomique normalTpsl ──
         notional_usd = size_usd * max(leverage, 1)
-        sz = max(round(notional_usd / price, 4), 0.001)
+        sz = format_size_hl(max(notional_usd / price, 0), sz_decimals)
         close_side = not is_buy
         # v4.5 — pos_mock["size"] doit etre le NOTIONNEL reel (deja leverage)
         # pour que _build_sl_order/_build_tp_order calculent la meme
@@ -1435,19 +1511,19 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
             "coin":        ticker,
             "is_buy":      is_buy,
             "sz":          sz,
-            "px":          price * 1.01 if is_buy else price * 0.99,
+            "px":          format_price_hl(price * 1.01 if is_buy else price * 0.99, sz_decimals, False),
             "order_type":  {"limit": {"tif": "Ioc"}},
             "reduce_only": False,
         }
         orders = [entry_order]
 
         if sl_price is not None:
-            sl_order = _build_sl_order(ticker, pos_mock, sl_price, cfg)
+            sl_order = _build_sl_order(ticker, pos_mock, sl_price, cfg, sz_decimals, False)
             if sl_order:
                 orders.append(sl_order)
 
         if tp_price is not None:
-            tp_order = _build_tp_order(ticker, pos_mock, tp_price, cfg)
+            tp_order = _build_tp_order(ticker, pos_mock, tp_price, cfg, sz_decimals, False)
             if tp_order:
                 orders.append(tp_order)
 
@@ -1474,7 +1550,12 @@ def close_order(exchange, symbol, position, cfg):
     ticker = ticker_from_slot_key(symbol)
     try:
         if is_spot(symbol, cfg):
-            sz = max(round(position["size"] / position["entry"], 6), 0.0001)
+            try:
+                _, spot_map = _get_sz_decimals_map(exchange.info)
+                sz_decimals = spot_map.get(ticker, 6)
+            except Exception:
+                sz_decimals = 6
+            sz = format_size_hl(max(position["size"] / position["entry"], 0), sz_decimals)
             api_ticker = cfg.get("SPOT_TICKER_MAP", {}).get(ticker, ticker)
             is_buy = position["type"] == "short"
             result = exchange.market_open(api_ticker, is_buy, sz)
@@ -1502,19 +1583,25 @@ def _spot_sl_asset(symbol, cfg):
     return None
 
 
-def _build_sl_order(symbol, position, sl_price, cfg):
+def _build_sl_order(symbol, position, sl_price, cfg, sz_decimals=4, is_spot_asset=False):
     """Construit un ordre SL trigger avec buffer de securite mark price.
     Long  : trigger decale legerement sous sl_price (buffer vers le bas)
     Short : trigger decale legerement au dessus de sl_price (buffer vers le haut)
     Garantit que le SL ne se declenche pas sur un micro-ecart mark/mid.
+
+    v4.98 — SUR DEMANDE EXPLICITE : sz_decimals REEL de l actif (recupere
+    depuis l API, plus un arrondi fixe code en dur qui causait des rejets
+    d ordre sur les actifs a precision differente). Idem pour les prix
+    (format_price_hl, au lieu d un round(...,2) universel — totalement
+    invalide sur un actif a $0.09 comme DOGE, par exemple).
     """
     is_long    = position["type"] == "long"
     close_side = not is_long
-    sz         = max(round(position["size"] / position["entry"], 4), 0.001)
+    sz         = format_size_hl(max(position["size"] / position["entry"], 0), sz_decimals)
 
     buffer     = cfg.get("MARK_PRICE_BUFFER_PCT", 0.05) / 100
-    trigger_px = round(sl_price * (1 - buffer) if is_long else sl_price * (1 + buffer), 2)
-    limit_px   = round(trigger_px * 0.99 if is_long else trigger_px * 1.01, 2)
+    trigger_px = format_price_hl(sl_price * (1 - buffer) if is_long else sl_price * (1 + buffer), sz_decimals, is_spot_asset)
+    limit_px   = format_price_hl(trigger_px * 0.99 if is_long else trigger_px * 1.01, sz_decimals, is_spot_asset)
 
     if is_spot(symbol, cfg):
         asset_id = _spot_sl_asset(symbol, cfg)
@@ -1534,19 +1621,21 @@ def _build_sl_order(symbol, position, sl_price, cfg):
     }
 
 
-def _build_tp_order(symbol, position, tp_price, cfg):
+def _build_tp_order(symbol, position, tp_price, cfg, sz_decimals=4, is_spot_asset=False):
     """Construit un ordre TP trigger avec buffer de securite mark price.
     Long  : trigger decale legerement au dessus de tp_price (buffer vers le haut)
     Short : trigger decale legerement sous tp_price (buffer vers le bas)
     Garantit que le TP ne se declenche pas trop tot sur un micro-ecart mark/mid.
+
+    v4.98 — meme fix de precision reelle par actif que _build_sl_order.
     """
     is_long    = position["type"] == "long"
     close_side = not is_long
-    sz         = max(round(position["size"] / position["entry"], 4), 0.001)
+    sz         = format_size_hl(max(position["size"] / position["entry"], 0), sz_decimals)
 
     buffer     = cfg.get("MARK_PRICE_BUFFER_PCT", 0.05) / 100
-    trigger_px = round(tp_price * (1 + buffer) if is_long else tp_price * (1 - buffer), 2)
-    limit_px   = round(trigger_px * 0.99 if is_long else trigger_px * 1.01, 2)
+    trigger_px = format_price_hl(tp_price * (1 + buffer) if is_long else tp_price * (1 - buffer), sz_decimals, is_spot_asset)
+    limit_px   = format_price_hl(trigger_px * 0.99 if is_long else trigger_px * 1.01, sz_decimals, is_spot_asset)
 
     if is_spot(symbol, cfg):
         asset_id = _spot_sl_asset(symbol, cfg)
@@ -4989,8 +5078,18 @@ class BotEngine:
         # quand UNIFIED_SIMPLIFIED_MODE est actif).
         unified_active = cfg.get("UNIFIED_SIMPLIFIED_MODE", True)
         if unified_active:
-            trend_confirmed_long = self._unified_trend_confirmed(prices, trend_up)
-            trend_confirmed_short = self._unified_trend_confirmed(prices, trend_down)
+            # v4.96 — FIX BUG CRITIQUE : ce diagnostic appelait
+            # _unified_trend_confirmed SANS les parametres de stabilite
+            # (state, streak_attr, min_stability_cycles), alors que la VRAIE
+            # decision (long_level_ok/short_level_ok, calculee plus haut) les
+            # utilise depuis v4.76. Divergence : le diagnostic voyait la
+            # tendance "confirmee" (verification faible, sans stabilite)
+            # alors que la vraie decision la jugeait "pas assez stable" —
+            # aucune des 3 raisons ne matchait, d ou "raison inconnue"
+            # (observe sur SEI, AAVE). Reutilise desormais EXACTEMENT les
+            # memes parametres que la decision reelle.
+            trend_confirmed_long = self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", normal_stability_cycles)
+            trend_confirmed_short = self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", normal_stability_cycles)
             proximity_long_ok = self._unified_proximity_ok(price, support, resistance, "long")
             proximity_short_ok = self._unified_proximity_ok(price, support, resistance, "short")
             amplitude_ok = self._unified_sr_amplitude_ok(support, resistance)
@@ -5047,13 +5146,15 @@ class BotEngine:
             # decrivait l ancienne logique, plus utilisee pour la decision).
             if rsi_buy and ema_bull and trend_up and not state.long_signal_stale and not long_level_ok:
                 raisons = []
-                if not trend_confirmed_long: raisons.append("tendance/ADX pas assez forte")
+                if not trend_confirmed_long:
+                    raisons.append(f"tendance/ADX pas assez forte ou pas assez stable ({state.trend_up_streak}/{normal_stability_cycles} cycles)")
                 if not proximity_long_ok: raisons.append("hors fenetre 1-5% du support (et pas de cassure)")
                 if not amplitude_ok: raisons.append("fourchette S/R trop etroite")
                 self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG qualifie mais base commune non reunie : {', '.join(raisons) if raisons else 'raison inconnue'}", "level": "dim"})
             if rsi_sell and ema_bear and trend_down and not state.short_signal_stale and not short_level_ok:
                 raisons = []
-                if not trend_confirmed_short: raisons.append("tendance/ADX pas assez forte")
+                if not trend_confirmed_short:
+                    raisons.append(f"tendance/ADX pas assez forte ou pas assez stable ({state.trend_down_streak}/{normal_stability_cycles} cycles)")
                 if not proximity_short_ok: raisons.append("hors fenetre 1-5% de la resistance (et pas de cassure)")
                 if not amplitude_ok: raisons.append("fourchette S/R trop etroite")
                 self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT qualifie mais base commune non reunie : {', '.join(raisons) if raisons else 'raison inconnue'}", "level": "dim"})
