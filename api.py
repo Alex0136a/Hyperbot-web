@@ -172,6 +172,7 @@ def _consume_events():
                     sl_pct_used=data.get("sl_pct_used"),
                     ttp_arm1_pct_used=data.get("ttp_arm1_pct_used"),
                     adaptive_sl_ttp=data.get("adaptive_sl_ttp"),
+                    trade_mode=data.get("trade_mode", "paper"),
                 )
             elif etype == "trade":
                 ticker = be.ticker_from_slot_key(data.get("symbol", ""))
@@ -668,6 +669,7 @@ def _open_positions() -> List[Dict[str, Any]]:
                 # (cas observe : pic affiche de 1.32% sans sortie declenchee
                 # malgre un trailing dynamique cense s armer a 1%).
                 "tp_stage": state.tp_stage,  # 0=aucun, 1=arme (tier1)
+                "effective_mode": pos.get("effective_mode", "paper"),  # v4.90 — mode reel de CE trade
                 "spot_accum_armed": state.spot_accum_armed,  # v4.62 — FIX : Spot-Accum a son propre armement, separe de tp_stage
                 "spot_accum_arm_pct_used": cfg.get("SPOT_ACCUM_TTP_ARM_PCT"),  # v4.63 — seuil REELLEMENT lu, pour verifier sans deviner
                 "spot_accum_peak_pnl_pct_internal": round(state.spot_accum_peak_pnl_pct, 3) if state.spot_accum_peak_pnl_pct is not None else None,
@@ -2054,6 +2056,43 @@ def get_bilan(email: str = Depends(require_user)):
         "total": _aggregate(closed, initial_balance),
         "daily": _compute_daily(closed, days=7, base=initial_balance),
         "by_coin": _compute_by_coin(closed),
+    }
+
+
+@app.get("/api/bilan-live")
+def get_bilan_live(email: str = Depends(require_user)):
+    """v4.90 — SUR DEMANDE EXPLICITE : bilan DEDIE au capital LIVE (reel,
+    synchronise depuis Hyperliquid), completement separe du bilan paper
+    ci-dessus — capital, PnL ouvert, performance, trades ouverts et win
+    rate, tous calcules UNIQUEMENT a partir des trades reellement executes
+    en live (trade_mode='live'), jamais melanges avec le paper."""
+    closed_all = db.get_all_closed_trades()
+    closed_live = [r for r in closed_all if r.get("trade_mode") == "live"]
+
+    live_capital_base = getattr(bot, "live_capital_base", cfg.get("CAPITAL_USD", 0))
+    total_pnl_realized_live = sum(s.live_pnl for s in bot.states.values())
+
+    open_positions = _open_positions()
+    open_positions_live = [p for p in open_positions if p.get("effective_mode") == "live"]
+    open_pnl_live = round(sum(p["pnl"] for p in open_positions_live), 2)
+
+    total_capital_live = live_capital_base + total_pnl_realized_live + open_pnl_live
+    performance_pct_live = round((total_capital_live - live_capital_base) / live_capital_base * 100, 2) if live_capital_base else 0
+
+    stats_live = _aggregate(closed_live, live_capital_base)
+
+    return {
+        "hyperliquid_capital": round(live_capital_base, 2),
+        "total_capital_live": round(total_capital_live, 2),
+        "open_pnl": open_pnl_live,
+        "open_count": len(open_positions_live),
+        "performance_pct": performance_pct_live,
+        "win_rate": stats_live["win_rate"],
+        "total_trades": stats_live["total"],
+        "wins": stats_live["wins"],
+        "losses": stats_live["losses"],
+        "net_realized": stats_live["net"],
+        "open_positions": open_positions_live,
     }
 
 
