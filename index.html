@@ -524,6 +524,7 @@ function App() {
   const [advancedSettings, setAdvancedSettings] = useState(null);
   const [advancedEdits, setAdvancedEdits] = useState({});
   const [bilan, setBilan] = useState(null);
+  const [bilanLive, setBilanLive] = useState(null);
   const [volatility, setVolatility] = useState(null);
   const [clock, setClock] = useState({utc:"", local:"", market:""});
   const [botLogs, setBotLogs] = useState([]);
@@ -874,6 +875,7 @@ Confirmer ?`
     {id:"rapport",label:"📄 Rapport"},
     {id:"stats",label:"📊 Performance"},
     {id:"bilan",label:"💰 Bilan"},
+    {id:"bilan_live",label:"🔴 Bilan Live"},
     {id:"volatilite",label:"📈 Volatilité"},
   ];
 
@@ -982,7 +984,7 @@ Confirmer ?`
       {/* TABS */}
       <div style={{display:"flex",borderBottom:"1px solid #1e2d4a",background:"#0f1629",overflowX:"auto"}}>
         {TABS.map(t=>(
-          <button key={t.id} onClick={()=>{setTab(t.id); if(t.id==="stats") apiCall("/api/stats/daily","GET",null,token).then(r=>setDailyStats(r)); if(t.id==="rapport") loadData(); if(t.id==="bilan") apiCall("/api/bilan","GET",null,token).then(r=>setBilan(r)); if(t.id==="parametres") apiCall("/api/config/advanced","GET",null,token).then(r=>setAdvancedSettings(r)); if(t.id==="volatilite") apiCall("/api/volatility","GET",null,token).then(r=>setVolatility(r));}} style={{padding:"10px 14px",background:"transparent",border:"none",borderBottom:tab===t.id?"2px solid #3b82f6":"2px solid transparent",color:tab===t.id?"#60a5fa":"#64748b",fontSize:11,fontWeight:tab===t.id?700:400,whiteSpace:"nowrap"}}>
+          <button key={t.id} onClick={()=>{setTab(t.id); if(t.id==="stats") apiCall("/api/stats/daily","GET",null,token).then(r=>setDailyStats(r)); if(t.id==="rapport") loadData(); if(t.id==="bilan") apiCall("/api/bilan","GET",null,token).then(r=>setBilan(r)); if(t.id==="bilan_live") apiCall("/api/bilan-live","GET",null,token).then(r=>setBilanLive(r)); if(t.id==="parametres") apiCall("/api/config/advanced","GET",null,token).then(r=>setAdvancedSettings(r)); if(t.id==="volatilite") apiCall("/api/volatility","GET",null,token).then(r=>setVolatility(r));}} style={{padding:"10px 14px",background:"transparent",border:"none",borderBottom:tab===t.id?"2px solid #3b82f6":"2px solid transparent",color:tab===t.id?"#60a5fa":"#64748b",fontSize:11,fontWeight:tab===t.id?700:400,whiteSpace:"nowrap"}}>
             {t.label}
           </button>
         ))}
@@ -2886,6 +2888,69 @@ Confirmer ?`
               );
             })}
           </div>
+          </>)}
+        </div>
+      )}
+
+      {/* BILAN LIVE — v4.90 SUR DEMANDE EXPLICITE : capital reel Hyperliquid,
+      PnL ouvert, performance, trades ouverts et win rate — completement
+      separe du bilan paper ci-dessus, jamais melange. */}
+      {tab==="bilan_live" && (
+        <div style={{padding:14}}>
+          {!bilanLive ? <div style={{color:"#94a3b8",fontSize:12,textAlign:"center",padding:40}}>
+            <button onClick={()=>apiCall("/api/bilan-live","GET",null,token).then(r=>setBilanLive(r))}
+              style={{background:"#2d0a0a",border:"1px solid #f87171",borderRadius:8,padding:"10px 20px",color:"#f87171",cursor:"pointer"}}>
+              🔴 Charger le bilan live
+            </button>
+          </div> : (<>
+          <div style={{background:"#1a0a0a",border:"1px solid #4a1e1e",borderRadius:12,padding:16,marginBottom:12}}>
+            <div style={{fontSize:11,color:"#f87171",letterSpacing:1,marginBottom:12,fontWeight:700}}>🔴 CAPITAL HYPERLIQUID (RÉEL)</div>
+            <div style={{fontSize:28,fontWeight:800,color:"#fff"}}>${bilanLive.hyperliquid_capital.toFixed(2)}</div>
+            <div style={{fontSize:11,color:"#94a3b8",marginTop:4}}>Capital total (avec PnL) : <span style={{color:"#fff",fontWeight:700}}>${bilanLive.total_capital_live.toFixed(2)}</span></div>
+            <div style={{fontSize:11,marginTop:2,color:bilanLive.performance_pct>=0?"#34d399":"#f87171"}}>
+              Performance : {bilanLive.performance_pct>=0?"+":""}{bilanLive.performance_pct.toFixed(2)}%
+            </div>
+          </div>
+
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10,marginBottom:12}}>
+            <div style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:12}}>
+              <div style={{fontSize:10,color:"#94a3b8",marginBottom:4}}>PnL OUVERT</div>
+              <div style={{fontSize:18,fontWeight:700,color:bilanLive.open_pnl>=0?"#34d399":"#f87171"}}>
+                {bilanLive.open_pnl>=0?"+":""}${bilanLive.open_pnl.toFixed(2)}
+              </div>
+            </div>
+            <div style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:12}}>
+              <div style={{fontSize:10,color:"#94a3b8",marginBottom:4}}>TRADES OUVERTS</div>
+              <div style={{fontSize:18,fontWeight:700,color:"#fff"}}>{bilanLive.open_count}</div>
+            </div>
+            <div style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:12}}>
+              <div style={{fontSize:10,color:"#94a3b8",marginBottom:4}}>WIN RATE</div>
+              <div style={{fontSize:18,fontWeight:700,color:"#fff"}}>{bilanLive.win_rate}%</div>
+              <div style={{fontSize:9,color:"#475569"}}>{bilanLive.wins}G / {bilanLive.losses}P sur {bilanLive.total_trades}</div>
+            </div>
+            <div style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:12}}>
+              <div style={{fontSize:10,color:"#94a3b8",marginBottom:4}}>NET RÉALISÉ</div>
+              <div style={{fontSize:18,fontWeight:700,color:bilanLive.net_realized>=0?"#34d399":"#f87171"}}>
+                {bilanLive.net_realized>=0?"+":""}${bilanLive.net_realized.toFixed(2)}
+              </div>
+            </div>
+          </div>
+
+          {bilanLive.open_positions.length > 0 && (
+            <div style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:12}}>
+              <div style={{fontSize:10,color:"#94a3b8",marginBottom:8,fontWeight:700}}>POSITIONS LIVE OUVERTES</div>
+              {bilanLive.open_positions.map((p,i)=>(
+                <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:i<bilanLive.open_positions.length-1?"1px solid #1e2d4a":"none",fontSize:11}}>
+                  <span style={{color:"#fff"}}>{p.action} {p.coin}</span>
+                  <span style={{color:p.pnl>=0?"#34d399":"#f87171",fontWeight:700}}>{p.pnl>=0?"+":""}${p.pnl.toFixed(2)} ({p.pnl_pct.toFixed(2)}%)</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <button onClick={()=>apiCall("/api/bilan-live","GET",null,token).then(r=>setBilanLive(r))}
+            style={{marginTop:12,background:"#1e2d4a",border:"1px solid #334155",borderRadius:6,padding:"6px 14px",color:"#94a3b8",fontSize:10,cursor:"pointer"}}>
+            🔄 Rafraîchir
+          </button>
           </>)}
         </div>
       )}
