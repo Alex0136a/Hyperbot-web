@@ -323,11 +323,14 @@ CONFIG = {
     # differente (ex: fenetre d armement 2.5%-3.5% plutot qu un trailing).
     "SPOT_ACCUM_ENABLED": True,
     "SPOT_ACCUM_MAX_TRADES": 3,
-    "SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT": 1.0,   # entree seulement si prix >= support + 1% (etait 2%)
+    # v4.108 — FIX BUG CRITIQUE : desormais en % de l AMPLITUDE (comme le
+    # seuil structurel du trailing, 70% de l amplitude), pas du prix du
+    # support — recalibre a 5-10% de l amplitude (au lieu de 1-5% du prix).
+    "SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT": 5.0,
     # v4.50 — SUR DEMANDE EXPLICITE : plafond ajoute (n existait pas avant)
     # — l entree doit rester dans une fenetre serree pres du support, pas
     # n importe ou jusqu a la resistance.
-    "SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT": 5.0,   # entree seulement si prix <= support + 5%
+    "SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT": 10.0,
     # v4.53 — SUR DEMANDE EXPLICITE : la fourchette support-resistance doit
     # avoir une amplitude minimale (support=100 -> resistance >= 103 pour 3%).
     "SPOT_ACCUM_MIN_SR_AMPLITUDE_PCT": 2.0,
@@ -820,8 +823,12 @@ PROFILE_SWING = {
     # les 3 conditions communes + stabilite) — alignement total avec
     # Accumulation/Spot-Accumulation.
     "UNIFIED_FULL_SIMPLIFIED_MODE":    True,
-    "UNIFIED_MIN_ABOVE_SUPPORT_PCT":   1.0,
-    "UNIFIED_MAX_ABOVE_SUPPORT_PCT":   5.0,
+    # v4.108 — FIX BUG CRITIQUE : desormais exprime en % de l AMPLITUDE
+    # (support-resistance), plus du prix du support — coherent avec le
+    # seuil structurel du trailing (70% de l amplitude). Recalibre a 5-10%
+    # (au lieu de 1-5%, qui deviendrait ridicule en % d amplitude).
+    "UNIFIED_MIN_ABOVE_SUPPORT_PCT":   5.0,
+    "UNIFIED_MAX_ABOVE_SUPPORT_PCT":   10.0,
     "UNIFIED_MIN_SR_AMPLITUDE_PCT":    2.0,
     # v4.32 — marge d hysteresis autour du seuil ci-dessus : le mode ne
     # bascule que si l ADX depasse clairement le seuil (+marge pour "trend",
@@ -3083,27 +3090,37 @@ class BotEngine:
         return (resistance - support) / support * 100 >= min_pct
 
     def _unified_proximity_ok(self, price, support, resistance, direction, allow_breakout=True):
-        """v4.58 — Proximite 1-5% PARTAGEE par les 3 modes : pour un LONG,
-        le prix doit etre entre UNIFIED_MIN/MAX_ABOVE_SUPPORT_PCT au-dessus
-        du support (et symetriquement pour un SHORT, sous la resistance).
-        allow_breakout=True permet aussi une cassure nette comme alternative
-        (utilise par Normal/Accumulation, pas par Spot-Accum)."""
+        """v4.108 — FIX BUG CRITIQUE : le calcul precedent (v4.58) exprimait
+        1-5% en % du PRIX du support — incoherent avec le seuil structurel
+        du trailing (70% de l AMPLITUDE support-resistance) et pouvant
+        techniquement autoriser une entree au-dela de la resistance si
+        l amplitude etait proche du minimum (2%). Desormais exprime en % de
+        l AMPLITUDE elle-meme (coherent avec le reste du systeme) —
+        recalibre a 5-10% (au lieu de 1-5%, qui deviendrait ridiculement
+        etroit en mouvement de prix reel une fois exprime en % d amplitude).
+        Pour un LONG, le prix doit etre entre UNIFIED_MIN/MAX_ABOVE_SUPPORT_PCT
+        pourcent DE L AMPLITUDE au-dessus du support (et symetriquement pour
+        un SHORT, sous la resistance). allow_breakout=True permet aussi une
+        cassure nette comme alternative (utilise par Normal/Accumulation,
+        pas par Spot-Accum)."""
         cfg = self.cfg
-        min_pct = cfg.get("UNIFIED_MIN_ABOVE_SUPPORT_PCT", 1.0)
-        max_pct = cfg.get("UNIFIED_MAX_ABOVE_SUPPORT_PCT", 5.0)
+        min_pct = cfg.get("UNIFIED_MIN_ABOVE_SUPPORT_PCT", 5.0)
+        max_pct = cfg.get("UNIFIED_MAX_ABOVE_SUPPORT_PCT", 10.0)
         if direction == "long":
-            if support is None or support <= 0:
+            if support is None or support <= 0 or resistance is None or resistance <= support:
                 return False
-            dist_pct = (price - support) / support * 100
+            amplitude = resistance - support
+            dist_pct = (price - support) / amplitude * 100
             in_window = min_pct <= dist_pct <= max_pct
-            breakout = allow_breakout and resistance is not None and price > resistance
+            breakout = allow_breakout and price > resistance
             return in_window or breakout
         else:  # short
-            if resistance is None or resistance <= 0:
+            if resistance is None or resistance <= 0 or support is None or support >= resistance:
                 return False
-            dist_pct = (resistance - price) / resistance * 100
+            amplitude = resistance - support
+            dist_pct = (resistance - price) / amplitude * 100
             in_window = min_pct <= dist_pct <= max_pct
-            breakout = allow_breakout and support is not None and price < support
+            breakout = allow_breakout and price < support
             return in_window or breakout
 
     def _gate_active_or_auto_activate(self, ticker, confidence, direction):
@@ -5816,15 +5833,20 @@ class BotEngine:
             snap["blocker"] = f"fourchette S/R trop etroite ({sr_amplitude_pct:.2f}% < {min_sr_amplitude_pct}%)"
             return  # fourchette trop etroite, pas assez de marge de mouvement
 
-        min_above_pct = cfg.get("SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT", 1.0)
+        min_above_pct = cfg.get("SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT", 5.0)
         # v4.50 — FIX : aucun plafond n existait avant — l entree pouvait se
         # produire n importe ou entre le minimum et la resistance (parfois
         # a 50-75% de la fourchette), contrairement a l intention reelle du
         # mode ("ouvrir pres du support"). Ajoute une borne haute explicite.
-        max_above_pct = cfg.get("SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT", 5.0)
-        dist_above_support_pct = (price - support) / support * 100
+        # v4.108 — FIX BUG CRITIQUE : desormais exprime en % de l AMPLITUDE
+        # (comme le seuil structurel du trailing, 70% de l amplitude) — pas
+        # du prix du support, incoherent et pouvant techniquement autoriser
+        # une entree au-dela de la resistance sur une fourchette etroite.
+        # Recalibre a 5-10% de l amplitude.
+        max_above_pct = cfg.get("SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT", 10.0)
+        dist_above_support_pct = (price - support) / (resistance - support) * 100
         snap["dist_above_support_pct"] = round(dist_above_support_pct, 2)
-        snap["window"] = f"{min_above_pct}-{max_above_pct}%"
+        snap["window"] = f"{min_above_pct}-{max_above_pct}% de l'amplitude"
         if dist_above_support_pct < min_above_pct or dist_above_support_pct > max_above_pct:
             snap["blocker"] = f"hors fenetre ({dist_above_support_pct:.2f}% pas entre {min_above_pct}-{max_above_pct}%)"
             return  # hors de la fenetre visee (trop pres du support, ou trop loin)
