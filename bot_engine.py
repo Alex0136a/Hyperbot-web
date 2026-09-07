@@ -5204,14 +5204,16 @@ class BotEngine:
                 raisons = []
                 if not trend_confirmed_long:
                     raisons.append(f"tendance/ADX pas assez forte ou pas assez stable ({state.trend_up_streak}/{normal_stability_cycles} cycles)")
-                if not proximity_long_ok: raisons.append("hors fenetre 1-5% du support (et pas de cassure)")
+                if not proximity_long_ok:
+                    raisons.append(f"hors fenetre {cfg.get('UNIFIED_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('UNIFIED_MAX_ABOVE_SUPPORT_PCT', 10.0)}% de l'amplitude, du support (et pas de cassure)")
                 if not amplitude_ok: raisons.append("fourchette S/R trop etroite")
                 self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} LONG qualifie mais base commune non reunie : {', '.join(raisons) if raisons else 'raison inconnue'}", "level": "dim"})
             if rsi_sell and ema_bear and trend_down and not state.short_signal_stale and not short_level_ok:
                 raisons = []
                 if not trend_confirmed_short:
                     raisons.append(f"tendance/ADX pas assez forte ou pas assez stable ({state.trend_down_streak}/{normal_stability_cycles} cycles)")
-                if not proximity_short_ok: raisons.append("hors fenetre 1-5% de la resistance (et pas de cassure)")
+                if not proximity_short_ok:
+                    raisons.append(f"hors fenetre {cfg.get('UNIFIED_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('UNIFIED_MAX_ABOVE_SUPPORT_PCT', 10.0)}% de l'amplitude, de la resistance (et pas de cassure)")
                 if not amplitude_ok: raisons.append("fourchette S/R trop etroite")
                 self.emit("log", {"msg": f"[{ticker}] ${price:.2f} RSI:{rsi:.1f} SHORT qualifie mais base commune non reunie : {', '.join(raisons) if raisons else 'raison inconnue'}", "level": "dim"})
         else:
@@ -5578,7 +5580,7 @@ class BotEngine:
                 if not (snap.get("trend_long_ok") or snap.get("trend_short_ok")):
                     raisons.append(f"tendance pas assez stable/forte ({state.trend_up_streak}↑/{state.trend_down_streak}↓ sur {accum_stability_cycles} cycles requis)")
                 if not (snap.get("proximity_long_ok") or snap.get("proximity_short_ok")):
-                    raisons.append("hors fenetre 1-5% (et pas de cassure)")
+                    raisons.append(f"hors fenetre {cfg.get('UNIFIED_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('UNIFIED_MAX_ABOVE_SUPPORT_PCT', 10.0)}% de l'amplitude (et pas de cassure)")
                 snap["blocker"] = ", ".join(raisons) if raisons else "momentum defavorable ou direction non alignee"
             else:
                 snap["blocker"] = "hors zone de proximite support/resistance"
