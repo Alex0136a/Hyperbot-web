@@ -239,7 +239,7 @@ CONFIG = {
     # rapport a sa moyenne longue — signe d un range sans vraie tendance),
     # et un SHORT si la resistance est proche ET au dessus de l EMA200.
     # Applique au mode normal ET a Accumulation.
-    "REQUIRE_SR_EMA200_SEPARATION": False,
+    "REQUIRE_SR_EMA200_SEPARATION": True,
     "SR_EMA200_PROXIMITY_PCT": 0.5,  # "proche" de l EMA200 = a moins de ce % d ecart
 
     # v4.25 — Confirmation renforcee apres un gain (voir _process) : nombre
@@ -400,6 +400,11 @@ CONFIG = {
     "SL_TTP_ADAPTIVE_ENABLED": False,
     "SL_ATR_MULTIPLIER":       1.0,   # SL = ATR% x ce multiplicateur
     "SL_PCT_MIN":              0.3,   # plancher de securite (evite un SL quasi nul si ATR tres faible)
+    # v4.112 — SUR DEMANDE EXPLICITE : mouvement de PRIX minimum garanti
+    # avant que le SL ne puisse se declencher, quel que soit le levier —
+    # compense sl_pct_of_e a la hausse si le levier > x1 et que le plancher
+    # adaptatif rendrait le mouvement de prix requis trop petit (bruit).
+    "SL_MIN_PRICE_MOVE_PCT":   0.3,
     # v4.66 — SUR DEMANDE EXPLICITE : plancher STRICT et DIRECT sur les
     # seuils d armement (tier0/tier1), independant du ratio de mise a
     # l echelle — evite les trades microscopiques sur les actifs a tres
@@ -829,7 +834,7 @@ PROFILE_SWING = {
     # (au lieu de 1-5%, qui deviendrait ridicule en % d amplitude).
     "UNIFIED_MIN_ABOVE_SUPPORT_PCT":   5.0,
     "UNIFIED_MAX_ABOVE_SUPPORT_PCT":   10.0,
-    "UNIFIED_MIN_SR_AMPLITUDE_PCT":    2.0,
+    "UNIFIED_MIN_SR_AMPLITUDE_PCT":    4.0,
     # v4.32 — marge d hysteresis autour du seuil ci-dessus : le mode ne
     # bascule que si l ADX depasse clairement le seuil (+marge pour "trend",
     # -marge pour "reversal") — dans la zone ambigue entre les deux, le
@@ -6269,6 +6274,23 @@ class BotEngine:
         # ou adaptatifs a l ATR) — _manage_position_impl les relit ici en
         # priorite, avec repli sur les valeurs fixes globales si absents
         # (positions ouvertes avant ce fix, ou mode adaptatif desactive).
+        # v4.112 — FIX BUG CRITIQUE : sl_pct_of_e est un plafond en % DE E
+        # (donc en $, independant du levier par conception — voir plus haut)
+        # — mais le MOUVEMENT DE PRIX reellement necessaire pour l atteindre
+        # est sl_pct_of_e/levier, qui devient microscopique a fort levier
+        # (0.10% a x3 avec le plancher adaptatif de 0.3%) — largement dans
+        # le bruit normal du marche, causant des sorties quasi-aleatoires
+        # independamment de la qualite de l entree (confirme sur un lot de
+        # 47 trades, 46 pertes, pic moyen 0.30% avant SL). Compense
+        # desormais sl_pct_of_e A LA HAUSSE si le levier > x1, pour garantir
+        # un mouvement de prix minimum (SL_MIN_PRICE_MOVE_PCT, 0.3% par
+        # defaut) avant que le SL ne puisse se declencher — quel que soit
+        # le levier utilise.
+        min_price_move_pct = cfg.get("SL_MIN_PRICE_MOVE_PCT", 0.3)
+        if leverage > 1:
+            implied_price_move = sl_pct_of_e / leverage
+            if implied_price_move < min_price_move_pct:
+                sl_pct_of_e = min_price_move_pct * leverage
         state.position["sl_pct_of_e"]   = sl_pct_of_e
         state.position["ttp_arm1_pct"]  = ttp_arm1_pct
         state.position["ttp_lock1_pct"] = ttp_lock1_pct
