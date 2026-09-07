@@ -216,12 +216,22 @@ def get_open_trade_id_by_coin_action(coin, action):
         return row["id"] if row else None
 
 
-def get_trades(limit=50, only_closed=False):
+def get_trades(limit=50, only_closed=False, order_by_close=False):
+    """v4.114 — SUR DEMANDE EXPLICITE : order_by_close=True trie par date de
+    FERMETURE (closed_at DESC, plus recent en premier) au lieu de l ordre
+    d OUVERTURE (id DESC, comportement d origine) — pour un historique de
+    trades FERMES, trier par ouverture est incorrect : un trade ouvert tot
+    mais ferme tard apparaissait avant un trade ouvert tard mais ferme vite,
+    inversant l ordre reel de l historique. Comportement par defaut
+    INCHANGE (order_by_close=False) pour ne rien casser des autres usages."""
     with _lock, _connect() as conn:
         q = "SELECT * FROM trades"
         if only_closed:
             q += " WHERE closed_at IS NOT NULL"
-        q += " ORDER BY id DESC LIMIT ?"
+        if order_by_close:
+            q += " ORDER BY closed_at DESC LIMIT ?"
+        else:
+            q += " ORDER BY id DESC LIMIT ?"
         rows = conn.execute(q, (limit,)).fetchall()
         return [dict(r) for r in rows]
 
