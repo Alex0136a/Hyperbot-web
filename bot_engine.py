@@ -4638,13 +4638,17 @@ class BotEngine:
         #    active_coins est applique plus loin (apres le calcul de confiance),
         #    pour permettre l auto-activation d un actif inactif si une
         #    opportunite tres forte est detectee.
-        max_open = cfg.get("MAX_OPEN_TRADES")
-        if max_open is not None:
-            open_count = sum(1 for st in self.states.values() if st.position)
-            if open_count >= max_open:
-                self.emit("log", {"msg": f"[{ticker}] Max {max_open} positions ouvertes atteint — nouvelle entree suspendue", "level": "dim"})
-                return
-
+        # v4.111 — FIX BUG CRITIQUE : ce plafond utilisait un "return"
+        # global qui interrompait TOUTE la fonction _process AVANT d
+        # atteindre les verifications Accumulation/Funding/Spot-Accum plus
+        # bas (chacune ayant deja son PROPRE plafond dedie, correctement
+        # filtre par strategie, verifie dans _finalize_pending_*_candidates
+        # — mais jamais atteint puisque la fonction s arretait ici avant
+        # meme de collecter leurs candidats). Le plafond du mode normal
+        # lui-meme est deja correctement applique plus tard, lors de
+        # _finalize_pending_candidates (compte uniquement les positions
+        # strategy=="normal"), donc AUCUNE verification supplementaire n
+        # est necessaire ici — il suffisait de retirer ce blocage global.
         # ── Plage horaire — bloque les NOUVELLES entrées en paper ET en live ──
         if not is_trading_hours(cfg):
             self.emit("log", {"msg": f"[{ticker}] Hors plage horaire — aucune nouvelle entree", "level": "dim"})
@@ -5234,6 +5238,7 @@ class BotEngine:
         else:
             long_entry_ok = rsi_buy and ema_bull and trend_up and not state.long_signal_stale and long_level_ok
             short_entry_ok = rsi_sell and ema_bear and trend_down and not state.short_signal_stale and short_level_ok
+
 
         if long_entry_ok:
             # v3.2 — FIX : ce filtre ne s applique qu en mode "reversal". En
