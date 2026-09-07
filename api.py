@@ -1868,17 +1868,29 @@ def paper_close(body: PaperCloseBody, email: str = Depends(require_user)):
     price = state.current_price or state.position["entry"]
     ticker = be.ticker_from_slot_key(body.trade_id)
     pos_snapshot = dict(state.position)  # avant fermeture — necessaire pour close_order (actifs spot)
+    # v4.110 — FIX BUG CRITIQUE : utilisait cfg.get("MODE") (mode GLOBAL),
+    # jamais le mode EFFECTIF par strategie — si le mode global est reste
+    # "paper" alors qu UNE strategie precise (ex: Spot-Accum) a ete basculee
+    # en live via le switch par mode, la fermeture reelle sur Hyperliquid
+    # n etait JAMAIS tentee, alors que le suivi interne du bot marquait la
+    # position comme fermee — position reelle abandonnee sans plus AUCUN
+    # suivi (SL/TTP/retournement), un vrai risque de securite confirme.
+    real_strategy = pos_snapshot.get("strategy", "normal")
+    effective_mode_close = bot._effective_mode(real_strategy)
+    close_order_ok = None
     with _state_lock:
         pnl, win, trade = state.close_position(price, body.reason)
         trade["symbol"] = body.trade_id
-        if cfg.get("MODE") == "live" and bot.exchange:
-            be.close_order(bot.exchange, body.trade_id, pos_snapshot, cfg)
+        if effective_mode_close == "live" and bot.exchange:
+            close_order_ok = be.close_order(bot.exchange, body.trade_id, pos_snapshot, cfg)
         action = "LONG" if trade["type"] == "long" else "SHORT"
         trade_id = db.get_open_trade_id_by_coin_action(ticker, action)
         if trade_id:
             db.close_trade(trade_id, trade["exit"], trade["pnl"], trade["reason"])
+    if effective_mode_close == "live" and not close_order_ok:
+        _push_log("warn", f"⚠️ [{ticker}] Fermeture manuelle : le suivi interne est ferme, mais l'ordre REEL de fermeture sur Hyperliquid a ECHOUE ou n'a pas ete confirme — verifiez manuellement votre position sur Hyperliquid, elle pourrait etre restee ouverte sans plus aucun suivi du bot.")
     _push_log("warn", f"[{ticker}] Fermeture manuelle @ ${price:.2f} | PnL: {pnl:+.2f}$")
-    return {"ok": True, "pnl": pnl}
+    return {"ok": True, "pnl": pnl, "real_close_confirmed": close_order_ok}
 
 
 class SpotAccumTargetBody(BaseModel):
