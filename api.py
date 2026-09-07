@@ -800,7 +800,7 @@ ADVANCED_SETTINGS = {
     "SL_MIN_PRICE_MOVE_PCT":   {"label": "SL - mouvement de prix minimum garanti, compense par le levier (%)", "default": 0.3},
     "TTP_MIN_ARM_PCT_FLOOR":   {"label": "TTP - plancher strict d'armement, anti trades microscopiques (%)", "default": 0.3},
     "TTP_MAX_GIVEBACK_PCT_OF_PEAK": {"label": "TTP - plafond de redonnage maximum du pic, même tendance intacte (%)", "default": 20.0},
-    "TTP_MAX_GIVEBACK_MIN_PEAK_PCT": {"label": "TTP - pic minimum requis avant que le plafond de redonnage s'applique (%)", "default": 2.5},
+    "TTP_MAX_GIVEBACK_MIN_PEAK_PCT": {"label": "TTP - pic minimum requis avant que le plafond de redonnage s'applique (%)", "default": 1.0},
     "TTP_MAX_GIVEBACK_PCT_SMALL_PEAK": {"label": "TTP - plafond de redonnage pour petits pics, sous le seuil ci-dessus (%)", "default": 50.0},
     "TIER0_ARM_RATIO_OF_SL":   {"label": "TTP - ratio fixe tier0 armement / SL", "default": 0.5},
     "TIER0_GAP_RATIO_OF_SL":   {"label": "TTP - ratio fixe tier0 marge de repli / SL", "default": 0.42},
