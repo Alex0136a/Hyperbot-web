@@ -1763,12 +1763,16 @@ def get_signals(limit: int = Query(50), strategy: str = Query(None), email: str 
     quelques lignes visibles, voire aucune, meme avec beaucoup de trades
     reels). Avec le filtre, on interroge un bassin bien plus large AVANT de
     filtrer, pour que 'limit' s applique au nombre de trades de CE mode
-    precis, pas au nombre de trades tous modes confondus."""
+    precis, pas au nombre de trades tous modes confondus.
+    v4.114 — FIX BUG : order_by_close=True trie desormais par date de
+    FERMETURE (plus recent en premier) — l ancien tri par ouverture (id)
+    inversait l ordre reel des trades fermes (un trade ouvert tot mais
+    ferme tard apparaissait avant un trade ouvert tard mais ferme vite)."""
     if strategy:
-        raw = db.get_trades(limit=max(limit * 20, 2000))
+        raw = db.get_trades(limit=max(limit * 20, 2000), order_by_close=True)
         filtered = [r for r in raw if (r.get("strategy") or "normal") == strategy]
         return {"signals": [_trade_row_to_signal(r) for r in filtered[:limit]]}
-    return {"signals": [_trade_row_to_signal(r) for r in db.get_trades(limit=limit)]}
+    return {"signals": [_trade_row_to_signal(r) for r in db.get_trades(limit=limit, order_by_close=True)]}
 
 
 @app.get("/api/stats")
