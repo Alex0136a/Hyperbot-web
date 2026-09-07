@@ -5578,7 +5578,21 @@ class BotEngine:
             if snap.get("unified_mode_active"):
                 raisons = []
                 if not (snap.get("trend_long_ok") or snap.get("trend_short_ok")):
-                    raisons.append(f"tendance pas assez stable/forte ({state.trend_up_streak}↑/{state.trend_down_streak}↓ sur {accum_stability_cycles} cycles requis)")
+                    # v4.109 — SUR DEMANDE EXPLICITE : distingue precisement
+                    # la duree insuffisante de la force ADX insuffisante —
+                    # le message combine precedent ("pas assez stable/forte")
+                    # etait trompeur avec de gros compteurs de cycles
+                    # (ex: 2868), suggerant a tort un probleme de duree alors
+                    # que c est l ADX qui bloque reellement.
+                    up_streak_ok = state.trend_up_streak >= accum_stability_cycles
+                    down_streak_ok = state.trend_down_streak >= accum_stability_cycles
+                    if not up_streak_ok and not down_streak_ok:
+                        raisons.append(f"duree insuffisante ({state.trend_up_streak}↑/{state.trend_down_streak}↓ sur {accum_stability_cycles} cycles requis)")
+                    else:
+                        adx_diag = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
+                        adx_threshold_diag = cfg.get("ADX_TREND_THRESHOLD", 25.0)
+                        adx_diag_str = f"{adx_diag:.1f}" if adx_diag is not None else "indisponible"
+                        raisons.append(f"duree OK ({state.trend_up_streak}↑/{state.trend_down_streak}↓) mais ADX {adx_diag_str} < {adx_threshold_diag} (tendance pas assez forte)")
                 if not (snap.get("proximity_long_ok") or snap.get("proximity_short_ok")):
                     raisons.append(f"hors fenetre {cfg.get('UNIFIED_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('UNIFIED_MAX_ABOVE_SUPPORT_PCT', 10.0)}% de l'amplitude (et pas de cassure)")
                 snap["blocker"] = ", ".join(raisons) if raisons else "momentum defavorable ou direction non alignee"
