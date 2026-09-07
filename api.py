@@ -424,6 +424,7 @@ def _public_config() -> Dict[str, Any]:
             "normal": True, "accumulation": True, "funding_contrarian": True, "spot_accumulation": True,
         }),
         "require_sr_ema200_separation": cfg.get("REQUIRE_SR_EMA200_SEPARATION", True),
+        "unified_require_sr_amplitude": cfg.get("UNIFIED_REQUIRE_SR_AMPLITUDE", False),
         "unified_simplified_mode": cfg.get("UNIFIED_SIMPLIFIED_MODE", True),
         "unified_full_simplified_mode": cfg.get("UNIFIED_FULL_SIMPLIFIED_MODE", True),
         "ttp_trend_hold_filter_enabled": cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True),
@@ -1177,6 +1178,7 @@ class FiltersBody(BaseModel):
     require_sr_ema200_separation: Optional[bool] = None
     unified_simplified_mode: Optional[bool] = None
     unified_full_simplified_mode: Optional[bool] = None
+    unified_require_sr_amplitude: Optional[bool] = None
     ttp_trend_hold_filter_enabled: Optional[bool] = None
     unified_require_adx_confirm: Optional[bool] = None
     ttp_dynamic_from_arm1: Optional[bool] = None
@@ -1232,6 +1234,8 @@ def put_filters(body: FiltersBody, email: str = Depends(require_user)):
         _apply_and_persist("UNIFIED_SIMPLIFIED_MODE", body.unified_simplified_mode)
     if body.unified_full_simplified_mode is not None:
         _apply_and_persist("UNIFIED_FULL_SIMPLIFIED_MODE", body.unified_full_simplified_mode)
+    if body.unified_require_sr_amplitude is not None:
+        _apply_and_persist("UNIFIED_REQUIRE_SR_AMPLITUDE", body.unified_require_sr_amplitude)
     if body.ttp_trend_hold_filter_enabled is not None:
         _apply_and_persist("TTP_TREND_HOLD_FILTER_ENABLED", body.ttp_trend_hold_filter_enabled)
     if body.unified_require_adx_confirm is not None:
