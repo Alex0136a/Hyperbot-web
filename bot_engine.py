@@ -600,7 +600,7 @@ CONFIG = {
     # v4.85 — SUR DEMANDE EXPLICITE : le plafond de redonnage ci-dessus ne
     # s applique qu au-dela de ce pic minimum — sur un petit pic, ce plafond
     # serait trop serre et irait a l encontre de la protection de tendance.
-    "TTP_MAX_GIVEBACK_MIN_PEAK_PCT": 2.5,
+    "TTP_MAX_GIVEBACK_MIN_PEAK_PCT": 1.0,
     # v4.86 — SUR DEMANDE EXPLICITE : SECOND plafond, plus large, applique
     # LUI sous le pic minimum ci-dessus — sans ca, un petit gain pouvait
     # techniquement repasser en perte et rester ouvert indefiniment tant
