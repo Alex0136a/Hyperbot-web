@@ -834,6 +834,11 @@ PROFILE_SWING = {
     # (au lieu de 1-5%, qui deviendrait ridicule en % d amplitude).
     "UNIFIED_MIN_ABOVE_SUPPORT_PCT":   5.0,
     "UNIFIED_MAX_ABOVE_SUPPORT_PCT":   10.0,
+    # v4.113 — SUR DEMANDE EXPLICITE : mis en pause temporairement (False)
+    # en attendant un mecanisme plus robuste base sur les touches multiples
+    # du support/resistance — la valeur ci-dessous reste prete a l emploi
+    # des que reactive.
+    "UNIFIED_REQUIRE_SR_AMPLITUDE": False,
     "UNIFIED_MIN_SR_AMPLITUDE_PCT":    4.0,
     # v4.32 — marge d hysteresis autour du seuil ci-dessus : le mode ne
     # bascule que si l ADX depasse clairement le seuil (+marge pour "trend",
@@ -3087,10 +3092,18 @@ class BotEngine:
     def _unified_sr_amplitude_ok(self, support, resistance):
         """v4.58 — Amplitude S/R PARTAGEE par les 3 modes : la fourchette
         support-resistance doit faire au moins UNIFIED_MIN_SR_AMPLITUDE_PCT
-        (3% par defaut) — evite les fourchettes trop plates."""
+        (3% par defaut) — evite les fourchettes trop plates.
+        v4.113 — SUR DEMANDE EXPLICITE : mis en pause temporairement — jugee
+        possiblement peu fiable (sensible au bruit, ne mesure pas si le
+        niveau a ete reellement teste plusieurs fois) — desactivable via
+        UNIFIED_REQUIRE_SR_AMPLITUDE (False = neutralise cette obligation
+        en attendant un mecanisme plus robuste base sur les touches
+        multiples du support/resistance)."""
+        cfg = self.cfg
+        if not cfg.get("UNIFIED_REQUIRE_SR_AMPLITUDE", False):
+            return True
         if support is None or resistance is None or support <= 0:
             return False
-        cfg = self.cfg
         min_pct = cfg.get("UNIFIED_MIN_SR_AMPLITUDE_PCT", 3.0)
         return (resistance - support) / support * 100 >= min_pct
 
