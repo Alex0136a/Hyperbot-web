@@ -4072,7 +4072,7 @@ class BotEngine:
             min_maturity = cfg.get("ACCUMULATION_REVERSAL_MIN_EMA_MATURITY", 100)
             data_mature = len(state.mtf_prices) >= min_maturity
             data_healthy = self._is_ws_healthy() if self.info is not None else True
-            ema200_now = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+            ema200_now = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
 
             if not data_mature or not data_healthy or ema200_now is None:
                 reason_skip = "EMA200 pas assez mature" if not data_mature else ("collecte instable" if not data_healthy else "EMA200 indisponible")
@@ -4177,7 +4177,7 @@ class BotEngine:
                 min_maturity = cfg.get("SPOT_ACCUM_REVERSAL_MIN_EMA_MATURITY", 100)
                 data_mature = len(state.mtf_prices) >= min_maturity
                 data_healthy = self._is_ws_healthy() if self.info is not None else True
-                ema200_now = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+                ema200_now = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
 
                 if not data_mature or not data_healthy or ema200_now is None:
                     # Donnees pas assez fiables pour juger d un retournement
@@ -4265,7 +4265,7 @@ class BotEngine:
                     # en pleine tendance haussiere intacte.
                     trend_still_intact_sa = False
                     if cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
-                        ema200_hold_sa = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+                        ema200_hold_sa = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
                         if ema200_hold_sa is not None:
                             trend_still_intact_sa = price > ema200_hold_sa  # Spot-Accum est LONG uniquement
                     if trend_still_intact_sa:
@@ -4423,7 +4423,7 @@ class BotEngine:
                     # intacte.
                     trend_still_intact_t0 = False
                     if cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
-                        ema200_hold_t0 = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+                        ema200_hold_t0 = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
                         if ema200_hold_t0 is not None:
                             trend_still_intact_t0 = (price > ema200_hold_t0) if pos["type"] == "long" else (price < ema200_hold_t0)
                     if trend_still_intact_t0:
@@ -4536,7 +4536,7 @@ class BotEngine:
                 # qui a son propre trailing independant).
                 trend_still_intact = False  # par defaut si le filtre est desactive : comportement d origine (ferme normalement)
                 if cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
-                    ema200_hold = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+                    ema200_hold = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
                     if ema200_hold is not None:
                         if pos["type"] == "long":
                             trend_still_intact = price > ema200_hold
@@ -4644,6 +4644,8 @@ class BotEngine:
         cfg   = self.cfg
         ticker = ticker_from_slot_key(symbol)   # vrai ticker API (ex: "BTC" depuis "BTC_0")
         state = self.states[symbol]
+        if ticker == "BTC":
+            print(f"[MTF-DIAG] _process ENTREE pour BTC, prix={price}, collecting={state.collecting}")
         # v3.2 — FIX : ne pas ecraser le prix avec la valeur REST (cycle,
         # potentiellement vieille de 15s) si le WebSocket est sain — il
         # fournit deja une valeur plus fraiche en continu pour les actifs en
@@ -4708,6 +4710,12 @@ class BotEngine:
         state.cycle_count += 1
         if state.cycle_count % MTF_STEP == 0:
             state.mtf_prices.append(price)
+            # v4.123 — SUR DEMANDE EXPLICITE : print() visible directement
+            # dans les logs Railway (contrairement a self.emit, qui ne va
+            # que vers l interface web) — diagnostic direct de l accumulation
+            # MTF sans dependre d un autre panneau de l interface.
+            if ticker == "BTC":
+                print(f"[MTF-DIAG] BTC echantillon pris — mtf_prices={len(state.mtf_prices)}/5 requis, cycle_count={state.cycle_count}, MTF_STEP={MTF_STEP}")
             # v4.36 — Cloture de la bougie ~2min en cours : capture le plus
             # haut/bas REELLEMENT vu depuis le dernier point (alimente en
             # direct par le WebSocket entre deux echantillonnages, secours
@@ -4722,7 +4730,7 @@ class BotEngine:
             # bougie suivante).
             state.window_high = price
             state.window_low  = price
-        ema200 = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+        ema200 = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
         # v4.12 — FIX FAILLE : quand l EMA200 n est pas encore calculable
         # (donnees insuffisantes, ex: juste apres un redemarrage), l ancien
         # code mettait trend_up ET trend_down a True SIMULTANEMENT — la
