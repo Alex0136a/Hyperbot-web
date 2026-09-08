@@ -2506,6 +2506,13 @@ class BotEngine:
         # Construire les slot_keys proprement : "BTC_0", "PAXG_1", "SOL_2"
         slot_keys = [f"{s}_{i}" for i, s in enumerate(raw_symbols)]
         self.states = {k: SymbolState() for k in slot_keys}
+        # v4.121 — SUR DEMANDE EXPLICITE : Accumulation dispose de son PROPRE
+        # jeu d emplacements, independant de self.states (partage par
+        # Normal/Funding/Spot-Accum) — CETTE LIGNE avait ete perdue lors
+        # d une manipulation de fichiers precedente, causant une erreur 500
+        # sur tous les endpoints references self.accum_states (deja utilise
+        # partout ailleurs dans le fichier, mais jamais initialise).
+        self.accum_states = {k: SymbolState() for k in slot_keys}
         cfg["SYMBOLS"] = slot_keys
         self._all_symbols = slot_keys[:]
         # Chargement capital persistant — interets composes
