@@ -417,6 +417,10 @@ CONFIG = {
     # de base historiques (TTP_TIER0_ARM/GAP_PRICE_PCT face a SL_PCT_OF_E=1.0%).
     "TIER0_ARM_RATIO_OF_SL":  0.5,
     "TIER0_GAP_RATIO_OF_SL":  0.42,
+    # v4.120 — SUR DEMANDE EXPLICITE : marge d hysteresis pour la
+    # reactivation defensive tier1->tier0 — evite l oscillation quand le
+    # prix hesite pres du seuil d armement (observe sur WIF).
+    "TIER0_REARM_HYSTERESIS_PCT": 15.0,
     "SL_PCT_MAX":              3.0,   # plafond de securite (evite un SL demesure si ATR tres eleve)
 
     # Tous les symboles sont des perpétuels — SPOT_SYMBOLS vide
@@ -4410,11 +4414,19 @@ class BotEngine:
             # devrait normalement jamais arriver tant que lock1_price_pct
             # reste superieur a tier0_arm_pct (tier 1 fermerait deja le trade
             # avant), mais protege si les seuils sont reconfigures autrement.
-            if pnl_pct <= tier0_arm_pct:
+            # v4.120 — SUR DEMANDE EXPLICITE : marge d hysteresis ajoutee —
+            # sans elle, un prix qui oscille tout pres de tier0_arm_pct
+            # pouvait faire basculer tier1<->tier0 a chaque cycle (observe
+            # sur WIF). Le seuil de REACTIVATION est desormais legerement
+            # EN DESSOUS du seuil d ARMEMENT initial (marge de 15% par
+            # defaut), creant une zone tampon qui evite le battement.
+            hysteresis_margin = cfg.get("TIER0_REARM_HYSTERESIS_PCT", 15.0)
+            tier0_reactivation_threshold = tier0_arm_pct * (1 - hysteresis_margin / 100)
+            if pnl_pct <= tier0_reactivation_threshold:
                 state.tp_stage = 0
                 state.tier0_armed = True
                 state.tier0_peak_pnl_usd = state.peak_pnl_usd
-                self.emit("log", {"msg": f"[{ticker}] Repli sous {tier0_arm_pct:.2f}% — retour a la protection anticipee (tier 1 desarme)", "level": "warn"})
+                self.emit("log", {"msg": f"[{ticker}] Repli net sous {tier0_reactivation_threshold:.2f}% (seuil d'armement {tier0_arm_pct:.2f}%) — retour a la protection anticipee (tier1 -> tier0)", "level": "warn"})
                 return
 
             if state.peak_pnl_usd is None or pnl_usd > state.peak_pnl_usd:
@@ -5287,7 +5299,13 @@ class BotEngine:
             if rsi_buy and ema_bull and trend_up and not state.long_signal_stale and not long_level_ok:
                 raisons = []
                 if not trend_confirmed_long:
-                    raisons.append(f"tendance/ADX pas assez forte ou pas assez stable ({state.trend_up_streak}/{normal_stability_cycles} cycles)")
+                    up_streak_ok_n = state.trend_up_streak >= normal_stability_cycles
+                    if not up_streak_ok_n:
+                        raisons.append(f"duree insuffisante ({state.trend_up_streak}/{normal_stability_cycles} cycles requis)")
+                    else:
+                        adx_diag_n = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
+                        adx_diag_n_str = f"{adx_diag_n:.1f}" if adx_diag_n is not None else "indisponible"
+                        raisons.append(f"duree OK ({state.trend_up_streak} cycles) mais ADX {adx_diag_n_str} < {cfg.get('ADX_TREND_THRESHOLD', 25.0)} (tendance pas assez forte)")
                 if not proximity_long_ok:
                     raisons.append(f"hors fenetre {cfg.get('UNIFIED_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('UNIFIED_MAX_ABOVE_SUPPORT_PCT', 10.0)}% de l'amplitude, du support (et pas de cassure)")
                 if not amplitude_ok: raisons.append("fourchette S/R trop etroite")
@@ -5295,7 +5313,13 @@ class BotEngine:
             if rsi_sell and ema_bear and trend_down and not state.short_signal_stale and not short_level_ok:
                 raisons = []
                 if not trend_confirmed_short:
-                    raisons.append(f"tendance/ADX pas assez forte ou pas assez stable ({state.trend_down_streak}/{normal_stability_cycles} cycles)")
+                    down_streak_ok_n = state.trend_down_streak >= normal_stability_cycles
+                    if not down_streak_ok_n:
+                        raisons.append(f"duree insuffisante ({state.trend_down_streak}/{normal_stability_cycles} cycles requis)")
+                    else:
+                        adx_diag_n2 = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
+                        adx_diag_n2_str = f"{adx_diag_n2:.1f}" if adx_diag_n2 is not None else "indisponible"
+                        raisons.append(f"duree OK ({state.trend_down_streak} cycles) mais ADX {adx_diag_n2_str} < {cfg.get('ADX_TREND_THRESHOLD', 25.0)} (tendance pas assez forte)")
                 if not proximity_short_ok:
                     raisons.append(f"hors fenetre {cfg.get('UNIFIED_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('UNIFIED_MAX_ABOVE_SUPPORT_PCT', 10.0)}% de l'amplitude, de la resistance (et pas de cassure)")
                 if not amplitude_ok: raisons.append("fourchette S/R trop etroite")
