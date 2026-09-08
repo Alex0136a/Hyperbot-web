@@ -812,6 +812,21 @@ PROFILE_SWING = {
     # bloquant Accumulation en continu. Abaisse a 20 specifiquement pour ce
     # mode, sans affecter la qualite du mode normal recemment recalibree.
     "ACCUMULATION_ADX_TREND_THRESHOLD": 20.0,
+    # v4.117 — SUR DEMANDE EXPLICITE : fenetre de proximite DEDIEE a
+    # Accumulation, distincte de UNIFIED_MIN/MAX_ABOVE_SUPPORT_PCT (mode
+    # normal, inchange a 5-10%) — elargie a 5-20% suite a l observation que
+    # cette fenetre etait devenue le principal facteur bloquant
+    # Accumulation une fois l ADX et l amplitude minimale traites.
+    # v4.118 — SUR DEMANDE EXPLICITE : revert a 5-10% (identique au mode
+    # normal) — l elargissement a 5-20% n etait pas la vraie cause du
+    # blocage (confirme : INJ a qualifie "aucun obstacle particulier" avec
+    # la fenetre a 5-10%, prouvant qu elle fonctionne aussi pour
+    # Accumulation). Le veritable facteur limitant est la RARETE naturelle
+    # de la combinaison simultanee de toutes les conditions, pas la largeur
+    # de cette fenetre precise. Structure dediee conservee (permet de
+    # differencier a nouveau facilement si besoin plus tard).
+    "ACCUMULATION_MIN_ABOVE_SUPPORT_PCT": 5.0,
+    "ACCUMULATION_MAX_ABOVE_SUPPORT_PCT": 10.0,
     # v4.75 — SUR DEMANDE EXPLICITE : la tendance doit etre STABLE depuis ce
     # nombre de cycles consecutifs (~10s/cycle, 24 = ~4 min) avant d etre
     # consideree valide a l entree — evite d entrer juste avant/pendant un
@@ -3118,7 +3133,7 @@ class BotEngine:
         min_pct = cfg.get("UNIFIED_MIN_SR_AMPLITUDE_PCT", 3.0)
         return (resistance - support) / support * 100 >= min_pct
 
-    def _unified_proximity_ok(self, price, support, resistance, direction, allow_breakout=True):
+    def _unified_proximity_ok(self, price, support, resistance, direction, allow_breakout=True, min_pct_override=None, max_pct_override=None):
         """v4.108 — FIX BUG CRITIQUE : le calcul precedent (v4.58) exprimait
         1-5% en % du PRIX du support — incoherent avec le seuil structurel
         du trailing (70% de l AMPLITUDE support-resistance) et pouvant
@@ -3131,10 +3146,15 @@ class BotEngine:
         pourcent DE L AMPLITUDE au-dessus du support (et symetriquement pour
         un SHORT, sous la resistance). allow_breakout=True permet aussi une
         cassure nette comme alternative (utilise par Normal/Accumulation,
-        pas par Spot-Accum)."""
+        pas par Spot-Accum).
+        v4.117 — SUR DEMANDE EXPLICITE : min_pct_override/max_pct_override
+        permettent a Accumulation d utiliser SA PROPRE fenetre (5-20% par
+        defaut), plus large que celle du mode normal (5-10%, inchangee) —
+        observe que la fenetre 5-10% etait le principal facteur bloquant
+        Accumulation une fois l ADX et l amplitude minimale traites."""
         cfg = self.cfg
-        min_pct = cfg.get("UNIFIED_MIN_ABOVE_SUPPORT_PCT", 5.0)
-        max_pct = cfg.get("UNIFIED_MAX_ABOVE_SUPPORT_PCT", 10.0)
+        min_pct = min_pct_override if min_pct_override is not None else cfg.get("UNIFIED_MIN_ABOVE_SUPPORT_PCT", 5.0)
+        max_pct = max_pct_override if max_pct_override is not None else cfg.get("UNIFIED_MAX_ABOVE_SUPPORT_PCT", 10.0)
         if direction == "long":
             if support is None or support <= 0 or resistance is None or resistance <= support:
                 return False
@@ -5579,8 +5599,10 @@ class BotEngine:
             accum_adx_threshold = cfg.get("ACCUMULATION_ADX_TREND_THRESHOLD", 20.0)
             trend_long_ok = self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", accum_stability_cycles, accum_adx_threshold)
             trend_short_ok = self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", accum_stability_cycles, accum_adx_threshold)
-            prox_long_ok = self._unified_proximity_ok(price, support, resistance, "long")
-            prox_short_ok = self._unified_proximity_ok(price, support, resistance, "short")
+            accum_min_prox = cfg.get("ACCUMULATION_MIN_ABOVE_SUPPORT_PCT", 5.0)
+            accum_max_prox = cfg.get("ACCUMULATION_MAX_ABOVE_SUPPORT_PCT", 20.0)
+            prox_long_ok = self._unified_proximity_ok(price, support, resistance, "long", min_pct_override=accum_min_prox, max_pct_override=accum_max_prox)
+            prox_short_ok = self._unified_proximity_ok(price, support, resistance, "short", min_pct_override=accum_min_prox, max_pct_override=accum_max_prox)
             snap["trend_up_streak"] = state.trend_up_streak
             snap["trend_down_streak"] = state.trend_down_streak
             snap["stability_cycles_required"] = accum_stability_cycles
@@ -5629,7 +5651,7 @@ class BotEngine:
                         adx_diag_str = f"{adx_diag:.1f}" if adx_diag is not None else "indisponible"
                         raisons.append(f"duree OK ({state.trend_up_streak}↑/{state.trend_down_streak}↓) mais ADX {adx_diag_str} < {adx_threshold_diag} (tendance pas assez forte)")
                 if not (snap.get("proximity_long_ok") or snap.get("proximity_short_ok")):
-                    raisons.append(f"hors fenetre {cfg.get('UNIFIED_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('UNIFIED_MAX_ABOVE_SUPPORT_PCT', 10.0)}% de l'amplitude (et pas de cassure)")
+                    raisons.append(f"hors fenetre {cfg.get('ACCUMULATION_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('ACCUMULATION_MAX_ABOVE_SUPPORT_PCT', 20.0)}% de l'amplitude (et pas de cassure)")
                 snap["blocker"] = ", ".join(raisons) if raisons else "momentum defavorable ou direction non alignee"
             else:
                 snap["blocker"] = "hors zone de proximite support/resistance"
