@@ -601,6 +601,13 @@ CONFIG = {
     # s applique qu au-dela de ce pic minimum — sur un petit pic, ce plafond
     # serait trop serre et irait a l encontre de la protection de tendance.
     "TTP_MAX_GIVEBACK_MIN_PEAK_PCT": 1.0,
+    # v4.119 — SUR DEMANDE EXPLICITE : pour les PETITS pics (< seuil
+    # ci-dessus), plafond de redonnage a 50%, mais SEULEMENT si le repli
+    # est SOUTENU sur plusieurs cycles consecutifs (evite de fermer sur un
+    # simple aller-retour ponctuel/bruit, distinct du plafond instantane
+    # des gros pics).
+    "TTP_SMALL_PEAK_GIVEBACK_PCT": 50.0,
+    "TTP_SMALL_PEAK_GIVEBACK_MIN_CYCLES": 5,
     # v4.86 — SUR DEMANDE EXPLICITE : SECOND plafond, plus large, applique
     # LUI sous le pic minimum ci-dessus — sans ca, un petit gain pouvait
     # techniquement repasser en perte et rester ouvert indefiniment tant
@@ -2083,6 +2090,11 @@ class SymbolState:
         # v4.75 — compteurs de stabilite de la tendance (cycles consecutifs).
         self.trend_up_streak = 0
         self.trend_down_streak = 0
+        # v4.119 — SUR DEMANDE EXPLICITE : compteur de cycles CONSECUTIFS ou
+        # le PnL est reste sous 50% du pic, pour les PETITS pics (< 1%) —
+        # distingue un repli SOUTENU d un simple aller-retour ponctuel, avant
+        # de fermer. Remis a 0 des que le PnL repasse au-dessus du seuil.
+        self.small_peak_giveback_streak = 0
         # v4.55 — instantane diagnostic de chaque clause d entree
         # Spot-Accumulation, expose via /api/entry-diagnostics.
         self.spot_accum_gate_snapshot = {}
@@ -4483,10 +4495,29 @@ class BotEngine:
                         giveback_floor = peak_price_pct * (1 - max_giveback_pct / 100)
                         if pnl_pct <= giveback_floor:
                             giveback_cap_triggered = True
+                    else:
+                        # v4.119 — SUR DEMANDE EXPLICITE : pour les PETITS
+                        # pics (< min_peak_for_cap), plafond de 50% du pic —
+                        # mais UNIQUEMENT si le repli est SOUTENU sur
+                        # plusieurs cycles consecutifs (pas juste un
+                        # aller-retour ponctuel/bruit). Le compteur
+                        # s incremente a CHAQUE appel de cette fonction, y
+                        # compris sur mise a jour WebSocket en temps reel,
+                        # pas seulement au cycle ~10s.
+                        small_peak_giveback_pct = cfg.get("TTP_SMALL_PEAK_GIVEBACK_PCT", 50.0)
+                        small_peak_giveback_min_cycles = cfg.get("TTP_SMALL_PEAK_GIVEBACK_MIN_CYCLES", 5)
+                        small_giveback_floor = peak_price_pct * (1 - small_peak_giveback_pct / 100)
+                        if pnl_pct <= small_giveback_floor:
+                            state.small_peak_giveback_streak += 1
+                        else:
+                            state.small_peak_giveback_streak = 0
+                        if state.small_peak_giveback_streak >= small_peak_giveback_min_cycles:
+                            giveback_cap_triggered = True
                     if not giveback_cap_triggered:
                         self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Repli a {pnl_pct:.2f}% (verrou {current_lock_pct:.2f}%) mais tendance de fond toujours intacte — position maintenue", "level": "dim"})
                         self._save_open_positions()
                         return
+                    state.small_peak_giveback_streak = 0
                     # Plafond de redonnage atteint malgre la tendance intacte : ferme quand meme.
                     pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
                     trade["symbol"] = symbol
