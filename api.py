@@ -810,6 +810,7 @@ ADVANCED_SETTINGS = {
     "TTP_MAX_GIVEBACK_PCT_SMALL_PEAK": {"label": "TTP - plafond de redonnage pour petits pics, sous le seuil ci-dessus (%)", "default": 50.0},
     "TIER0_ARM_RATIO_OF_SL":   {"label": "TTP - ratio fixe tier0 armement / SL", "default": 0.5},
     "TIER0_GAP_RATIO_OF_SL":   {"label": "TTP - ratio fixe tier0 marge de repli / SL", "default": 0.42},
+    "TIER0_REARM_HYSTERESIS_PCT": {"label": "TTP - marge d'hysteresis anti-oscillation tier1->tier0 (%)", "default": 15.0},
     "SL_PCT_MAX":              {"label": "SL/TTP adaptatif - plafond de securite (%)", "default": 3.0},
     "FUNDING_ANNUAL_THRESHOLD_PCT": {"label": "Funding Contrarian - seuil annualise (%)", "default": 25.0},
     "FUNDING_MODE_MAX_TRADES":      {"label": "Funding Contrarian - trades simultanes max", "default": 3},
