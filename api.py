@@ -583,7 +583,14 @@ def _analyze_confidence_by_asset(min_trades: int = 5):
 
 def _open_positions() -> List[Dict[str, Any]]:
     out = []
-    for slot_key, state in bot.states.items():
+    # v4.121 — SUR DEMANDE EXPLICITE : Accumulation a desormais son PROPRE
+    # emplacement (bot.accum_states), sans quoi ses positions n apparaitraient
+    # JAMAIS dans l interface (affichage "Trades ouverts" de tous les
+    # onglets, alimente par cette fonction). Combine les deux sources —
+    # slot_key identique entre les deux dicts, sans risque de collision
+    # dans la liste de sortie (chaque position devient une entree separee).
+    combined_states = list(bot.states.items()) + list(bot.accum_states.items())
+    for slot_key, state in combined_states:
         pos = state.position
         if not pos:
             continue
@@ -1606,6 +1613,10 @@ def get_strategy_performance(strategy: str, email: str = Depends(require_user)):
     win_pnl = sum((t.get("pnl") or 0) for t in wins)
     loss_pnl = sum((t.get("pnl") or 0) for t in losses)
     open_count = sum(1 for st in bot.states.values() if st.position and (st.position.get("strategy") or "normal") == strategy)
+    # v4.121 — SUR DEMANDE EXPLICITE : Accumulation a desormais son PROPRE
+    # emplacement (bot.accum_states), jamais compte ci-dessus.
+    if strategy == "accumulation":
+        open_count += sum(1 for st in bot.accum_states.values() if st.position)
     return {
         "strategy": strategy,
         "total_trades": len(filtered),
@@ -1715,8 +1726,12 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             blocker_spot_accum = spot_snap.get("blocker", "pas encore de donnees")
         # v4.80 — SUR DEMANDE EXPLICITE : meme diagnostic pour Accumulation,
         # qui n en avait aucun jusqu ici.
-        accum_snap = state.accumulation_gate_snapshot or {}
-        if has_position and state.position.get("strategy") == "accumulation":
+        # v4.121 — FIX : Accumulation a desormais son PROPRE emplacement
+        # (bot.accum_states), independant de bot.states — lit depuis le bon
+        # endroit, verifie sa PROPRE position (pas celle du mode normal).
+        accum_state = bot.accum_states.get(slot_key)
+        accum_snap = (accum_state.accumulation_gate_snapshot if accum_state else None) or {}
+        if accum_state and accum_state.position is not None:
             blocker_accumulation = "position deja ouverte"
         elif not accum_snap:
             blocker_accumulation = "pas encore de donnees"
@@ -1808,7 +1823,9 @@ def paper_portfolio(email: str = Depends(require_user)):
     # permanence, meme avec des positions ouvertes en profit/perte.
     open_positions = _open_positions()
     unrealized_pnl = round(sum(p["pnl"] for p in open_positions), 2)
-    realized_pnl = sum(s.pnl for s in bot.states.values())
+    # v4.121 — SUR DEMANDE EXPLICITE : Accumulation a desormais son PROPRE
+    # emplacement (bot.accum_states), jamais inclus ci-dessous auparavant.
+    realized_pnl = sum(s.pnl for s in bot.states.values()) + sum(s.pnl for s in bot.accum_states.values())
     initial_balance = float(db.get_meta("initial_balance", cfg["CAPITAL_USD"])) or 1.0
 
     closed = db.get_all_closed_trades()
@@ -1847,6 +1864,16 @@ def paper_reset(email: str = Depends(require_user)):
             state.trades = 0
             state.wins = 0
             state.closed_trades.clear()
+        # v4.121 — SUR DEMANDE EXPLICITE : Accumulation a desormais son
+        # PROPRE emplacement (bot.accum_states), jamais reinitialise
+        # ci-dessus auparavant — les trades/PnL Accumulation auraient
+        # survecu a une reinitialisation complete.
+        for accum_state in bot.accum_states.values():
+            accum_state.position = None
+            accum_state.pnl = 0.0
+            accum_state.trades = 0
+            accum_state.wins = 0
+            accum_state.closed_trades.clear()
     # v4.1 — FIX : repart du capital par defaut du CODE (be.CONFIG), pas de
     # cfg["CAPITAL_USD"] qui contient la derniere valeur PERSISTEE (chargee
     # au demarrage depuis hyperbot_capital_*.json) — sans ce fix, changer le
@@ -1877,7 +1904,11 @@ class PaperCloseBody(BaseModel):
 
 @app.post("/api/paper/close")
 def paper_close(body: PaperCloseBody, email: str = Depends(require_user)):
+    # v4.121 — SUR DEMANDE EXPLICITE : Accumulation a desormais son PROPRE
+    # emplacement (bot.accum_states) — repli si absent de bot.states.
     state = bot.states.get(body.trade_id)
+    if not state or not state.position:
+        state = bot.accum_states.get(body.trade_id)
     if not state or not state.position:
         raise HTTPException(404, "Aucune position ouverte pour cet identifiant")
     price = state.current_price or state.position["entry"]
@@ -2388,6 +2419,15 @@ def reset_all(email: str = Depends(require_user)):
         state.trades = 0
         state.wins = 0
         state.closed_trades.clear()
+    # v4.121 — SUR DEMANDE EXPLICITE : Accumulation a desormais son PROPRE
+    # emplacement (bot.accum_states), jamais reinitialise ci-dessus
+    # auparavant.
+    for accum_state in bot.accum_states.values():
+        accum_state.position = None
+        accum_state.pnl = 0.0
+        accum_state.trades = 0
+        accum_state.wins = 0
+        accum_state.closed_trades.clear()
     for k, v in preserved.items():
         cfg[k] = v
     bot.cfg = cfg
