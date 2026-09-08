@@ -6161,6 +6161,22 @@ class BotEngine:
                 else:
                     sl_atr_mult = cfg.get("SL_ATR_MULTIPLIER_BY_SYMBOL", {}).get(ticker, cfg.get("SL_ATR_MULTIPLIER", 1.0))
                 sl_dynamic = max(sl_min, min(sl_max, atr_pct_entry * sl_atr_mult))
+                # v4.116 — FIX BUG CRITIQUE : la compensation levier (v4.112)
+                # etait appliquee TROP TARD (uniquement sur le sl_pct_of_e
+                # FINAL, apres coup) — tous les seuils DERIVES par ratio
+                # (tier0_arm_pct, ttp_arm1_pct, etc., calcules juste en
+                # dessous a partir de sl_dynamic) restaient bases sur la
+                # valeur NON compensee, expliquant la persistance de
+                # l armement precoce (tier0 arme a 0.07-0.21% observe,
+                # malgre le correctif SL) — leverage etait deja disponible
+                # a ce point, il suffisait de compenser sl_dynamic ICI,
+                # AVANT que les ratios ne s appliquent, pour que TOUS les
+                # seuils derives en heritent naturellement.
+                if leverage > 1:
+                    min_price_move_pct_early = cfg.get("SL_MIN_PRICE_MOVE_PCT", 0.3)
+                    implied_price_move_early = sl_dynamic / leverage
+                    if implied_price_move_early < min_price_move_pct_early:
+                        sl_dynamic = min_price_move_pct_early * leverage
                 # Proportions conservees telles que definies par les reglages fixes actuels
                 ratio_arm1  = (ttp_arm1_pct  / sl_pct_of_e) if sl_pct_of_e else 1.0
                 ratio_lock1 = (ttp_lock1_pct / sl_pct_of_e) if sl_pct_of_e else 0.8
