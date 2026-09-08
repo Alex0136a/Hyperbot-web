@@ -806,6 +806,12 @@ PROFILE_SWING = {
     # precis, en priorite sur cette detection automatique.
     "ADX_PERIOD":               14,
     "ADX_TREND_THRESHOLD":      25.0,
+    # v4.115 — SUR DEMANDE EXPLICITE : seuil ADX DEDIE a Accumulation,
+    # distinct de ADX_TREND_THRESHOLD ci-dessus (mode normal, inchange a
+    # 25) — observe qu aucun actif sur un lot de 30 ne depassait jamais 25,
+    # bloquant Accumulation en continu. Abaisse a 20 specifiquement pour ce
+    # mode, sans affecter la qualite du mode normal recemment recalibree.
+    "ACCUMULATION_ADX_TREND_THRESHOLD": 20.0,
     # v4.75 — SUR DEMANDE EXPLICITE : la tendance doit etre STABLE depuis ce
     # nombre de cycles consecutifs (~10s/cycle, 24 = ~4 min) avant d etre
     # consideree valide a l entree — evite d entrer juste avant/pendant un
@@ -3066,7 +3072,7 @@ class BotEngine:
             return 2
         return 1
 
-    def _unified_trend_confirmed(self, prices, trend_ok, state=None, streak_attr=None, min_stability_cycles=None):
+    def _unified_trend_confirmed(self, prices, trend_ok, state=None, streak_attr=None, min_stability_cycles=None, adx_threshold_override=None):
         """v4.58 — SUR DEMANDE EXPLICITE : verification de tendance PARTAGEE
         par les 3 modes (normal, Accumulation, Spot-Accumulation) — EMA200
         (trend_ok, deja calcule par l appelant) ET ADX >= seuil (tendance
@@ -3076,7 +3082,12 @@ class BotEngine:
         tendance soit STABLE depuis au moins ce nombre de cycles (pas juste
         vraie a l instant). Laisse None (par defaut) = comportement
         INCHANGE — seul Accumulation les fournit explicitement, le mode
-        normal continue de fonctionner exactement comme avant."""
+        normal continue de fonctionner exactement comme avant.
+        v4.115 — SUR DEMANDE EXPLICITE : adx_threshold_override permet a
+        Accumulation d utiliser SON PROPRE seuil ADX (20 par defaut),
+        DIFFERENT de celui du mode normal (25, inchange) — observe que
+        AUCUN actif ne depassait jamais 25 sur un lot de 30, suggerant un
+        seuil trop strict pour un usage courant."""
         if not trend_ok:
             return False
         cfg = self.cfg
@@ -3086,7 +3097,7 @@ class BotEngine:
         if not cfg.get("UNIFIED_REQUIRE_ADX_CONFIRM", True):
             return True
         adx = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
-        adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
+        adx_threshold = adx_threshold_override if adx_threshold_override is not None else cfg.get("ADX_TREND_THRESHOLD", 25.0)
         return adx is not None and adx >= adx_threshold
 
     def _unified_sr_amplitude_ok(self, support, resistance):
@@ -5565,8 +5576,9 @@ class BotEngine:
             # v4.75 — SUR DEMANDE EXPLICITE : extension de la stabilite de
             # tendance a Accumulation (meme principe que Spot-Accum).
             accum_stability_cycles = cfg.get("ACCUMULATION_TREND_STABILITY_CYCLES", 24)
-            trend_long_ok = self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", accum_stability_cycles)
-            trend_short_ok = self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", accum_stability_cycles)
+            accum_adx_threshold = cfg.get("ACCUMULATION_ADX_TREND_THRESHOLD", 20.0)
+            trend_long_ok = self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", accum_stability_cycles, accum_adx_threshold)
+            trend_short_ok = self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", accum_stability_cycles, accum_adx_threshold)
             prox_long_ok = self._unified_proximity_ok(price, support, resistance, "long")
             prox_short_ok = self._unified_proximity_ok(price, support, resistance, "short")
             snap["trend_up_streak"] = state.trend_up_streak
@@ -5613,7 +5625,7 @@ class BotEngine:
                         raisons.append(f"duree insuffisante ({state.trend_up_streak}↑/{state.trend_down_streak}↓ sur {accum_stability_cycles} cycles requis)")
                     else:
                         adx_diag = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
-                        adx_threshold_diag = cfg.get("ADX_TREND_THRESHOLD", 25.0)
+                        adx_threshold_diag = cfg.get("ACCUMULATION_ADX_TREND_THRESHOLD", 20.0)
                         adx_diag_str = f"{adx_diag:.1f}" if adx_diag is not None else "indisponible"
                         raisons.append(f"duree OK ({state.trend_up_streak}↑/{state.trend_down_streak}↓) mais ADX {adx_diag_str} < {adx_threshold_diag} (tendance pas assez forte)")
                 if not (snap.get("proximity_long_ok") or snap.get("proximity_short_ok")):
