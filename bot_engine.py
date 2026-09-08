@@ -4775,9 +4775,18 @@ class BotEngine:
             _, _atr_pct_now = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
         state.current_atr_pct = _atr_pct_now
 
-        if state.position:
+        # v4.122 — FIX BUG CRITIQUE : ce "return" bloquait TOUTE la suite de
+        # _process (y compris les verifications Accumulation/Funding/
+        # Spot-Accum plus bas) des que le mode NORMAL avait deja une
+        # position ouverte sur cet actif — meme schema que le bug
+        # MAX_OPEN_TRADES corrige precedemment. Desormais, gere la position
+        # normale si presente, mais NE bloque QUE la decision finale du
+        # mode normal lui-meme (voir plus bas), laisse la fonction
+        # continuer vers les autres modes, chacun avec son propre
+        # emplacement independant.
+        normal_already_has_position = bool(state.position)
+        if normal_already_has_position:
             self._maybe_manage_position_via_cycle(symbol, price, state)
-            return
 
         # v3.2 — Le blocage "session 23h45" est retire : les nouvelles entrees
         # restent possibles jusqu a 23h59:59 UTC. Le decoupage en jours
@@ -5015,7 +5024,7 @@ class BotEngine:
         # candidat finalise gagne).
         self._check_accumulation_signal(
             symbol, ticker, price, support, resistance, rsi, momentum_pct,
-            ema200, trend_up, trend_down, prices, state
+            ema200, trend_up, trend_down, prices, state, self.accum_states[symbol]
         )
 
         # v4.33 — Mode Funding Contrarian, lui aussi EN PARALLELE, evalue
@@ -5184,28 +5193,28 @@ class BotEngine:
         confirm_cycles_needed = cfg.get("POST_WIN_CONFIRM_CYCLES", 18)
         max_wait_cycles       = cfg.get("POST_WIN_MAX_WAIT_CYCLES", 90)
 
-        if state.post_win_confirm_long:
-            state.post_win_wait_long += 1
+        if accum_state.post_win_confirm_long:
+            accum_state.post_win_wait_long += 1
             if long_level_ok:
-                state.confirm_count_long += 1
+                accum_state.confirm_count_long += 1
             else:
-                state.confirm_count_long = 0
+                accum_state.confirm_count_long = 0
 
-            if state.confirm_count_long >= confirm_cycles_needed:
+            if accum_state.confirm_count_long >= confirm_cycles_needed:
                 # Confirmation soutenue atteinte normalement — voie principale
-                state.post_win_confirm_long = False
-                state.confirm_count_long = 0
-                state.post_win_wait_long = 0
-            elif state.post_win_wait_long >= max_wait_cycles:
+                accum_state.post_win_confirm_long = False
+                accum_state.confirm_count_long = 0
+                accum_state.post_win_wait_long = 0
+            elif accum_state.post_win_wait_long >= max_wait_cycles:
                 # v4.27 — FIX : Bollinger devient reellement DECISIF, pas un
                 # simple filtre de plus — s il confirme, il TRANCHE et
                 # autorise directement (sans exiger en plus les autres
                 # conditions ce cycle precis), c est justement le but de
                 # "consulter un autre indicateur pour decider".
                 fallback_ok = bb_low_ok  # prix a/sous la bande basse = extreme statistique favorable a un LONG
-                state.post_win_confirm_long = False
-                state.confirm_count_long = 0
-                state.post_win_wait_long = 0
+                accum_state.post_win_confirm_long = False
+                accum_state.confirm_count_long = 0
+                accum_state.post_win_wait_long = 0
                 if fallback_ok:
                     self.emit("log", {"msg": f"[{ticker}] LONG — confirmation post-gain jamais soutenue apres {max_wait_cycles} cycles, Bollinger favorable — TRANCHE, trade autorise", "level": "warn"})
                     long_level_ok = True
@@ -5214,25 +5223,25 @@ class BotEngine:
                     long_level_ok = False
             else:
                 if long_level_ok:
-                    self.emit("log", {"msg": f"[{ticker}] LONG qualifie mais en attente de confirmation post-gain ({state.confirm_count_long}/{confirm_cycles_needed} cycles consecutifs, {state.post_win_wait_long}/{max_wait_cycles} max)", "level": "dim"})
+                    self.emit("log", {"msg": f"[{ticker}] LONG qualifie mais en attente de confirmation post-gain ({accum_state.confirm_count_long}/{confirm_cycles_needed} cycles consecutifs, {accum_state.post_win_wait_long}/{max_wait_cycles} max)", "level": "dim"})
                 long_level_ok = False
 
-        if state.post_win_confirm_short:
-            state.post_win_wait_short += 1
+        if accum_state.post_win_confirm_short:
+            accum_state.post_win_wait_short += 1
             if short_level_ok:
-                state.confirm_count_short += 1
+                accum_state.confirm_count_short += 1
             else:
-                state.confirm_count_short = 0
+                accum_state.confirm_count_short = 0
 
-            if state.confirm_count_short >= confirm_cycles_needed:
-                state.post_win_confirm_short = False
-                state.confirm_count_short = 0
-                state.post_win_wait_short = 0
-            elif state.post_win_wait_short >= max_wait_cycles:
+            if accum_state.confirm_count_short >= confirm_cycles_needed:
+                accum_state.post_win_confirm_short = False
+                accum_state.confirm_count_short = 0
+                accum_state.post_win_wait_short = 0
+            elif accum_state.post_win_wait_short >= max_wait_cycles:
                 fallback_ok = bb_up_ok  # prix a/sur la bande haute = extreme statistique favorable a un SHORT
-                state.post_win_confirm_short = False
-                state.confirm_count_short = 0
-                state.post_win_wait_short = 0
+                accum_state.post_win_confirm_short = False
+                accum_state.confirm_count_short = 0
+                accum_state.post_win_wait_short = 0
                 if fallback_ok:
                     self.emit("log", {"msg": f"[{ticker}] SHORT — confirmation post-gain jamais soutenue apres {max_wait_cycles} cycles, Bollinger favorable — TRANCHE, trade autorise", "level": "warn"})
                     short_level_ok = True
@@ -5241,7 +5250,7 @@ class BotEngine:
                     short_level_ok = False
             else:
                 if short_level_ok:
-                    self.emit("log", {"msg": f"[{ticker}] SHORT qualifie mais en attente de confirmation post-gain ({state.confirm_count_short}/{confirm_cycles_needed} cycles consecutifs, {state.post_win_wait_short}/{max_wait_cycles} max)", "level": "dim"})
+                    self.emit("log", {"msg": f"[{ticker}] SHORT qualifie mais en attente de confirmation post-gain ({accum_state.confirm_count_short}/{confirm_cycles_needed} cycles consecutifs, {accum_state.post_win_wait_short}/{max_wait_cycles} max)", "level": "dim"})
                 short_level_ok = False
 
         # v4.58 — SUR DEMANDE EXPLICITE : mode SIMPLIFIE — remplace TOUT ce
@@ -5332,12 +5341,12 @@ class BotEngine:
             "amplitude_coherent": amplitude_coherent,
             "sr_ema_long_ok": sr_ema_long_ok,
             "sr_ema_short_ok": sr_ema_short_ok,
-            "post_win_confirm_long": state.post_win_confirm_long,
-            "post_win_confirm_short": state.post_win_confirm_short,
-            "confirm_count_long": state.confirm_count_long,
-            "confirm_count_short": state.confirm_count_short,
-            "post_win_wait_long": state.post_win_wait_long,
-            "post_win_wait_short": state.post_win_wait_short,
+            "post_win_confirm_long": accum_state.post_win_confirm_long,
+            "post_win_confirm_short": accum_state.post_win_confirm_short,
+            "confirm_count_long": accum_state.confirm_count_long,
+            "confirm_count_short": accum_state.confirm_count_short,
+            "post_win_wait_long": accum_state.post_win_wait_long,
+            "post_win_wait_short": accum_state.post_win_wait_short,
             "long_level_ok_final": long_level_ok,
             "short_level_ok_final": short_level_ok,
             "would_enter_long": bool(long_level_ok) if cfg.get("UNIFIED_FULL_SIMPLIFIED_MODE", True) else bool(rsi_buy and ema_bull and trend_up and not state.long_signal_stale and long_level_ok),
@@ -5403,6 +5412,13 @@ class BotEngine:
             long_entry_ok = rsi_buy and ema_bull and trend_up and not state.long_signal_stale and long_level_ok
             short_entry_ok = rsi_sell and ema_bear and trend_down and not state.short_signal_stale and short_level_ok
 
+        # v4.122 — SUR DEMANDE EXPLICITE : bloque la decision finale du mode
+        # normal si une position normale est deja ouverte sur cet actif —
+        # remplace l ancien "return" precoce qui bloquait aussi les autres
+        # modes (voir plus haut, ou normal_already_has_position est defini).
+        if normal_already_has_position:
+            long_entry_ok = False
+            short_entry_ok = False
 
         if long_entry_ok:
             # v3.2 — FIX : ce filtre ne s applique qu en mode "reversal". En
@@ -5656,7 +5672,7 @@ class BotEngine:
 
     def _check_accumulation_signal(self, symbol, ticker, price, support, resistance,
                                     rsi, momentum_pct, ema200, trend_up, trend_down,
-                                    prices, state):
+                                    prices, state, accum_state):
         """v4.16 — Mode ACCUMULATION : strategie independante de la logique
         RSI/tendance habituelle. LONG si le prix est proche du SUPPORT
         recent, SHORT si proche de la RESISTANCE recente — logique de
@@ -5665,14 +5681,18 @@ class BotEngine:
         cycle (plus seulement en repli quand la logique normale ne trouve
         rien) — sur demande explicite. Alimente
         self._pending_accumulation_candidates, plafond et execution geres
-        separement (voir _finalize_pending_accumulation_candidates). Comme
-        un seul slot existe par actif, un garde-fou dans _finalize_open
-        evite qu un candidat normal et un candidat Accumulation sur le meme
-        actif n ouvrent tous les deux le meme cycle.
+        separement (voir _finalize_pending_accumulation_candidates).
+        v4.121 — SUR DEMANDE EXPLICITE : Accumulation dispose desormais de
+        son PROPRE emplacement (accum_state), independant de celui partage
+        par Normal/Funding/Spot-Accum (state) — un actif deja pris par un
+        autre mode ne bloque plus Accumulation. 'state' reste utilise
+        UNIQUEMENT pour les donnees de MARCHE partagees (stabilite de
+        tendance, historique de bougies pour l ATR) — deja calculees une
+        seule fois par cycle, pas besoin de dupliquer ce calcul.
         """
         cfg = self.cfg
         snap = {"ts": time.time(), "enabled": cfg.get("ACCUMULATION_ENABLED", False)}
-        state.accumulation_gate_snapshot = snap
+        accum_state.accumulation_gate_snapshot = snap
         if not cfg.get("ACCUMULATION_ENABLED", False):
             snap["blocker"] = "mode desactive"
             return
@@ -5818,36 +5838,36 @@ class BotEngine:
         # doit aussi freiner Accumulation sur le meme actif/sens, et inversement).
         confirm_cycles_needed = cfg.get("POST_WIN_CONFIRM_CYCLES", 18)
         max_wait_cycles = cfg.get("POST_WIN_MAX_WAIT_CYCLES", 180)
-        if direction == "long" and state.post_win_confirm_long:
-            state.post_win_wait_long += 1
-            state.confirm_count_long += 1
-            if state.confirm_count_long >= confirm_cycles_needed:
-                state.post_win_confirm_long = False
-                state.confirm_count_long = 0
-                state.post_win_wait_long = 0
-            elif state.post_win_wait_long >= max_wait_cycles:
+        if direction == "long" and accum_state.post_win_confirm_long:
+            accum_state.post_win_wait_long += 1
+            accum_state.confirm_count_long += 1
+            if accum_state.confirm_count_long >= confirm_cycles_needed:
+                accum_state.post_win_confirm_long = False
+                accum_state.confirm_count_long = 0
+                accum_state.post_win_wait_long = 0
+            elif accum_state.post_win_wait_long >= max_wait_cycles:
                 bb_up, _, bb_low = calc_bollinger(prices, cfg.get("BB_PERIOD", 20), cfg.get("BB_STD", 2.0))
                 fallback_ok = bb_low is not None and price <= bb_low
-                state.post_win_confirm_long = False
-                state.confirm_count_long = 0
-                state.post_win_wait_long = 0
+                accum_state.post_win_confirm_long = False
+                accum_state.confirm_count_long = 0
+                accum_state.post_win_wait_long = 0
                 if not fallback_ok:
                     return
             else:
                 return
-        if direction == "short" and state.post_win_confirm_short:
-            state.post_win_wait_short += 1
-            state.confirm_count_short += 1
-            if state.confirm_count_short >= confirm_cycles_needed:
-                state.post_win_confirm_short = False
-                state.confirm_count_short = 0
-                state.post_win_wait_short = 0
-            elif state.post_win_wait_short >= max_wait_cycles:
+        if direction == "short" and accum_state.post_win_confirm_short:
+            accum_state.post_win_wait_short += 1
+            accum_state.confirm_count_short += 1
+            if accum_state.confirm_count_short >= confirm_cycles_needed:
+                accum_state.post_win_confirm_short = False
+                accum_state.confirm_count_short = 0
+                accum_state.post_win_wait_short = 0
+            elif accum_state.post_win_wait_short >= max_wait_cycles:
                 bb_up, _, bb_low = calc_bollinger(prices, cfg.get("BB_PERIOD", 20), cfg.get("BB_STD", 2.0))
                 fallback_ok = bb_up is not None and price >= bb_up
-                state.post_win_confirm_short = False
-                state.confirm_count_short = 0
-                state.post_win_wait_short = 0
+                accum_state.post_win_confirm_short = False
+                accum_state.confirm_count_short = 0
+                accum_state.post_win_wait_short = 0
                 if not fallback_ok:
                     return
             else:
@@ -5889,7 +5909,7 @@ class BotEngine:
             reasons.append("tendance EMA200 confirmee")
 
         self._pending_accumulation_candidates.append({
-            "symbol": symbol, "ticker": ticker, "state": state, "signal": direction,
+            "symbol": symbol, "ticker": ticker, "state": accum_state, "signal": direction,
             "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": "accumulation",
             "reasons": reasons, "prices": prices, "conf_breakdown": {},
             "strategy": "accumulation",
