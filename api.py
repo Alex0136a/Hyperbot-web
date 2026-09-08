@@ -1573,7 +1573,7 @@ def get_trend_summary(email: str = Depends(require_user)):
         ticker = be.ticker_from_slot_key(slot_key)
         price = state.current_price
         prices = list(state.price_history)
-        ema200 = be.calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 10 else None
+        ema200 = be.calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
         adx = be.calc_adx(prices, adx_period) if len(prices) >= adx_period + 1 else None
         if price is None or ema200 is None or adx is None:
             label = "donnees insuffisantes"
