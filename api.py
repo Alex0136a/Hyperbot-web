@@ -783,6 +783,8 @@ ADVANCED_SETTINGS = {
     "ADX_PERIOD":              {"label": "ADX - periode",                    "default": 14},
     "ADX_TREND_THRESHOLD":     {"label": "ADX - seuil Trend/Reversal",       "default": 25.0},
     "ACCUMULATION_ADX_TREND_THRESHOLD": {"label": "Accumulation - seuil ADX dedie (distinct du mode normal)", "default": 20.0},
+    "ACCUMULATION_MIN_ABOVE_SUPPORT_PCT": {"label": "Accumulation - minimum fenetre proximite (% de l'amplitude, dedie)", "default": 5.0},
+    "ACCUMULATION_MAX_ABOVE_SUPPORT_PCT": {"label": "Accumulation - maximum fenetre proximite (% de l'amplitude, dedie)", "default": 10.0},
     "SPOT_ACCUM_TREND_STABILITY_CYCLES":   {"label": "Spot-Accum - stabilité tendance requise avant entrée (cycles ~10s)", "default": 24},
     "NORMAL_TREND_STABILITY_CYCLES":       {"label": "Normal - stabilité tendance requise avant entrée (cycles ~10s)", "default": 24},
     "ACCUMULATION_TREND_STABILITY_CYCLES": {"label": "Accumulation - stabilité tendance requise avant entrée (cycles ~10s)", "default": 24},
