@@ -2615,6 +2615,19 @@ class BotEngine:
                 snapshot["_spot_accum_armed"] = st.spot_accum_armed
                 snapshot["_spot_accum_peak_pnl_pct"] = st.spot_accum_peak_pnl_pct
                 positions[sym] = snapshot
+        # v4.121 — SUR DEMANDE EXPLICITE : sauvegarde aussi les positions
+        # Accumulation (emplacement desormais separe) — prefixe "ACCUM__"
+        # pour les distinguer au chargement, meme fichier partage.
+        for sym, st in self.accum_states.items():
+            if st.position:
+                snapshot = dict(st.position)
+                snapshot["_peak_pnl_usd"] = st.peak_pnl_usd
+                snapshot["_tp_stage"] = st.tp_stage
+                snapshot["_trailing_tp_active"] = st.trailing_tp_active
+                snapshot["_tier0_armed"] = st.tier0_armed
+                snapshot["_tier0_peak_pnl_usd"] = st.tier0_peak_pnl_usd
+                snapshot["_absolute_peak_pnl_usd"] = st.absolute_peak_pnl_usd
+                positions[f"ACCUM__{sym}"] = snapshot
         try:
             with open(self.POSITIONS_FILE, "w") as f:
                 json.dump(positions, f, indent=2)
@@ -2911,7 +2924,7 @@ class BotEngine:
         reelle de tous les trades enregistres (net +0.35$ depuis le debut),
         a cause d un redemarrage force pendant la fuite memoire corrigee en
         v4.3 (voir close_position/self.closed_trades)."""
-        total_pnl = sum(s.pnl for s in self.states.values())
+        total_pnl = sum(s.pnl for s in self.states.values()) + sum(s.pnl for s in self.accum_states.values())
         current_capital = self.cfg["CAPITAL_USD"] + total_pnl
         save_capital(current_capital, self.sessions, self.total_pnl_all)
 
@@ -2928,7 +2941,7 @@ class BotEngine:
             return
         self._started = False
         # Sauvegarde du capital pour interets composes
-        total_pnl = sum(s.pnl for s in self.states.values())
+        total_pnl = sum(s.pnl for s in self.states.values()) + sum(s.pnl for s in self.accum_states.values())
         new_capital = self.cfg["CAPITAL_USD"] + total_pnl
         self.sessions += 1
         self.total_pnl_all += total_pnl
@@ -2951,11 +2964,13 @@ class BotEngine:
         }
 
     def _send_snapshot(self):
-        total_pnl = sum(s.pnl for s in self.states.values())
+        total_pnl = sum(s.pnl for s in self.states.values()) + sum(s.pnl for s in self.accum_states.values())
         # Stats 24h glissantes
-        h24_trades = sum(s.trades_last_24h()["trades"] for s in self.states.values())
-        h24_pnl    = sum(s.trades_last_24h()["pnl"]    for s in self.states.values())
-        h24_wins   = sum(s.trades_last_24h()["wins"]   for s in self.states.values())
+        # v4.121 — SUR DEMANDE EXPLICITE : inclut aussi accum_states, sinon
+        # les trades Accumulation disparaissent des stats 24h du dashboard.
+        h24_trades = sum(s.trades_last_24h()["trades"] for s in self.states.values()) + sum(s.trades_last_24h()["trades"] for s in self.accum_states.values())
+        h24_pnl    = sum(s.trades_last_24h()["pnl"]    for s in self.states.values()) + sum(s.trades_last_24h()["pnl"]    for s in self.accum_states.values())
+        h24_wins   = sum(s.trades_last_24h()["wins"]   for s in self.states.values()) + sum(s.trades_last_24h()["wins"]   for s in self.accum_states.values())
         h24_wr     = h24_wins / h24_trades * 100 if h24_trades > 0 else 0.0
         self.emit("snapshot", {
             "cycle": self.cycle,
@@ -3058,6 +3073,19 @@ class BotEngine:
                 trade["symbol"] = slot_key
                 self.emit("trade", trade)
                 closed_count += 1
+        # v4.121 — SUR DEMANDE EXPLICITE : Accumulation a desormais son
+        # PROPRE emplacement (self.accum_states), jamais parcouru ci-dessus.
+        if strategy == "accumulation":
+            for slot_key, accum_state in list(self.accum_states.items()):
+                pos = accum_state.position
+                if pos:
+                    price = accum_state.current_price or pos.get("entry")
+                    if price is None:
+                        continue
+                    pnl, _, trade = accum_state.close_position(price, "MANUEL (bascule live)")
+                    trade["symbol"] = slot_key
+                    self.emit("trade", trade)
+                    closed_count += 1
         if closed_count:
             self._save_open_positions()
         return closed_count
@@ -3820,6 +3848,31 @@ class BotEngine:
                     self.emit("log", {"msg": f"[{ticker}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} restauree (paper, apres redemarrage){stage_info}", "level": "warn"})
             if restored:
                 self.emit("log", {"msg": f"{restored} position(s) paper restauree(s) apres redemarrage.", "level": "warn"})
+
+            # v4.121 — SUR DEMANDE EXPLICITE : restaure aussi les positions
+            # Accumulation (emplacement separe, cles prefixees "ACCUM__").
+            restored_accum = 0
+            for slot_key, accum_state in self.accum_states.items():
+                pos = saved_positions.get(f"ACCUM__{slot_key}") if saved_positions else None
+                if pos and not accum_state.position:
+                    ticker = ticker_from_slot_key(slot_key)
+                    peak_pnl_usd = pos.pop("_peak_pnl_usd", None)
+                    tp_stage = pos.pop("_tp_stage", 0)
+                    trailing_tp_active = pos.pop("_trailing_tp_active", False)
+                    tier0_armed = pos.pop("_tier0_armed", False)
+                    tier0_peak_pnl_usd = pos.pop("_tier0_peak_pnl_usd", None)
+                    absolute_peak_pnl_usd = pos.pop("_absolute_peak_pnl_usd", None)
+                    accum_state.position = pos
+                    accum_state.peak_pnl_usd = peak_pnl_usd
+                    accum_state.tp_stage = tp_stage
+                    accum_state.trailing_tp_active = trailing_tp_active
+                    accum_state.tier0_armed = tier0_armed
+                    accum_state.tier0_peak_pnl_usd = tier0_peak_pnl_usd
+                    accum_state.absolute_peak_pnl_usd = absolute_peak_pnl_usd
+                    restored_accum += 1
+                    self.emit("log", {"msg": f"[{ticker}] Position Accumulation {pos['type'].upper()} @ ${pos['entry']:.2f} restauree (paper, apres redemarrage)", "level": "warn"})
+            if restored_accum:
+                self.emit("log", {"msg": f"{restored_accum} position(s) Accumulation restauree(s) apres redemarrage.", "level": "warn"})
 
         self._load_confidence_thresholds()
         # v3.2 — REACTIVE : la collecte des indicateurs (notamment l EMA
@@ -6555,7 +6608,12 @@ class BotEngine:
         self._pending_accumulation_candidates.sort(key=lambda c: c["confidence"], reverse=True)
         max_acc = cfg.get("ACCUMULATION_MAX_TRADES", 3)
         for cand in self._pending_accumulation_candidates:
-            open_count = sum(1 for st in self.states.values() if st.position and st.position.get("strategy") == "accumulation")
+            # v4.121 — FIX BUG CRITIQUE : comptait depuis self.states, mais
+            # Accumulation a desormais son PROPRE emplacement
+            # (self.accum_states) — sans ce correctif, ce plafond restait
+            # TOUJOURS a 0/max_acc, permettant un nombre ILLIMITE de trades
+            # Accumulation simultanes, quel que soit le reglage.
+            open_count = sum(1 for st in self.accum_states.values() if st.position)
             if open_count >= max_acc:
                 self.emit("log", {
                     "msg": f"[{cand['ticker']}] 🎯 Slot Accumulation plein ({open_count}/{max_acc}) — candidat a {cand['confidence']:.0f}% laisse de cote ce cycle.",
