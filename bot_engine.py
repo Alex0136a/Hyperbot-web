@@ -975,11 +975,21 @@ def apply_profile(cfg, profile_name):
 #  INDICATEURS TECHNIQUES
 # ─────────────────────────────────────────────
 def calc_ema(prices, period):
-    if len(prices) < period:
+    """v4.124 — FIX BUG CRITIQUE : exigeait auparavant len(prices) >= period
+    AVANT de retourner quoi que ce soit — pour period=200 (EMA200,
+    echantillonne ~toutes les 2 min), ca signifiait ~6h40 d attente avant le
+    tout premier resultat non-None, quel que soit le seuil externe applique
+    par l appelant (celui-ci n a jamais eu d effet reel). Calcule desormais
+    une estimation DES que 2+ points sont disponibles — graine simple
+    (moyenne des points disponibles) qui s affine progressivement vers une
+    vraie EMA a mesure que les donnees s accumulent, au lieu de rester
+    bloque a None pendant des heures."""
+    if len(prices) < 2:
         return None
-    k = 2 / (period + 1)
-    ema = sum(prices[:period]) / period
-    for p in prices[period:]:
+    effective_period = min(period, len(prices))
+    k = 2 / (effective_period + 1)
+    ema = sum(prices[:effective_period]) / effective_period
+    for p in prices[effective_period:]:
         ema = p * k + ema * (1 - k)
     return ema
 
