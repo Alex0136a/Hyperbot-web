@@ -5193,28 +5193,28 @@ class BotEngine:
         confirm_cycles_needed = cfg.get("POST_WIN_CONFIRM_CYCLES", 18)
         max_wait_cycles       = cfg.get("POST_WIN_MAX_WAIT_CYCLES", 90)
 
-        if accum_state.post_win_confirm_long:
-            accum_state.post_win_wait_long += 1
+        if state.post_win_confirm_long:
+            state.post_win_wait_long += 1
             if long_level_ok:
-                accum_state.confirm_count_long += 1
+                state.confirm_count_long += 1
             else:
-                accum_state.confirm_count_long = 0
+                state.confirm_count_long = 0
 
-            if accum_state.confirm_count_long >= confirm_cycles_needed:
+            if state.confirm_count_long >= confirm_cycles_needed:
                 # Confirmation soutenue atteinte normalement — voie principale
-                accum_state.post_win_confirm_long = False
-                accum_state.confirm_count_long = 0
-                accum_state.post_win_wait_long = 0
-            elif accum_state.post_win_wait_long >= max_wait_cycles:
+                state.post_win_confirm_long = False
+                state.confirm_count_long = 0
+                state.post_win_wait_long = 0
+            elif state.post_win_wait_long >= max_wait_cycles:
                 # v4.27 — FIX : Bollinger devient reellement DECISIF, pas un
                 # simple filtre de plus — s il confirme, il TRANCHE et
                 # autorise directement (sans exiger en plus les autres
                 # conditions ce cycle precis), c est justement le but de
                 # "consulter un autre indicateur pour decider".
                 fallback_ok = bb_low_ok  # prix a/sous la bande basse = extreme statistique favorable a un LONG
-                accum_state.post_win_confirm_long = False
-                accum_state.confirm_count_long = 0
-                accum_state.post_win_wait_long = 0
+                state.post_win_confirm_long = False
+                state.confirm_count_long = 0
+                state.post_win_wait_long = 0
                 if fallback_ok:
                     self.emit("log", {"msg": f"[{ticker}] LONG — confirmation post-gain jamais soutenue apres {max_wait_cycles} cycles, Bollinger favorable — TRANCHE, trade autorise", "level": "warn"})
                     long_level_ok = True
@@ -5223,25 +5223,25 @@ class BotEngine:
                     long_level_ok = False
             else:
                 if long_level_ok:
-                    self.emit("log", {"msg": f"[{ticker}] LONG qualifie mais en attente de confirmation post-gain ({accum_state.confirm_count_long}/{confirm_cycles_needed} cycles consecutifs, {accum_state.post_win_wait_long}/{max_wait_cycles} max)", "level": "dim"})
+                    self.emit("log", {"msg": f"[{ticker}] LONG qualifie mais en attente de confirmation post-gain ({state.confirm_count_long}/{confirm_cycles_needed} cycles consecutifs, {state.post_win_wait_long}/{max_wait_cycles} max)", "level": "dim"})
                 long_level_ok = False
 
-        if accum_state.post_win_confirm_short:
-            accum_state.post_win_wait_short += 1
+        if state.post_win_confirm_short:
+            state.post_win_wait_short += 1
             if short_level_ok:
-                accum_state.confirm_count_short += 1
+                state.confirm_count_short += 1
             else:
-                accum_state.confirm_count_short = 0
+                state.confirm_count_short = 0
 
-            if accum_state.confirm_count_short >= confirm_cycles_needed:
-                accum_state.post_win_confirm_short = False
-                accum_state.confirm_count_short = 0
-                accum_state.post_win_wait_short = 0
-            elif accum_state.post_win_wait_short >= max_wait_cycles:
+            if state.confirm_count_short >= confirm_cycles_needed:
+                state.post_win_confirm_short = False
+                state.confirm_count_short = 0
+                state.post_win_wait_short = 0
+            elif state.post_win_wait_short >= max_wait_cycles:
                 fallback_ok = bb_up_ok  # prix a/sur la bande haute = extreme statistique favorable a un SHORT
-                accum_state.post_win_confirm_short = False
-                accum_state.confirm_count_short = 0
-                accum_state.post_win_wait_short = 0
+                state.post_win_confirm_short = False
+                state.confirm_count_short = 0
+                state.post_win_wait_short = 0
                 if fallback_ok:
                     self.emit("log", {"msg": f"[{ticker}] SHORT — confirmation post-gain jamais soutenue apres {max_wait_cycles} cycles, Bollinger favorable — TRANCHE, trade autorise", "level": "warn"})
                     short_level_ok = True
@@ -5250,7 +5250,7 @@ class BotEngine:
                     short_level_ok = False
             else:
                 if short_level_ok:
-                    self.emit("log", {"msg": f"[{ticker}] SHORT qualifie mais en attente de confirmation post-gain ({accum_state.confirm_count_short}/{confirm_cycles_needed} cycles consecutifs, {accum_state.post_win_wait_short}/{max_wait_cycles} max)", "level": "dim"})
+                    self.emit("log", {"msg": f"[{ticker}] SHORT qualifie mais en attente de confirmation post-gain ({state.confirm_count_short}/{confirm_cycles_needed} cycles consecutifs, {state.post_win_wait_short}/{max_wait_cycles} max)", "level": "dim"})
                 short_level_ok = False
 
         # v4.58 — SUR DEMANDE EXPLICITE : mode SIMPLIFIE — remplace TOUT ce
@@ -5341,12 +5341,12 @@ class BotEngine:
             "amplitude_coherent": amplitude_coherent,
             "sr_ema_long_ok": sr_ema_long_ok,
             "sr_ema_short_ok": sr_ema_short_ok,
-            "post_win_confirm_long": accum_state.post_win_confirm_long,
-            "post_win_confirm_short": accum_state.post_win_confirm_short,
-            "confirm_count_long": accum_state.confirm_count_long,
-            "confirm_count_short": accum_state.confirm_count_short,
-            "post_win_wait_long": accum_state.post_win_wait_long,
-            "post_win_wait_short": accum_state.post_win_wait_short,
+            "post_win_confirm_long": state.post_win_confirm_long,
+            "post_win_confirm_short": state.post_win_confirm_short,
+            "confirm_count_long": state.confirm_count_long,
+            "confirm_count_short": state.confirm_count_short,
+            "post_win_wait_long": state.post_win_wait_long,
+            "post_win_wait_short": state.post_win_wait_short,
             "long_level_ok_final": long_level_ok,
             "short_level_ok_final": short_level_ok,
             "would_enter_long": bool(long_level_ok) if cfg.get("UNIFIED_FULL_SIMPLIFIED_MODE", True) else bool(rsi_buy and ema_bull and trend_up and not state.long_signal_stale and long_level_ok),
