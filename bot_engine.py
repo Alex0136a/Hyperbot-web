@@ -853,6 +853,12 @@ PROFILE_SWING = {
     # 2% de changement net minimum pour confirmer.
     "LONG_TERM_MOMENTUM_LOOKBACK_CANDLES": 180,
     "LONG_TERM_MOMENTUM_MIN_CHANGE_PCT": 2.0,
+    # v4.140 — SUR DEMANDE EXPLICITE : fenetre de tendance "fraiche" pour
+    # Accumulation — entre le minimum de cycles requis (12) et cette valeur,
+    # la fenetre de proximite S/R est completement ignoree, pour capturer
+    # le debut d un retournement plutot que d attendre un rejet a un niveau
+    # precis (pertinent seulement pour une tendance deja mature).
+    "ACCUMULATION_FRESH_TREND_MAX_CYCLES": 36,
     # v4.117 — SUR DEMANDE EXPLICITE : fenetre de proximite DEDIEE a
     # Accumulation, distincte de UNIFIED_MIN/MAX_ABOVE_SUPPORT_PCT (mode
     # normal, inchange a 5-10%) — elargie a 5-20% suite a l observation que
@@ -5916,6 +5922,38 @@ class BotEngine:
                 accum_amplitude_4h = None  # pas assez de bougies, repli sur (resistance-support) dans _unified_proximity_ok
             prox_long_ok = self._unified_proximity_ok(price, support, resistance, "long", min_pct_override=accum_min_prox, max_pct_override=accum_max_prox, amplitude_override=accum_amplitude_4h)
             prox_short_ok = self._unified_proximity_ok(price, support, resistance, "short", min_pct_override=accum_min_prox, max_pct_override=accum_max_prox, amplitude_override=accum_amplitude_4h)
+            # v4.140 — SUR DEMANDE EXPLICITE : detecte un DEBUT FRAIS de
+            # tendance (streak de stabilite juste au-dessus du minimum
+            # requis, pas encore mature) — dans ce cas, ignore
+            # COMPLETEMENT la fenetre de proximite S/R, pour capturer le
+            # retournement des son debut plutot que d attendre un rejet a
+            # un niveau precis (S/R), qui n a de sens que pour un rebond
+            # tardif, pas pour l amorce d un mouvement. Une tendance deja
+            # mature (streak au-dela de la fenetre "fraiche") continue
+            # d exiger la proximite S/R normalement.
+            fresh_max = cfg.get("ACCUMULATION_FRESH_TREND_MAX_CYCLES", 36)
+            fresh_long = accum_stability_cycles <= state.trend_up_streak <= fresh_max
+            fresh_short = accum_stability_cycles <= state.trend_down_streak <= fresh_max
+            if fresh_long:
+                prox_long_ok = True
+            if fresh_short:
+                prox_short_ok = True
+            # v4.141 — SUR DEMANDE EXPLICITE : complete le mecanisme
+            # ci-dessus pour couvrir aussi une tendance DEJA BIEN ENGAGEE
+            # (au-dela de la fenetre "fraiche") — reutilise la confirmation
+            # longue duree (mouvement reel du prix sur 6h, deja construite
+            # pour capturer les mouvements en "escalier") comme alternative
+            # supplementaire a la proximite S/R, peu importe l age du
+            # streak. Les DEUX mecanismes (fraiche + longue duree) couvrent
+            # ainsi le debut ET la poursuite d un mouvement, sans jamais
+            # exiger la proximite S/R pour Accumulation des qu une tendance
+            # reelle est confirmee d une facon ou d une autre.
+            established_long = self._long_term_momentum_confirmed(state, "long", cfg.get("LONG_TERM_MOMENTUM_LOOKBACK_CANDLES", 180), cfg.get("LONG_TERM_MOMENTUM_MIN_CHANGE_PCT", 2.0))
+            established_short = self._long_term_momentum_confirmed(state, "short", cfg.get("LONG_TERM_MOMENTUM_LOOKBACK_CANDLES", 180), cfg.get("LONG_TERM_MOMENTUM_MIN_CHANGE_PCT", 2.0))
+            if established_long:
+                prox_long_ok = True
+            if established_short:
+                prox_short_ok = True
             # v4.139 — SUR DEMANDE EXPLICITE : diagnostic direct visible dans
             # les logs Railway pour comprendre pourquoi "hors fenetre" bloque
             # presque systematiquement depuis le passage au S/R 24h + amplitude 4h.
