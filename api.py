@@ -791,7 +791,7 @@ ADVANCED_SETTINGS = {
     "ADX_TREND_THRESHOLD":     {"label": "ADX - seuil Trend/Reversal",       "default": 25.0},
     "ACCUMULATION_ADX_TREND_THRESHOLD": {"label": "Accumulation - seuil ADX dedie (distinct du mode normal)", "default": 20.0},
     "ACCUMULATION_MIN_ABOVE_SUPPORT_PCT": {"label": "Accumulation - minimum fenetre proximite (% de l'amplitude, dedie)", "default": 5.0},
-    "ACCUMULATION_MAX_ABOVE_SUPPORT_PCT": {"label": "Accumulation - maximum fenetre proximite (% de l'amplitude, dedie)", "default": 10.0},
+    "ACCUMULATION_MAX_ABOVE_SUPPORT_PCT": {"label": "Accumulation - maximum fenetre proximite (% de l'amplitude, dedie)", "default": 15.0},
     "ACCUMULATION_ANTI_RANGE_MIN_PCT": {"label": "Accumulation - mouvement minimum requis pour eviter le range (%)", "default": 2.0},
     "ACCUMULATION_ANTI_RANGE_LOOKBACK": {"label": "Accumulation - echantillons pour le detecteur de range (200 = 6h40, aligne sur EMA200)", "default": 200},
     "SPOT_ACCUM_ANTI_RANGE_MIN_PCT": {"label": "Spot-Accum - mouvement minimum requis pour eviter le range (%)", "default": 2.0},
@@ -1746,10 +1746,20 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
         accum_snap = (accum_state.accumulation_gate_snapshot if accum_state else None) or {}
         if accum_state and accum_state.position is not None:
             blocker_accumulation = "position deja ouverte"
+            blocker_accumulation_long = blocker_accumulation
+            blocker_accumulation_short = blocker_accumulation
         elif not accum_snap:
             blocker_accumulation = "pas encore de donnees"
+            blocker_accumulation_long = blocker_accumulation
+            blocker_accumulation_short = blocker_accumulation
         else:
             blocker_accumulation = accum_snap.get("blocker", "pas encore de donnees")
+            # v4.136 — SUR DEMANDE EXPLICITE : expose desormais separement
+            # LONG et SHORT pour Accumulation (comme le mode normal),
+            # au lieu d un seul champ combine qui masquait si un seul des
+            # deux sens etait en realite bloque.
+            blocker_accumulation_long = accum_snap.get("blocker_long", blocker_accumulation)
+            blocker_accumulation_short = accum_snap.get("blocker_short", blocker_accumulation)
         results.append({
             "ticker": ticker,
             "has_position": has_position,
@@ -1759,6 +1769,8 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             "blocker_spot_accum": blocker_spot_accum,
             "spot_accum_detail": spot_snap if spot_snap else None,
             "blocker_accumulation": blocker_accumulation,
+            "blocker_accumulation_long": blocker_accumulation_long,
+            "blocker_accumulation_short": blocker_accumulation_short,
             "accumulation_detail": accum_snap if accum_snap else None,
         })
     results.sort(key=lambda r: r["ticker"])
