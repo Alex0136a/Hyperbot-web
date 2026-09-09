@@ -5976,7 +5976,15 @@ class BotEngine:
                 adx_diag = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
                 adx_threshold_diag = cfg.get("ACCUMULATION_ADX_TREND_THRESHOLD", 20.0)
                 adx_diag_str = f"{adx_diag:.1f}" if adx_diag is not None else "indisponible"
-                adx_ok = adx_diag is not None and adx_diag >= adx_threshold_diag
+                # v4.138 — FIX BUG CRITIQUE : le diagnostic affichait l ADX
+                # comme bloquant de facon INCONDITIONNELLE, sans jamais
+                # consulter UNIFIED_REQUIRE_ADX_CONFIRM — alors que la VRAIE
+                # decision (_unified_trend_confirmed) le respecte
+                # correctement et ignore l ADX si desactive. Le diagnostic
+                # mentait donc sur la vraie cause du blocage des que ce
+                # reglage etait desactive (cas actuel).
+                adx_required = cfg.get("UNIFIED_REQUIRE_ADX_CONFIRM", True)
+                adx_ok = (not adx_required) or (adx_diag is not None and adx_diag >= adx_threshold_diag)
 
                 def _build_side_reasons(streak_ok, prox_ok, streak_val, other_streak_val):
                     raisons_side = []
