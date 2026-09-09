@@ -344,7 +344,15 @@ CONFIG = {
     # v4.127 — SUR DEMANDE EXPLICITE : meme detecteur de range direct que
     # pour Accumulation.
     "SPOT_ACCUM_ANTI_RANGE_MIN_PCT": 2.0,
-    "SPOT_ACCUM_ANTI_RANGE_LOOKBACK": 30,
+    # v4.130 — SUR DEMANDE EXPLICITE : 300 echantillons = 10h de recul (10
+    # bougies 1h) — coherent avec la lecture d une tendance sur plusieurs
+    # bougies, au lieu d 1h (l equivalent d une seule bougie), juge
+    # incoherent.
+    # v4.131 — SUR DEMANDE EXPLICITE : aligne sur la periode reelle de l
+    # EMA200 (200 echantillons = 6h40), qui reste un vrai "EMA200" standard
+    # — les deux systemes partagent deja la meme source (state.mtf_prices),
+    # ils atteignent desormais leur pleine maturite au meme moment.
+    "SPOT_ACCUM_ANTI_RANGE_LOOKBACK": 200,
     "SPOT_ACCUM_TTP_ARM_PCT": 1.0,             # armement du trailing a partir de ce % de PnL
     "SPOT_ACCUM_TTP_TOLERANCE_PCT": 0.5,       # marge de repli depuis le pic, une fois arme
     "SPOT_ACCUM_TARGET_SR_PCT": 80.0,          # objectif = ce % de la distance support-resistance (mesuree a l entree)
@@ -851,7 +859,9 @@ PROFILE_SWING = {
     # (desactivee) comme outil anti-range, en plus de la fenetre de
     # proximite (conservee, inchangee).
     "ACCUMULATION_ANTI_RANGE_MIN_PCT": 2.0,
-    "ACCUMULATION_ANTI_RANGE_LOOKBACK": 30,
+    # v4.130 — SUR DEMANDE EXPLICITE : meme raisonnement que Spot-Accum.
+    # v4.131 — SUR DEMANDE EXPLICITE : meme alignement que Spot-Accum.
+    "ACCUMULATION_ANTI_RANGE_LOOKBACK": 200,
     # v4.75 — SUR DEMANDE EXPLICITE : la tendance doit etre STABLE depuis ce
     # nombre de cycles consecutifs (~10s/cycle, 24 = ~4 min) avant d etre
     # consideree valide a l entree — evite d entrer juste avant/pendant un
@@ -2091,7 +2101,7 @@ class SymbolState:
         # pour ne jamais rester bloque plus longtemps que ce delai.
         self.post_win_wait_long  = 0
         self.post_win_wait_short = 0
-        self.mtf_prices    = deque(maxlen=200)
+        self.mtf_prices    = deque(maxlen=350)  # v4.130 - 350 pour couvrir 10h+ (300 requis) avec marge
         # v4.36 — SUR DEMANDE EXPLICITE : suivi du plus HAUT/BAS reel entre
         # deux echantillonnages (alimente en temps reel par le WebSocket, pas
         # seulement au moment du cycle) — permet de batir de vraies bougies
@@ -2169,7 +2179,7 @@ class SymbolState:
         """
         self.price_history  = deque(maxlen=500)
         self.vol_history    = deque(maxlen=50)
-        self.mtf_prices     = deque(maxlen=200)
+        self.mtf_prices     = deque(maxlen=350)  # v4.130 - 350 pour couvrir 10h+ (300 requis) avec marge
         self.window_high = None
         self.window_low  = None
         self.candle_history = deque(maxlen=200)
@@ -2799,7 +2809,7 @@ class BotEngine:
                     continue
                 st.price_history = deque(data.get("price_history", []), maxlen=500)
                 st.vol_history = deque(data.get("vol_history", []), maxlen=50)
-                st.mtf_prices = deque(data.get("mtf_prices", []), maxlen=200)
+                st.mtf_prices = deque(data.get("mtf_prices", []), maxlen=350)  # v4.130 - coherent avec le nouveau maxlen
                 # v4.79 — FIX : candle_history n etait jamais restaure —
                 # chaque redemarrage (meme rapide, dans la fenetre de reprise)
                 # effacait silencieusement l historique de bougies utilise
