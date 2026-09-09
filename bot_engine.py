@@ -1380,7 +1380,21 @@ def reconcile_closed_positions(info, wallet_address, saved_positions, cfg):
                 if coin not in fill_map:
                     fill_map[coin] = f  # on prend le plus recent
 
-        for coin, pos in saved_positions.items():
+        for slot_key_raw, pos in saved_positions.items():
+            # v4.126 — FIX BUG CRITIQUE (2 niveaux) : 1) comparait la cle de
+            # sauvegarde COMPLETE (ex: "NEAR_10", voire "ACCUM__NEAR_10")
+            # directement contre les tickers BRUTS d Hyperliquid (ex:
+            # "NEAR") — ces deux formats ne pouvaient JAMAIS correspondre,
+            # ce qui signifie que TOUTE position sauvegardee etait
+            # systematiquement traitee comme "fermee pendant la
+            # deconnexion" (faux "ghost trade"), meme si elle etait encore
+            # bel et bien ouverte. 2) le code appelant refaisait la MEME
+            # erreur de comparaison en sens inverse, empechant de toute
+            # facon la reintegration correcte. Extrait maintenant le VRAI
+            # ticker et detecte le prefixe ACCUM__ pour un routage correct.
+            is_accum = slot_key_raw.startswith("ACCUM__")
+            slot_key = slot_key_raw[len("ACCUM__"):] if is_accum else slot_key_raw
+            coin = ticker_from_slot_key(slot_key)
             if coin in open_coins:
                 continue  # position encore ouverte, rien a faire
 
@@ -1402,6 +1416,8 @@ def reconcile_closed_positions(info, wallet_address, saved_positions, cfg):
 
             ghost_trades.append({
                 "symbol":  coin,
+                "slot_key": slot_key,  # v4.126 — pour un routage fiable cote appelant
+                "is_accum": is_accum,  # v4.126 — sait si ca va dans accum_states
                 "type":    ptype,
                 "entry":   entry,
                 "exit":    exit_px,
@@ -3777,9 +3793,14 @@ class BotEngine:
                 ghost_trades = reconcile_closed_positions(self.info, cfg["WALLET_ADDRESS"], saved_positions, cfg)
                 for gt in ghost_trades:
                     sym = gt["symbol"]
-                    # Trouver la slot_key correspondant a ce ticker
-                    slot_key = next((s for s in self.states if ticker_from_slot_key(s) == sym), None)
-                    target = self.states.get(slot_key) if slot_key else None
+                    # v4.126 — FIX BUG CRITIQUE : utilise desormais slot_key
+                    # et is_accum, fournis directement par
+                    # reconcile_closed_positions — l ancienne comparaison
+                    # (ticker_from_slot_key(s) == sym, ou sym etait DEJA une
+                    # cle de sauvegarde complete, jamais un ticker brut) ne
+                    # pouvait jamais trouver de correspondance.
+                    slot_key = gt.get("slot_key")
+                    target = (self.accum_states.get(slot_key) if gt.get("is_accum") else self.states.get(slot_key)) if slot_key else None
                     if target:
                         target.trades += 1
                         target.pnl    += gt["pnl"]
