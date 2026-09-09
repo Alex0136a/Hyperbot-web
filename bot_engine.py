@@ -838,6 +838,15 @@ PROFILE_SWING = {
     # bloquant Accumulation en continu. Abaisse a 20 specifiquement pour ce
     # mode, sans affecter la qualite du mode normal recemment recalibree.
     "ACCUMULATION_ADX_TREND_THRESHOLD": 20.0,
+    # v4.132 — SUR DEMANDE EXPLICITE : S/R sur 24h (720 bougies ~2min),
+    # distinct de la fenetre plus courte du mode normal (SR_PERIOD_CANDLES,
+    # ~3h20 par defaut) — repli automatique sur le S/R partage tant que
+    # candle_history n a pas encore 720 bougies accumulees.
+    "ACCUMULATION_SR_PERIOD_CANDLES": 720,
+    # v4.133 — SUR DEMANDE EXPLICITE : amplitude de reference (pour la
+    # fenetre de proximite 5-10%) basee sur 4h (120 bougies ~2min),
+    # distincte du S/R structurel sur 24h ci-dessus.
+    "ACCUMULATION_AMPLITUDE_PERIOD_CANDLES": 120,
     # v4.117 — SUR DEMANDE EXPLICITE : fenetre de proximite DEDIEE a
     # Accumulation, distincte de UNIFIED_MIN/MAX_ABOVE_SUPPORT_PCT (mode
     # normal, inchange a 5-10%) — elargie a 5-20% suite a l observation que
@@ -2111,7 +2120,7 @@ class SymbolState:
         # fortement la volatilite reelle — voir _process/calc_atr).
         self.window_high = None   # plus haut vu depuis le dernier point de bougie
         self.window_low  = None   # plus bas vu depuis le dernier point de bougie
-        self.candle_history = deque(maxlen=200)  # (high, low, close) par bougie ~2min, pour l ATR reel
+        self.candle_history = deque(maxlen=750)  # v4.132 - 750 pour couvrir 24h+ (720 requis) avec marge, (high, low, close) par bougie ~2min
         # v4.39 — FIX BUG CRITIQUE : l echantillonnage MTF (bougies + EMA200)
         # se basait sur len(price_history) % MTF_STEP == 0 — hors
         # price_history est une deque PLAFONNEE (maxlen=500), dont la
@@ -2182,7 +2191,7 @@ class SymbolState:
         self.mtf_prices     = deque(maxlen=350)  # v4.130 - 350 pour couvrir 10h+ (300 requis) avec marge
         self.window_high = None
         self.window_low  = None
-        self.candle_history = deque(maxlen=200)
+        self.candle_history = deque(maxlen=750)  # v4.132 - coherent avec le nouveau maxlen
         self.cycle_count = 0
         self.last_gate_snapshot = {}
         self.indicator_history = deque(maxlen=300)
@@ -2814,7 +2823,7 @@ class BotEngine:
                 # chaque redemarrage (meme rapide, dans la fenetre de reprise)
                 # effacait silencieusement l historique de bougies utilise
                 # pour le support/resistance et l ATR reel.
-                st.candle_history = deque([tuple(c) for c in data.get("candle_history", [])], maxlen=200)
+                st.candle_history = deque([tuple(c) for c in data.get("candle_history", [])], maxlen=750)  # v4.132 - coherent avec le nouveau maxlen
                 st.collecting = data.get("collecting", True)
                 st.consec_bull = data.get("consec_bull", 0)
                 st.consec_bear = data.get("consec_bear", 0)
@@ -3250,7 +3259,7 @@ class BotEngine:
         min_pct = cfg.get("UNIFIED_MIN_SR_AMPLITUDE_PCT", 3.0)
         return (resistance - support) / support * 100 >= min_pct
 
-    def _unified_proximity_ok(self, price, support, resistance, direction, allow_breakout=True, min_pct_override=None, max_pct_override=None):
+    def _unified_proximity_ok(self, price, support, resistance, direction, allow_breakout=True, min_pct_override=None, max_pct_override=None, amplitude_override=None):
         """v4.108 — FIX BUG CRITIQUE : le calcul precedent (v4.58) exprimait
         1-5% en % du PRIX du support — incoherent avec le seuil structurel
         du trailing (70% de l AMPLITUDE support-resistance) et pouvant
@@ -3268,14 +3277,22 @@ class BotEngine:
         permettent a Accumulation d utiliser SA PROPRE fenetre (5-20% par
         defaut), plus large que celle du mode normal (5-10%, inchangee) —
         observe que la fenetre 5-10% etait le principal facteur bloquant
-        Accumulation une fois l ADX et l amplitude minimale traites."""
+        Accumulation une fois l ADX et l amplitude minimale traites.
+        v4.133 — SUR DEMANDE EXPLICITE : amplitude_override permet de
+        calculer le % de proximite par rapport a une amplitude DIFFERENTE
+        de (resistance-support) — utilise par Accumulation, dont le S/R est
+        desormais calcule sur 24h (niveaux structurels), mais dont l
+        amplitude de reference pour juger la proximite reste basee sur les
+        4 dernieres heures (plus reactif aux conditions recentes)."""
         cfg = self.cfg
         min_pct = min_pct_override if min_pct_override is not None else cfg.get("UNIFIED_MIN_ABOVE_SUPPORT_PCT", 5.0)
         max_pct = max_pct_override if max_pct_override is not None else cfg.get("UNIFIED_MAX_ABOVE_SUPPORT_PCT", 10.0)
         if direction == "long":
             if support is None or support <= 0 or resistance is None or resistance <= support:
                 return False
-            amplitude = resistance - support
+            amplitude = amplitude_override if amplitude_override is not None else (resistance - support)
+            if amplitude is None or amplitude <= 0:
+                return False
             dist_pct = (price - support) / amplitude * 100
             in_window = min_pct <= dist_pct <= max_pct
             breakout = allow_breakout and price > resistance
@@ -3283,7 +3300,9 @@ class BotEngine:
         else:  # short
             if resistance is None or resistance <= 0 or support is None or support >= resistance:
                 return False
-            amplitude = resistance - support
+            amplitude = amplitude_override if amplitude_override is not None else (resistance - support)
+            if amplitude is None or amplitude <= 0:
+                return False
             dist_pct = (resistance - price) / amplitude * 100
             in_window = min_pct <= dist_pct <= max_pct
             breakout = allow_breakout and price < support
@@ -5073,6 +5092,16 @@ class BotEngine:
         if support is None or resistance is None:
             support, resistance = calc_support_resistance(prices, sr_period)
 
+        # v4.132 — SUR DEMANDE EXPLICITE : Accumulation utilise desormais un
+        # S/R calcule sur 24h (720 bougies ~2min), distinct de la fenetre
+        # plus courte du mode normal (~3h20 par defaut) — repli sur le S/R
+        # partage tant que candle_history n a pas encore 720 bougies
+        # accumulees (redemarrage recent).
+        accum_sr_period_candles = cfg.get("ACCUMULATION_SR_PERIOD_CANDLES", 720)
+        support_accum, resistance_accum = calc_support_resistance_from_candles(state.candle_history, accum_sr_period_candles)
+        if support_accum is None or resistance_accum is None:
+            support_accum, resistance_accum = support, resistance
+
         # v4.21 — SUR DEMANDE EXPLICITE : trace des indicateurs pour affichage
         # en graphe (RSI, MACD, EMA200, ATR, support/resistance). Purement
         # informatif, n influence aucune decision — voir _process pour le
@@ -5122,7 +5151,7 @@ class BotEngine:
         # ouverture dans _finalize_open : un seul slot par actif, le premier
         # candidat finalise gagne).
         self._check_accumulation_signal(
-            symbol, ticker, price, support, resistance, rsi, momentum_pct,
+            symbol, ticker, price, support_accum, resistance_accum, rsi, momentum_pct,
             ema200, trend_up, trend_down, prices, state, self.accum_states[symbol]
         )
 
@@ -5835,8 +5864,18 @@ class BotEngine:
             trend_short_ok = self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", accum_stability_cycles, accum_adx_threshold)
             accum_min_prox = cfg.get("ACCUMULATION_MIN_ABOVE_SUPPORT_PCT", 5.0)
             accum_max_prox = cfg.get("ACCUMULATION_MAX_ABOVE_SUPPORT_PCT", 20.0)
-            prox_long_ok = self._unified_proximity_ok(price, support, resistance, "long", min_pct_override=accum_min_prox, max_pct_override=accum_max_prox)
-            prox_short_ok = self._unified_proximity_ok(price, support, resistance, "short", min_pct_override=accum_min_prox, max_pct_override=accum_max_prox)
+            # v4.133 — SUR DEMANDE EXPLICITE : le S/R d Accumulation est
+            # calcule sur 24h (niveaux structurels), mais l amplitude de
+            # reference pour juger la proximite (5-10%) reste basee sur les
+            # 4 dernieres heures (120 bougies ~2min) — plus reactive aux
+            # conditions recentes que l amplitude totale sur 24h.
+            accum_amplitude_candles = list(state.candle_history)[-cfg.get("ACCUMULATION_AMPLITUDE_PERIOD_CANDLES", 120):]
+            if len(accum_amplitude_candles) >= 5:
+                accum_amplitude_4h = max(c[0] for c in accum_amplitude_candles) - min(c[1] for c in accum_amplitude_candles)
+            else:
+                accum_amplitude_4h = None  # pas assez de bougies, repli sur (resistance-support) dans _unified_proximity_ok
+            prox_long_ok = self._unified_proximity_ok(price, support, resistance, "long", min_pct_override=accum_min_prox, max_pct_override=accum_max_prox, amplitude_override=accum_amplitude_4h)
+            prox_short_ok = self._unified_proximity_ok(price, support, resistance, "short", min_pct_override=accum_min_prox, max_pct_override=accum_max_prox, amplitude_override=accum_amplitude_4h)
             # v4.127 — SUR DEMANDE EXPLICITE : detecteur de range DIRECT en
             # PLUS de la fenetre de proximite (conservee) — bloque si le
             # marche est reellement en range (peu de mouvement recent),
