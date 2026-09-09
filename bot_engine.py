@@ -3188,7 +3188,7 @@ class BotEngine:
                 return False
         if not cfg.get("UNIFIED_REQUIRE_ADX_CONFIRM", True):
             return True
-        adx = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
+        adx = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
         adx_threshold = adx_threshold_override if adx_threshold_override is not None else cfg.get("ADX_TREND_THRESHOLD", 25.0)
         return adx is not None and adx >= adx_threshold
 
@@ -5130,7 +5130,7 @@ class BotEngine:
         # configure explicitement pour un actif (force le mode quel que
         # soit l ADX) — sinon, detection automatique a chaque cycle.
         manual_mode = cfg.get("SYMBOL_RSI_MODE", {}).get(ticker)
-        adx = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
+        adx = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
         state.current_adx = adx
         if manual_mode:
             rsi_mode = manual_mode
@@ -5431,7 +5431,7 @@ class BotEngine:
                     if not up_streak_ok_n:
                         raisons.append(f"duree insuffisante ({state.trend_up_streak}/{normal_stability_cycles} cycles requis)")
                     else:
-                        adx_diag_n = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
+                        adx_diag_n = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
                         adx_diag_n_str = f"{adx_diag_n:.1f}" if adx_diag_n is not None else "indisponible"
                         raisons.append(f"duree OK ({state.trend_up_streak} cycles) mais ADX {adx_diag_n_str} < {cfg.get('ADX_TREND_THRESHOLD', 25.0)} (tendance pas assez forte)")
                 if not proximity_long_ok:
@@ -5445,7 +5445,7 @@ class BotEngine:
                     if not down_streak_ok_n:
                         raisons.append(f"duree insuffisante ({state.trend_down_streak}/{normal_stability_cycles} cycles requis)")
                     else:
-                        adx_diag_n2 = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
+                        adx_diag_n2 = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
                         adx_diag_n2_str = f"{adx_diag_n2:.1f}" if adx_diag_n2 is not None else "indisponible"
                         raisons.append(f"duree OK ({state.trend_down_streak} cycles) mais ADX {adx_diag_n2_str} < {cfg.get('ADX_TREND_THRESHOLD', 25.0)} (tendance pas assez forte)")
                 if not proximity_short_ok:
@@ -5840,7 +5840,7 @@ class BotEngine:
                     if not up_streak_ok and not down_streak_ok:
                         raisons.append(f"duree insuffisante ({state.trend_up_streak}↑/{state.trend_down_streak}↓ sur {accum_stability_cycles} cycles requis)")
                     else:
-                        adx_diag = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
+                        adx_diag = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
                         adx_threshold_diag = cfg.get("ACCUMULATION_ADX_TREND_THRESHOLD", 20.0)
                         adx_diag_str = f"{adx_diag:.1f}" if adx_diag is not None else "indisponible"
                         raisons.append(f"duree OK ({state.trend_up_streak}↑/{state.trend_down_streak}↓) mais ADX {adx_diag_str} < {adx_threshold_diag} (tendance pas assez forte)")
@@ -6080,7 +6080,7 @@ class BotEngine:
         # defaut), calcule ici localement (pas encore disponible a ce point
         # du cycle pour la logique normale).
         if cfg.get("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", True):
-            adx_local = calc_adx(prices, cfg.get("ADX_PERIOD", 14))
+            adx_local = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
             adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
             snap["adx"] = round(adx_local, 1) if adx_local is not None else None
             snap["adx_threshold"] = adx_threshold
