@@ -6079,7 +6079,17 @@ class BotEngine:
         # fonction est appelee avant que macd/amplitude ne soient calcules
         # plus loin dans _process pour la logique normale).
         if cfg.get("REQUIRE_DIRECTION_CONFIRM", True):
-            macd, macd_sig = calc_macd(prices, cfg.get("MACD_FAST", 12), cfg.get("MACD_SLOW", 26), cfg.get("MACD_SIGNAL", 9))
+            # v4.142 — FIX BUG CRITIQUE : le MACD utilisait "prices" (prix
+            # bruts ~10s), rendant MACD_SLOW=26/MACD_FAST=12 equivalents a
+            # seulement ~4/2 MINUTES — completement deconnecte de la
+            # tendance de plusieurs heures que l on cherche a confirmer,
+            # causant des blocages "MACD ne confirme pas" meme en pleine
+            # tendance reelle (meme defaut deja corrige pour l ADX).
+            # Utilise desormais mtf_prices (memes donnees que EMA200/ADX)
+            # quand suffisant, avec repli sur les prix bruts sinon.
+            macd_min_points = cfg.get("MACD_SLOW", 26) + cfg.get("MACD_SIGNAL", 9)
+            macd_prices = list(state.mtf_prices) if len(state.mtf_prices) >= macd_min_points else prices
+            macd, macd_sig = calc_macd(macd_prices, cfg.get("MACD_FAST", 12), cfg.get("MACD_SLOW", 26), cfg.get("MACD_SIGNAL", 9))
             if macd is not None and macd_sig is not None:
                 macd_confirmed = (macd > macd_sig) if direction == "long" else (macd < macd_sig)
                 if not macd_confirmed:
