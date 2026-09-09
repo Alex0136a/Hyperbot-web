@@ -413,7 +413,7 @@ CONFIG = {
     # volatil obtient des seuils plus larges, un marche calme des seuils
     # plus serres, mais toujours proportionnellement coherents entre eux.
     "SL_TTP_ADAPTIVE_ENABLED": False,
-    "SL_ATR_MULTIPLIER":       1.0,   # SL = ATR% x ce multiplicateur
+    "SL_ATR_MULTIPLIER":       2.0,   # SL = ATR% x ce multiplicateur — v4.137 SUR DEMANDE EXPLICITE : 1.0x juge trop serre (frequents SL prematures malgre des signaux corrects), double a 2.0x pour laisser plus de place au trade
     "SL_PCT_MIN":              0.3,   # plancher de securite (evite un SL quasi nul si ATR tres faible)
     # v4.112 — SUR DEMANDE EXPLICITE : mouvement de PRIX minimum garanti
     # avant que le SL ne puisse se declencher, quel que soit le levier —
