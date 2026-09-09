@@ -810,7 +810,7 @@ ADVANCED_SETTINGS = {
     "TTP_DYNAMIC_TRAIL_GAP_PCT":   {"label": "TTP - marge du trailing dynamique dès l'armement (%)", "default": 0.5},
     "ACCUMULATION_MAX_TRADES":     {"label": "Accumulation - trades simultanes max", "default": 3},
     "ACCUMULATION_PROXIMITY_PCT":  {"label": "Accumulation - proximite support/resistance (%)", "default": 1.0},
-    "SL_ATR_MULTIPLIER":       {"label": "SL/TTP adaptatif - multiplicateur ATR", "default": 1.0},
+    "SL_ATR_MULTIPLIER":       {"label": "SL/TTP adaptatif - multiplicateur ATR", "default": 2.0},
     "SL_PCT_MIN":              {"label": "SL/TTP adaptatif - plancher de securite (%)", "default": 0.3},
     "SL_MIN_PRICE_MOVE_PCT":   {"label": "SL - mouvement de prix minimum garanti, compense par le levier (%)", "default": 0.3},
     "TTP_MIN_ARM_PCT_FLOOR":   {"label": "TTP - plancher strict d'armement, anti trades microscopiques (%)", "default": 0.3},
