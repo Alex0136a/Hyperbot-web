@@ -5832,6 +5832,17 @@ class BotEngine:
             # marche est reellement en range (peu de mouvement recent),
             # independamment de la position par rapport au support/resistance.
             is_ranging = self._is_market_ranging(state, cfg.get("ACCUMULATION_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("ACCUMULATION_ANTI_RANGE_LOOKBACK", 30))
+            # v4.129 — SUR DEMANDE EXPLICITE : diagnostic direct visible dans
+            # les logs Railway (contrairement a self.emit) — verifie si les
+            # donnees brutes utilisees par le detecteur de range refletent
+            # bien la realite du marche pour BTC, sans deviner.
+            if ticker == "BTC":
+                _mtf_diag = list(state.mtf_prices)[-cfg.get("ACCUMULATION_ANTI_RANGE_LOOKBACK", 30):]
+                if len(_mtf_diag) >= 5:
+                    _range_diag = (max(_mtf_diag) - min(_mtf_diag)) / min(_mtf_diag) * 100
+                    print(f"[RANGE-DIAG] BTC | {len(_mtf_diag)} echantillons | min={min(_mtf_diag):.2f} max={max(_mtf_diag):.2f} | range={_range_diag:.3f}% | is_ranging={is_ranging}")
+                else:
+                    print(f"[RANGE-DIAG] BTC | seulement {len(_mtf_diag)} echantillons (besoin 5+)")
             if is_ranging:
                 prox_long_ok = False
                 prox_short_ok = False
