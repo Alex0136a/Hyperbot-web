@@ -867,7 +867,7 @@ PROFILE_SWING = {
     # de cette fenetre precise. Structure dediee conservee (permet de
     # differencier a nouveau facilement si besoin plus tard).
     "ACCUMULATION_MIN_ABOVE_SUPPORT_PCT": 5.0,
-    "ACCUMULATION_MAX_ABOVE_SUPPORT_PCT": 10.0,
+    "ACCUMULATION_MAX_ABOVE_SUPPORT_PCT": 15.0,
     # v4.127 — SUR DEMANDE EXPLICITE : detecteur de range DIRECT — bloque
     # l entree si le prix a bouge de moins de X% sur les N derniers
     # echantillons mtf_prices (~2min chacun). Remplace l amplitude S/R
@@ -5966,31 +5966,38 @@ class BotEngine:
 
         if direction is None:
             if snap.get("unified_mode_active"):
-                raisons = []
-                if not (snap.get("trend_long_ok") or snap.get("trend_short_ok")):
-                    # v4.109 — SUR DEMANDE EXPLICITE : distingue precisement
-                    # la duree insuffisante de la force ADX insuffisante —
-                    # le message combine precedent ("pas assez stable/forte")
-                    # etait trompeur avec de gros compteurs de cycles
-                    # (ex: 2868), suggerant a tort un probleme de duree alors
-                    # que c est l ADX qui bloque reellement.
-                    up_streak_ok = state.trend_up_streak >= accum_stability_cycles
-                    down_streak_ok = state.trend_down_streak >= accum_stability_cycles
-                    if not up_streak_ok and not down_streak_ok:
-                        raisons.append(f"duree insuffisante ({state.trend_up_streak}↑/{state.trend_down_streak}↓ sur {accum_stability_cycles} cycles requis)")
-                    else:
-                        adx_diag = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
-                        adx_threshold_diag = cfg.get("ACCUMULATION_ADX_TREND_THRESHOLD", 20.0)
-                        adx_diag_str = f"{adx_diag:.1f}" if adx_diag is not None else "indisponible"
-                        raisons.append(f"duree OK ({state.trend_up_streak}↑/{state.trend_down_streak}↓) mais ADX {adx_diag_str} < {adx_threshold_diag} (tendance pas assez forte)")
-                if not (snap.get("proximity_long_ok") or snap.get("proximity_short_ok")):
-                    if snap.get("is_ranging"):
-                        raisons.append(f"marche en range (mouvement < {cfg.get('ACCUMULATION_ANTI_RANGE_MIN_PCT', 2.0)}% sur {cfg.get('ACCUMULATION_ANTI_RANGE_LOOKBACK', 30)} echantillons)")
-                    else:
-                        raisons.append(f"hors fenetre {cfg.get('ACCUMULATION_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('ACCUMULATION_MAX_ABOVE_SUPPORT_PCT', 20.0)}% de l'amplitude (et pas de cassure)")
-                snap["blocker"] = ", ".join(raisons) if raisons else "momentum defavorable ou direction non alignee"
+                # v4.136 — SUR DEMANDE EXPLICITE : separe desormais les
+                # raisons LONG et SHORT (comme le mode normal), au lieu de
+                # les combiner avec un "OU" qui masquait si UN SEUL des deux
+                # sens etait en realite bloque, l autre etant peut-etre pres
+                # de qualifier.
+                up_streak_ok = state.trend_up_streak >= accum_stability_cycles
+                down_streak_ok = state.trend_down_streak >= accum_stability_cycles
+                adx_diag = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
+                adx_threshold_diag = cfg.get("ACCUMULATION_ADX_TREND_THRESHOLD", 20.0)
+                adx_diag_str = f"{adx_diag:.1f}" if adx_diag is not None else "indisponible"
+                adx_ok = adx_diag is not None and adx_diag >= adx_threshold_diag
+
+                def _build_side_reasons(streak_ok, prox_ok, streak_val, other_streak_val):
+                    raisons_side = []
+                    if not streak_ok:
+                        raisons_side.append(f"duree insuffisante ({streak_val}/{accum_stability_cycles} cycles requis)")
+                    elif not adx_ok:
+                        raisons_side.append(f"duree OK ({streak_val} cycles) mais ADX {adx_diag_str} < {adx_threshold_diag} (tendance pas assez forte)")
+                    if not prox_ok:
+                        if snap.get("is_ranging"):
+                            raisons_side.append(f"marche en range (mouvement < {cfg.get('ACCUMULATION_ANTI_RANGE_MIN_PCT', 2.0)}% sur {cfg.get('ACCUMULATION_ANTI_RANGE_LOOKBACK', 30)} echantillons)")
+                        else:
+                            raisons_side.append(f"hors fenetre {cfg.get('ACCUMULATION_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('ACCUMULATION_MAX_ABOVE_SUPPORT_PCT', 20.0)}% de l'amplitude (et pas de cassure)")
+                    return ", ".join(raisons_side) if raisons_side else "momentum defavorable ou direction non alignee"
+
+                snap["blocker_long"] = _build_side_reasons(up_streak_ok, snap.get("proximity_long_ok"), state.trend_up_streak, state.trend_down_streak)
+                snap["blocker_short"] = _build_side_reasons(down_streak_ok, snap.get("proximity_short_ok"), state.trend_down_streak, state.trend_up_streak)
+                snap["blocker"] = f"LONG: {snap['blocker_long']} | SHORT: {snap['blocker_short']}"
             else:
                 snap["blocker"] = "hors zone de proximite support/resistance"
+                snap["blocker_long"] = snap["blocker"]
+                snap["blocker_short"] = snap["blocker"]
             return
         snap["blocker"] = None  # rien ne bloque a ce stade, candidat en cours d evaluation
 
