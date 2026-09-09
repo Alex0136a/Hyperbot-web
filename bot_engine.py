@@ -847,6 +847,12 @@ PROFILE_SWING = {
     # fenetre de proximite 5-10%) basee sur 4h (120 bougies ~2min),
     # distincte du S/R structurel sur 24h ci-dessus.
     "ACCUMULATION_AMPLITUDE_PERIOD_CANDLES": 120,
+    # v4.135 — SUR DEMANDE EXPLICITE : confirmation de tendance longue duree
+    # (alternative a l EMA200 court terme) — capture les mouvements lents
+    # en "escalier" sur plusieurs heures. 180 bougies ~2min = 6h de recul,
+    # 2% de changement net minimum pour confirmer.
+    "LONG_TERM_MOMENTUM_LOOKBACK_CANDLES": 180,
+    "LONG_TERM_MOMENTUM_MIN_CHANGE_PCT": 2.0,
     # v4.117 — SUR DEMANDE EXPLICITE : fenetre de proximite DEDIEE a
     # Accumulation, distincte de UNIFIED_MIN/MAX_ABOVE_SUPPORT_PCT (mode
     # normal, inchange a 5-10%) — elargie a 5-20% suite a l observation que
@@ -3197,6 +3203,28 @@ class BotEngine:
             return 2
         return 1
 
+    def _long_term_momentum_confirmed(self, state, direction, lookback_candles, min_change_pct):
+        """v4.135 — SUR DEMANDE EXPLICITE : capture les mouvements LENTS en
+        "escalier" (petits paliers sur plusieurs heures, direction nette
+        mais sans franchissement net de l EMA200 a court terme) — compare
+        le prix ACTUEL au prix d il y a 'lookback_candles' bougies (~2min
+        chacune), via candle_history. Si l ecart net depasse min_change_pct
+        dans le sens attendu, confirme la tendance MEME SI l EMA200 (fenetre
+        courte, ~6h40) ne la confirme pas lui-meme — sert d alternative,
+        pas de remplacement, a la verification EMA200 existante."""
+        candles = list(state.candle_history)
+        if len(candles) < lookback_candles:
+            return False
+        price_now = candles[-1][2]  # cloture la plus recente
+        price_then = candles[-lookback_candles][2]  # cloture il y a N bougies
+        if price_then <= 0:
+            return False
+        change_pct = (price_now - price_then) / price_then * 100
+        if direction == "long":
+            return change_pct >= min_change_pct
+        else:
+            return change_pct <= -min_change_pct
+
     def _unified_trend_confirmed(self, prices, trend_ok, state=None, streak_attr=None, min_stability_cycles=None, adx_threshold_override=None):
         """v4.58 — SUR DEMANDE EXPLICITE : verification de tendance PARTAGEE
         par les 3 modes (normal, Accumulation, Spot-Accumulation) — EMA200
@@ -3214,6 +3242,18 @@ class BotEngine:
         AUCUN actif ne depassait jamais 25 sur un lot de 30, suggerant un
         seuil trop strict pour un usage courant."""
         if not trend_ok:
+            # v4.135 — SUR DEMANDE EXPLICITE : avant d abandonner sur un
+            # EMA200 court terme non confirme, verifie si un mouvement lent
+            # en escalier sur plusieurs heures confirme quand meme la
+            # meme direction — capture les cas ou l EMA200 (fenetre
+            # courte) ne franchit jamais nettement, meme avec une
+            # direction nette sur plusieurs heures.
+            if state is not None and streak_attr is not None:
+                direction = "long" if streak_attr == "trend_up_streak" else "short"
+                lookback = self.cfg.get("LONG_TERM_MOMENTUM_LOOKBACK_CANDLES", 180)
+                min_change = self.cfg.get("LONG_TERM_MOMENTUM_MIN_CHANGE_PCT", 2.0)
+                if self._long_term_momentum_confirmed(state, direction, lookback, min_change):
+                    return True
             return False
         cfg = self.cfg
         if min_stability_cycles is not None and state is not None and streak_attr is not None:
