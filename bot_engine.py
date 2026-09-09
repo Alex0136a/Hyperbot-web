@@ -3800,23 +3800,43 @@ class BotEngine:
                     # Trouver la slot_key correspondant a ce ticker
                     slot_key = next((s for s in self.states if ticker_from_slot_key(s) == ticker_sym), None)
                     if slot_key:
-                        self.states[slot_key].position = pos
+                        # v4.125 — FIX BUG CRITIQUE : recover_open_positions
+                        # ne connait PAS la strategie d origine (Hyperliquid
+                        # ne stocke pas ce concept, propre au bot) — une
+                        # position Accumulation recuperee etait toujours
+                        # ecrite dans self.states (partage par Normal/
+                        # Funding/Spot-Accum), jamais dans self.accum_states,
+                        # la rendant invisible ou incorrectement classee.
+                        # Croise avec la sauvegarde locale (cles prefixees
+                        # "ACCUM__") pour retrouver la VRAIE strategie
+                        # d origine et router vers le bon emplacement.
+                        saved_accum = saved_positions.get(f"ACCUM__{slot_key}") if saved_positions else None
+                        if saved_accum and saved_accum.get("type") == pos.get("type"):
+                            pos["strategy"] = "accumulation"
+                            target_state = self.accum_states[slot_key]
+                            self.emit("log", {"msg": f"[{ticker_sym}] Position identifiee comme Accumulation (via sauvegarde locale) — routee vers son emplacement dedie.", "level": "warn"})
+                        else:
+                            pos.setdefault("strategy", "normal")
+                            target_state = self.states[slot_key]
+                        target_state.position = pos
                         # v3.2 — FIX : recover_open_positions reconstruit la
                         # position depuis l EXCHANGE reel (entry/sl/tp exacts),
                         # mais ne connait pas la memoire du Trailing TP (pic de
                         # profit, etage) — on la retrouve ici en croisant avec
                         # notre propre sauvegarde (saved_positions, chargee plus
                         # haut), pour ne pas "oublier" une progression deja faite.
-                        saved = saved_positions.get(slot_key) if saved_positions else None
+                        # v4.125 — utilise la bonne cle de sauvegarde et le bon
+                        # emplacement (target_state) selon la strategie identifiee.
+                        saved = saved_accum if (saved_accum and pos.get("strategy") == "accumulation") else (saved_positions.get(slot_key) if saved_positions else None)
                         if saved:
-                            self.states[slot_key].peak_pnl_usd = saved.get("_peak_pnl_usd")
-                            self.states[slot_key].tp_stage = saved.get("_tp_stage", 0)
-                            self.states[slot_key].trailing_tp_active = saved.get("_trailing_tp_active", False)
-                            self.states[slot_key].tier0_armed = saved.get("_tier0_armed", False)  # v4.11
-                            self.states[slot_key].tier0_peak_pnl_usd = saved.get("_tier0_peak_pnl_usd")  # v4.11
-                            self.states[slot_key].absolute_peak_pnl_usd = saved.get("_absolute_peak_pnl_usd")  # v4.18
-                            self.states[slot_key].spot_accum_armed = saved.get("_spot_accum_armed", False)  # v4.63
-                            self.states[slot_key].spot_accum_peak_pnl_pct = saved.get("_spot_accum_peak_pnl_pct")  # v4.63
+                            target_state.peak_pnl_usd = saved.get("_peak_pnl_usd")
+                            target_state.tp_stage = saved.get("_tp_stage", 0)
+                            target_state.trailing_tp_active = saved.get("_trailing_tp_active", False)
+                            target_state.tier0_armed = saved.get("_tier0_armed", False)  # v4.11
+                            target_state.tier0_peak_pnl_usd = saved.get("_tier0_peak_pnl_usd")  # v4.11
+                            target_state.absolute_peak_pnl_usd = saved.get("_absolute_peak_pnl_usd")  # v4.18
+                            target_state.spot_accum_armed = saved.get("_spot_accum_armed", False)  # v4.63
+                            target_state.spot_accum_peak_pnl_pct = saved.get("_spot_accum_peak_pnl_pct")  # v4.63
                         self.emit("log", {"msg": f"[{ticker_sym}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} reintegree | SL ${pos['sl']:.2f} | TP ${pos['tp']:.2f}", "level": "warn"})
                         ensure_sl_on_hyperliquid(self.exchange, self.info, cfg["WALLET_ADDRESS"], ticker_sym, pos, cfg)
                         self.emit("log", {"msg": f"[{ticker_sym}] Verification SL Hyperliquid effectuee", "level": "ok"})
