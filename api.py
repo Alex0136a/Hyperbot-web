@@ -1657,7 +1657,15 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             blocker_long = "position deja ouverte"
         elif not snap:
             blocker_long = "pas encore de donnees"
-        elif not (snap.get("rsi_buy") and snap.get("ema_bull") and snap.get("trend_up")):
+        # v4.134 — FIX BUG CRITIQUE : en mode simplifie (unified_mode_active),
+        # la VRAIE decision n utilise plus du tout rsi_buy/ema_bull/trend_up
+        # individuellement — seulement long_level_ok_final (tendance+ADX+
+        # proximite combines). Ce gate obsolete bloquait AVANT MEME d
+        # atteindre la logique correcte du mode simplifie (deja codee plus
+        # bas, mais jamais atteinte) — expliquant "signal de base non
+        # reuni" en quasi-permanence, meme quand le signal simplifie etait
+        # en realite tout pres de qualifier.
+        elif not snap.get("unified_mode_active") and not (snap.get("rsi_buy") and snap.get("ema_bull") and snap.get("trend_up")):
             blocker_long = "signal de base non reuni (RSI/EMA/tendance)"
         elif snap.get("long_signal_stale"):
             blocker_long = "signal pas encore renouvele (fraicheur)"
@@ -1691,7 +1699,8 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             blocker_short = "position deja ouverte"
         elif not snap:
             blocker_short = "pas encore de donnees"
-        elif not (snap.get("rsi_sell") and snap.get("ema_bear") and snap.get("trend_down")):
+        # v4.134 — FIX BUG CRITIQUE : meme correctif que blocker_long.
+        elif not snap.get("unified_mode_active") and not (snap.get("rsi_sell") and snap.get("ema_bear") and snap.get("trend_down")):
             blocker_short = "signal de base non reuni (RSI/EMA/tendance)"
         elif snap.get("short_signal_stale"):
             blocker_short = "signal pas encore renouvele (fraicheur)"
