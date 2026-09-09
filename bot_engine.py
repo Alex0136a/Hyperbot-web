@@ -5916,6 +5916,14 @@ class BotEngine:
                 accum_amplitude_4h = None  # pas assez de bougies, repli sur (resistance-support) dans _unified_proximity_ok
             prox_long_ok = self._unified_proximity_ok(price, support, resistance, "long", min_pct_override=accum_min_prox, max_pct_override=accum_max_prox, amplitude_override=accum_amplitude_4h)
             prox_short_ok = self._unified_proximity_ok(price, support, resistance, "short", min_pct_override=accum_min_prox, max_pct_override=accum_max_prox, amplitude_override=accum_amplitude_4h)
+            # v4.139 — SUR DEMANDE EXPLICITE : diagnostic direct visible dans
+            # les logs Railway pour comprendre pourquoi "hors fenetre" bloque
+            # presque systematiquement depuis le passage au S/R 24h + amplitude 4h.
+            if ticker == "BTC":
+                _amp_used = accum_amplitude_4h if accum_amplitude_4h is not None else (resistance - support)
+                _dist_long = (price - support) / _amp_used * 100 if _amp_used > 0 else None
+                _dist_short = (resistance - price) / _amp_used * 100 if _amp_used > 0 else None
+                print(f"[PROX-DIAG] BTC | prix={price:.2f} | support_24h={support:.2f} resistance_24h={resistance:.2f} (ecart={resistance-support:.2f}) | amplitude_4h={_amp_used:.2f} ({len(accum_amplitude_candles)} bougies) | dist_long={_dist_long:.1f}% dist_short={_dist_short:.1f}% | fenetre={accum_min_prox}-{accum_max_prox}%")
             # v4.127 — SUR DEMANDE EXPLICITE : detecteur de range DIRECT en
             # PLUS de la fenetre de proximite (conservee) — bloque si le
             # marche est reellement en range (peu de mouvement recent),
