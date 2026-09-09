@@ -333,11 +333,18 @@ CONFIG = {
     "SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT": 10.0,
     # v4.53 — SUR DEMANDE EXPLICITE : la fourchette support-resistance doit
     # avoir une amplitude minimale (support=100 -> resistance >= 103 pour 3%).
+    # v4.127 — SUR DEMANDE EXPLICITE : neutralise par defaut (False),
+    # remplace par le detecteur de range direct (ANTI_RANGE ci-dessous).
+    "SPOT_ACCUM_REQUIRE_SR_AMPLITUDE": False,
     "SPOT_ACCUM_MIN_SR_AMPLITUDE_PCT": 2.0,
     # v4.53 — SUR DEMANDE EXPLICITE : confirmation ADX de la tendance
     # (reutilise ADX_TREND_THRESHOLD, 25 par defaut) — "tendance haussiere
     # claire", pas juste prix > EMA200 franchi de justesse.
-    "SPOT_ACCUM_REQUIRE_ADX_CONFIRM": True,
+    "SPOT_ACCUM_REQUIRE_ADX_CONFIRM": False,
+    # v4.127 — SUR DEMANDE EXPLICITE : meme detecteur de range direct que
+    # pour Accumulation.
+    "SPOT_ACCUM_ANTI_RANGE_MIN_PCT": 2.0,
+    "SPOT_ACCUM_ANTI_RANGE_LOOKBACK": 30,
     "SPOT_ACCUM_TTP_ARM_PCT": 1.0,             # armement du trailing a partir de ce % de PnL
     "SPOT_ACCUM_TTP_TOLERANCE_PCT": 0.5,       # marge de repli depuis le pic, une fois arme
     "SPOT_ACCUM_TARGET_SR_PCT": 80.0,          # objectif = ce % de la distance support-resistance (mesuree a l entree)
@@ -838,14 +845,21 @@ PROFILE_SWING = {
     # differencier a nouveau facilement si besoin plus tard).
     "ACCUMULATION_MIN_ABOVE_SUPPORT_PCT": 5.0,
     "ACCUMULATION_MAX_ABOVE_SUPPORT_PCT": 10.0,
+    # v4.127 — SUR DEMANDE EXPLICITE : detecteur de range DIRECT — bloque
+    # l entree si le prix a bouge de moins de X% sur les N derniers
+    # echantillons mtf_prices (~2min chacun). Remplace l amplitude S/R
+    # (desactivee) comme outil anti-range, en plus de la fenetre de
+    # proximite (conservee, inchangee).
+    "ACCUMULATION_ANTI_RANGE_MIN_PCT": 2.0,
+    "ACCUMULATION_ANTI_RANGE_LOOKBACK": 30,
     # v4.75 — SUR DEMANDE EXPLICITE : la tendance doit etre STABLE depuis ce
     # nombre de cycles consecutifs (~10s/cycle, 24 = ~4 min) avant d etre
     # consideree valide a l entree — evite d entrer juste avant/pendant un
     # retournement deja amorce (observe : pics de 0.14-0.48% suivis d un SL
     # sur Spot-Accum). N affecte PAS le mode normal.
-    "SPOT_ACCUM_TREND_STABILITY_CYCLES": 24,
-    "ACCUMULATION_TREND_STABILITY_CYCLES": 24,
-    "NORMAL_TREND_STABILITY_CYCLES": 24,
+    "SPOT_ACCUM_TREND_STABILITY_CYCLES": 12,
+    "ACCUMULATION_TREND_STABILITY_CYCLES": 12,
+    "NORMAL_TREND_STABILITY_CYCLES": 12,
     # v4.58 — SUR DEMANDE EXPLICITE : 3 conditions de BASE PARTAGEES par les
     # 3 modes (normal, Accumulation, Spot-Accumulation) — remplacent une
     # grande partie de la complexite empilee ces dernieres iterations
@@ -853,7 +867,7 @@ PROFILE_SWING = {
     # ancienne coherence d amplitude, separation EMA200, confirmation
     # post-trade) pour le mode NORMAL. Accumulation garde en plus sa logique
     # de cassure (breakout) et sa confirmation post-trade existante.
-    "UNIFIED_REQUIRE_ADX_CONFIRM":     True,
+    "UNIFIED_REQUIRE_ADX_CONFIRM":     False,
     "UNIFIED_SIMPLIFIED_MODE":         True,   # v4.58 — base commune remplace l ancienne complexite (mode normal)
     # v4.76 — SUR DEMANDE EXPLICITE : simplification COMPLETE du mode normal
     # (retire RSI/EMA croisee/fraicheur de la decision finale, ne garde que
@@ -3191,6 +3205,22 @@ class BotEngine:
         adx = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
         adx_threshold = adx_threshold_override if adx_threshold_override is not None else cfg.get("ADX_TREND_THRESHOLD", 25.0)
         return adx is not None and adx >= adx_threshold
+
+    def _is_market_ranging(self, state, min_range_pct, lookback):
+        """v4.127 — SUR DEMANDE EXPLICITE : detecteur de range DIRECT, base
+        sur le mouvement REEL du prix (mtf_prices, ~2 min par echantillon —
+        memes donnees que EMA200/ADX), plutot que sur l amplitude
+        support-resistance (calcul juge peu fiable/mal interprete). Mesure
+        simplement : le prix a-t-il bouge de plus de min_range_pct sur les
+        'lookback' derniers echantillons ? Si non, marche considere en
+        range, bloque l entree. Retourne False (ne bloque pas) si pas
+        encore assez de donnees — evite un nouveau blocage systematique
+        juste apres un redemarrage."""
+        mtf = list(state.mtf_prices)[-lookback:]
+        if len(mtf) < 5:
+            return False
+        price_range_pct = (max(mtf) - min(mtf)) / min(mtf) * 100
+        return price_range_pct < min_range_pct
 
     def _unified_sr_amplitude_ok(self, support, resistance):
         """v4.58 — Amplitude S/R PARTAGEE par les 3 modes : la fourchette
@@ -5797,6 +5827,15 @@ class BotEngine:
             accum_max_prox = cfg.get("ACCUMULATION_MAX_ABOVE_SUPPORT_PCT", 20.0)
             prox_long_ok = self._unified_proximity_ok(price, support, resistance, "long", min_pct_override=accum_min_prox, max_pct_override=accum_max_prox)
             prox_short_ok = self._unified_proximity_ok(price, support, resistance, "short", min_pct_override=accum_min_prox, max_pct_override=accum_max_prox)
+            # v4.127 — SUR DEMANDE EXPLICITE : detecteur de range DIRECT en
+            # PLUS de la fenetre de proximite (conservee) — bloque si le
+            # marche est reellement en range (peu de mouvement recent),
+            # independamment de la position par rapport au support/resistance.
+            is_ranging = self._is_market_ranging(state, cfg.get("ACCUMULATION_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("ACCUMULATION_ANTI_RANGE_LOOKBACK", 30))
+            if is_ranging:
+                prox_long_ok = False
+                prox_short_ok = False
+            snap["is_ranging"] = is_ranging
             snap["trend_up_streak"] = state.trend_up_streak
             snap["trend_down_streak"] = state.trend_down_streak
             snap["stability_cycles_required"] = accum_stability_cycles
@@ -5845,7 +5884,10 @@ class BotEngine:
                         adx_diag_str = f"{adx_diag:.1f}" if adx_diag is not None else "indisponible"
                         raisons.append(f"duree OK ({state.trend_up_streak}↑/{state.trend_down_streak}↓) mais ADX {adx_diag_str} < {adx_threshold_diag} (tendance pas assez forte)")
                 if not (snap.get("proximity_long_ok") or snap.get("proximity_short_ok")):
-                    raisons.append(f"hors fenetre {cfg.get('ACCUMULATION_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('ACCUMULATION_MAX_ABOVE_SUPPORT_PCT', 20.0)}% de l'amplitude (et pas de cassure)")
+                    if snap.get("is_ranging"):
+                        raisons.append(f"marche en range (mouvement < {cfg.get('ACCUMULATION_ANTI_RANGE_MIN_PCT', 2.0)}% sur {cfg.get('ACCUMULATION_ANTI_RANGE_LOOKBACK', 30)} echantillons)")
+                    else:
+                        raisons.append(f"hors fenetre {cfg.get('ACCUMULATION_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('ACCUMULATION_MAX_ABOVE_SUPPORT_PCT', 20.0)}% de l'amplitude (et pas de cassure)")
                 snap["blocker"] = ", ".join(raisons) if raisons else "momentum defavorable ou direction non alignee"
             else:
                 snap["blocker"] = "hors zone de proximite support/resistance"
@@ -5861,9 +5903,11 @@ class BotEngine:
             sr_proximity = cfg.get("SR_EMA200_PROXIMITY_PCT", 0.5)
             if direction == "long" and support < ema200:
                 if (ema200 - support) / ema200 * 100 <= sr_proximity:
+                    snap["blocker"] = "support trop proche de l'EMA200 (marche en range pur)"
                     return
             if direction == "short" and resistance > ema200:
                 if (resistance - ema200) / ema200 * 100 <= sr_proximity:
+                    snap["blocker"] = "resistance trop proche de l'EMA200 (marche en range pur)"
                     return
 
         # v4.35 — SUR DEMANDE EXPLICITE : Accumulation herite desormais des
@@ -5878,6 +5922,13 @@ class BotEngine:
             if macd is not None and macd_sig is not None:
                 macd_confirmed = (macd > macd_sig) if direction == "long" else (macd < macd_sig)
                 if not macd_confirmed:
+                    # v4.128 — FIX BUG CRITIQUE : ce blocage etait
+                    # INVISIBLE dans le diagnostic — snap["blocker"] restait
+                    # a None (affichant a tort "aucun obstacle particulier")
+                    # alors que la fonction s arretait ici sans jamais
+                    # ouvrir de trade. Meme correctif pour les 2 autres
+                    # filtres non traces plus bas (amplitude ATR, post-win).
+                    snap["blocker"] = f"MACD ne confirme pas la direction {direction}"
                     return
 
         if cfg.get("REQUIRE_AMPLITUDE_COHERENCE", True):
@@ -5889,6 +5940,7 @@ class BotEngine:
             min_ratio  = cfg.get("MIN_AMPLITUDE_TO_SL_RATIO", 0.5)
             max_ratio  = cfg.get("MAX_AMPLITUDE_TO_SL_RATIO", 2.5)
             if atr_pct_now is None or not ((sl_pct_ref * min_ratio) <= atr_pct_now <= (sl_pct_ref * max_ratio)):
+                snap["blocker"] = f"amplitude ATR incoherente (ATR={atr_pct_now:.2f}% hors [{sl_pct_ref*min_ratio:.2f}%-{sl_pct_ref*max_ratio:.2f}%])" if atr_pct_now is not None else "ATR indisponible"
                 return
 
         # Confirmation post-trade soutenue (18 cycles, secours Bollinger a 30
@@ -5911,8 +5963,10 @@ class BotEngine:
                 accum_state.confirm_count_long = 0
                 accum_state.post_win_wait_long = 0
                 if not fallback_ok:
+                    snap["blocker"] = "confirmation post-trade LONG non validee (secours Bollinger)"
                     return
             else:
+                snap["blocker"] = f"confirmation post-trade LONG en attente ({accum_state.confirm_count_long}/{confirm_cycles_needed} cycles)"
                 return
         if direction == "short" and accum_state.post_win_confirm_short:
             accum_state.post_win_wait_short += 1
@@ -5928,8 +5982,10 @@ class BotEngine:
                 accum_state.confirm_count_short = 0
                 accum_state.post_win_wait_short = 0
                 if not fallback_ok:
+                    snap["blocker"] = "confirmation post-trade SHORT non validee (secours Bollinger)"
                     return
             else:
+                snap["blocker"] = f"confirmation post-trade SHORT en attente ({accum_state.confirm_count_short}/{confirm_cycles_needed} cycles)"
                 return
 
         # ── Score de confiance dedie (proximite + position RSI + momentum) ──
@@ -5954,6 +6010,7 @@ class BotEngine:
 
         threshold = self._get_confidence_threshold(ticker)
         if confidence < threshold:
+            snap["blocker"] = f"confiance {confidence:.0f}% < seuil requis {threshold:.0f}%"
             return
 
         level_label = "support" if direction == "long" else "resistance"
@@ -6092,13 +6149,26 @@ class BotEngine:
         # doit avoir une amplitude minimale (ex: support=100 -> resistance
         # >= 103 pour 3%) — evite d entrer dans un range trop plat, ou meme
         # atteindre l objectif ne rapporterait quasiment rien.
-        min_sr_amplitude_pct = cfg.get("SPOT_ACCUM_MIN_SR_AMPLITUDE_PCT", 3.0)
-        sr_amplitude_pct = (resistance - support) / support * 100
-        snap["sr_amplitude_pct"] = round(sr_amplitude_pct, 2)
-        snap["min_sr_amplitude_pct"] = min_sr_amplitude_pct
-        if sr_amplitude_pct < min_sr_amplitude_pct:
-            snap["blocker"] = f"fourchette S/R trop etroite ({sr_amplitude_pct:.2f}% < {min_sr_amplitude_pct}%)"
-            return  # fourchette trop etroite, pas assez de marge de mouvement
+        # v4.127 — SUR DEMANDE EXPLICITE : remplace par un detecteur de
+        # range DIRECT (mouvement reel du prix, mtf_prices) — juge plus
+        # fiable que l amplitude S/R (calcul/interpretation conteste).
+        # Neutralise via SPOT_ACCUM_REQUIRE_SR_AMPLITUDE (False par defaut).
+        if cfg.get("SPOT_ACCUM_REQUIRE_SR_AMPLITUDE", False):
+            min_sr_amplitude_pct = cfg.get("SPOT_ACCUM_MIN_SR_AMPLITUDE_PCT", 3.0)
+            sr_amplitude_pct = (resistance - support) / support * 100
+            snap["sr_amplitude_pct"] = round(sr_amplitude_pct, 2)
+            snap["min_sr_amplitude_pct"] = min_sr_amplitude_pct
+            if sr_amplitude_pct < min_sr_amplitude_pct:
+                snap["blocker"] = f"fourchette S/R trop etroite ({sr_amplitude_pct:.2f}% < {min_sr_amplitude_pct}%)"
+                return  # fourchette trop etroite, pas assez de marge de mouvement
+
+        # v4.127 — SUR DEMANDE EXPLICITE : detecteur de range DIRECT, EN PLUS
+        # de la fenetre de proximite (conservee, verifiee plus bas).
+        is_ranging_sa = self._is_market_ranging(state, cfg.get("SPOT_ACCUM_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("SPOT_ACCUM_ANTI_RANGE_LOOKBACK", 30))
+        snap["is_ranging"] = is_ranging_sa
+        if is_ranging_sa:
+            snap["blocker"] = f"marche en range (mouvement < {cfg.get('SPOT_ACCUM_ANTI_RANGE_MIN_PCT', 2.0)}% sur {cfg.get('SPOT_ACCUM_ANTI_RANGE_LOOKBACK', 30)} echantillons)"
+            return
 
         min_above_pct = cfg.get("SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT", 5.0)
         # v4.50 — FIX : aucun plafond n existait avant — l entree pouvait se
