@@ -6060,7 +6060,13 @@ class BotEngine:
         # en dessous de l EMA200, un SHORT si la resistance est proche ET
         # au dessus — marche en range pur, sans separation nette de sa
         # moyenne longue.
-        if cfg.get("REQUIRE_SR_EMA200_SEPARATION", False) and ema200 is not None and ema200 > 0:
+        # v4.144 — SUR DEMANDE EXPLICITE : neutralise par defaut pour
+        # Accumulation (ACCUMULATION_REQUIRE_SR_EMA200_SEPARATION=False) —
+        # ce reglage partage avec le mode normal (active la-bas) s est
+        # avere trop restrictif pour Accumulation specifiquement, qui vise
+        # justement a capturer des tendances/retournements, pas seulement
+        # des cassures nettes hors zone de range.
+        if cfg.get("ACCUMULATION_REQUIRE_SR_EMA200_SEPARATION", False) and ema200 is not None and ema200 > 0:
             sr_proximity = cfg.get("SR_EMA200_PROXIMITY_PCT", 0.5)
             if direction == "long" and support < ema200:
                 if (ema200 - support) / ema200 * 100 <= sr_proximity:
@@ -6102,7 +6108,13 @@ class BotEngine:
                     snap["blocker"] = f"MACD ne confirme pas la direction {direction}"
                     return
 
-        if cfg.get("REQUIRE_AMPLITUDE_COHERENCE", True):
+        # v4.144 — SUR DEMANDE EXPLICITE : neutralise par defaut pour
+        # Accumulation (ACCUMULATION_REQUIRE_AMPLITUDE_COHERENCE=False) —
+        # la fourchette [SL_PCT_OF_E x 0.5 - x 2.5] s est averee trop
+        # stricte pour le marche calme observe (ATR systematiquement sous
+        # le minimum exige sur la quasi-totalite des actifs suivis). Le
+        # mode normal (ligne ~5314) garde son propre comportement inchange.
+        if cfg.get("ACCUMULATION_REQUIRE_AMPLITUDE_COHERENCE", False):
             # v4.36 — vrai calcul (haut/bas/cloture), repli sur l ancien.
             _, atr_pct_now = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
             if atr_pct_now is None:
