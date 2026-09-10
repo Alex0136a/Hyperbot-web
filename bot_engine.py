@@ -3580,6 +3580,28 @@ class BotEngine:
                     continue
                 state.current_price = price
                 self._manage_position(slot_key, price, state)
+
+            # v4.121/v4.145 — SUR DEMANDE EXPLICITE : gere aussi, EN
+            # PARALLELE, les positions Accumulation (emplacement separe de
+            # self.states) — meme logique de surveillance temps reel. Ce
+            # bloc avait disparu lors d une manipulation de fichiers
+            # anterieure, expliquant un PnL/prix actuel fige (jamais mis a
+            # jour) sur les positions Accumulation.
+            for slot_key, accum_state in list(self.accum_states.items()):
+                if not accum_state.position:
+                    continue
+                ticker = ticker_from_slot_key(slot_key)
+                raw = mids.get(ticker)
+                if raw is None:
+                    continue
+                try:
+                    price = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if price <= 0:
+                    continue
+                accum_state.current_price = price
+                self._manage_position(slot_key, price, accum_state)
         except Exception as e:
             print(f"[WS] Erreur traitement flux allMids : {e}")
 
@@ -4951,6 +4973,15 @@ class BotEngine:
         normal_already_has_position = bool(state.position)
         if normal_already_has_position:
             self._maybe_manage_position_via_cycle(symbol, price, state)
+
+        # v4.145 — SUR DEMANDE EXPLICITE : meme secours par cycle pour
+        # Accumulation (emplacement separe, self.accum_states) — sans ca,
+        # si le WebSocket est indisponible, les positions Accumulation
+        # n auraient RIEN pour verifier SL/TTP entre deux cycles, en plus
+        # de ne jamais voir leur prix actuel mis a jour.
+        accum_state_here = self.accum_states.get(symbol)
+        if accum_state_here is not None and accum_state_here.position:
+            self._maybe_manage_position_via_cycle(symbol, price, accum_state_here)
 
         # v3.2 — Le blocage "session 23h45" est retire : les nouvelles entrees
         # restent possibles jusqu a 23h59:59 UTC. Le decoupage en jours
