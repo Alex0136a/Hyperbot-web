@@ -540,6 +540,7 @@ function App() {
   const [lastUpdate, setLastUpdate] = useState(null);
   const [nowTick, setNowTick] = useState(Date.now());
   const logEnd = useRef(null);
+  const logsContainerRef = useRef(null);
   const pollRef = useRef(null);
 
   const flashSave = (field) => {
@@ -767,7 +768,22 @@ function App() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [token, loadData]);
 
-  useEffect(() => { logEnd.current?.scrollIntoView({behavior:"smooth"}); }, [botLogs]);
+  // v4.143 — SUR DEMANDE EXPLICITE : ne force plus le defilement vers le
+  // bas a CHAQUE mise a jour des logs (perturbait la lecture des entrees
+  // passees des qu on avait fait defiler vers le haut) — verifie d abord
+  // si l utilisateur est deja proche du bas (a moins de 80px), auto-scroll
+  // uniquement dans ce cas. S il a delibrement remonte pour lire, sa
+  // position de lecture est desormais preservee jusqu a ce qu il revienne
+  // lui-meme en bas.
+  useEffect(() => {
+    const container = logsContainerRef.current;
+    if (!container) return;
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    const wasNearBottom = distanceFromBottom < 80;
+    if (wasNearBottom) {
+      logEnd.current?.scrollIntoView({behavior:"smooth"});
+    }
+  }, [botLogs]);
 
   // v3.2 — vrai chronometre en direct pour la duree des trades ouverts
   // (Paper Trading) : re-render force chaque seconde, independant du
@@ -2044,7 +2060,7 @@ Confirmer ?`
               </button>
             </div>
           </div>
-          <div style={{background:"#050810",borderRadius:8,padding:12,height:420,overflowY:"auto",border:"1px solid #0f1629"}}>
+          <div ref={logsContainerRef} style={{background:"#050810",borderRadius:8,padding:12,height:420,overflowY:"auto",border:"1px solid #0f1629"}}>
             {botLogs.length===0?<div style={{color:"#94a3b8",fontSize:11}}>{isRunning?"En attente du premier scan...":"Démarrez le bot pour voir les logs"}</div>
             :botLogs.map((l,i)=>(
               <div key={i} style={{display:"flex",gap:8,marginBottom:3}}>
