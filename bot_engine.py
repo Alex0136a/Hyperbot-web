@@ -862,6 +862,12 @@ PROFILE_SWING = {
     # 2% de changement net minimum pour confirmer.
     "LONG_TERM_MOMENTUM_LOOKBACK_CANDLES": 180,
     "LONG_TERM_MOMENTUM_MIN_CHANGE_PCT": 2.0,
+    # v4.148 — SUR DEMANDE EXPLICITE : detecteur de cassure fraiche pour
+    # Accumulation — 60 bougies ~2min = 2h de recul pour identifier un
+    # nouveau plus haut/plus bas. Confirme la tendance ET contourne la
+    # proximite S/R IMMEDIATEMENT des detection, pour une prise de
+    # position des la confirmation du mouvement.
+    "ACCUMULATION_BREAKOUT_LOOKBACK_CANDLES": 60,
     # v4.140 — SUR DEMANDE EXPLICITE : fenetre de tendance "fraiche" pour
     # Accumulation — entre le minimum de cycles requis (12) et cette valeur,
     # la fenetre de proximite S/R est completement ignoree, pour capturer
@@ -3217,6 +3223,27 @@ class BotEngine:
         elif confidence >= 75:
             return 2
         return 1
+
+    def _detect_fresh_breakout(self, state, direction, lookback_candles):
+        """v4.148 — SUR DEMANDE EXPLICITE : detecte le DEBUT d un mouvement
+        de facon IMMEDIATE — contrairement a l EMA200 (lent par nature,
+        exige un franchissement d une moyenne mobile) ou a la confirmation
+        longue duree (exige des heures de mouvement deja accumule), verifie
+        simplement si le prix ACTUEL vient d etablir un nouveau plus haut
+        (LONG) ou plus bas (SHORT) sur les 'lookback_candles' dernieres
+        bougies — signal structurel classique, quasi instantane, pour
+        capturer un retournement ou une cassure au moment ou elle se
+        produit, pas des heures plus tard."""
+        candles = list(state.candle_history)
+        if len(candles) < lookback_candles:
+            return False
+        recent = candles[-lookback_candles:]
+        if direction == "long":
+            prior_high = max(c[0] for c in recent[:-1]) if len(recent) > 1 else None
+            return prior_high is not None and recent[-1][2] > prior_high
+        else:
+            prior_low = min(c[1] for c in recent[:-1]) if len(recent) > 1 else None
+            return prior_low is not None and recent[-1][2] < prior_low
 
     def _long_term_momentum_confirmed(self, state, direction, lookback_candles, min_change_pct):
         """v4.135 — SUR DEMANDE EXPLICITE : capture les mouvements LENTS en
@@ -5948,6 +5975,17 @@ class BotEngine:
             accum_adx_threshold = cfg.get("ACCUMULATION_ADX_TREND_THRESHOLD", 20.0)
             trend_long_ok = self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", accum_stability_cycles, accum_adx_threshold)
             trend_short_ok = self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", accum_stability_cycles, accum_adx_threshold)
+            # v4.148 — SUR DEMANDE EXPLICITE : en plus de l EMA200/duree
+            # habituels, confirme IMMEDIATEMENT la tendance des qu une
+            # cassure structurelle fraiche est detectee (nouveau plus haut/
+            # plus bas recent) — permet une prise de position DES la
+            # confirmation du mouvement, sans attendre les cycles de
+            # stabilite normalement requis.
+            breakout_lookback = cfg.get("ACCUMULATION_BREAKOUT_LOOKBACK_CANDLES", 60)
+            if self._detect_fresh_breakout(state, "long", breakout_lookback):
+                trend_long_ok = True
+            if self._detect_fresh_breakout(state, "short", breakout_lookback):
+                trend_short_ok = True
             accum_min_prox = cfg.get("ACCUMULATION_MIN_ABOVE_SUPPORT_PCT", 5.0)
             accum_max_prox = cfg.get("ACCUMULATION_MAX_ABOVE_SUPPORT_PCT", 20.0)
             # v4.133 — SUR DEMANDE EXPLICITE : le S/R d Accumulation est
@@ -5993,6 +6031,14 @@ class BotEngine:
             if established_long:
                 prox_long_ok = True
             if established_short:
+                prox_short_ok = True
+            # v4.148 — SUR DEMANDE EXPLICITE : une cassure fraiche contourne
+            # aussi la proximite S/R — sans ca, la confirmation immediate de
+            # tendance (ci-dessus) resterait sans effet, puisqu une cassure
+            # se produit typiquement LOIN d un niveau S/R sur 24h.
+            if self._detect_fresh_breakout(state, "long", breakout_lookback):
+                prox_long_ok = True
+            if self._detect_fresh_breakout(state, "short", breakout_lookback):
                 prox_short_ok = True
             # v4.139 — SUR DEMANDE EXPLICITE : diagnostic direct visible dans
             # les logs Railway pour comprendre pourquoi "hors fenetre" bloque
