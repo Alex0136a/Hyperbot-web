@@ -573,6 +573,12 @@ CONFIG = {
     # TP, lui, reste en % de mouvement de prix pur (inchange, amplifie par
     # le levier) — SEUL le SL est plafonne en $ ainsi, sur demande explicite.
     "SL_PCT_OF_E":            1.0,   # Stop Loss = -1.0% de E -> perte $ plafonnee, quel que soit le levier
+    # v4.149 — SUR DEMANDE EXPLICITE : "patience" avant fermeture SL,
+    # applicable a TOUS les modes (fonction partagee) — exige que le prix
+    # reste au-dela du seuil pendant ce nombre de cycles CONSECUTIFS
+    # (defaut 10, ~100s) avant de fermer reellement. Filtre les meches
+    # breves (bruit) sans affecter un vrai effondrement soutenu.
+    "SL_PATIENCE_CYCLES":     10,
     "EXCHANGE_SAFETY_SL_MULT": 2.0,  # SL pose sur Hyperliquid = ce multiple du SL bot (filet de securite uniquement)
 
     # Trailing Take Profit (TTP), en % de MOUVEMENT DE PRIX REEL (v4.7) :
@@ -2249,6 +2255,7 @@ class SymbolState:
         self.tier0_armed = False
         self.tier0_peak_pnl_usd = None
         self.absolute_peak_pnl_usd = None
+        self.sl_breach_streak = 0  # v4.149 — SUR DEMANDE EXPLICITE : compteur de "patience" SL
 
     def trades_last_24h(self):
         cutoff = datetime.now().timestamp() - 86400
@@ -4523,7 +4530,21 @@ class BotEngine:
         # actuelle pour les positions ouvertes avant ce fix (champ absent).
         sl_pct_of_e = pos.get("sl_pct_of_e", cfg.get("SL_PCT_OF_E", 1.0))
         sl_usd = -E * sl_pct_of_e / 100
+        # v4.149 — SUR DEMANDE EXPLICITE : "patience" avant de fermer sur
+        # Stop Loss — exige que le prix reste au-dela du seuil pendant
+        # SL_PATIENCE_CYCLES cycles CONSECUTIFS (defaut 10, ~100s) avant de
+        # fermer reellement. Une mèche breve (pic de bruit qui touche le
+        # seuil puis repart aussitot dans le bon sens) n a plus le temps de
+        # declencher une fermeture — seul un vrai effondrement SOUTENU
+        # continue de le faire, puisque le compteur ne progresse que si le
+        # depassement persiste d un cycle au suivant (repli a 0 des que le
+        # prix revient dans les clous).
+        sl_patience_cycles = cfg.get("SL_PATIENCE_CYCLES", 10)
         if pnl_usd <= sl_usd:
+            state.sl_breach_streak = getattr(state, "sl_breach_streak", 0) + 1
+        else:
+            state.sl_breach_streak = 0
+        if pnl_usd <= sl_usd and state.sl_breach_streak >= sl_patience_cycles:
             pnl, _, trade = state.close_position(price, "STOP LOSS")
             trade["symbol"] = symbol
             if mode == "live" and self.exchange:
