@@ -873,7 +873,7 @@ PROFILE_SWING = {
     # nouveau plus haut/plus bas. Confirme la tendance ET contourne la
     # proximite S/R IMMEDIATEMENT des detection, pour une prise de
     # position des la confirmation du mouvement.
-    "ACCUMULATION_BREAKOUT_LOOKBACK_CANDLES": 60,
+    "ACCUMULATION_BREAKOUT_LOOKBACK_CANDLES": 30,
     # v4.140 — SUR DEMANDE EXPLICITE : fenetre de tendance "fraiche" pour
     # Accumulation — entre le minimum de cycles requis (12) et cette valeur,
     # la fenetre de proximite S/R est completement ignoree, pour capturer
