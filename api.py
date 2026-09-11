@@ -793,6 +793,7 @@ ADVANCED_SETTINGS = {
     "ACCUMULATION_MIN_ABOVE_SUPPORT_PCT": {"label": "Accumulation - minimum fenetre proximite (% de l'amplitude, dedie)", "default": 5.0},
     "ACCUMULATION_MAX_ABOVE_SUPPORT_PCT": {"label": "Accumulation - maximum fenetre proximite (% de l'amplitude, dedie)", "default": 15.0},
     "ACCUMULATION_ANTI_RANGE_MIN_PCT": {"label": "Accumulation - mouvement minimum requis pour eviter le range (%)", "default": 2.0},
+    "ACCUMULATION_MIN_AMPLITUDE_TO_ATR_RATIO": {"label": "Accumulation - amplitude S/R minimale, en multiple de l'ATR", "default": 3.0},
     "ACCUMULATION_ANTI_RANGE_LOOKBACK": {"label": "Accumulation - echantillons pour le detecteur de range (200 = 6h40, aligne sur EMA200)", "default": 200},
     "SPOT_ACCUM_ANTI_RANGE_MIN_PCT": {"label": "Spot-Accum - mouvement minimum requis pour eviter le range (%)", "default": 2.0},
     "SPOT_ACCUM_ANTI_RANGE_LOOKBACK": {"label": "Spot-Accum - echantillons pour le detecteur de range (200 = 6h40, aligne sur EMA200)", "default": 200},
