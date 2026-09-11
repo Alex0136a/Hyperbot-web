@@ -847,6 +847,15 @@ PROFILE_SWING = {
     # fenetre de proximite 5-10%) basee sur 4h (120 bougies ~2min),
     # distincte du S/R structurel sur 24h ci-dessus.
     "ACCUMULATION_AMPLITUDE_PERIOD_CANDLES": 120,
+    # v4.146 — SUR DEMANDE EXPLICITE : exige que l amplitude S/R (24h) soit
+    # au moins ce multiple de l ATR (volatilite recente) — garantit une
+    # vraie zone structurelle, pas juste du bruit de marche amplifie.
+    "ACCUMULATION_REQUIRE_AMPLITUDE_VS_ATR": True,
+    "ACCUMULATION_MIN_AMPLITUDE_TO_ATR_RATIO": 3.0,
+    # v4.147 — SUR DEMANDE EXPLICITE : periode ATR dediee a ce filtre (4h =
+    # 120 bougies ~2min), plus longue que le defaut (14 = 28min) pour ne
+    # pas etre faussee par un pic de volatilite ponctuel et recent.
+    "ACCUMULATION_AMPLITUDE_ATR_PERIOD": 120,
     # v4.135 — SUR DEMANDE EXPLICITE : confirmation de tendance longue duree
     # (alternative a l EMA200 court terme) — capture les mouvements lents
     # en "escalier" sur plusieurs heures. 180 bougies ~2min = 6h de recul,
@@ -6155,6 +6164,32 @@ class BotEngine:
             max_ratio  = cfg.get("MAX_AMPLITUDE_TO_SL_RATIO", 2.5)
             if atr_pct_now is None or not ((sl_pct_ref * min_ratio) <= atr_pct_now <= (sl_pct_ref * max_ratio)):
                 snap["blocker"] = f"amplitude ATR incoherente (ATR={atr_pct_now:.2f}% hors [{sl_pct_ref*min_ratio:.2f}%-{sl_pct_ref*max_ratio:.2f}%])" if atr_pct_now is not None else "ATR indisponible"
+                return
+
+        # v4.146 — SUR DEMANDE EXPLICITE : nouvelle approche pour s assurer
+        # d une vraie marge de developpement — compare l AMPLITUDE S/R
+        # elle-meme (pas le SL) a la volatilite recente reelle (ATR). Une
+        # amplitude trop proche du bruit habituel du marche (ATR) signifie
+        # que le support et la resistance ne representent pas une vraie
+        # zone structurelle, juste des fluctuations normales — explique
+        # les petits pics frequents (0.09% en moyenne observes) suivis d
+        # un redonnage quasi total. Actif par defaut (contrairement au
+        # filtre precedent, juge trop strict et desactive).
+        if cfg.get("ACCUMULATION_REQUIRE_AMPLITUDE_VS_ATR", True):
+            # v4.147 — SUR DEMANDE EXPLICITE : periode ATR dediee, plus
+            # longue (4h/120 bougies, au lieu du defaut 14/28min) — un ATR
+            # trop court aurait pu etre gonfle par un pic de volatilite
+            # PONCTUEL et RECENT (exactement le genre de mouvement qu on
+            # veut capturer), bloquant a tort l entree en le comparant a
+            # une amplitude fixe sur 24h — desequilibre d echelle corrige.
+            amp_atr_period = cfg.get("ACCUMULATION_AMPLITUDE_ATR_PERIOD", 120)
+            _, atr_pct_for_amp = calc_true_range_atr(list(state.candle_history), amp_atr_period)
+            if atr_pct_for_amp is None:
+                _, atr_pct_for_amp = calc_atr(prices, amp_atr_period)
+            amplitude_pct_sr = (resistance - support) / support * 100 if support > 0 else None
+            min_amp_atr_ratio = cfg.get("ACCUMULATION_MIN_AMPLITUDE_TO_ATR_RATIO", 3.0)
+            if atr_pct_for_amp is None or amplitude_pct_sr is None or amplitude_pct_sr < (atr_pct_for_amp * min_amp_atr_ratio):
+                snap["blocker"] = f"amplitude S/R trop proche du bruit (amplitude={amplitude_pct_sr:.2f}% < {min_amp_atr_ratio}x ATR={atr_pct_for_amp:.2f}%)" if (atr_pct_for_amp is not None and amplitude_pct_sr is not None) else "ATR ou amplitude indisponible"
                 return
 
         # Confirmation post-trade soutenue (18 cycles, secours Bollinger a 30
