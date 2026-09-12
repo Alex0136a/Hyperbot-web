@@ -7091,6 +7091,28 @@ class BotEngine:
             if not ok:
                 self.emit("log", {"msg": f"[{ticker}] Ordre non execute — {order_err or 'raison inconnue'}", "level": "warn"})
                 return
+            # v4.160 — FIX BUG CRITIQUE : update_leverage() ne verifiait
+            # jamais si le levier REELLEMENT applique par Hyperliquid
+            # correspondait a celui demande — pour certains actifs
+            # (souvent plus risques/moins liquides), Hyperliquid peut
+            # plafonner silencieusement a un levier inferieur, sans lever
+            # d erreur. Le bot continuait alors a calculer son PnL/afficher
+            # un badge base sur le levier DEMANDE, jamais celui REELLEMENT
+            # utilise — observe concretement : x3 affiche, x2 reel sur
+            # Hyperliquid, PnL du bot sous-evalue de moitie. Verifie
+            # desormais apres coup et corrige si un ecart est detecte.
+            try:
+                real_state = self.info.user_state(cfg["WALLET_ADDRESS"])
+                for item in real_state.get("assetPositions", []):
+                    p_check = item.get("position", {})
+                    if p_check.get("coin") == ticker:
+                        real_leverage = p_check.get("leverage", {}).get("value")
+                        if real_leverage and real_leverage != leverage:
+                            self.emit("log", {"msg": f"[{ticker}] ⚠️ Levier reellement applique par Hyperliquid (x{real_leverage}) different de celui demande (x{leverage}) — correction du suivi interne.", "level": "warn"})
+                            leverage = real_leverage
+                        break
+            except Exception as e:
+                print(f"[LEVERAGE-VERIF] Impossible de verifier le levier reel pour {ticker} : {e}")
 
         state.open_position(signal, price, sl_p, tp_p, size, confidence=confidence, leverage=leverage, strategy=strategy)
         # v4.89 — SUR DEMANDE EXPLICITE : memorise le mode REEL (paper/live)
