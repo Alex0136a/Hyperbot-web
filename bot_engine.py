@@ -164,7 +164,7 @@ CONFIG = {
     # (logs, evenements, historique) pour rester bien distinct des trades
     # normaux.
     "ACCUMULATION_ENABLED":              False,
-    "ACCUMULATION_MAX_TRADES":           3,     # plafond de trades Accumulation simultanes, independant de MAX_OPEN_TRADES
+    "ACCUMULATION_MAX_TRADES":           4,     # plafond de trades Accumulation simultanes, independant de MAX_OPEN_TRADES
     "ACCUMULATION_PROXIMITY_PCT":        1.0,   # "proche" du support/resistance = a moins de ce % de distance
 
     # v4.42 — SUR DEMANDE EXPLICITE : jeu de seuils SL/TTP DEDIE au mode
@@ -322,7 +322,7 @@ CONFIG = {
     # 0.5% de marge de repli depuis le pic — a corriger si l intention etait
     # differente (ex: fenetre d armement 2.5%-3.5% plutot qu un trailing).
     "SPOT_ACCUM_ENABLED": True,
-    "SPOT_ACCUM_MAX_TRADES": 5,
+    "SPOT_ACCUM_MAX_TRADES": 4,
     # v4.108 — FIX BUG CRITIQUE : desormais en % de l AMPLITUDE (comme le
     # seuil structurel du trailing, 70% de l amplitude), pas du prix du
     # support — recalibre a 5-10% de l amplitude (au lieu de 1-5% du prix).
@@ -6829,15 +6829,23 @@ class BotEngine:
         # echecs "notionnel sous le minimum Hyperliquid de $10" observes
         # avec un pourcentage fixe trop petit pour le capital actuel.
         if strategy == "spot_accumulation":
-            max_spot_trades = max(cfg.get("SPOT_ACCUM_MAX_TRADES", 3), 1)
-            size = min(equity / max_spot_trades, capital_available)
+            # v4.158 — SUR DEMANDE EXPLICITE : diviseur desormais base sur
+            # la SOMME des trades simultanes des DEUX modes (Accumulation +
+            # Spot-Accumulation combines), pas seulement celui de ce mode —
+            # les deux partagent reellement le meme capital (voir
+            # capital_engaged, deja corrige pour inclure les deux), la
+            # taille par trade doit refleter cette coordination.
+            max_combined_trades = max(cfg.get("ACCUMULATION_MAX_TRADES", 3), 1) + max(cfg.get("SPOT_ACCUM_MAX_TRADES", 3), 1)
+            size = min(equity / max_combined_trades, capital_available)
         # v4.152 — SUR DEMANDE EXPLICITE : meme dimensionnement dynamique
         # pour Accumulation — garantit l utilisation complete du capital
         # dedie, sans jamais le depasser, au lieu de partager la taille
         # figee du lot avec le mode normal.
         if strategy == "accumulation":
-            max_accum_trades = max(cfg.get("ACCUMULATION_MAX_TRADES", 3), 1)
-            size = min(equity / max_accum_trades, capital_available)
+            # v4.158 — SUR DEMANDE EXPLICITE : meme diviseur combine que
+            # Spot-Accumulation ci-dessus.
+            max_combined_trades = max(cfg.get("ACCUMULATION_MAX_TRADES", 3), 1) + max(cfg.get("SPOT_ACCUM_MAX_TRADES", 3), 1)
+            size = min(equity / max_combined_trades, capital_available)
         if size <= 0:
             self.emit("log", {"msg": f"[{ticker}] Capital insuffisant pour E=${self.batch_entry_size:.2f} (disponible ${capital_available:.2f})", "level": "warn"})
             return
