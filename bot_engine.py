@@ -381,7 +381,7 @@ CONFIG = {
     # (n accepte le signal que si l EMA200 est assez mature ET la collecte
     # saine — pas de coupure recente).
     "SPOT_ACCUM_REVERSAL_EXIT_ENABLED": True,
-    "SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES": 180,      # ~30 min a 10s/cycle (etait 18 = ~3 min)
+    "SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES": 30,      # v4.157 SUR DEMANDE EXPLICITE : 5 min a 10s/cycle (etait 180 = ~30 min, juge trop lent — 95% de pertes sur ce motif de fermeture observees)
     "SPOT_ACCUM_REVERSAL_MIN_EMA_MATURITY": 100,    # bougies mtf minimum (sur 200 max) pour faire confiance a l EMA200
 
     # v4.64 — SUR DEMANDE EXPLICITE : meme mecanisme de retournement
@@ -391,7 +391,7 @@ CONFIG = {
     # confirme (pas un simple creux passager, voir garde-fous qualite des
     # donnees). ACTIF par defaut.
     "ACCUMULATION_REVERSAL_EXIT_ENABLED": True,
-    "ACCUMULATION_REVERSAL_CONFIRM_CYCLES": 180,      # ~30 min a 10s/cycle
+    "ACCUMULATION_REVERSAL_CONFIRM_CYCLES": 30,      # v4.157 SUR DEMANDE EXPLICITE : 5 min a 10s/cycle (etait 180 = ~30 min, aligne sur le meme correctif applique a Spot-Accum)
     "ACCUMULATION_REVERSAL_MIN_EMA_MATURITY": 100,
 
     # v4.44 — SUR DEMANDE EXPLICITE : liste d actifs DEDIEE par mode
