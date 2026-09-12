@@ -6431,16 +6431,25 @@ class BotEngine:
             return
 
         snap["trend_up"] = trend_up
-        if not trend_up:
+        # v4.150 — SUR DEMANDE EXPLICITE : meme detecteur de cassure fraiche
+        # qu Accumulation (nouveau plus haut sur 1h), applique ici
+        # uniquement en LONG (Spot-Accum ne fait jamais de short) — permet
+        # une prise de position DES la confirmation d un debut de
+        # mouvement haussier, sans attendre l EMA200 ni la duree de
+        # stabilite habituellement requis.
+        breakout_lookback_sa = cfg.get("SPOT_ACCUM_BREAKOUT_LOOKBACK_CANDLES", cfg.get("ACCUMULATION_BREAKOUT_LOOKBACK_CANDLES", 30))
+        fresh_breakout_sa = self._detect_fresh_breakout(state, "long", breakout_lookback_sa)
+        snap["fresh_breakout"] = fresh_breakout_sa
+        if not trend_up and not fresh_breakout_sa:
             snap["blocker"] = "pas de tendance haussiere (EMA200)"
-            return  # exige la tendance generale haussiere (EMA200)
+            return  # exige la tendance generale haussiere (EMA200), sauf cassure fraiche
         # v4.75 — SUR DEMANDE EXPLICITE : la tendance doit aussi etre STABLE
         # depuis un moment (pas juste vraie a l instant du signal) — evite
         # d entrer juste avant/pendant un retournement deja amorce.
         min_stability_cycles = cfg.get("SPOT_ACCUM_TREND_STABILITY_CYCLES", 24)
         snap["trend_up_streak"] = state.trend_up_streak
         snap["min_stability_cycles"] = min_stability_cycles
-        if state.trend_up_streak < min_stability_cycles:
+        if state.trend_up_streak < min_stability_cycles and not fresh_breakout_sa:
             snap["blocker"] = f"tendance trop recente ({state.trend_up_streak}/{min_stability_cycles} cycles)"
             return
         if support is None or resistance is None or support <= 0:
@@ -6452,7 +6461,7 @@ class BotEngine:
         # meme seuil que le reste du bot (ADX_TREND_THRESHOLD, 25 par
         # defaut), calcule ici localement (pas encore disponible a ce point
         # du cycle pour la logique normale).
-        if cfg.get("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", True):
+        if cfg.get("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", True) and not fresh_breakout_sa:
             adx_local = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
             adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
             snap["adx"] = round(adx_local, 1) if adx_local is not None else None
@@ -6500,12 +6509,19 @@ class BotEngine:
         dist_above_support_pct = (price - support) / (resistance - support) * 100
         snap["dist_above_support_pct"] = round(dist_above_support_pct, 2)
         snap["window"] = f"{min_above_pct}-{max_above_pct}% de l'amplitude"
-        if dist_above_support_pct < min_above_pct or dist_above_support_pct > max_above_pct:
-            snap["blocker"] = f"hors fenetre ({dist_above_support_pct:.2f}% pas entre {min_above_pct}-{max_above_pct}%)"
-            return  # hors de la fenetre visee (trop pres du support, ou trop loin)
-        if price >= resistance:
-            snap["blocker"] = "prix deja au-dessus de la resistance"
-            return  # deja au-dessus de la resistance recente, entree trop tardive
+        if not fresh_breakout_sa:
+            if dist_above_support_pct < min_above_pct or dist_above_support_pct > max_above_pct:
+                snap["blocker"] = f"hors fenetre ({dist_above_support_pct:.2f}% pas entre {min_above_pct}-{max_above_pct}%)"
+                return  # hors de la fenetre visee (trop pres du support, ou trop loin)
+            if price >= resistance:
+                snap["blocker"] = "prix deja au-dessus de la resistance"
+                return  # deja au-dessus de la resistance recente, entree trop tardive
+        # v4.150 — SUR DEMANDE EXPLICITE : une cassure fraiche contourne
+        # ces deux blocages — une vraie cassure depasse PAR DEFINITION la
+        # resistance recente, ce que le blocage ci-dessus interdirait
+        # normalement (pensé pour eviter une entree "trop tardive", mais
+        # contre-productif face a une cassure qu on cherche justement a
+        # capturer des sa confirmation).
 
         # ── Score de confiance dedie : plus on est loin du support (dans la
         # zone visee) sans depasser la resistance, plus la confiance est
