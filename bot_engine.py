@@ -356,6 +356,12 @@ CONFIG = {
     "SPOT_ACCUM_TTP_ARM_PCT": 1.0,             # armement du trailing a partir de ce % de PnL
     "SPOT_ACCUM_TTP_TOLERANCE_PCT": 0.5,       # marge de repli depuis le pic, une fois arme
     "SPOT_ACCUM_TARGET_SR_PCT": 80.0,          # objectif = ce % de la distance support-resistance (mesuree a l entree)
+    # v4.161 — SUR DEMANDE EXPLICITE : desactive par defaut — la fermeture
+    # forcee a l objectif empechait de laisser courir un trade au-dela de
+    # 80% de la distance S/R initiale, meme quand la tendance restait
+    # forte. Le trailing (TTP) seul gere desormais la sortie, capturant
+    # potentiellement bien plus de hausse si le mouvement continue.
+    "SPOT_ACCUM_TARGET_EXIT_ENABLED": False,
     # v4.49 — SUR DEMANDE EXPLICITE : second seuil de declenchement du
     # trailing (s ajoute a SPOT_ACCUM_TTP_ARM_PCT, arme des que l un des
     # deux est atteint) — base sur la structure du marche, pas un % de PnL.
@@ -4539,7 +4545,7 @@ class BotEngine:
             #    immediate des que le prix l atteint, meme si le trailing
             #    n a pas encore suivi jusque-la.
             target_price = pos.get("target_price")
-            if target_price is not None and price >= target_price:
+            if cfg.get("SPOT_ACCUM_TARGET_EXIT_ENABLED", False) and target_price is not None and price >= target_price:
                 # v4.107 — SUR DEMANDE EXPLICITE : motif distinct de "TRAILING
                 # TAKE PROFIT" — permet de voir dans l historique lequel des
                 # 2 mecanismes a reellement ferme le trade (objectif atteint
