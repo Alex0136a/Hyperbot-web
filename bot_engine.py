@@ -939,6 +939,16 @@ PROFILE_SWING = {
     # les 3 conditions communes + stabilite) — alignement total avec
     # Accumulation/Spot-Accumulation.
     "UNIFIED_FULL_SIMPLIFIED_MODE":    True,
+    # v4.155 — SUR DEMANDE EXPLICITE : bloqueur anti-range pour le mode
+    # normal (aucun outil dedie pour bien trader un range, contrairement a
+    # Accumulation) — 200 echantillons = 6h40 (aligne sur EMA200/ADX).
+    "NORMAL_REQUIRE_ANTI_RANGE": True,
+    "NORMAL_ANTI_RANGE_MIN_PCT": 2.0,
+    "NORMAL_ANTI_RANGE_LOOKBACK": 200,
+    # v4.155 — SUR DEMANDE EXPLICITE : meme protection pour Funding.
+    "FUNDING_REQUIRE_ANTI_RANGE": True,
+    "FUNDING_ANTI_RANGE_MIN_PCT": 2.0,
+    "FUNDING_ANTI_RANGE_LOOKBACK": 200,
     # v4.108 — FIX BUG CRITIQUE : desormais exprime en % de l AMPLITUDE
     # (support-resistance), plus du prix du support — coherent avec le
     # seuil structurel du trailing (70% de l amplitude). Recalibre a 5-10%
@@ -5741,6 +5751,18 @@ class BotEngine:
             long_entry_ok = rsi_buy and ema_bull and trend_up and not state.long_signal_stale and long_level_ok
             short_entry_ok = rsi_sell and ema_bear and trend_down and not state.short_signal_stale and short_level_ok
 
+        # v4.155 — SUR DEMANDE EXPLICITE : le mode normal n a AUCUN outil
+        # dedie pour bien trader un marche en range (contrairement a
+        # Accumulation, qui dispose desormais d un mode "trader le range"
+        # a part entiere) — bloque donc l entree si le marche est
+        # reellement en range, meme si le mode simplifie signale un signal
+        # LONG/SHORT valide. Meme principe de precaution que Spot-Accum.
+        if cfg.get("NORMAL_REQUIRE_ANTI_RANGE", True):
+            is_ranging_normal = self._is_market_ranging(state, cfg.get("NORMAL_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("NORMAL_ANTI_RANGE_LOOKBACK", 200))
+            if is_ranging_normal:
+                long_entry_ok = False
+                short_entry_ok = False
+
         # v4.122 — SUR DEMANDE EXPLICITE : bloque la decision finale du mode
         # normal si une position normale est deja ouverte sur cet actif —
         # remplace l ancien "return" precoce qui bloquait aussi les autres
@@ -6472,6 +6494,15 @@ class BotEngine:
         conf_threshold = self._get_confidence_threshold(ticker)
         if confidence < conf_threshold:
             return
+
+        # v4.155 — SUR DEMANDE EXPLICITE : meme protection que Normal — le
+        # mode Funding n a aucun outil dedie pour bien trader un marche en
+        # range, bloque donc l entree si c est le cas, meme avec un signal
+        # de funding par ailleurs valide.
+        if cfg.get("FUNDING_REQUIRE_ANTI_RANGE", True):
+            is_ranging_funding = self._is_market_ranging(state, cfg.get("FUNDING_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("FUNDING_ANTI_RANGE_LOOKBACK", 200))
+            if is_ranging_funding:
+                return
 
         reasons = [
             f"💰 Funding Contrarian : {annual_pct:+.1f}% annualise (seuil ±{threshold:.0f}%)",
