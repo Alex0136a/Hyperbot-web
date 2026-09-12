@@ -138,7 +138,7 @@ def _compute_protected_trade_ids():
             continue
         ticker = be.ticker_from_slot_key(slot_key)
         action = "LONG" if s.position["type"] == "long" else "SHORT"
-        tid = db.get_open_trade_id_by_coin_action(ticker, action)
+        tid = db.get_open_trade_id_by_coin_action(ticker, action, s.position.get("strategy"))
         if tid:
             protected_ids.append(tid)
     return protected_ids
@@ -177,7 +177,7 @@ def _consume_events():
             elif etype == "trade":
                 ticker = be.ticker_from_slot_key(data.get("symbol", ""))
                 action = "LONG" if data.get("type") == "long" else "SHORT"
-                trade_id = db.get_open_trade_id_by_coin_action(ticker, action)
+                trade_id = db.get_open_trade_id_by_coin_action(ticker, action, data.get("strategy"))
                 if trade_id:
                     db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"), peak_pnl=data.get("peak_pnl_usd"), peak_pnl_pct=data.get("peak_pnl_pct"))
                 else:
@@ -624,7 +624,12 @@ def _open_positions() -> List[Dict[str, Any]]:
             leverage = cfg.get("LEVERAGE", 1)
             tp1 = tp2 = None
             try:
-                trade_id = db.get_open_trade_id_by_coin_action(ticker, action)
+                # v4.159 — FIX BUG CRITIQUE : transmet desormais la
+                # strategie exacte de CETTE position pour eviter de
+                # recuperer par erreur le levier/TP d une position d un
+                # AUTRE mode sur le meme coin+action (ex: Normal ET
+                # Accumulation shorts simultanes sur le meme actif).
+                trade_id = db.get_open_trade_id_by_coin_action(ticker, action, pos.get("strategy"))
                 if trade_id:
                     rows = db.get_trades(limit=1000)
                     match = next((r for r in rows if r["id"] == trade_id), None)
@@ -1956,7 +1961,7 @@ def paper_close(body: PaperCloseBody, email: str = Depends(require_user)):
         if effective_mode_close == "live" and bot.exchange:
             close_order_ok = be.close_order(bot.exchange, body.trade_id, pos_snapshot, cfg)
         action = "LONG" if trade["type"] == "long" else "SHORT"
-        trade_id = db.get_open_trade_id_by_coin_action(ticker, action)
+        trade_id = db.get_open_trade_id_by_coin_action(ticker, action, real_strategy)
         if trade_id:
             db.close_trade(trade_id, trade["exit"], trade["pnl"], trade["reason"])
     if effective_mode_close == "live" and not close_order_ok:
