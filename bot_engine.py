@@ -322,7 +322,7 @@ CONFIG = {
     # 0.5% de marge de repli depuis le pic — a corriger si l intention etait
     # differente (ex: fenetre d armement 2.5%-3.5% plutot qu un trailing).
     "SPOT_ACCUM_ENABLED": True,
-    "SPOT_ACCUM_MAX_TRADES": 3,
+    "SPOT_ACCUM_MAX_TRADES": 5,
     # v4.108 — FIX BUG CRITIQUE : desormais en % de l AMPLITUDE (comme le
     # seuil structurel du trailing, 70% de l amplitude), pas du prix du
     # support — recalibre a 5-10% de l amplitude (au lieu de 1-5% du prix).
@@ -6655,8 +6655,17 @@ class BotEngine:
             total_pnl = sum(s.paper_pnl for s in self.states.values())
             base_capital = cfg["CAPITAL_USD"]
         equity = base_capital + total_pnl
+        # v4.153 — FIX BUG CRITIQUE : ne comptait QUE self.states
+        # (Normal/Funding/Spot-Accum), jamais self.accum_states —
+        # capital_available ignorait donc completement ce qu Accumulation
+        # avait deja engage, permettant un surengagement REEL du capital
+        # au-dela de ce qui est reellement disponible sur le compte des
+        # que plusieurs modes ont des positions ouvertes simultanement.
         capital_engaged = sum(
             s.position["size"] for s in self.states.values()
+            if s.position and s.position.get("effective_mode", "paper") == mode_for_sizing
+        ) + sum(
+            s.position["size"] for s in self.accum_states.values()
             if s.position and s.position.get("effective_mode", "paper") == mode_for_sizing
         )
         capital_available = equity - capital_engaged
@@ -6695,6 +6704,13 @@ class BotEngine:
         if strategy == "spot_accumulation":
             max_spot_trades = max(cfg.get("SPOT_ACCUM_MAX_TRADES", 3), 1)
             size = min(equity / max_spot_trades, capital_available)
+        # v4.152 — SUR DEMANDE EXPLICITE : meme dimensionnement dynamique
+        # pour Accumulation — garantit l utilisation complete du capital
+        # dedie, sans jamais le depasser, au lieu de partager la taille
+        # figee du lot avec le mode normal.
+        if strategy == "accumulation":
+            max_accum_trades = max(cfg.get("ACCUMULATION_MAX_TRADES", 3), 1)
+            size = min(equity / max_accum_trades, capital_available)
         if size <= 0:
             self.emit("log", {"msg": f"[{ticker}] Capital insuffisant pour E=${self.batch_entry_size:.2f} (disponible ${capital_available:.2f})", "level": "warn"})
             return
