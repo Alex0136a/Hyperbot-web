@@ -204,11 +204,27 @@ def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=N
         conn.commit()
 
 
-def get_open_trade_id_by_coin_action(coin, action):
+def get_open_trade_id_by_coin_action(coin, action, strategy=None):
     """Retrouve le dernier trade ouvert (non ferme) pour ce coin/action —
     utilise quand on ne connait pas l id (ouverture geree par bot_engine,
-    pas par l API)."""
+    pas par l API).
+    v4.159 — FIX BUG CRITIQUE : sans le parametre strategy, cette
+    recherche etait AMBIGUE des que 2 modes (ex: Normal ET Accumulation)
+    avaient chacun une position ouverte sur le MEME coin+action —
+    retournait potentiellement la MAUVAISE ligne (levier, TP d un AUTRE
+    mode affiches a tort). Filtre desormais aussi par strategy quand
+    fourni, pour cibler exactement la bonne ligne."""
     with _lock, _connect() as conn:
+        if strategy is not None:
+            row = conn.execute(
+                "SELECT id FROM trades WHERE coin=? AND action=? AND strategy=? AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
+                (coin, action, strategy)
+            ).fetchone()
+            if row:
+                return row["id"]
+        # repli (strategy non fournie, ou aucune ligne avec cette strategy
+        # exacte — trades anciens sans champ strategy renseigne) :
+        # comportement d origine.
         row = conn.execute(
             "SELECT id FROM trades WHERE coin=? AND action=? AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
             (coin, action)
