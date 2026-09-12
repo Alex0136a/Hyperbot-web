@@ -579,6 +579,12 @@ CONFIG = {
     # (defaut 10, ~100s) avant de fermer reellement. Filtre les meches
     # breves (bruit) sans affecter un vrai effondrement soutenu.
     "SL_PATIENCE_CYCLES":     10,
+    # v4.154 — SUR DEMANDE EXPLICITE : meme principe de patience, applique
+    # au TTP, COUPLE a une confirmation par changement de couleur de
+    # bougie — les deux synchronisees sur les memes donnees temps reel
+    # (candle_history, alimente par le WebSocket). 5 cycles par defaut
+    # (un peu plus court que le SL, car le TTP protege deja un gain).
+    "TTP_PATIENCE_CYCLES":    5,
     "EXCHANGE_SAFETY_SL_MULT": 2.0,  # SL pose sur Hyperliquid = ce multiple du SL bot (filet de securite uniquement)
 
     # Trailing Take Profit (TTP), en % de MOUVEMENT DE PRIX REEL (v4.7) :
@@ -2263,6 +2269,7 @@ class SymbolState:
         self.tier0_peak_pnl_usd = None
         self.absolute_peak_pnl_usd = None
         self.sl_breach_streak = 0  # v4.149 — SUR DEMANDE EXPLICITE : compteur de "patience" SL
+        self.ttp_breach_streak = 0  # v4.154 — SUR DEMANDE EXPLICITE : compteur de "patience" TTP
 
     def trades_last_24h(self):
         cutoff = datetime.now().timestamp() - 86400
@@ -3237,6 +3244,43 @@ class BotEngine:
         elif confidence >= 75:
             return 2
         return 1
+
+    def _ttp_confirmed_to_close(self, state, direction):
+        """v4.154 — SUR DEMANDE EXPLICITE : meme principe de "patience" que
+        le Stop Loss (anti-meche), applique au Trailing Take Profit, COUPLE
+        a une confirmation par changement de couleur de bougie — les deux
+        conditions sont synchronisees sur les MEMES donnees temps reel
+        (candle_history, alimente en direct par le WebSocket).
+        1) Patience : le declencheur de repli doit rester actif pendant
+           TTP_PATIENCE_CYCLES cycles CONSECUTIFS (compteur remis a zero
+           des que la condition de repli n est plus vraie).
+        2) Couleur de bougie : la bougie EN COURS doit avoir change de
+           couleur par rapport a la precedente, dans le sens du
+           retournement attendu (rouge apres verte pour un LONG qui
+           referme, verte apres rouge pour un SHORT) — confirme que le
+           marche a REELLEMENT commence a s inverser, pas seulement une
+           meche isolee sur la bougie precedente.
+        Retourne True seulement si les DEUX conditions sont reunies."""
+        cfg = self.cfg
+        patience_cycles = cfg.get("TTP_PATIENCE_CYCLES", 5)
+        state.ttp_breach_streak = getattr(state, "ttp_breach_streak", 0) + 1
+        patience_ok = state.ttp_breach_streak >= patience_cycles
+
+        candles = list(state.candle_history)
+        color_ok = True  # par defaut (pas assez de bougies) : ne bloque pas la fermeture
+        if len(candles) >= 2:
+            prev_close, cur_close = candles[-2][2], candles[-1][2]
+            prev_prev_close = candles[-3][2] if len(candles) >= 3 else prev_close
+            prev_color_up = prev_close >= prev_prev_close
+            cur_color_up = cur_close >= prev_close
+            if direction == "long":
+                # LONG qui referme : attend une bougie ROUGE apres une VERTE
+                color_ok = not (prev_color_up and cur_color_up)
+            else:
+                # SHORT qui referme : attend une bougie VERTE apres une ROUGE
+                color_ok = not (not prev_color_up and not cur_color_up)
+
+        return patience_ok and color_ok
 
     def _detect_fresh_breakout(self, state, direction, lookback_candles):
         """v4.148 — SUR DEMANDE EXPLICITE : detecte le DEBUT d un mouvement
@@ -4511,10 +4555,14 @@ class BotEngine:
                             if pnl_pct <= giveback_floor_sa:
                                 giveback_cap_triggered_sa = True
                         if not giveback_cap_triggered_sa:
+                            state.ttp_breach_streak = 0  # v4.154 — reinitialise la patience TTP
                             self.emit("log", {"msg": f"[{ticker}] 🌱 Repli Spot-Accum a {pnl_pct:.2f}% (pic {state.spot_accum_peak_pnl_pct:.2f}%) mais tendance de fond toujours intacte — position maintenue", "level": "dim"})
                             self._save_open_positions()
                             return
-                        # sinon : plafond de redonnage atteint, ferme quand meme
+                        # sinon : plafond de redonnage atteint — v4.154, exige aussi la confirmation patience+bougie
+                        if not self._ttp_confirmed_to_close(state, "long"):
+                            self._save_open_positions()
+                            return
                     pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
                     trade["symbol"] = symbol
                     self.emit("trade", trade)
@@ -4681,10 +4729,14 @@ class BotEngine:
                             if pnl_pct <= giveback_floor_t0:
                                 giveback_cap_triggered_t0 = True
                         if not giveback_cap_triggered_t0:
+                            state.ttp_breach_streak = 0  # v4.154 — reinitialise la patience TTP
                             self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Repli tier0 a {pnl_pct:.2f}% (verrou {tier0_lock_pct:.2f}%) mais tendance de fond toujours intacte — position maintenue", "level": "dim"})
                             self._save_open_positions()
                             return
-                        # sinon : plafond de redonnage atteint, ferme quand meme (tombe dans le bloc de fermeture ci-dessous)
+                        # sinon : plafond de redonnage atteint — v4.154, exige aussi la confirmation patience+bougie
+                        if not self._ttp_confirmed_to_close(state, pos["type"]):
+                            self._save_open_positions()
+                            return
                     pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
                     trade["symbol"] = symbol
                     if mode == "live" and self.exchange:
@@ -4828,11 +4880,15 @@ class BotEngine:
                         if state.small_peak_giveback_streak >= small_peak_giveback_min_cycles:
                             giveback_cap_triggered = True
                     if not giveback_cap_triggered:
+                        state.ttp_breach_streak = 0  # v4.154 — reinitialise la patience TTP
                         self.emit("log", {"msg": f"[{ticker}] ${price:.2f} Repli a {pnl_pct:.2f}% (verrou {current_lock_pct:.2f}%) mais tendance de fond toujours intacte — position maintenue", "level": "dim"})
                         self._save_open_positions()
                         return
                     state.small_peak_giveback_streak = 0
-                    # Plafond de redonnage atteint malgre la tendance intacte : ferme quand meme.
+                    # Plafond de redonnage atteint malgre la tendance intacte — v4.154, exige aussi la confirmation patience+bougie
+                    if not self._ttp_confirmed_to_close(state, pos["type"]):
+                        self._save_open_positions()
+                        return
                     pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
                     trade["symbol"] = symbol
                     if mode == "live" and self.exchange:
@@ -4850,6 +4906,9 @@ class BotEngine:
                     self._persist_capital_snapshot()
                     return
                 else:
+                    if not self._ttp_confirmed_to_close(state, pos["type"]):
+                        self._save_open_positions()
+                        return
                     pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
                     trade["symbol"] = symbol
                     if mode == "live" and self.exchange:
@@ -4869,6 +4928,7 @@ class BotEngine:
                     self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
                     return
             else:
+                state.ttp_breach_streak = 0  # v4.154 — reinitialise la patience TTP (pas de repli en cours)
                 self.emit("log", {"msg": f"[{ticker}] ${price:.2f} TTP actif | mouvement +{pnl_pct:.2f}% (+${pnl_usd:.2f} a x{leverage}) | pic +{peak_price_pct:.2f}% (sortie si repli a +{current_lock_pct:.2f}%)", "level": "dim"})
                 return
 
