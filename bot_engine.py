@@ -904,6 +904,13 @@ PROFILE_SWING = {
     # v4.130 — SUR DEMANDE EXPLICITE : meme raisonnement que Spot-Accum.
     # v4.131 — SUR DEMANDE EXPLICITE : meme alignement que Spot-Accum.
     "ACCUMULATION_ANTI_RANGE_LOOKBACK": 200,
+    # v4.151 — SUR DEMANDE EXPLICITE : quand le marche est en range (voir
+    # ci-dessus) ET que le prix est dans la fenetre de proximite normale,
+    # trade DIRECTEMENT la fourchette (achat pres du support, vente pres
+    # de la resistance) sans exiger de confirmation de tendance — retour a
+    # l intention d origine d Accumulation, en complement (pas en
+    # remplacement) des mecanismes de capture de tendance/cassure.
+    "ACCUMULATION_TRADE_THE_RANGE": True,
     # v4.75 — SUR DEMANDE EXPLICITE : la tendance doit etre STABLE depuis ce
     # nombre de cycles consecutifs (~10s/cycle, 24 = ~4 min) avant d etre
     # consideree valide a l entree — evite d entrer juste avant/pendant un
@@ -6073,6 +6080,16 @@ class BotEngine:
             # PLUS de la fenetre de proximite (conservee) — bloque si le
             # marche est reellement en range (peu de mouvement recent),
             # independamment de la position par rapport au support/resistance.
+            # v4.151 — SUR DEMANDE EXPLICITE : le detecteur de range n est
+            # plus un simple bloqueur — il devient un MODE D ENTREE
+            # ALTERNATIF a part entiere. Si le marche est reellement en
+            # range (peu de mouvement recent) ET que le prix est dans la
+            # fenetre de proximite normale, on trade DIRECTEMENT la
+            # fourchette (achat pres du support, vente pres de la
+            # resistance) SANS exiger de confirmation de tendance —
+            # exactement l intention d origine d Accumulation. Si le
+            # marche n est PAS en range, le comportement precedent
+            # s applique inchange (tendance + proximite requises).
             is_ranging = self._is_market_ranging(state, cfg.get("ACCUMULATION_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("ACCUMULATION_ANTI_RANGE_LOOKBACK", 30))
             # v4.129 — SUR DEMANDE EXPLICITE : diagnostic direct visible dans
             # les logs Railway (contrairement a self.emit) — verifie si les
@@ -6085,9 +6102,11 @@ class BotEngine:
                     print(f"[RANGE-DIAG] BTC | {len(_mtf_diag)} echantillons | min={min(_mtf_diag):.2f} max={max(_mtf_diag):.2f} | range={_range_diag:.3f}% | is_ranging={is_ranging}")
                 else:
                     print(f"[RANGE-DIAG] BTC | seulement {len(_mtf_diag)} echantillons (besoin 5+)")
-            if is_ranging:
-                prox_long_ok = False
-                prox_short_ok = False
+            if is_ranging and cfg.get("ACCUMULATION_TRADE_THE_RANGE", True):
+                if prox_long_ok:
+                    trend_long_ok = True
+                if prox_short_ok:
+                    trend_short_ok = True
             snap["is_ranging"] = is_ranging
             snap["trend_up_streak"] = state.trend_up_streak
             snap["trend_down_streak"] = state.trend_down_streak
@@ -6147,7 +6166,7 @@ class BotEngine:
                         raisons_side.append(f"duree OK ({streak_val} cycles) mais ADX {adx_diag_str} < {adx_threshold_diag} (tendance pas assez forte)")
                     if not prox_ok:
                         if snap.get("is_ranging"):
-                            raisons_side.append(f"marche en range (mouvement < {cfg.get('ACCUMULATION_ANTI_RANGE_MIN_PCT', 2.0)}% sur {cfg.get('ACCUMULATION_ANTI_RANGE_LOOKBACK', 30)} echantillons)")
+                            raisons_side.append(f"en range mais hors zone d'achat/vente ({cfg.get('ACCUMULATION_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('ACCUMULATION_MAX_ABOVE_SUPPORT_PCT', 20.0)}% de l'amplitude)")
                         else:
                             raisons_side.append(f"hors fenetre {cfg.get('ACCUMULATION_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('ACCUMULATION_MAX_ABOVE_SUPPORT_PCT', 20.0)}% de l'amplitude (et pas de cassure)")
                     return ", ".join(raisons_side) if raisons_side else "momentum defavorable ou direction non alignee"
