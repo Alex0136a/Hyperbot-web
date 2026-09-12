@@ -880,6 +880,11 @@ PROFILE_SWING = {
     # proximite S/R IMMEDIATEMENT des detection, pour une prise de
     # position des la confirmation du mouvement.
     "ACCUMULATION_BREAKOUT_LOOKBACK_CANDLES": 30,
+    # v4.156 — SUR DEMANDE EXPLICITE : les bougies precedant une cassure
+    # doivent former une vraie consolidation (mouvement <= ce %) — evite de
+    # declencher sur une simple poursuite de tendance deja fluide.
+    "BREAKOUT_MAX_PRIOR_CONSOLIDATION_PCT": 3.0,
+    "BREAKOUT_MAX_CONSOLIDATION_DIRECTIONALITY": 0.5,
     # v4.140 — SUR DEMANDE EXPLICITE : fenetre de tendance "fraiche" pour
     # Accumulation — entre le minimum de cycles requis (12) et cette valeur,
     # la fenetre de proximite S/R est completement ignoree, pour capturer
@@ -3301,17 +3306,48 @@ class BotEngine:
         (LONG) ou plus bas (SHORT) sur les 'lookback_candles' dernieres
         bougies — signal structurel classique, quasi instantane, pour
         capturer un retournement ou une cassure au moment ou elle se
-        produit, pas des heures plus tard."""
+        produit, pas des heures plus tard.
+        v4.156 — FIX BUG CRITIQUE : la version precedente se declenchait
+        sur PRESQUE CHAQUE bougie d une tendance simplement reguliere (5/5
+        declenchements observes sur une simulation de hausse lineaire,
+        SANS consolidation) — "nouveau plus haut sur N bougies" est
+        quasi-toujours vrai en tendance fluide, ne capturant donc PAS une
+        vraie cassure mais n importe quelle poursuite de mouvement deja en
+        cours. Exige desormais que les bougies PRECEDENTES (avant celle qui
+        casse) aient ete relativement PLATES (vraie consolidation prealable,
+        via _is_market_ranging) — une vraie cassure suit un resserrement,
+        pas une simple continuation."""
         candles = list(state.candle_history)
         if len(candles) < lookback_candles:
             return False
         recent = candles[-lookback_candles:]
+        consolidation_candles = recent[:-1]
+        if len(consolidation_candles) < 5:
+            return False
+        cons_closes = [c[2] for c in consolidation_candles]
+        cons_min, cons_max = min(cons_closes), max(cons_closes)
+        cons_range_pct = (cons_max - cons_min) / cons_min * 100 if cons_min > 0 else None
+        max_consolidation_pct = self.cfg.get("BREAKOUT_MAX_PRIOR_CONSOLIDATION_PCT", 3.0)
+        if cons_range_pct is None or cons_range_pct > max_consolidation_pct:
+            return False  # les bougies precedentes bougeaient deja trop — pas une vraie consolidation
+        # v4.156 (suite) — une consolidation genuine OSCILLE (le prix finit
+        # proche d ou il a commence), contrairement a une derive
+        # directionnelle lente qui peut accidentellement avoir une faible
+        # amplitude TOTALE tout en progressant CONSTAMMENT dans un sens.
+        # Exige que le deplacement NET (debut->fin) reste une PETITE part
+        # de l amplitude totale observee (sinon : deja une tendance, pas
+        # une consolidation plate).
+        net_change = abs(cons_closes[-1] - cons_closes[0])
+        total_range = cons_max - cons_min
+        max_directionality_ratio = self.cfg.get("BREAKOUT_MAX_CONSOLIDATION_DIRECTIONALITY", 0.5)
+        if total_range <= 0 or (net_change / total_range) > max_directionality_ratio:
+            return False  # derive directionnelle deguisee en "faible amplitude", pas une vraie consolidation
         if direction == "long":
-            prior_high = max(c[0] for c in recent[:-1]) if len(recent) > 1 else None
-            return prior_high is not None and recent[-1][2] > prior_high
+            prior_high = max(c[0] for c in consolidation_candles)
+            return recent[-1][2] > prior_high
         else:
-            prior_low = min(c[1] for c in recent[:-1]) if len(recent) > 1 else None
-            return prior_low is not None and recent[-1][2] < prior_low
+            prior_low = min(c[1] for c in consolidation_candles)
+            return recent[-1][2] < prior_low
 
     def _long_term_momentum_confirmed(self, state, direction, lookback_candles, min_change_pct):
         """v4.135 — SUR DEMANDE EXPLICITE : capture les mouvements LENTS en
