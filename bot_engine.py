@@ -914,7 +914,7 @@ PROFILE_SWING = {
     "ACCUMULATION_ANTI_RANGE_MIN_PCT": 2.0,
     # v4.130 — SUR DEMANDE EXPLICITE : meme raisonnement que Spot-Accum.
     # v4.131 — SUR DEMANDE EXPLICITE : meme alignement que Spot-Accum.
-    "ACCUMULATION_ANTI_RANGE_LOOKBACK": 200,
+    "ACCUMULATION_ANTI_RANGE_LOOKBACK": 30,
     # v4.151 — SUR DEMANDE EXPLICITE : quand le marche est en range (voir
     # ci-dessus) ET que le prix est dans la fenetre de proximite normale,
     # trade DIRECTEMENT la fourchette (achat pres du support, vente pres
@@ -949,11 +949,11 @@ PROFILE_SWING = {
     # Accumulation) — 200 echantillons = 6h40 (aligne sur EMA200/ADX).
     "NORMAL_REQUIRE_ANTI_RANGE": True,
     "NORMAL_ANTI_RANGE_MIN_PCT": 2.0,
-    "NORMAL_ANTI_RANGE_LOOKBACK": 200,
+    "NORMAL_ANTI_RANGE_LOOKBACK": 30,
     # v4.155 — SUR DEMANDE EXPLICITE : meme protection pour Funding.
     "FUNDING_REQUIRE_ANTI_RANGE": True,
     "FUNDING_ANTI_RANGE_MIN_PCT": 2.0,
-    "FUNDING_ANTI_RANGE_LOOKBACK": 200,
+    "FUNDING_ANTI_RANGE_LOOKBACK": 30,
     # v4.108 — FIX BUG CRITIQUE : desormais exprime en % de l AMPLITUDE
     # (support-resistance), plus du prix du support — coherent avec le
     # seuil structurel du trailing (70% de l amplitude). Recalibre a 5-10%
