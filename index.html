@@ -79,13 +79,13 @@ const ACCUM_OVERRIDE_KEYS = new Set([
 const PAPER_SUBTABS = [
   {key:"all", label:"Tous", icon:"📊", color:"#60a5fa"},
   {key:"performance", label:"Performance", icon:"📈", color:"#34d399"},
-  {key:"normal", label:"Normal", icon:"⚡", color:"#e2e8f0"},
+  {key:"forex", label:"Forex", icon:"⚡", color:"#e2e8f0"},
   {key:"accumulation", label:"Accumulation", icon:"🎯", color:"#c084fc"},
   {key:"funding_contrarian", label:"Funding", icon:"💰", color:"#fbbf24"},
   {key:"spot_accumulation", label:"Spot-Accum", icon:"🌱", color:"#34d399"},
 ];
 // v4.44 — modes ayant une liste d actifs dediee personnalisable (pas
-// "normal", qui reste gere via l onglet Marches existant)
+// "forex", qui reste gere via l onglet Marches existant)
 const MODE_COIN_KEY = {
   accumulation: "accumulation_active_coins",
   funding_contrarian: "funding_active_coins",
@@ -687,7 +687,7 @@ function App() {
   const loadAllStrategyPerformance = useCallback(async () => {
     if (!token) return;
     setStrategyPerfLoading(true);
-    const modes = ["normal","accumulation","funding_contrarian","spot_accumulation"];
+    const modes = ["forex","accumulation","funding_contrarian","spot_accumulation"];
     try {
       const results = await Promise.all(modes.map(m=>
         apiCall(`/api/strategy-performance/${m}`, "GET", null, token).catch(()=>null)
@@ -2111,11 +2111,11 @@ Confirmer ?`
                   style={{background:"#05301622",border:"1px solid #34d399",borderRadius:6,padding:"8px 16px",color:"#34d399",fontSize:11,cursor:"pointer",fontWeight:700,marginBottom:14}}>
                   {strategyPerfLoading?"Chargement...":"🔄 Rafraîchir les 4 modes"}
                 </button>
-                {["normal","accumulation","funding_contrarian","spot_accumulation"].every(m=>!strategyPerf[m]) ? (
+                {["forex","accumulation","funding_contrarian","spot_accumulation"].every(m=>!strategyPerf[m]) ? (
                   <div style={{fontSize:11,color:"#94a3b8"}}>Cliquez sur "Rafraîchir" pour comparer la performance des 4 modes en un coup d'œil.</div>
                 ) : (
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-                    {["normal","accumulation","funding_contrarian","spot_accumulation"].map(m=>{
+                    {["forex","accumulation","funding_contrarian","spot_accumulation"].map(m=>{
                       const meta = PAPER_SUBTABS.find(s=>s.key===m);
                       const perf = strategyPerf[m];
                       return (
@@ -2139,7 +2139,7 @@ Confirmer ?`
             )}
 
             {paperSubTab!=="all" && paperSubTab!=="performance" && (()=>{
-              const openFiltered = (paper?.open_trades||[]).filter(t=>(t.strategy||"normal")===paperSubTab);
+              const openFiltered = (paper?.open_trades||[]).filter(t=>(t.strategy||"forex")===paperSubTab);
               // v4.44 — FIX : utilise l historique DEDIE recupere pour ce
               // mode precis (deja filtre cote serveur, pool bien plus large
               // que les 50 signaux partages tous modes confondus).
@@ -2147,7 +2147,7 @@ Confirmer ?`
               const coinsSeen = [...new Set([...openFiltered.map(t=>t.coin), ...historyFiltered.map(s=>s.coin)])].sort();
               const perf = strategyPerf[paperSubTab];
               const stMeta = PAPER_SUBTABS.find(s=>s.key===paperSubTab);
-              const coinKey = MODE_COIN_KEY[paperSubTab]; // undefined pour "normal"
+              const coinKey = MODE_COIN_KEY[paperSubTab]; // undefined pour "forex"
               const modeCoinList = coinKey ? config?.[coinKey] : null; // null = herite du global
               const globalActive = config?.active_coins || [];
               const strategyOverride = config?.strategy_mode_override?.[paperSubTab] ?? null;
@@ -2526,7 +2526,7 @@ Confirmer ?`
           normal" sur chaque champ) — n a plus de raison de s afficher sur
           les autres onglets (Tous, Accumulation, Funding, Spot-Accum), qui
           ont chacun leur propre panneau "Reglages dedies a ce mode". */}
-          {paperSubTab==="normal" && (
+          {paperSubTab==="forex" && (
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:16}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
               <div>
