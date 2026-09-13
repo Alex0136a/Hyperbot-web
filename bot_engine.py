@@ -120,7 +120,7 @@ CONFIG = {
     # trader ; les autres modes (Accumulation/Funding/Spot-Accum) les
     # ignorent completement, et inversement Normal ignore desormais les
     # cryptos (voir isolation dans _process).
-    "NORMAL_FOREX_SYMBOLS": ["xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY"],
+    "NORMAL_FOREX_SYMBOLS": ["xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY", "PAXG"],
     # v4.163 — marge ISOLEE obligatoire pour les marches HIP-3 (contrairement
     # aux cryptos, en marge croisee) — voir application dans le passage d
     # ordre et l ajustement de levier.
@@ -4182,7 +4182,10 @@ class BotEngine:
             lev_errors = []
             for t in real_tickers_lev:
                 # v4.163 — SUR DEMANDE EXPLICITE : marge isolee pour le forex.
-                is_cross_margin_startup = t not in cfg.get("NORMAL_FOREX_SYMBOLS", [])
+                # v4.171 — FIX : meme distinction que pour le levier par
+                # trade — seul le prefixe "xyz:" (vrais marches HIP-3)
+                # exige la marge isolee, pas PAXG.
+                is_cross_margin_startup = not t.startswith("xyz:")
                 # v4.166 — meme nom qualifie "dex:coin" que pour le passage d ordre.
                 lev_ticker_startup = t
                 try:
@@ -5608,6 +5611,14 @@ class BotEngine:
 
             # v4.43 — Mode Spot-Accumulation, lui aussi EN PARALLELE.
             self._check_spot_accumulation_signal(symbol, ticker, price, support, resistance, rsi, trend_up, prices, state)
+        else:
+            # v4.170 — SUR DEMANDE EXPLICITE : message explicite plutot que
+            # de laisser un instantane perime ("pas encore de donnees") —
+            # ces modes IGNORENT volontairement le forex, ce n est pas un
+            # manque de donnees. Meme message que PAXG (actif exclu).
+            forex_snap = {"blocker": "actif non selectionne pour ce mode"}
+            self.accum_states[symbol].accumulation_gate_snapshot = forex_snap
+            state.spot_accum_gate_snapshot = forex_snap
 
         # v4.19 — Respect des niveaux, FUSIONNE dans la logique principale
         # (pas juste Accumulation) : un LONG a besoin d un rebond pres du
@@ -7291,7 +7302,13 @@ class BotEngine:
             # v4.163 — SUR DEMANDE EXPLICITE : les marches HIP-3 (forex,
             # namespace "xyz:") exigent la marge ISOLEE — la marge croisee,
             # utilisee pour les cryptos, n est pas supportee sur ces marches.
-            is_cross_margin = ticker not in cfg.get("NORMAL_FOREX_SYMBOLS", [])
+            # v4.171 — FIX : PAXG est un actif natif Hyperliquid (marge
+            # croisee normale), contrairement aux vrais marches HIP-3
+            # (prefixe "xyz:", marge isolee obligatoire) — ne verifier que
+            # le prefixe, pas l appartenance a NORMAL_FOREX_SYMBOLS dans son
+            # ensemble (qui inclut aussi PAXG pour l isolation de MODE
+            # uniquement, pas pour la marge).
+            is_cross_margin = not ticker.startswith("xyz:")
             # v4.166 — meme nom qualifie "dex:coin" que pour le passage d ordre.
             lev_ticker = ticker
             try:
