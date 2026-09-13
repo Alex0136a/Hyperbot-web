@@ -613,6 +613,12 @@ CONFIG = {
     # (defaut 10, ~100s) avant de fermer reellement. Filtre les meches
     # breves (bruit) sans affecter un vrai effondrement soutenu.
     "SL_PATIENCE_CYCLES":     10,
+    # v4.179 — SUR DEMANDE EXPLICITE : plafond de duree maximale (toutes
+    # strategies sauf Spot-Accum, philosophie patiente explicitement
+    # exclue) — ferme uniquement si le PnL est neutre ou positif, jamais
+    # force une perte.
+    "MAX_HOLD_DURATION_ENABLED": True,
+    "MAX_HOLD_DURATION_HOURS": 12,
     # v4.154 — SUR DEMANDE EXPLICITE : meme principe de patience, applique
     # au TTP, COUPLE a une confirmation par changement de couleur de
     # bougie — les deux synchronisees sur les memes donnees temps reel
@@ -4623,6 +4629,30 @@ class BotEngine:
         # pour que Stop Loss/TTP restent coherents avec le levier prudent
         # applique par trade (voir _compute_prudent_leverage).
         pnl_usd = E * pos.get("leverage", 1) * pnl_pct / 100
+
+        # v4.179 — SUR DEMANDE EXPLICITE : plafond de duree maximale (12h)
+        # pour tous les modes SAUF Spot-Accum (philosophie explicitement
+        # patiente, "tenir tant que l actif existe") — ferme uniquement si
+        # le PnL est POSITIF OU NEUTRE a ce moment (jamais force une perte,
+        # une position encore perdante apres 12h continue normalement,
+        # geree par les mecanismes de sortie habituels).
+        if pos.get("strategy") != "spot_accumulation" and cfg.get("MAX_HOLD_DURATION_ENABLED", True):
+            try:
+                opened_dt = datetime.strptime(pos["opened_at"], "%d/%m/%Y %H:%M:%S")
+                hours_open = (datetime.now() - opened_dt).total_seconds() / 3600
+            except (ValueError, KeyError, TypeError):
+                hours_open = 0
+            max_hold_hours = cfg.get("MAX_HOLD_DURATION_HOURS", 12)
+            if hours_open >= max_hold_hours and pnl_usd >= 0:
+                pnl, _, trade = state.close_position(price, "DUREE MAX ATTEINTE")
+                trade["symbol"] = symbol
+                if mode == "live" and self.exchange:
+                    close_order(self.exchange, ticker, pos, self.cfg)
+                self.emit("trade", trade)
+                self.emit("log", {"msg": f"[{ticker}] {strat_tag}⏱️ DUREE MAX ATTEINTE ({hours_open:.1f}h >= {max_hold_hours}h, PnL neutre/positif) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "dim"})
+                self._save_open_positions()
+                self._persist_capital_snapshot()
+                return
 
         # v4.18 — Suivi du pic ABSOLU, des le premier cycle en profit, quel
         # que soit le seuil de trailing atteint (ou pas) — purement
