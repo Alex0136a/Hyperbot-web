@@ -112,7 +112,7 @@ CONFIG = {
                            # (HIP-3, namespace "xyz:") dedies au mode Normal
                            # — cote deja implicitement contre USD chacun.
                            # Isolation de mode geree dans _process (voir
-                           # NORMAL_FOREX_SYMBOLS ci-dessous).
+                           # FOREX_SYMBOLS ci-dessous).
                            "xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY"],
 
     # v4.163 — SUR DEMANDE EXPLICITE : liste de reference pour identifier
@@ -120,11 +120,11 @@ CONFIG = {
     # trader ; les autres modes (Accumulation/Funding/Spot-Accum) les
     # ignorent completement, et inversement Normal ignore desormais les
     # cryptos (voir isolation dans _process).
-    "NORMAL_FOREX_SYMBOLS": ["xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY", "PAXG"],
+    "FOREX_SYMBOLS": ["xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY", "PAXG"],
     # v4.163 — marge ISOLEE obligatoire pour les marches HIP-3 (contrairement
     # aux cryptos, en marge croisee) — voir application dans le passage d
     # ordre et l ajustement de levier.
-    "NORMAL_FOREX_ISOLATED_MARGIN": True,
+    "FOREX_ISOLATED_MARGIN": True,
 
     # v3.2 — Nouvelle approche : les 30 marches sont TOUS eligibles par
     # defaut (le bot pioche librement parmi eux selon le score de
@@ -299,7 +299,7 @@ CONFIG = {
     # soit le mode global. Le garde-fou FUNDING_MODE_LIVE_ALLOWED ci-dessus
     # reste actif EN PLUS pour funding_contrarian, jamais retire.
     "STRATEGY_MODE_OVERRIDE": {
-        "normal": None,
+        "forex": None,
         "accumulation": None,
         "funding_contrarian": None,
         "spot_accumulation": None,
@@ -309,7 +309,7 @@ CONFIG = {
     # False = bloque UNIQUEMENT les nouvelles ouvertures (les positions
     # deja ouvertes de ce mode continuent normalement jusqu a fermeture).
     "STRATEGY_TRADING_ENABLED": {
-        "normal": True,
+        "forex": True,
         "accumulation": True,
         "funding_contrarian": True,
         "spot_accumulation": True,
@@ -956,7 +956,7 @@ PROFILE_SWING = {
     # sur Spot-Accum). N affecte PAS le mode normal.
     "SPOT_ACCUM_TREND_STABILITY_CYCLES": 12,
     "ACCUMULATION_TREND_STABILITY_CYCLES": 12,
-    "NORMAL_TREND_STABILITY_CYCLES": 12,
+    "FOREX_TREND_STABILITY_CYCLES": 12,
     # v4.58 — SUR DEMANDE EXPLICITE : 3 conditions de BASE PARTAGEES par les
     # 3 modes (normal, Accumulation, Spot-Accumulation) — remplacent une
     # grande partie de la complexite empilee ces dernieres iterations
@@ -974,9 +974,9 @@ PROFILE_SWING = {
     # v4.155 — SUR DEMANDE EXPLICITE : bloqueur anti-range pour le mode
     # normal (aucun outil dedie pour bien trader un range, contrairement a
     # Accumulation) — 200 echantillons = 6h40 (aligne sur EMA200/ADX).
-    "NORMAL_REQUIRE_ANTI_RANGE": True,
-    "NORMAL_ANTI_RANGE_MIN_PCT": 2.0,
-    "NORMAL_ANTI_RANGE_LOOKBACK": 30,
+    "FOREX_REQUIRE_ANTI_RANGE": True,
+    "FOREX_ANTI_RANGE_MIN_PCT": 2.0,
+    "FOREX_ANTI_RANGE_LOOKBACK": 30,
     # v4.155 — SUR DEMANDE EXPLICITE : meme protection pour Funding.
     "FUNDING_REQUIRE_ANTI_RANGE": True,
     "FUNDING_ANTI_RANGE_MIN_PCT": 2.0,
@@ -1633,7 +1633,7 @@ def get_prices(info, slot_keys, cfg):
         # WebSocket, corrigee ici pour le chemin REST (cycle classique).
         # Repli specifique, ne s active que si des tickers forex manquent
         # encore apres les tentatives ci-dessus.
-        forex_syms = set(cfg.get("NORMAL_FOREX_SYMBOLS", []))
+        forex_syms = set(cfg.get("FOREX_SYMBOLS", []))
         still_missing = [k for k in slot_keys if k not in result and ticker_from_slot_key(k) in forex_syms]
         if still_missing:
             try:
@@ -1766,7 +1766,7 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
         # utilise un ticker BRUT avec un parametre "dex" separe. Les deux
         # conventions coexistent, gerees ici uniquement pour l ordre.
         # v4.169 — FIX : ticker contient DEJA le nom complet "xyz:EUR" nativement
-        # (SYMBOLS/NORMAL_FOREX_SYMBOLS le stockent ainsi) — aucune
+        # (SYMBOLS/FOREX_SYMBOLS le stockent ainsi) — aucune
         # transformation supplementaire necessaire, contrairement a la
         # version precedente qui aurait double le prefixe.
         order_ticker = ticker
@@ -2331,12 +2331,12 @@ class SymbolState:
         self.consec_bull     = 0
         self.consec_bear     = 0
 
-    def open_position(self, ptype, entry, sl, tp, size, confidence=None, leverage=1, strategy="normal"):
+    def open_position(self, ptype, entry, sl, tp, size, confidence=None, leverage=1, strategy="forex"):
         self.position = {
             "type": ptype, "entry": entry, "sl": sl, "tp": tp,
             "size": size, "opened_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
             "confidence": confidence, "leverage": leverage,
-            "strategy": strategy,  # v4.8 — "normal" ou "accumulation", pour differencier partout en aval
+            "strategy": strategy,  # v4.8 — "forex" ou "accumulation", pour differencier partout en aval
         }
         self.peak_price = entry
         self.trailing_tp_active = False
@@ -2435,7 +2435,7 @@ class SymbolState:
             "type": p["type"], "entry": p["entry"], "exit": exit_price,
             "pnl": pnl_usd, "reason": reason, "win": win,
             "ts": datetime.now().timestamp(),
-            "strategy": p.get("strategy", "normal"),  # v4.8
+            "strategy": p.get("strategy", "forex"),  # v4.8
             "trade_mode": trade_mode,  # v4.89 — paper ou live REEL de ce trade precis
             "peak_pnl_usd": peak_pnl_usd_at_close,  # v4.15
             "peak_pnl_pct": peak_pnl_pct_at_close,  # v4.17
@@ -3256,7 +3256,7 @@ class BotEngine:
         closed_count = 0
         for slot_key, state in list(self.states.items()):
             pos = state.position
-            if pos and pos.get("strategy", "normal") == strategy:
+            if pos and pos.get("strategy", "forex") == strategy:
                 price = state.current_price or pos.get("entry")
                 if price is None:
                     continue
@@ -3839,7 +3839,7 @@ class BotEngine:
                 self.all_mids = {}
             self.all_mids.update(mids)
 
-            forex_tickers = set(self.cfg.get("NORMAL_FOREX_SYMBOLS", []))
+            forex_tickers = set(self.cfg.get("FOREX_SYMBOLS", []))
             for slot_key, state in self.states.items():
                 ticker = ticker_from_slot_key(slot_key)
                 if ticker not in forex_tickers:
@@ -4261,7 +4261,7 @@ class BotEngine:
                             target_state = self.accum_states[slot_key]
                             self.emit("log", {"msg": f"[{ticker_sym}] Position identifiee comme Accumulation (via sauvegarde locale) — routee vers son emplacement dedie.", "level": "warn"})
                         else:
-                            pos.setdefault("strategy", "normal")
+                            pos.setdefault("strategy", "forex")
                             target_state = self.states[slot_key]
                         target_state.position = pos
                         # v3.2 — FIX : recover_open_positions reconstruit la
@@ -4522,7 +4522,7 @@ class BotEngine:
         # la resolution par-strategie — aucun changement de comportement
         # pour un mode qui n a pas ete personnalise (retombe sur le mode
         # global, exactement comme avant).
-        mode = self._effective_mode(pos.get("strategy", "normal"))
+        mode = self._effective_mode(pos.get("strategy", "forex"))
         # v4.33 — SECURITE EXPLICITE : un trade "funding_contrarian" reste
         # simule (paper) meme si le bot tourne globalement en mode live, tant
         # que FUNDING_MODE_LIVE_ALLOWED n est pas active manuellement — ce
@@ -5189,7 +5189,7 @@ class BotEngine:
         # ticker forex (marge croisee incompatible avec l exigence de
         # marge isolee des marches HIP-3), et qu Normal continue d
         # evaluer des cryptos alors qu il est desormais dedie au forex.
-        is_forex_ticker = ticker in cfg.get("NORMAL_FOREX_SYMBOLS", [])
+        is_forex_ticker = ticker in cfg.get("FOREX_SYMBOLS", [])
         if ticker == "BTC":
             print(f"[MTF-DIAG] _process ENTREE pour BTC, prix={price}, collecting={state.collecting}")
         # v3.2 — FIX : ne pas ecraser le prix avec la valeur REST (cycle,
@@ -5371,7 +5371,7 @@ class BotEngine:
         # meme de collecter leurs candidats). Le plafond du mode normal
         # lui-meme est deja correctement applique plus tard, lors de
         # _finalize_pending_candidates (compte uniquement les positions
-        # strategy=="normal"), donc AUCUNE verification supplementaire n
+        # strategy=="forex"), donc AUCUNE verification supplementaire n
         # est necessaire ici — il suffisait de retirer ce blocage global.
         # ── Plage horaire — bloque les NOUVELLES entrées en paper ET en live ──
         if not is_trading_hours(cfg):
@@ -5851,7 +5851,7 @@ class BotEngine:
             # v4.76 — SUR DEMANDE EXPLICITE : meme stabilite de tendance que
             # Spot-Accum/Accumulation, etendue au mode normal (cluster de
             # 19 entrees groupees observe le 04/09, sans cette protection).
-            normal_stability_cycles = cfg.get("NORMAL_TREND_STABILITY_CYCLES", 24)
+            normal_stability_cycles = cfg.get("FOREX_TREND_STABILITY_CYCLES", 24)
             long_level_ok = (
                 self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", normal_stability_cycles)
                 and self._unified_proximity_ok(price, support, resistance, "long")
@@ -6011,8 +6011,8 @@ class BotEngine:
         # a part entiere) — bloque donc l entree si le marche est
         # reellement en range, meme si le mode simplifie signale un signal
         # LONG/SHORT valide. Meme principe de precaution que Spot-Accum.
-        if cfg.get("NORMAL_REQUIRE_ANTI_RANGE", True):
-            is_ranging_normal = self._is_market_ranging(state, cfg.get("NORMAL_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("NORMAL_ANTI_RANGE_LOOKBACK", 200))
+        if cfg.get("FOREX_REQUIRE_ANTI_RANGE", True):
+            is_ranging_normal = self._is_market_ranging(state, cfg.get("FOREX_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("FOREX_ANTI_RANGE_LOOKBACK", 200))
             if is_ranging_normal:
                 long_entry_ok = False
                 short_entry_ok = False
@@ -6935,7 +6935,7 @@ class BotEngine:
             cand["confidence"], cand["rsi"], cand["rsi_mode"], cand["reasons"], cand["prices"],
             cand.get("conf_breakdown", {})
         )
-        strategy = cand.get("strategy", "normal")  # v4.8 — "normal" ou "accumulation"
+        strategy = cand.get("strategy", "forex")  # v4.8 — "forex" ou "accumulation"
         # v4.106 — SUR DEMANDE EXPLICITE : chaque mode peut desormais etre
         # arrete INDEPENDAMMENT des autres (bouton Marche/Arret par mode) —
         # meme principe que le bouton global (self.trading_enabled) :
@@ -7305,7 +7305,7 @@ class BotEngine:
             # v4.171 — FIX : PAXG est un actif natif Hyperliquid (marge
             # croisee normale), contrairement aux vrais marches HIP-3
             # (prefixe "xyz:", marge isolee obligatoire) — ne verifier que
-            # le prefixe, pas l appartenance a NORMAL_FOREX_SYMBOLS dans son
+            # le prefixe, pas l appartenance a FOREX_SYMBOLS dans son
             # ensemble (qui inclut aussi PAXG pour l isolation de MODE
             # uniquement, pas pour la marge).
             is_cross_margin = not ticker.startswith("xyz:")
@@ -7461,7 +7461,7 @@ class BotEngine:
             "sl_pct_used": sl_pct_of_e,
             "ttp_arm1_pct_used": ttp_arm1_pct,
             "adaptive_sl_ttp": adaptive_used,
-            "strategy": strategy,  # v4.8 — "normal" ou "accumulation"
+            "strategy": strategy,  # v4.8 — "forex" ou "accumulation"
             "trade_mode": effective_mode_open,  # v4.90 — mode reel (paper/live) de CE trade
             # v4.10 — ratio informatif "mouvement de prix TP / % de E du SL" :
             # a levier x1 c est le vrai ratio gain/risque $. Au-dela, le gain
@@ -7488,7 +7488,7 @@ class BotEngine:
         de place) resteront candidats aux cycles suivants si leur signal
         persiste toujours.
         v4.8 — MAX_OPEN_TRADES ne compte desormais que les positions de
-        strategie "normal" : le mode Accumulation a son propre plafond
+        strategie "forex" : le mode Accumulation a son propre plafond
         independant (voir _finalize_pending_accumulation_candidates),
         les deux pools de slots ne se disputent plus la meme limite."""
         if not self._pending_candidates:
@@ -7497,7 +7497,7 @@ class BotEngine:
         self._pending_candidates.sort(key=lambda c: c["confidence"], reverse=True)
         max_open = cfg.get("MAX_OPEN_TRADES")
         for cand in self._pending_candidates:
-            open_count = sum(1 for st in self.states.values() if st.position and st.position.get("strategy", "normal") == "normal")
+            open_count = sum(1 for st in self.states.values() if st.position and st.position.get("strategy", "forex") == "forex")
             if max_open is not None and open_count >= max_open:
                 self.emit("log", {
                     "msg": f"[{cand['ticker']}] Slot plein ({open_count}/{max_open}) — candidat a {cand['confidence']:.0f}% laisse de cote ce cycle (meilleurs scores prioritaires).",
