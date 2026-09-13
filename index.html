@@ -2188,6 +2188,25 @@ Confirmer ?`
                         {v==="live"?"🔴 LIVE":"🎮 PAPER"}
                       </button>
                     ))}
+                    <button onClick={async()=>{
+                      // v4.165 — SUR DEMANDE EXPLICITE : nettoyage seul,
+                      // sans jamais toucher au statut paper/live (contrairement
+                      // au bouton LIVE ci-dessus).
+                      const confirmMsg = `Nettoyer ${stMeta.label} va :\n\n` +
+                        `• Fermer immediatement tous les trades ouverts de ce mode\n` +
+                        `• Effacer definitivement son historique (statistiques remises a zero)\n\n` +
+                        `Le statut paper/live actuel est CONSERVE. Continuer ?`;
+                      if (!confirm(confirmMsg)) return;
+                      try{
+                        const r = await apiCall("/api/config/strategy-clear-only","POST",{strategy:paperSubTab},token);
+                        alert(`${stMeta.label} nettoye.\n\n${r.closed_positions} trade(s) ferme(s), ${r.deleted_history} trade(s) d'historique efface(s).`);
+                        setStrategyPerf({});
+                        setModeHistory({});
+                        loadData();
+                      }catch(err){ alert("Erreur : "+err.message); }
+                    }} style={{background:"#1e293b",border:"1px solid #475569",borderRadius:5,padding:"5px 12px",color:"#94a3b8",fontSize:10,fontWeight:700,cursor:"pointer"}}>
+                      🧹 Nettoyer
+                    </button>
                     {strategyOverride && (
                       <>
                         <span style={{fontSize:9,color:effectiveModeForTab==="live"?"#f87171":"#34d399",fontWeight:700}}>
