@@ -4827,45 +4827,71 @@ class BotEngine:
         # actuelle pour les positions ouvertes avant ce fix (champ absent).
         sl_pct_of_e = pos.get("sl_pct_of_e", cfg.get("SL_PCT_OF_E", 1.0))
         sl_usd = -E * sl_pct_of_e / 100
-        # v4.149 — SUR DEMANDE EXPLICITE : "patience" avant de fermer sur
-        # Stop Loss — exige que le prix reste au-dela du seuil pendant
-        # SL_PATIENCE_CYCLES cycles CONSECUTIFS (defaut 10, ~100s) avant de
-        # fermer reellement. Une mèche breve (pic de bruit qui touche le
-        # seuil puis repart aussitot dans le bon sens) n a plus le temps de
-        # declencher une fermeture — seul un vrai effondrement SOUTENU
-        # continue de le faire, puisque le compteur ne progresse que si le
-        # depassement persiste d un cycle au suivant (repli a 0 des que le
-        # prix revient dans les clous).
-        sl_patience_cycles = cfg.get("SL_PATIENCE_CYCLES", 10)
-        if pnl_usd <= sl_usd:
-            state.sl_breach_streak = getattr(state, "sl_breach_streak", 0) + 1
-        else:
-            state.sl_breach_streak = 0
-        if pnl_usd <= sl_usd and state.sl_breach_streak >= sl_patience_cycles:
-            pnl, _, trade = state.close_position(price, "STOP LOSS")
-            trade["symbol"] = symbol
-            if mode == "live" and self.exchange:
-                close_order(self.exchange, ticker, pos, self.cfg)
-            self.emit("trade", trade)
-            peak_str = f" | pic atteint avant la chute : +${trade['peak_pnl_usd']:.2f}" if trade.get("peak_pnl_usd") else ""
-            self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (plafond -${-sl_usd:.2f} = {sl_pct_of_e:.2f}% de E, mouvement de prix requis a x{pos.get('leverage',1)} : {sl_pct_of_e/max(pos.get('leverage',1),1):.2f}%){peak_str}", "level": "loss"})
-            # v4.31 — SUR DEMANDE EXPLICITE, suite a une serie de 7+ pertes
-            # consecutives dans le MEME sens observee (ARB LONG) : la
-            # confirmation renforcee (voir plus bas) se declenche desormais
-            # APRES TOUTE fermeture dans un sens donne — gain OU perte — pas
-            # seulement apres un gain. Une perte prouve que la direction
-            # etait fausse, raison de plus d exiger une reconfirmation
-            # soutenue avant de retenter le meme pari.
-            if pos["type"] == "long":
-                state.post_win_confirm_long = True
-                state.confirm_count_long = 0
+        # v4.174 — SUR DEMANDE EXPLICITE : pour Spot-Accum UNIQUEMENT,
+        # remplace COMPLETEMENT le SL classique (% de prix) par une rupture
+        # CONFIRMEE du support (le niveau structurel memorise a l entree),
+        # plutot qu une distance de prix arbitraire — coherent avec la
+        # philosophie "on tient tant que la structure tient". Confirmation
+        # = meme couleur de bougie + patience que les autres mecanismes de
+        # retournement du bot.
+        if pos.get("strategy") == "spot_accumulation":
+            support_at_entry_sl = pos.get("support_at_entry")
+            support_broken = support_at_entry_sl is not None and price < support_at_entry_sl
+            if support_broken:
+                state.sl_breach_streak = getattr(state, "sl_breach_streak", 0) + 1
             else:
-                state.post_win_confirm_short = True
-                state.confirm_count_short = 0
-            self._register_max_loss(ticker, pos.get("confidence"))
-            self._save_open_positions()  # sauvegarde en live ET en paper
-            self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
-            return
+                state.sl_breach_streak = 0
+            sl_patience_cycles_sa = cfg.get("SL_PATIENCE_CYCLES", 10)
+            if support_broken and state.sl_breach_streak >= sl_patience_cycles_sa and self._candle_color_confirms_reversal(state, "long"):
+                pnl, _, trade = state.close_position(price, "STOP LOSS (support rompu)")
+                trade["symbol"] = symbol
+                if mode == "live" and self.exchange:
+                    close_order(self.exchange, ticker, pos, self.cfg)
+                self.emit("trade", trade)
+                self.emit("log", {"msg": f"[{ticker}] 🌱 STOP LOSS Spot-Accum : support ${support_at_entry_sl:.4f} rompu et confirme @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "loss"})
+                self._save_open_positions()
+                self._persist_capital_snapshot()
+                return
+        else:
+            # v4.149 — SUR DEMANDE EXPLICITE : "patience" avant de fermer sur
+            # Stop Loss — exige que le prix reste au-dela du seuil pendant
+            # SL_PATIENCE_CYCLES cycles CONSECUTIFS (defaut 10, ~100s) avant de
+            # fermer reellement. Une mèche breve (pic de bruit qui touche le
+            # seuil puis repart aussitot dans le bon sens) n a plus le temps de
+            # declencher une fermeture — seul un vrai effondrement SOUTENU
+            # continue de le faire, puisque le compteur ne progresse que si le
+            # depassement persiste d un cycle au suivant (repli a 0 des que le
+            # prix revient dans les clous).
+            sl_patience_cycles = cfg.get("SL_PATIENCE_CYCLES", 10)
+            if pnl_usd <= sl_usd:
+                state.sl_breach_streak = getattr(state, "sl_breach_streak", 0) + 1
+            else:
+                state.sl_breach_streak = 0
+            if pnl_usd <= sl_usd and state.sl_breach_streak >= sl_patience_cycles:
+                pnl, _, trade = state.close_position(price, "STOP LOSS")
+                trade["symbol"] = symbol
+                if mode == "live" and self.exchange:
+                    close_order(self.exchange, ticker, pos, self.cfg)
+                self.emit("trade", trade)
+                peak_str = f" | pic atteint avant la chute : +${trade['peak_pnl_usd']:.2f}" if trade.get("peak_pnl_usd") else ""
+                self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (plafond -${-sl_usd:.2f} = {sl_pct_of_e:.2f}% de E, mouvement de prix requis a x{pos.get('leverage',1)} : {sl_pct_of_e/max(pos.get('leverage',1),1):.2f}%){peak_str}", "level": "loss"})
+                # v4.31 — SUR DEMANDE EXPLICITE, suite a une serie de 7+ pertes
+                # consecutives dans le MEME sens observee (ARB LONG) : la
+                # confirmation renforcee (voir plus bas) se declenche desormais
+                # APRES TOUTE fermeture dans un sens donne — gain OU perte — pas
+                # seulement apres un gain. Une perte prouve que la direction
+                # etait fausse, raison de plus d exiger une reconfirmation
+                # soutenue avant de retenter le meme pari.
+                if pos["type"] == "long":
+                    state.post_win_confirm_long = True
+                    state.confirm_count_long = 0
+                else:
+                    state.post_win_confirm_short = True
+                    state.confirm_count_short = 0
+                self._register_max_loss(ticker, pos.get("confidence"))
+                self._save_open_positions()  # sauvegarde en live ET en paper
+                self._persist_capital_snapshot()  # v4.3 - resilience crash/OOM
+                return
 
         # ── 2. SL Hyperliquid — filet de securite (ne devrait presque jamais
         #      se declencher en premier, le Stop Loss bot est plus serre) ────
