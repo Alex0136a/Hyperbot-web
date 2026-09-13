@@ -4754,9 +4754,14 @@ class BotEngine:
             #    SPOT_ACCUM_TTP_TOLERANCE_PCT (0.5% par defaut).
             arm_pct = cfg.get("SPOT_ACCUM_TTP_ARM_PCT", 3.0)
             tolerance_pct = cfg.get("SPOT_ACCUM_TTP_TOLERANCE_PCT", 0.5)
-            trailing_arm_price = pos.get("trailing_arm_price")
+            # v4.173 — SUR DEMANDE EXPLICITE : retire l armement via le prix
+            # structurel (support + 70% de la distance S/R) — pouvait armer
+            # le trailing sur un PnL minuscule (0.29% observe) des que ce
+            # prix etait proche de l entree, contraire a la philosophie
+            # patiente de Spot-Accum. Seul le seuil de PnL declenche
+            # desormais l armement.
             if not state.spot_accum_armed:
-                if pnl_pct >= arm_pct or (trailing_arm_price is not None and price >= trailing_arm_price):
+                if pnl_pct >= arm_pct:
                     state.spot_accum_armed = True
                     state.spot_accum_peak_pnl_pct = pnl_pct
             else:
