@@ -3266,6 +3266,24 @@ class BotEngine:
             return 2
         return 1
 
+    def _candle_color_confirms_reversal(self, state, direction):
+        """v4.162 — SUR DEMANDE EXPLICITE : extrait de _ttp_confirmed_to_close
+        pour reutilisation SANS le compteur de patience partage (evite une
+        collision avec ttp_breach_streak si utilise par un mecanisme
+        different, comme RETOURNEMENT CONFIRME, qui a deja son PROPRE
+        compteur de patience dedie)."""
+        candles = list(state.candle_history)
+        if len(candles) < 2:
+            return True  # pas assez de bougies : ne bloque pas la fermeture
+        prev_close, cur_close = candles[-2][2], candles[-1][2]
+        prev_prev_close = candles[-3][2] if len(candles) >= 3 else prev_close
+        prev_color_up = prev_close >= prev_prev_close
+        cur_color_up = cur_close >= prev_close
+        if direction == "long":
+            return not (prev_color_up and cur_color_up)
+        else:
+            return not (not prev_color_up and not cur_color_up)
+
     def _ttp_confirmed_to_close(self, state, direction):
         """v4.154 — SUR DEMANDE EXPLICITE : meme principe de "patience" que
         le Stop Loss (anti-meche), applique au Trailing Take Profit, COUPLE
@@ -3286,21 +3304,7 @@ class BotEngine:
         patience_cycles = cfg.get("TTP_PATIENCE_CYCLES", 5)
         state.ttp_breach_streak = getattr(state, "ttp_breach_streak", 0) + 1
         patience_ok = state.ttp_breach_streak >= patience_cycles
-
-        candles = list(state.candle_history)
-        color_ok = True  # par defaut (pas assez de bougies) : ne bloque pas la fermeture
-        if len(candles) >= 2:
-            prev_close, cur_close = candles[-2][2], candles[-1][2]
-            prev_prev_close = candles[-3][2] if len(candles) >= 3 else prev_close
-            prev_color_up = prev_close >= prev_prev_close
-            cur_color_up = cur_close >= prev_close
-            if direction == "long":
-                # LONG qui referme : attend une bougie ROUGE apres une VERTE
-                color_ok = not (prev_color_up and cur_color_up)
-            else:
-                # SHORT qui referme : attend une bougie VERTE apres une ROUGE
-                color_ok = not (not prev_color_up and not cur_color_up)
-
+        color_ok = self._candle_color_confirms_reversal(state, direction)
         return patience_ok and color_ok
 
     def _detect_fresh_breakout(self, state, direction, lookback_candles):
@@ -4412,6 +4416,15 @@ class BotEngine:
 
             confirm_needed = cfg.get("ACCUMULATION_REVERSAL_CONFIRM_CYCLES", 180)
             if state.accumulation_reversal_count >= confirm_needed:
+                # v4.162 — SUR DEMANDE EXPLICITE : ajoute la meme protection
+                # patience+couleur de bougie que SL/TTP — meme avec le
+                # compteur de cycles deja requis ci-dessus, ce mecanisme
+                # s est avere le plus mauvais du bot (12% de reussite sur
+                # 26 trades reels observes). Exige desormais AUSSI cette
+                # confirmation supplementaire avant de fermer reellement.
+                if not self._candle_color_confirms_reversal(state, pos.get("type", "long")):
+                    self._save_open_positions()
+                    return
                 pnl, _, trade = state.close_position(price, "RETOURNEMENT CONFIRME")
                 trade["symbol"] = symbol
                 self.emit("trade", trade)
@@ -4517,6 +4530,11 @@ class BotEngine:
 
                 confirm_needed = cfg.get("SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES", 180)  # ~30 min par defaut
                 if state.spot_accum_reversal_count >= confirm_needed:
+                    # v4.162 — SUR DEMANDE EXPLICITE : meme protection
+                    # supplementaire que la version Accumulation ci-dessus.
+                    if not self._candle_color_confirms_reversal(state, "long"):
+                        self._save_open_positions()
+                        return
                     pnl, _, trade = state.close_position(price, "RETOURNEMENT CONFIRME")
                     trade["symbol"] = symbol
                     self.emit("trade", trade)
