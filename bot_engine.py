@@ -1627,6 +1627,29 @@ def get_prices(info, slot_keys, cfg):
                     except (ValueError, TypeError):
                         pass
 
+        # v4.168 — SUR DEMANDE EXPLICITE : les tickers forex (HIP-3, DEX
+        # "xyz") ne sont JAMAIS presents dans meta_and_asset_ctxs()/all_mids()
+        # SANS le parametre "dex" — meme cause que pour la souscription
+        # WebSocket, corrigee ici pour le chemin REST (cycle classique).
+        # Repli specifique, ne s active que si des tickers forex manquent
+        # encore apres les tentatives ci-dessus.
+        forex_syms = set(cfg.get("NORMAL_FOREX_SYMBOLS", []))
+        still_missing = [k for k in slot_keys if k not in result and ticker_from_slot_key(k) in forex_syms]
+        if still_missing:
+            try:
+                forex_mids = info.all_mids(dex="xyz")
+                for k in still_missing:
+                    t = ticker_from_slot_key(k)
+                    if t in forex_mids:
+                        try:
+                            v = float(forex_mids[t])
+                            if v > 0:
+                                result[k] = v
+                        except (ValueError, TypeError):
+                            pass
+            except Exception as e:
+                print(f"[FOREX-PRICES] Echec recuperation prix forex (dex xyz) : {e}")
+
         return result
 
     except Exception as e:
@@ -4341,6 +4364,26 @@ class BotEngine:
 
         symbols_display = ", ".join(self._original_symbols)
         self.emit("log", {"msg": f"Demarrage | {symbols_display} | ${cfg['CAPITAL_USD']}", "level": "ok"})
+        # v4.169 — SUR DEMANDE EXPLICITE : liste TOUS les DEX HIP-3
+        # disponibles au demarrage (diagnostic ponctuel) — le DEX "xyz" s
+        # est avere ne contenir QUE des actions/matieres premieres, jamais
+        # de forex malgre la documentation initiale consultee. Cherche
+        # directement le bon nom de DEX plutot que de continuer a deviner.
+        if self.info is not None:
+            dexs = None
+            for attempt_name, attempt_fn in [
+                ("info.perp_dexs()", lambda: self.info.perp_dexs()),
+                ("info.post /info type=perpDexs", lambda: self.info.post("/info", {"type": "perpDexs"})),
+                ("requete brute via session HTTP interne", lambda: self.info.session.post(f"{self.info.base_url}/info", json={"type": "perpDexs"}).json()),
+            ]:
+                try:
+                    dexs = attempt_fn()
+                    print(f"[PERPDEXS-DIAG] Succes via {attempt_name} : {dexs}")
+                    break
+                except Exception as e:
+                    print(f"[PERPDEXS-DIAG] Echec via {attempt_name} : {e}")
+            if dexs is None:
+                print("[PERPDEXS-DIAG] Aucune methode n a fonctionne pour lister les DEX HIP-3.")
         self.emit("log", {"msg": f"Plage horaire : {cfg['TRADE_HOUR_START']}h-{cfg['TRADE_HOUR_END']}h Paris", "level": "info"})
 
         # v3.2 — signale la fin complete de l initialisation (reconciliation
