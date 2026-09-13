@@ -113,14 +113,14 @@ CONFIG = {
                            # — cote deja implicitement contre USD chacun.
                            # Isolation de mode geree dans _process (voir
                            # NORMAL_FOREX_SYMBOLS ci-dessous).
-                           "xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY"],
+                           "EUR", "JPY", "KRW", "DXY"],
 
     # v4.163 — SUR DEMANDE EXPLICITE : liste de reference pour identifier
     # les tickers forex (namespace "xyz:") — Normal est le SEUL mode a les
     # trader ; les autres modes (Accumulation/Funding/Spot-Accum) les
     # ignorent completement, et inversement Normal ignore desormais les
     # cryptos (voir isolation dans _process).
-    "NORMAL_FOREX_SYMBOLS": ["xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY"],
+    "NORMAL_FOREX_SYMBOLS": ["EUR", "JPY", "KRW", "DXY"],
     # v4.163 — marge ISOLEE obligatoire pour les marches HIP-3 (contrairement
     # aux cryptos, en marge croisee) — voir application dans le passage d
     # ordre et l ajustement de levier.
@@ -153,7 +153,7 @@ CONFIG = {
                            # v4.164 — FIX : oublies lors de l implementation
                            # initiale, empechant tout traitement reel malgre
                            # leur presence dans SYMBOLS.
-                           "xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY"],
+                           "EUR", "JPY", "KRW", "DXY"],
     "MAX_OPEN_TRADES":    5,
 
     # v4.9 — Cooldown de reentree DANS LE MEME SENS apres la fermeture d un
@@ -1736,8 +1736,16 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
         # position reellement ouverte.
         pos_mock = {"type": "long" if is_buy else "short", "entry": price, "size": notional_usd}
 
+        # v4.166 — SUR DEMANDE EXPLICITE : les marches HIP-3 (forex) exigent
+        # le nom COMPLET "dex:coin" (ex: "xyz:EUR") pour le PASSAGE D ORDRE
+        # specifiquement (le SDK Hyperliquid officiel route via
+        # coin.split(":")[0] en interne) — contrairement a allMids, qui
+        # utilise un ticker BRUT avec un parametre "dex" separe. Les deux
+        # conventions coexistent, gerees ici uniquement pour l ordre.
+        order_ticker = f"xyz:{ticker}" if ticker in cfg.get("NORMAL_FOREX_SYMBOLS", []) else ticker
+
         entry_order = {
-            "coin":        ticker,
+            "coin":        order_ticker,
             "is_buy":      is_buy,
             "sz":          sz,
             "limit_px":    format_price_hl(price * 1.01 if is_buy else price * 0.99, sz_decimals, False),
@@ -1747,12 +1755,12 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
         orders = [entry_order]
 
         if sl_price is not None:
-            sl_order = _build_sl_order(ticker, pos_mock, sl_price, cfg, sz_decimals, False)
+            sl_order = _build_sl_order(order_ticker, pos_mock, sl_price, cfg, sz_decimals, False)
             if sl_order:
                 orders.append(sl_order)
 
         if tp_price is not None:
-            tp_order = _build_tp_order(ticker, pos_mock, tp_price, cfg, sz_decimals, False)
+            tp_order = _build_tp_order(order_ticker, pos_mock, tp_price, cfg, sz_decimals, False)
             if tp_order:
                 orders.append(tp_order)
 
@@ -3776,6 +3784,65 @@ class BotEngine:
         except Exception as e:
             print(f"[WS] Erreur traitement flux allMids : {e}")
 
+    def _on_ws_allmids_forex(self, msg):
+        """v4.166 — SUR DEMANDE EXPLICITE : callback dedie au flux 'allMids'
+        du DEX HIP-3 "xyz" (forex, mode Normal) — l API Hyperliquid isole
+        ce DEX du DEX natif, une souscription SEPAREE (avec le champ "dex")
+        est necessaire pour recevoir EUR/JPY/KRW/DXY. Meme logique que
+        _on_ws_allmids (fenetre haut/bas, prix courant, gestion de
+        position), mais scoped uniquement aux tickers forex — FUSIONNE
+        dans self.all_mids (cles brutes "EUR" etc., aucune collision
+        possible avec les tickers crypto existants) plutot que de
+        l ecraser."""
+        try:
+            data = msg.get("data", {}) if isinstance(msg, dict) else {}
+            mids = data.get("mids", {})
+            if not mids:
+                return
+            self._last_ws_tick = time.time()
+            # Fusion (pas ecrasement) — self.all_mids garde aussi les
+            # cryptos alimentees par _on_ws_allmids.
+            if not isinstance(self.all_mids, dict):
+                self.all_mids = {}
+            self.all_mids.update(mids)
+
+            forex_tickers = set(self.cfg.get("NORMAL_FOREX_SYMBOLS", []))
+            for slot_key, state in self.states.items():
+                ticker = ticker_from_slot_key(slot_key)
+                if ticker not in forex_tickers:
+                    continue
+                raw = mids.get(ticker)
+                if raw is None:
+                    continue
+                try:
+                    tick_price = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if tick_price <= 0:
+                    continue
+                if state.window_high is None or tick_price > state.window_high:
+                    state.window_high = tick_price
+                if state.window_low is None or tick_price < state.window_low:
+                    state.window_low = tick_price
+
+            for slot_key, state in list(self.states.items()):
+                ticker = ticker_from_slot_key(slot_key)
+                if ticker not in forex_tickers or not state.position:
+                    continue
+                raw = mids.get(ticker)
+                if raw is None:
+                    continue
+                try:
+                    price = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if price <= 0:
+                    continue
+                state.current_price = price
+                self._manage_position(slot_key, price, state)
+        except Exception as e:
+            print(f"[WS-FOREX] Erreur traitement flux allMids (dex xyz) : {e}")
+
     def _is_ws_healthy(self):
         """True si le WebSocket est abonne ET a recu un tick recemment
         (moins de WS_STALE_AFTER_SEC secondes)."""
@@ -3879,6 +3946,10 @@ class BotEngine:
                     self.info = new_info
                     self.exchange = new_exchange
                     self.info.subscribe({"type": "allMids"}, self._on_ws_allmids)
+                    try:
+                        self.info.subscribe({"type": "allMids", "dex": "xyz"}, self._on_ws_allmids_forex)
+                    except Exception:
+                        pass  # v4.166 — repli silencieux, deja logge au demarrage initial
                     self._ws_subscribed = True
                     self._last_ws_tick = time.time()  # evite un "faux mort" immediat le temps du 1er tick
                     msg = "🔄 Reconnexion WebSocket effectuee (nouvelle connexion etablie)."
@@ -4053,6 +4124,21 @@ class BotEngine:
             self.emit("log", {"msg": "WebSocket temps reel actif — surveillance Max Loss/TP en direct (independante du cycle)", "level": "ok"})
         except Exception as e:
             self._ws_subscribed = False
+        # v4.166 — SUR DEMANDE EXPLICITE : souscription SEPAREE pour le DEX
+        # HIP-3 "xyz" (forex, mode Normal) — l API Hyperliquid isole les
+        # DEX builder-deployes du DEX natif par defaut, un simple
+        # {"type": "allMids"} SANS le champ "dex" ne retourne QUE les
+        # actifs natifs (BTC, ETH, etc.), jamais EUR/JPY/KRW/DXY. Fusionne
+        # dans le MEME self.all_mids (cle brute "EUR", pas de collision
+        # possible avec les tickers crypto existants). Repli silencieux si
+        # le SDK installe ne supporte pas encore ce parametre — le forex
+        # resterait alors sans donnees, mais le reste du bot continue de
+        # fonctionner normalement.
+        try:
+            self.info.subscribe({"type": "allMids", "dex": "xyz"}, self._on_ws_allmids_forex)
+            self.emit("log", {"msg": "WebSocket forex (DEX xyz) actif — EUR/JPY/KRW/DXY en direct.", "level": "ok"})
+        except Exception as e:
+            self.emit("log", {"msg": f"Echec abonnement WebSocket forex (DEX xyz) : {e} — le SDK installe ne supporte peut etre pas encore ce parametre. Le mode Normal restera sans donnees tant que ce n est pas resolu.", "level": "warn"})
             self.emit("log", {"msg": f"Echec abonnement WebSocket ({e}) — repli sur surveillance par cycle ({cfg['CYCLE_INTERVAL']}s)", "level": "warn"})
 
         # ── Application reelle du levier configure (fix v3.1 : LEVERAGE ──
@@ -4064,8 +4150,10 @@ class BotEngine:
             for t in real_tickers_lev:
                 # v4.163 — SUR DEMANDE EXPLICITE : marge isolee pour le forex.
                 is_cross_margin_startup = t not in cfg.get("NORMAL_FOREX_SYMBOLS", [])
+                # v4.166 — meme nom qualifie "dex:coin" que pour le passage d ordre.
+                lev_ticker_startup = f"xyz:{t}" if not is_cross_margin_startup else t
                 try:
-                    self.exchange.update_leverage(leverage, t, is_cross=is_cross_margin_startup)
+                    self.exchange.update_leverage(leverage, lev_ticker_startup, is_cross=is_cross_margin_startup)
                 except Exception as e:
                     lev_errors.append(t)
                     print(f"[LEVERAGE] Echec x{leverage} sur {t} : {e}")
@@ -7151,8 +7239,10 @@ class BotEngine:
             # namespace "xyz:") exigent la marge ISOLEE — la marge croisee,
             # utilisee pour les cryptos, n est pas supportee sur ces marches.
             is_cross_margin = ticker not in cfg.get("NORMAL_FOREX_SYMBOLS", [])
+            # v4.166 — meme nom qualifie "dex:coin" que pour le passage d ordre.
+            lev_ticker = f"xyz:{ticker}" if not is_cross_margin else ticker
             try:
-                self.exchange.update_leverage(leverage, ticker, is_cross=is_cross_margin)
+                self.exchange.update_leverage(leverage, lev_ticker, is_cross=is_cross_margin)
             except Exception as e:
                 self.emit("log", {"msg": f"[{ticker}] Echec application levier prudent x{leverage} : {e} — poursuite avec le levier deja en place.", "level": "warn"})
             # tp_price=None : plus d ordre TP fixe sur Hyperliquid, la prise de
