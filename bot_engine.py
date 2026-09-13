@@ -3801,7 +3801,8 @@ class BotEngine:
             # les logs Railway (print, pas self.emit) — verifie si ce
             # callback est reellement appele et ce que contient le message
             # brut recu, sans deviner.
-            print(f"[WS-FOREX-DIAG] callback appele | mids recus={len(mids)} | echantillon brut msg={str(msg)[:300]}")
+            forex_keys_found = {k: v for k, v in mids.items() if k in ("EUR", "JPY", "KRW", "DXY")}
+            print(f"[WS-FOREX-DIAG] callback appele | mids recus={len(mids)} | cles forex trouvees={forex_keys_found} | 20 premieres cles recues={list(mids.keys())[:20]}")
             if not mids:
                 return
             self._last_ws_tick = time.time()
