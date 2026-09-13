@@ -374,7 +374,7 @@ CONFIG = {
     # — les deux systemes partagent deja la meme source (state.mtf_prices),
     # ils atteignent desormais leur pleine maturite au meme moment.
     "SPOT_ACCUM_ANTI_RANGE_LOOKBACK": 200,
-    "SPOT_ACCUM_TTP_ARM_PCT": 1.0,             # armement du trailing a partir de ce % de PnL
+    "SPOT_ACCUM_TTP_ARM_PCT": 0.4,             # v4.180 SUR DEMANDE EXPLICITE : abaisse de 1.0% a 0.4% — des pics de 0.64-0.89% observes n armaient jamais le trailing (sous l ancien seuil de 1.0%), laissant le prix redonner integralement jusqu en perte sans aucune protection
     "SPOT_ACCUM_TTP_TOLERANCE_PCT": 0.5,       # marge de repli depuis le pic, une fois arme
     "SPOT_ACCUM_TARGET_SR_PCT": 80.0,          # objectif = ce % de la distance support-resistance (mesuree a l entree)
     # v4.161 — SUR DEMANDE EXPLICITE : desactive par defaut — la fermeture
