@@ -408,7 +408,7 @@ CONFIG = {
     # (n accepte le signal que si l EMA200 est assez mature ET la collecte
     # saine — pas de coupure recente).
     "SPOT_ACCUM_REVERSAL_EXIT_ENABLED": True,
-    "SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES": 30,      # v4.157 SUR DEMANDE EXPLICITE : 5 min a 10s/cycle (etait 180 = ~30 min, juge trop lent — 95% de pertes sur ce motif de fermeture observees)
+    "SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES": 1080,      # v4.172 SUR DEMANDE EXPLICITE : 3h a 10s/cycle (etait 30 = 5min) — Spot-Accum vise a TENIR une tendance sur la duree ("tant que l actif existe"), un exit aussi rapide que celui d Accumulation (5min, juge separement trop lent AVANT correctif) allait a l encontre de cette philosophie patiente — 92% des fermetures via ce motif, pic moyen de 0.20% seulement observes.
     "SPOT_ACCUM_REVERSAL_MIN_EMA_MATURITY": 100,    # bougies mtf minimum (sur 200 max) pour faire confiance a l EMA200
 
     # v4.64 — SUR DEMANDE EXPLICITE : meme mecanisme de retournement
