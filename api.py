@@ -1171,6 +1171,32 @@ def post_strategy_go_live(body: StrategyGoLiveBody, email: str = Depends(require
     }
 
 
+@app.post("/api/config/strategy-clear-only")
+def post_strategy_clear_only(body: StrategyGoLiveBody, email: str = Depends(require_user)):
+    """v4.165 — SUR DEMANDE EXPLICITE : version SANS le passage en live de
+    strategy-go-live — ferme toutes les positions ouvertes pour ce mode et
+    efface son historique, mais NE TOUCHE PAS a son statut paper/live
+    (contrairement a strategy-go-live, qui force le passage en live comme
+    etape finale). Utile pour repartir sur une base propre (ex: mode
+    Normal reoriente vers un nouvel univers d actifs) sans forcer d
+    engagement en argent reel."""
+    valid_strategies = ("normal", "accumulation", "funding_contrarian", "spot_accumulation")
+    if body.strategy not in valid_strategies:
+        raise HTTPException(400, f"Mode inconnu : {body.strategy}")
+
+    closed_count = bot._close_all_trades_for_strategy(body.strategy)
+    deleted_count = db.clear_trades_by_strategy(body.strategy)
+
+    _push_log("info", f"🧹 Nettoyage {body.strategy} — {closed_count} position(s) fermee(s), {deleted_count} trade(s) d historique efface(s). Statut paper/live inchange.")
+
+    return {
+        "ok": True,
+        "strategy": body.strategy,
+        "closed_positions": closed_count,
+        "deleted_history": deleted_count,
+    }
+
+
 class ModeCoinResetBody(BaseModel):
     mode: str
 
