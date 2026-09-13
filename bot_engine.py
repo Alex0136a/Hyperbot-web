@@ -113,14 +113,14 @@ CONFIG = {
                            # — cote deja implicitement contre USD chacun.
                            # Isolation de mode geree dans _process (voir
                            # NORMAL_FOREX_SYMBOLS ci-dessous).
-                           "EUR", "JPY", "KRW", "DXY"],
+                           "xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY"],
 
     # v4.163 — SUR DEMANDE EXPLICITE : liste de reference pour identifier
     # les tickers forex (namespace "xyz:") — Normal est le SEUL mode a les
     # trader ; les autres modes (Accumulation/Funding/Spot-Accum) les
     # ignorent completement, et inversement Normal ignore desormais les
     # cryptos (voir isolation dans _process).
-    "NORMAL_FOREX_SYMBOLS": ["EUR", "JPY", "KRW", "DXY"],
+    "NORMAL_FOREX_SYMBOLS": ["xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY"],
     # v4.163 — marge ISOLEE obligatoire pour les marches HIP-3 (contrairement
     # aux cryptos, en marge croisee) — voir application dans le passage d
     # ordre et l ajustement de levier.
@@ -153,7 +153,7 @@ CONFIG = {
                            # v4.164 — FIX : oublies lors de l implementation
                            # initiale, empechant tout traitement reel malgre
                            # leur presence dans SYMBOLS.
-                           "EUR", "JPY", "KRW", "DXY"],
+                           "xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY"],
     "MAX_OPEN_TRADES":    5,
 
     # v4.9 — Cooldown de reentree DANS LE MEME SENS apres la fermeture d un
@@ -1765,7 +1765,11 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
         # coin.split(":")[0] en interne) — contrairement a allMids, qui
         # utilise un ticker BRUT avec un parametre "dex" separe. Les deux
         # conventions coexistent, gerees ici uniquement pour l ordre.
-        order_ticker = f"xyz:{ticker}" if ticker in cfg.get("NORMAL_FOREX_SYMBOLS", []) else ticker
+        # v4.169 — FIX : ticker contient DEJA le nom complet "xyz:EUR" nativement
+        # (SYMBOLS/NORMAL_FOREX_SYMBOLS le stockent ainsi) — aucune
+        # transformation supplementaire necessaire, contrairement a la
+        # version precedente qui aurait double le prefixe.
+        order_ticker = ticker
 
         entry_order = {
             "coin":        order_ticker,
@@ -3824,7 +3828,7 @@ class BotEngine:
             # les logs Railway (print, pas self.emit) — verifie si ce
             # callback est reellement appele et ce que contient le message
             # brut recu, sans deviner.
-            forex_keys_found = {k: v for k, v in mids.items() if k in ("EUR", "JPY", "KRW", "DXY")}
+            forex_keys_found = {k: v for k, v in mids.items() if k in ("xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY")}
             print(f"[WS-FOREX-DIAG] callback appele | mids recus={len(mids)} | cles forex trouvees={forex_keys_found} | 20 premieres cles recues={list(mids.keys())[:20]}")
             if not mids:
                 return
@@ -4180,7 +4184,7 @@ class BotEngine:
                 # v4.163 — SUR DEMANDE EXPLICITE : marge isolee pour le forex.
                 is_cross_margin_startup = t not in cfg.get("NORMAL_FOREX_SYMBOLS", [])
                 # v4.166 — meme nom qualifie "dex:coin" que pour le passage d ordre.
-                lev_ticker_startup = f"xyz:{t}" if not is_cross_margin_startup else t
+                lev_ticker_startup = t
                 try:
                     self.exchange.update_leverage(leverage, lev_ticker_startup, is_cross=is_cross_margin_startup)
                 except Exception as e:
@@ -7289,7 +7293,7 @@ class BotEngine:
             # utilisee pour les cryptos, n est pas supportee sur ces marches.
             is_cross_margin = ticker not in cfg.get("NORMAL_FOREX_SYMBOLS", [])
             # v4.166 — meme nom qualifie "dex:coin" que pour le passage d ordre.
-            lev_ticker = f"xyz:{ticker}" if not is_cross_margin else ticker
+            lev_ticker = ticker
             try:
                 self.exchange.update_leverage(leverage, lev_ticker, is_cross=is_cross_margin)
             except Exception as e:
