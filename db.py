@@ -117,6 +117,46 @@ def init_db():
             # des statistiques (win rate, performance) separees par mode
             # reel, jamais melangees entre capital virtuel et capital reel.
             conn.execute("ALTER TABLE trades ADD COLUMN trade_mode TEXT")
+        # v4.171 — SUR DEMANDE EXPLICITE : renommage complet du mode "normal"
+        # en "forex" (desormais dedie au forex/HIP-3) — migre les lignes
+        # EXISTANTES en base, une seule fois (idempotent, sans effet si deja
+        # applique). Les trades sans champ strategy (avant son introduction)
+        # restent NULL ici — deja geres comme "forex" par defaut ailleurs
+        # (clear_trades_by_strategy, api.py) sans necessiter de migration.
+        conn.execute("UPDATE trades SET strategy = 'forex' WHERE strategy = 'normal'")
+        # v4.171 — SUR DEMANDE EXPLICITE : migre aussi les reglages
+        # PERSONNALISES deja enregistres (config_overrides) sous les anciens
+        # noms NORMAL_* — sans ca, tout reglage que l utilisateur aurait
+        # deja personnalise pour ce mode serait orphelin (le code cherche
+        # desormais FOREX_*, ces lignes resteraient invisibles).
+        key_renames = {
+            "NORMAL_FOREX_SYMBOLS": "FOREX_SYMBOLS",
+            "NORMAL_FOREX_ISOLATED_MARGIN": "FOREX_ISOLATED_MARGIN",
+            "NORMAL_ANTI_RANGE_LOOKBACK": "FOREX_ANTI_RANGE_LOOKBACK",
+            "NORMAL_ANTI_RANGE_MIN_PCT": "FOREX_ANTI_RANGE_MIN_PCT",
+            "NORMAL_REQUIRE_ANTI_RANGE": "FOREX_REQUIRE_ANTI_RANGE",
+            "NORMAL_TREND_STABILITY_CYCLES": "FOREX_TREND_STABILITY_CYCLES",
+        }
+        for old_key, new_key in key_renames.items():
+            existing_new = conn.execute("SELECT 1 FROM config_overrides WHERE key=?", (new_key,)).fetchone()
+            if not existing_new:
+                conn.execute("UPDATE config_overrides SET key=? WHERE key=?", (new_key, old_key))
+        # v4.171 (suite) — STRATEGY_TRADING_ENABLED et STRATEGY_MODE_OVERRIDE
+        # sont des DICTIONNAIRES JSON persistes en UNE seule ligne, avec
+        # "normal" comme cle INTERNE (ex: {"normal": false, ...}) — si l
+        # utilisateur avait deja mis ce mode en pause, cette preference
+        # serait sinon perdue/invisible (le code cherche desormais la cle
+        # "forex" a l interieur de ce meme dictionnaire).
+        for dict_key in ("STRATEGY_TRADING_ENABLED", "STRATEGY_MODE_OVERRIDE"):
+            row = conn.execute("SELECT value FROM config_overrides WHERE key=?", (dict_key,)).fetchone()
+            if row:
+                try:
+                    parsed = json.loads(row["value"])
+                    if isinstance(parsed, dict) and "normal" in parsed and "forex" not in parsed:
+                        parsed["forex"] = parsed.pop("normal")
+                        conn.execute("UPDATE config_overrides SET value=? WHERE key=?", (json.dumps(parsed), dict_key))
+                except (json.JSONDecodeError, TypeError):
+                    pass
         conn.execute("""
             CREATE TABLE IF NOT EXISTS config_overrides (
                 key TEXT PRIMARY KEY,
@@ -386,13 +426,14 @@ def clear_trades_by_strategy(strategy):
     strategie precise (utilise au moment de basculer un mode en live, pour
     repartir sur un historique propre pour ce mode-la sans toucher aux
     autres). Les trades sans champ strategy (anciens trades, avant son
-    introduction) sont consideres "normal"."""
+    introduction, ou avant le renommage "normal"->"forex") sont consideres
+    "forex"."""
     import traceback
     with _lock, _connect() as conn:
-        if strategy == "normal":
-            rows = conn.execute("SELECT COUNT(*) AS c FROM trades WHERE strategy = ? OR strategy IS NULL", (strategy,)).fetchone()
+        if strategy == "forex":
+            rows = conn.execute("SELECT COUNT(*) AS c FROM trades WHERE strategy = ? OR strategy IS NULL OR strategy = 'normal'", (strategy,)).fetchone()
             count_before = rows["c"]
-            conn.execute("DELETE FROM trades WHERE strategy = ? OR strategy IS NULL", (strategy,))
+            conn.execute("DELETE FROM trades WHERE strategy = ? OR strategy IS NULL OR strategy = 'normal'", (strategy,))
         else:
             rows = conn.execute("SELECT COUNT(*) AS c FROM trades WHERE strategy = ?", (strategy,)).fetchone()
             count_before = rows["c"]
