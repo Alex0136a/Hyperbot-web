@@ -3797,6 +3797,11 @@ class BotEngine:
         try:
             data = msg.get("data", {}) if isinstance(msg, dict) else {}
             mids = data.get("mids", {})
+            # v4.167 — SUR DEMANDE EXPLICITE : diagnostic direct visible dans
+            # les logs Railway (print, pas self.emit) — verifie si ce
+            # callback est reellement appele et ce que contient le message
+            # brut recu, sans deviner.
+            print(f"[WS-FOREX-DIAG] callback appele | mids recus={len(mids)} | echantillon brut msg={str(msg)[:300]}")
             if not mids:
                 return
             self._last_ws_tick = time.time()
