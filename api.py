@@ -167,7 +167,7 @@ def _consume_events():
                     take_profit1=data["take_profit1"], take_profit2=data["take_profit2"],
                     rsi=data.get("rsi"), entry_reasons=data.get("entry_reasons"),
                     confidence_breakdown=data.get("confidence_breakdown"),
-                    strategy=data.get("strategy", "normal"),
+                    strategy=data.get("strategy", "forex"),
                     size_usd=data.get("size_usd"),
                     sl_pct_used=data.get("sl_pct_used"),
                     ttp_arm1_pct_used=data.get("ttp_arm1_pct_used"),
@@ -418,10 +418,10 @@ def _public_config() -> Dict[str, Any]:
         "funding_mode_enabled": cfg.get("FUNDING_MODE_ENABLED", False),
         "funding_mode_live_allowed": cfg.get("FUNDING_MODE_LIVE_ALLOWED", False),
         "strategy_mode_override": cfg.get("STRATEGY_MODE_OVERRIDE", {
-            "normal": None, "accumulation": None, "funding_contrarian": None, "spot_accumulation": None,
+            "forex": None, "accumulation": None, "funding_contrarian": None, "spot_accumulation": None,
         }),
         "strategy_trading_enabled": cfg.get("STRATEGY_TRADING_ENABLED", {
-            "normal": True, "accumulation": True, "funding_contrarian": True, "spot_accumulation": True,
+            "forex": True, "accumulation": True, "funding_contrarian": True, "spot_accumulation": True,
         }),
         "require_sr_ema200_separation": cfg.get("REQUIRE_SR_EMA200_SEPARATION", True),
         "unified_require_sr_amplitude": cfg.get("UNIFIED_REQUIRE_SR_AMPLITUDE", False),
@@ -705,7 +705,7 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "ttp_arm2_pct_used": pos.get("ttp_arm2_pct"),
                 "ttp_gap_pct_used": pos.get("ttp_gap_pct"),
                 "adaptive_sl_ttp": pos.get("adaptive_sl_ttp", False),
-                "strategy": pos.get("strategy", "normal"),  # v4.34 — FIX : jamais expose ici avant
+                "strategy": pos.get("strategy", "forex"),  # v4.34 — FIX : jamais expose ici avant
                 "target_price": pos.get("target_price"),  # v4.47 — objectif Spot-Accum (modifiable)
                 "trailing_arm_price": pos.get("trailing_arm_price"),  # v4.49 — seuil structurel d'armement du trailing (modifiable)
             })
@@ -737,7 +737,7 @@ def _trade_row_to_signal(row: Dict[str, Any]) -> Dict[str, Any]:
         "exit_price": row["exit_price"],
         "pnl": row["pnl"],
         "reason": row["reason"],
-        "strategy": row["strategy"] if "strategy" in row.keys() else "normal",
+        "strategy": row["strategy"] if "strategy" in row.keys() else "forex",
         "peak_pnl": row["peak_pnl"] if "peak_pnl" in row.keys() else None,
         "peak_pnl_pct": row["peak_pnl_pct"] if "peak_pnl_pct" in row.keys() else None,
         "size_usd": row["size_usd"] if "size_usd" in row.keys() else None,
@@ -803,7 +803,7 @@ ADVANCED_SETTINGS = {
     "SPOT_ACCUM_ANTI_RANGE_MIN_PCT": {"label": "Spot-Accum - mouvement minimum requis pour eviter le range (%)", "default": 2.0},
     "SPOT_ACCUM_ANTI_RANGE_LOOKBACK": {"label": "Spot-Accum - echantillons pour le detecteur de range (200 = 6h40, aligne sur EMA200)", "default": 200},
     "SPOT_ACCUM_TREND_STABILITY_CYCLES":   {"label": "Spot-Accum - stabilité tendance requise avant entrée (cycles ~10s)", "default": 24},
-    "NORMAL_TREND_STABILITY_CYCLES":       {"label": "Normal - stabilité tendance requise avant entrée (cycles ~10s)", "default": 24},
+    "FOREX_TREND_STABILITY_CYCLES":       {"label": "Forex - stabilité tendance requise avant entrée (cycles ~10s)", "default": 12},
     "ACCUMULATION_TREND_STABILITY_CYCLES": {"label": "Accumulation - stabilité tendance requise avant entrée (cycles ~10s)", "default": 24},
     "SR_PERIOD":               {"label": "Support/Resistance - periode (cycles, repli seulement)", "default": 50},
     "SR_PERIOD_CANDLES":       {"label": "Support/Resistance - periode (bougies ~2min, ex: 100=~3h20)", "default": 100},
@@ -1075,7 +1075,7 @@ def put_mode_coins(body: ModeCoinBody, email: str = Depends(require_user)):
 
 
 class StrategyModeBody(BaseModel):
-    strategy: str  # "normal" | "accumulation" | "funding_contrarian" | "spot_accumulation"
+    strategy: str  # "forex" | "accumulation" | "funding_contrarian" | "spot_accumulation"
     value: Optional[str] = None  # "paper" | "live" | None (suit le mode global)
 
 
@@ -1084,7 +1084,7 @@ def put_strategy_mode(body: StrategyModeBody, email: str = Depends(require_user)
     """v4.87 — SUR DEMANDE EXPLICITE : bascule un mode precis entre paper et
     live, independamment du mode global du bot et des 3 autres modes.
     value=None retire la personnalisation (retombe sur le mode global)."""
-    valid_strategies = ("normal", "accumulation", "funding_contrarian", "spot_accumulation")
+    valid_strategies = ("forex", "accumulation", "funding_contrarian", "spot_accumulation")
     if body.strategy not in valid_strategies:
         raise HTTPException(400, f"Mode inconnu : {body.strategy}")
     if body.value is not None and body.value not in ("paper", "live"):
@@ -1097,7 +1097,7 @@ def put_strategy_mode(body: StrategyModeBody, email: str = Depends(require_user)
 
 
 class StrategyTradingEnabledBody(BaseModel):
-    strategy: str  # "normal" | "accumulation" | "funding_contrarian" | "spot_accumulation"
+    strategy: str  # "forex" | "accumulation" | "funding_contrarian" | "spot_accumulation"
     enabled: bool
 
 
@@ -1107,7 +1107,7 @@ def put_strategy_trading_enabled(body: StrategyTradingEnabledBody, email: str = 
     enabled=False bloque UNIQUEMENT l ouverture de nouveaux trades pour ce
     mode precis ; les positions deja ouvertes de ce mode continuent d etre
     gerees normalement (SL/TTP/retournement) jusqu a leur fermeture."""
-    valid_strategies = ("normal", "accumulation", "funding_contrarian", "spot_accumulation")
+    valid_strategies = ("forex", "accumulation", "funding_contrarian", "spot_accumulation")
     if body.strategy not in valid_strategies:
         raise HTTPException(400, f"Mode inconnu : {body.strategy}")
     current = cfg.get("STRATEGY_TRADING_ENABLED") or {}
@@ -1119,7 +1119,7 @@ def put_strategy_trading_enabled(body: StrategyTradingEnabledBody, email: str = 
 
 
 class StrategyGoLiveBody(BaseModel):
-    strategy: str  # "normal" | "accumulation" | "funding_contrarian" | "spot_accumulation"
+    strategy: str  # "forex" | "accumulation" | "funding_contrarian" | "spot_accumulation"
 
 
 @app.post("/api/config/strategy-go-live")
@@ -1135,7 +1135,7 @@ def post_strategy_go_live(body: StrategyGoLiveBody, email: str = Depends(require
          paper, car le bot n a qu un seul pot de capital)
       4) Force enfin ce mode sur "live" via STRATEGY_MODE_OVERRIDE
     """
-    valid_strategies = ("normal", "accumulation", "funding_contrarian", "spot_accumulation")
+    valid_strategies = ("forex", "accumulation", "funding_contrarian", "spot_accumulation")
     if body.strategy not in valid_strategies:
         raise HTTPException(400, f"Mode inconnu : {body.strategy}")
 
@@ -1180,7 +1180,7 @@ def post_strategy_clear_only(body: StrategyGoLiveBody, email: str = Depends(requ
     etape finale). Utile pour repartir sur une base propre (ex: mode
     Normal reoriente vers un nouvel univers d actifs) sans forcer d
     engagement en argent reel."""
-    valid_strategies = ("normal", "accumulation", "funding_contrarian", "spot_accumulation")
+    valid_strategies = ("forex", "accumulation", "funding_contrarian", "spot_accumulation")
     if body.strategy not in valid_strategies:
         raise HTTPException(400, f"Mode inconnu : {body.strategy}")
 
@@ -1642,13 +1642,13 @@ def get_strategy_performance(strategy: str, email: str = Depends(require_user)):
     la demande depuis l historique reel en base — pour le bouton
     "Performance" de chaque sous-onglet de l onglet Paper Trading."""
     all_closed = db.get_all_closed_trades()
-    filtered = [t for t in all_closed if (t.get("strategy") or "normal") == strategy]
+    filtered = [t for t in all_closed if (t.get("strategy") or "forex") == strategy]
     wins = [t for t in filtered if (t.get("pnl") or 0) > 0]
     losses = [t for t in filtered if (t.get("pnl") or 0) <= 0]
     total_pnl = sum((t.get("pnl") or 0) for t in filtered)
     win_pnl = sum((t.get("pnl") or 0) for t in wins)
     loss_pnl = sum((t.get("pnl") or 0) for t in losses)
-    open_count = sum(1 for st in bot.states.values() if st.position and (st.position.get("strategy") or "normal") == strategy)
+    open_count = sum(1 for st in bot.states.values() if st.position and (st.position.get("strategy") or "forex") == strategy)
     # v4.121 — SUR DEMANDE EXPLICITE : Accumulation a desormais son PROPRE
     # emplacement (bot.accum_states), jamais compte ci-dessus.
     if strategy == "accumulation":
@@ -1848,7 +1848,7 @@ def get_signals(limit: int = Query(50), strategy: str = Query(None), email: str 
     ferme tard apparaissait avant un trade ouvert tard mais ferme vite)."""
     if strategy:
         raw = db.get_trades(limit=max(limit * 20, 2000), order_by_close=True)
-        filtered = [r for r in raw if (r.get("strategy") or "normal") == strategy]
+        filtered = [r for r in raw if (r.get("strategy") or "forex") == strategy]
         return {"signals": [_trade_row_to_signal(r) for r in filtered[:limit]]}
     return {"signals": [_trade_row_to_signal(r) for r in db.get_trades(limit=limit, order_by_close=True)]}
 
@@ -1978,7 +1978,7 @@ def paper_close(body: PaperCloseBody, email: str = Depends(require_user)):
     # n etait JAMAIS tentee, alors que le suivi interne du bot marquait la
     # position comme fermee — position reelle abandonnee sans plus AUCUN
     # suivi (SL/TTP/retournement), un vrai risque de securite confirme.
-    real_strategy = pos_snapshot.get("strategy", "normal")
+    real_strategy = pos_snapshot.get("strategy", "forex")
     effective_mode_close = bot._effective_mode(real_strategy)
     close_order_ok = None
     with _state_lock:
