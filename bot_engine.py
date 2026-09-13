@@ -409,6 +409,13 @@ CONFIG = {
     # saine — pas de coupure recente).
     "SPOT_ACCUM_REVERSAL_EXIT_ENABLED": True,
     "SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES": 1080,      # v4.172 SUR DEMANDE EXPLICITE : 3h a 10s/cycle (etait 30 = 5min) — Spot-Accum vise a TENIR une tendance sur la duree ("tant que l actif existe"), un exit aussi rapide que celui d Accumulation (5min, juge separement trop lent AVANT correctif) allait a l encontre de cette philosophie patiente — 92% des fermetures via ce motif, pic moyen de 0.20% seulement observes.
+    # v4.177 — SUR DEMANDE EXPLICITE : plafond de perte tolere PENDANT
+    # l attente de confirmation de retournement (3h ci-dessus) — protege
+    # le capital d une erosion progressive sans remettre en cause la
+    # patience elle-meme.
+    # v4.177 (annule) — plafond de perte pendant l attente retire sur
+    # demande explicite : le vrai levier d action est le levier x1
+    # (ci-dessous), pas un seuil % supplementaire.
     "SPOT_ACCUM_REVERSAL_MIN_EMA_MATURITY": 100,    # bougies mtf minimum (sur 200 max) pour faire confiance a l EMA200
 
     # v4.64 — SUR DEMANDE EXPLICITE : meme mecanisme de retournement
@@ -3295,6 +3302,26 @@ class BotEngine:
         if override in ("paper", "live"):
             return override
         return self.cfg["MODE"]
+
+    def _compute_spot_accum_dynamic_leverage(self, ticker):
+        """v4.178 — SUR DEMANDE EXPLICITE : levier dynamique 2-5x pour
+        Spot-Accum, uniquement quand l entree qualifie via le flirt S/R +
+        couleur de bougie (pas via une cassure fraiche). Reutilise le
+        suivi de confiance par actif DEJA existant (confidence_thresholds)
+        comme proxy de performance historique — seuil bas (proche de
+        CONFIDENCE_MIN_PCT) = actif performant -> levier haut (5x). Seuil
+        haut (proche de CONFIDENCE_MAX_PCT, releve apres des pertes) =
+        actif penalise -> levier bas (2x)."""
+        cfg = self.cfg
+        base = cfg.get("CONFIDENCE_MIN_PCT", 65.0)
+        ceiling = cfg.get("CONFIDENCE_MAX_PCT", 87.0)
+        threshold = self.confidence_thresholds.get(ticker, base)
+        if ceiling <= base:
+            return 2
+        ratio = (ceiling - threshold) / (ceiling - base)
+        ratio = max(0.0, min(1.0, ratio))
+        leverage = 2 + ratio * (cfg.get("SPOT_ACCUM_MAX_DYNAMIC_LEVERAGE", 5) - 2)
+        return round(leverage)
 
     def _compute_prudent_leverage(self, ticker, confidence, rsi_mode):
         """v3.2 — Levier prudent, calcule INDIVIDUELLEMENT pour chaque trade
@@ -6996,6 +7023,10 @@ class BotEngine:
                 if bullish_now is False:
                     snap["blocker"] = "bougie actuelle non haussiere"
                     return
+        # v4.178 — SUR DEMANDE EXPLICITE : marque si cette entree qualifie
+        # via le flirt S/R (pas via une cassure fraiche) — determine si le
+        # levier dynamique 2-5x s applique (uniquement dans ce cas).
+        snap["entered_via_flirt"] = not fresh_breakout_sa
         # v4.150 — SUR DEMANDE EXPLICITE : une cassure fraiche contourne
         # ces deux blocages — une vraie cassure depasse PAR DEFINITION la
         # resistance recente, ce que le blocage ci-dessus interdirait
@@ -7031,6 +7062,7 @@ class BotEngine:
             "reasons": reasons, "prices": prices, "conf_breakdown": {},
             "strategy": "spot_accumulation",
             "support_at_entry": support, "resistance_at_entry": resistance,
+            "entered_via_flirt": snap.get("entered_via_flirt", False),
         })
 
     def _finalize_open(self, cand):
@@ -7187,11 +7219,17 @@ class BotEngine:
         # v3.2 — le levier prudent doit etre connu AVANT le calcul du SL de
         # securite, puisque le notionnel reel (taille x levier) determine le
         # % de mouvement correspondant a un montant $ donne.
-        # v4.43 — SUR DEMANDE EXPLICITE : Spot-Accumulation force TOUJOURS le
-        # levier a x1 — coherent avec l esprit spot et l absence de SL (pas
-        # de risque de liquidation, meme sur un mouvement tres defavorable).
+        # v4.178 — SUR DEMANDE EXPLICITE : Spot-Accumulation utilise
+        # desormais un levier DYNAMIQUE (2-5x) quand l entree qualifie via
+        # le flirt S/R + couleur de bougie — l ancien x1 systematique reste
+        # applique pour une entree via cassure fraiche (mouvement deja bien
+        # engage, moins besoin d amplifier), coherent avec l esprit
+        # prudent d origine dans ce cas precis.
         if strategy == "spot_accumulation":
-            leverage = 1
+            if cand.get("entered_via_flirt", False):
+                leverage = self._compute_spot_accum_dynamic_leverage(ticker)
+            else:
+                leverage = 1
         else:
             leverage = self._compute_prudent_leverage(ticker, confidence, rsi_mode)
         notional = size * leverage
