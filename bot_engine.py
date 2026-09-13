@@ -3322,6 +3322,55 @@ class BotEngine:
             return 2
         return 1
 
+    def _is_candle_bullish_now(self, state):
+        """v4.175 — SUR DEMANDE EXPLICITE : la bougie EN COURS est-elle verte
+        (haussiere) ? Utilise pour confirmer une entree LONG pres du
+        support — differe de _candle_color_confirms_reversal (qui detecte
+        un CHANGEMENT de couleur pour une SORTIE), ici on veut simplement
+        la couleur ACTUELLE. Retourne None si pas assez de bougies
+        (n empeche pas l entree par defaut, gere par l appelant)."""
+        candles = list(state.candle_history)
+        if len(candles) < 2:
+            return None
+        return candles[-1][2] >= candles[-2][2]
+
+    def _is_candle_bearish_now(self, state):
+        """v4.175 — meme principe que _is_candle_bullish_now, pour une
+        entree SHORT pres de la resistance (bougie rouge)."""
+        bullish = self._is_candle_bullish_now(state)
+        return None if bullish is None else not bullish
+
+    def _is_near_level_simple(self, price, level, max_pct):
+        """v4.175 — SUR DEMANDE EXPLICITE : remplace la fenetre de
+        proximite precise (5-15% de l amplitude) par un simple "assez
+        proche" — % de distance directe au niveau (pas relatif a l
+        amplitude), la couleur de bougie faisant desormais le plus gros du
+        travail de confirmation plutot qu une precision de zone."""
+        if level is None or level <= 0 or price is None:
+            return False
+        return abs(price - level) / level * 100 <= max_pct
+
+    def _structural_sl_broken(self, state, pos, price):
+        """v4.176 — SUR DEMANDE EXPLICITE : generalise a TOUS les modes (sauf
+        le mode range d Accumulation, qui garde sa propre logique) le SL
+        structurel construit pour Spot-Accum — LONG : rupture CONFIRMEE du
+        support memorise a l entree. SHORT : rupture CONFIRMEE de la
+        resistance memorisee a l entree. Confirmation = patience
+        (SL_PATIENCE_CYCLES) + changement de couleur de bougie, exactement
+        comme le mecanisme Spot-Accum d origine."""
+        cfg = self.cfg
+        direction = pos.get("type", "long")
+        level = pos.get("support_at_entry") if direction == "long" else pos.get("resistance_at_entry")
+        if level is None:
+            return False
+        broken = (price < level) if direction == "long" else (price > level)
+        if broken:
+            state.sl_breach_streak = getattr(state, "sl_breach_streak", 0) + 1
+        else:
+            state.sl_breach_streak = 0
+        patience = cfg.get("SL_PATIENCE_CYCLES", 10)
+        return broken and state.sl_breach_streak >= patience and self._candle_color_confirms_reversal(state, direction)
+
     def _candle_color_confirms_reversal(self, state, direction):
         """v4.162 — SUR DEMANDE EXPLICITE : extrait de _ttp_confirmed_to_close
         pour reutilisation SANS le compteur de patience partage (evite une
@@ -4827,28 +4876,34 @@ class BotEngine:
         # actuelle pour les positions ouvertes avant ce fix (champ absent).
         sl_pct_of_e = pos.get("sl_pct_of_e", cfg.get("SL_PCT_OF_E", 1.0))
         sl_usd = -E * sl_pct_of_e / 100
-        # v4.174 — SUR DEMANDE EXPLICITE : pour Spot-Accum UNIQUEMENT,
-        # remplace COMPLETEMENT le SL classique (% de prix) par une rupture
-        # CONFIRMEE du support (le niveau structurel memorise a l entree),
-        # plutot qu une distance de prix arbitraire — coherent avec la
-        # philosophie "on tient tant que la structure tient". Confirmation
-        # = meme couleur de bougie + patience que les autres mecanismes de
-        # retournement du bot.
-        if pos.get("strategy") == "spot_accumulation":
-            support_at_entry_sl = pos.get("support_at_entry")
-            support_broken = support_at_entry_sl is not None and price < support_at_entry_sl
-            if support_broken:
-                state.sl_breach_streak = getattr(state, "sl_breach_streak", 0) + 1
-            else:
-                state.sl_breach_streak = 0
-            sl_patience_cycles_sa = cfg.get("SL_PATIENCE_CYCLES", 10)
-            if support_broken and state.sl_breach_streak >= sl_patience_cycles_sa and self._candle_color_confirms_reversal(state, "long"):
-                pnl, _, trade = state.close_position(price, "STOP LOSS (support rompu)")
+        # v4.176 — SUR DEMANDE EXPLICITE : le SL structurel (rupture
+        # CONFIRMEE du support/resistance memorise a l entree) s applique
+        # desormais a TOUS les modes SAUF : Funding (logique fondee sur le
+        # taux de financement, pas la structure de prix — laisse inchangee
+        # a la demande explicite) et les entrees Accumulation qualifiees
+        # specifiquement via son mode "trader le range" (garde son propre
+        # SL % de prix classique, coherent avec sa logique dediee).
+        use_structural_sl = (
+            pos.get("strategy") != "funding_contrarian"
+            and not pos.get("entered_via_range", False)
+        )
+        if use_structural_sl:
+            structural_level = pos.get("support_at_entry") if pos["type"] == "long" else pos.get("resistance_at_entry")
+            if self._structural_sl_broken(state, pos, price):
+                level_label = "support" if pos["type"] == "long" else "resistance"
+                pnl, _, trade = state.close_position(price, f"STOP LOSS ({level_label} rompu)")
                 trade["symbol"] = symbol
                 if mode == "live" and self.exchange:
                     close_order(self.exchange, ticker, pos, self.cfg)
                 self.emit("trade", trade)
-                self.emit("log", {"msg": f"[{ticker}] 🌱 STOP LOSS Spot-Accum : support ${support_at_entry_sl:.4f} rompu et confirme @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "loss"})
+                self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS : {level_label} ${structural_level:.4f} rompu et confirme @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "loss"})
+                if pos["type"] == "long":
+                    state.post_win_confirm_long = True
+                    state.confirm_count_long = 0
+                else:
+                    state.post_win_confirm_short = True
+                    state.confirm_count_short = 0
+                self._register_max_loss(ticker, pos.get("confidence"))
                 self._save_open_positions()
                 self._persist_capital_snapshot()
                 return
@@ -5667,6 +5722,18 @@ class BotEngine:
                 (resistance is not None and 0 <= (resistance - price) / price * 100 <= level_proximity_pct)
                 or (support is not None and price < support)
             )
+            # v4.175 — SUR DEMANDE EXPLICITE : exige AUSSI une bougie de la
+            # bonne couleur (verte pour LONG pres du support, rouge pour
+            # SHORT pres de la resistance) — remplace la precision de la
+            # fenetre par une confirmation directe du momentum de la
+            # bougie en cours.
+            if cfg.get("REQUIRE_ENTRY_CANDLE_COLOR", True):
+                bullish_now = self._is_candle_bullish_now(state)
+                bearish_now = self._is_candle_bearish_now(state)
+                if bullish_now is False:
+                    long_level_ok = False
+                if bearish_now is False:
+                    short_level_ok = False
         else:
             long_level_ok = True
             short_level_ok = True
@@ -6304,6 +6371,7 @@ class BotEngine:
             "symbol": symbol, "ticker": ticker, "state": state, "signal": signal,
             "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": rsi_mode,
             "reasons": reasons, "prices": prices, "conf_breakdown": conf_breakdown,
+            "support": support, "resistance": resistance,
         })
 
     def _check_accumulation_signal(self, symbol, ticker, price, support, resistance,
@@ -6469,11 +6537,19 @@ class BotEngine:
                     print(f"[RANGE-DIAG] BTC | {len(_mtf_diag)} echantillons | min={min(_mtf_diag):.2f} max={max(_mtf_diag):.2f} | range={_range_diag:.3f}% | is_ranging={is_ranging}")
                 else:
                     print(f"[RANGE-DIAG] BTC | seulement {len(_mtf_diag)} echantillons (besoin 5+)")
+            entered_via_range_long = False
+            entered_via_range_short = False
             if is_ranging and cfg.get("ACCUMULATION_TRADE_THE_RANGE", True):
+                if prox_long_ok and not trend_long_ok:
+                    entered_via_range_long = True
+                if prox_short_ok and not trend_short_ok:
+                    entered_via_range_short = True
                 if prox_long_ok:
                     trend_long_ok = True
                 if prox_short_ok:
                     trend_short_ok = True
+            snap["entered_via_range_long"] = entered_via_range_long
+            snap["entered_via_range_short"] = entered_via_range_short
             snap["is_ranging"] = is_ranging
             snap["trend_up_streak"] = state.trend_up_streak
             snap["trend_down_streak"] = state.trend_down_streak
@@ -6726,11 +6802,13 @@ class BotEngine:
         if require_trend:
             reasons.append("tendance EMA200 confirmee")
 
+        entered_via_range = entered_via_range_long if direction == "long" else entered_via_range_short
         self._pending_accumulation_candidates.append({
             "symbol": symbol, "ticker": ticker, "state": accum_state, "signal": direction,
             "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": "accumulation",
             "reasons": reasons, "prices": prices, "conf_breakdown": {},
-            "strategy": "accumulation",
+            "strategy": "accumulation", "entered_via_range": entered_via_range,
+            "support": support, "resistance": resistance,
         })
 
     def _check_funding_contrarian_signal(self, symbol, ticker, price, rsi, prices, state):
@@ -6899,18 +6977,25 @@ class BotEngine:
         # (comme le seuil structurel du trailing, 70% de l amplitude) — pas
         # du prix du support, incoherent et pouvant techniquement autoriser
         # une entree au-dela de la resistance sur une fourchette etroite.
-        # Recalibre a 5-10% de l amplitude.
-        max_above_pct = cfg.get("SPOT_ACCUM_MAX_ABOVE_SUPPORT_PCT", 10.0)
-        dist_above_support_pct = (price - support) / (resistance - support) * 100
+        # v4.176 — SUR DEMANDE EXPLICITE : nouvelle philosophie unifiee —
+        # remplace la fenetre de proximite precise (5-10% de l amplitude)
+        # par un "flirt" simple avec le support + confirmation par bougie
+        # verte (haussiere). Coherent avec Normal/Accumulation desormais.
+        # L ancienne logique (achat d une tendance DEJA engagee, loin du
+        # support) est abandonnee au profit de cette approche unifiee.
+        dist_above_support_pct = (price - support) / (resistance - support) * 100 if resistance != support else 0
         snap["dist_above_support_pct"] = round(dist_above_support_pct, 2)
-        snap["window"] = f"{min_above_pct}-{max_above_pct}% de l'amplitude"
         if not fresh_breakout_sa:
-            if dist_above_support_pct < min_above_pct or dist_above_support_pct > max_above_pct:
-                snap["blocker"] = f"hors fenetre ({dist_above_support_pct:.2f}% pas entre {min_above_pct}-{max_above_pct}%)"
-                return  # hors de la fenetre visee (trop pres du support, ou trop loin)
-            if price >= resistance:
-                snap["blocker"] = "prix deja au-dessus de la resistance"
-                return  # deja au-dessus de la resistance recente, entree trop tardive
+            near_support = self._is_near_level_simple(price, support, cfg.get("ENTRY_LEVEL_PROXIMITY_PCT", 1.0))
+            snap["near_support"] = near_support
+            if not near_support:
+                snap["blocker"] = f"pas assez proche du support (${support:.4f})"
+                return
+            if cfg.get("REQUIRE_ENTRY_CANDLE_COLOR", True):
+                bullish_now = self._is_candle_bullish_now(state)
+                if bullish_now is False:
+                    snap["blocker"] = "bougie actuelle non haussiere"
+                    return
         # v4.150 — SUR DEMANDE EXPLICITE : une cassure fraiche contourne
         # ces deux blocages — une vraie cassure depasse PAR DEFINITION la
         # resistance recente, ce que le blocage ci-dessus interdirait
@@ -7376,6 +7461,13 @@ class BotEngine:
                 print(f"[LEVERAGE-VERIF] Impossible de verifier le levier reel pour {ticker} : {e}")
 
         state.open_position(signal, price, sl_p, tp_p, size, confidence=confidence, leverage=leverage, strategy=strategy)
+        # v4.176 — SUR DEMANDE EXPLICITE : memorise si cette entree a
+        # qualifie specifiquement via le mode "trader le range" d
+        # Accumulation — exclu du nouveau SL structurel (garde son propre
+        # SL % de prix classique), toutes les autres entrees suivent
+        # desormais le SL structurel (rupture confirmee du support/
+        # resistance).
+        state.position["entered_via_range"] = cand.get("entered_via_range", False)
         # v4.89 — SUR DEMANDE EXPLICITE : memorise le mode REEL (paper/live)
         # de CE trade precis au moment de son ouverture — close_position le
         # relit pour alimenter le bon pot (paper_pnl vs live_pnl), jamais
