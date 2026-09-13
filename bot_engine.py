@@ -149,7 +149,11 @@ CONFIG = {
                            "ARB", "AVAX", "LINK", "OP", "INJ",
                            "WIF", "JUP", "PENDLE", "EIGEN", "RENDER",
                            "APT", "SEI", "DOGE", "XRP", "NEAR", "FTM", "AAVE",
-                           "UNI", "CRV", "SUSHI", "GMX", "POL"],
+                           "UNI", "CRV", "SUSHI", "GMX", "POL",
+                           # v4.164 — FIX : oublies lors de l implementation
+                           # initiale, empechant tout traitement reel malgre
+                           # leur presence dans SYMBOLS.
+                           "xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY"],
     "MAX_OPEN_TRADES":    5,
 
     # v4.9 — Cooldown de reentree DANS LE MEME SENS apres la fermeture d un
