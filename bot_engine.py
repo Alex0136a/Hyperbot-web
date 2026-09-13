@@ -107,7 +107,24 @@ CONFIG = {
                            "ARB", "AVAX", "LINK", "OP", "INJ", "TIA", "TAO",
                            "WIF", "JUP", "PENDLE", "EIGEN", "RENDER", "SUI",
                            "APT", "SEI", "DOGE", "XRP", "NEAR", "FTM", "AAVE",
-                           "UNI", "CRV", "SUSHI", "GMX", "POL"],
+                           "UNI", "CRV", "SUSHI", "GMX", "POL",
+                           # v4.163 — SUR DEMANDE EXPLICITE : tickers forex
+                           # (HIP-3, namespace "xyz:") dedies au mode Normal
+                           # — cote deja implicitement contre USD chacun.
+                           # Isolation de mode geree dans _process (voir
+                           # NORMAL_FOREX_SYMBOLS ci-dessous).
+                           "xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY"],
+
+    # v4.163 — SUR DEMANDE EXPLICITE : liste de reference pour identifier
+    # les tickers forex (namespace "xyz:") — Normal est le SEUL mode a les
+    # trader ; les autres modes (Accumulation/Funding/Spot-Accum) les
+    # ignorent completement, et inversement Normal ignore desormais les
+    # cryptos (voir isolation dans _process).
+    "NORMAL_FOREX_SYMBOLS": ["xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY"],
+    # v4.163 — marge ISOLEE obligatoire pour les marches HIP-3 (contrairement
+    # aux cryptos, en marge croisee) — voir application dans le passage d
+    # ordre et l ajustement de levier.
+    "NORMAL_FOREX_ISOLATED_MARGIN": True,
 
     # v3.2 — Nouvelle approche : les 30 marches sont TOUS eligibles par
     # defaut (le bot pioche librement parmi eux selon le score de
@@ -4041,8 +4058,10 @@ class BotEngine:
             real_tickers_lev = list({ticker_from_slot_key(s) for s in cfg["SYMBOLS"]})
             lev_errors = []
             for t in real_tickers_lev:
+                # v4.163 — SUR DEMANDE EXPLICITE : marge isolee pour le forex.
+                is_cross_margin_startup = t not in cfg.get("NORMAL_FOREX_SYMBOLS", [])
                 try:
-                    self.exchange.update_leverage(leverage, t, is_cross=True)
+                    self.exchange.update_leverage(leverage, t, is_cross=is_cross_margin_startup)
                 except Exception as e:
                     lev_errors.append(t)
                     print(f"[LEVERAGE] Echec x{leverage} sur {t} : {e}")
@@ -5016,6 +5035,13 @@ class BotEngine:
         cfg   = self.cfg
         ticker = ticker_from_slot_key(symbol)   # vrai ticker API (ex: "BTC" depuis "BTC_0")
         state = self.states[symbol]
+        # v4.163 — SUR DEMANDE EXPLICITE : isolation complete entre forex
+        # (Normal uniquement) et crypto (tous les autres modes) — evite
+        # qu Accumulation/Funding/Spot-Accum n evaluent par erreur un
+        # ticker forex (marge croisee incompatible avec l exigence de
+        # marge isolee des marches HIP-3), et qu Normal continue d
+        # evaluer des cryptos alors qu il est desormais dedie au forex.
+        is_forex_ticker = ticker in cfg.get("NORMAL_FOREX_SYMBOLS", [])
         if ticker == "BTC":
             print(f"[MTF-DIAG] _process ENTREE pour BTC, prix={price}, collecting={state.collecting}")
         # v3.2 — FIX : ne pas ecraser le prix avec la valeur REST (cycle,
@@ -5421,18 +5447,22 @@ class BotEngine:
         # candidat sur le meme actif au meme cycle (garde-fou anti-double-
         # ouverture dans _finalize_open : un seul slot par actif, le premier
         # candidat finalise gagne).
-        self._check_accumulation_signal(
-            symbol, ticker, price, support_accum, resistance_accum, rsi, momentum_pct,
-            ema200, trend_up, trend_down, prices, state, self.accum_states[symbol]
-        )
+        # v4.163 — SUR DEMANDE EXPLICITE : Accumulation/Funding/Spot-Accum
+        # ignorent completement les tickers forex (dedies exclusivement au
+        # mode Normal, voir isolation en tete de _process).
+        if not is_forex_ticker:
+            self._check_accumulation_signal(
+                symbol, ticker, price, support_accum, resistance_accum, rsi, momentum_pct,
+                ema200, trend_up, trend_down, prices, state, self.accum_states[symbol]
+            )
 
-        # v4.33 — Mode Funding Contrarian, lui aussi EN PARALLELE, evalue
-        # independamment chaque cycle — meme garde-fou anti-double-ouverture
-        # dans _finalize_open (un seul slot par actif).
-        self._check_funding_contrarian_signal(symbol, ticker, price, rsi, prices, state)
+            # v4.33 — Mode Funding Contrarian, lui aussi EN PARALLELE, evalue
+            # independamment chaque cycle — meme garde-fou anti-double-ouverture
+            # dans _finalize_open (un seul slot par actif).
+            self._check_funding_contrarian_signal(symbol, ticker, price, rsi, prices, state)
 
-        # v4.43 — Mode Spot-Accumulation, lui aussi EN PARALLELE.
-        self._check_spot_accumulation_signal(symbol, ticker, price, support, resistance, rsi, trend_up, prices, state)
+            # v4.43 — Mode Spot-Accumulation, lui aussi EN PARALLELE.
+            self._check_spot_accumulation_signal(symbol, ticker, price, support, resistance, rsi, trend_up, prices, state)
 
         # v4.19 — Respect des niveaux, FUSIONNE dans la logique principale
         # (pas juste Accumulation) : un LONG a besoin d un rebond pres du
@@ -5810,6 +5840,14 @@ class BotEngine:
         else:
             long_entry_ok = rsi_buy and ema_bull and trend_up and not state.long_signal_stale and long_level_ok
             short_entry_ok = rsi_sell and ema_bear and trend_down and not state.short_signal_stale and short_level_ok
+
+        # v4.163 — SUR DEMANDE EXPLICITE : le mode Normal est desormais
+        # dedie exclusivement au forex — ignore completement les cryptos
+        # (voir isolation inverse pour Accumulation/Funding/Spot-Accum plus
+        # haut dans _process).
+        if not is_forex_ticker:
+            long_entry_ok = False
+            short_entry_ok = False
 
         # v4.155 — SUR DEMANDE EXPLICITE : le mode normal n a AUCUN outil
         # dedie pour bien trader un marche en range (contrairement a
@@ -7105,8 +7143,12 @@ class BotEngine:
             # Hyperliquid (remplace/surcharge le levier uniforme applique au
             # demarrage) — chaque trade peut donc avoir un levier different
             # selon sa confiance/mode/etat de penalite.
+            # v4.163 — SUR DEMANDE EXPLICITE : les marches HIP-3 (forex,
+            # namespace "xyz:") exigent la marge ISOLEE — la marge croisee,
+            # utilisee pour les cryptos, n est pas supportee sur ces marches.
+            is_cross_margin = ticker not in cfg.get("NORMAL_FOREX_SYMBOLS", [])
             try:
-                self.exchange.update_leverage(leverage, ticker, is_cross=True)
+                self.exchange.update_leverage(leverage, ticker, is_cross=is_cross_margin)
             except Exception as e:
                 self.emit("log", {"msg": f"[{ticker}] Echec application levier prudent x{leverage} : {e} — poursuite avec le levier deja en place.", "level": "warn"})
             # tp_price=None : plus d ordre TP fixe sur Hyperliquid, la prise de
