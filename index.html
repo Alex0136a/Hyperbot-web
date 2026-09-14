@@ -75,6 +75,27 @@ const ACCUM_OVERRIDE_KEYS = new Set([
   "ACCUMULATION_TTP_DYNAMIC_TRAIL_GAP_PCT",
   "FUNDING_TTP_DYNAMIC_TRAIL_GAP_PCT",
 ]);
+// v4.187 — SUR DEMANDE EXPLICITE : regroupe les reglages avances par mode,
+// selon le prefixe de leur cle — pour un affichage clair, separe par
+// section, plutot qu une seule grille plate de 26+ reglages melanges.
+function groupAdvancedSettingsByMode(settings) {
+  const groups = {forex: [], accumulation: [], funding: [], spot_accum: [], global: []};
+  for (const [key, meta] of Object.entries(settings)) {
+    if (key.startsWith("ACCUMULATION_")) groups.accumulation.push([key, meta]);
+    else if (key.startsWith("FUNDING_")) groups.funding.push([key, meta]);
+    else if (key.startsWith("SPOT_ACCUM_")) groups.spot_accum.push([key, meta]);
+    else if (key.startsWith("FOREX_") || key === "MAX_OPEN_TRADES") groups.forex.push([key, meta]);
+    else groups.global.push([key, meta]);
+  }
+  return groups;
+}
+const ADVANCED_GROUP_META = [
+  {key:"global", label:"🌐 Partagé (tous modes)", color:"#60a5fa"},
+  {key:"forex", label:"⚡ Forex", color:"#e2e8f0"},
+  {key:"accumulation", label:"🎯 Accumulation", color:"#a78bfa"},
+  {key:"funding", label:"💰 Funding Contrarian", color:"#fbbf24"},
+  {key:"spot_accum", label:"🌱 Spot-Accum", color:"#34d399"},
+];
 // v4.43 — sous-onglets Paper Trading par mode
 const PAPER_SUBTABS = [
   {key:"all", label:"Tous", icon:"📊", color:"#60a5fa"},
@@ -1854,38 +1875,61 @@ Confirmer ?`
             {!advancedSettings
               ? <div style={{color:"#94a3b8",fontSize:11}}>Chargement...</div>
               : <>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
-                  {Object.entries(advancedSettings).map(([key,meta])=>{
-                    // v4.42 — les 6 reglages Accumulation dedies acceptent une
-                    // valeur vide = null = "herite du mode normal" (pas de
-                    // changement de comportement) — bouton de reinitialisation
-                    // dedie pour y revenir explicitement. Tous les autres
-                    // reglages gardent EXACTEMENT le comportement d avant.
-                    const isAccumOverride = ACCUM_OVERRIDE_KEYS.has(key);
-                    return (
-                    <div key={key}>
-                      <div style={{fontSize:9,color:"#94a3b8",marginBottom:3}}>{meta.label}</div>
-                      <div style={{display:"flex",gap:4}}>
-                        <input key={`${key}-${meta.value}`} type="number" step="any"
-                          defaultValue={meta.value==null?"":meta.value}
-                          placeholder={isAccumOverride && meta.value==null ? "Hérite du mode normal" : ""}
-                          onChange={e=>{
-                            if (isAccumOverride) {
-                              setAdvancedEdits(p=>({...p,[key]: e.target.value===""?null:Number(e.target.value)}));
-                            } else {
-                              setAdvancedEdits(p=>({...p,[key]:Number(e.target.value)}));
-                            }
-                          }}
-                          style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11}}/>
-                        {isAccumOverride && meta.value!=null && (
-                          <button type="button" title="Réinitialiser (hériter du mode normal)"
-                            onClick={()=>setAdvancedEdits(p=>({...p,[key]:null}))}
-                            style={{background:"#1e2d4a",border:"1px solid #334155",borderRadius:6,padding:"0 8px",color:"#94a3b8",fontSize:11,cursor:"pointer"}}>↺</button>
-                        )}
+                {(()=>{
+                  // v4.187 — SUR DEMANDE EXPLICITE : sauvegarde reutilisable,
+                  // appelee AUSSI au blur (clic ailleurs) d un champ, pas
+                  // seulement par le bouton explicite en bas.
+                  const saveAdvancedEdits = async (edits) => {
+                    if(!Object.keys(edits).length) return;
+                    try{
+                      const r = await apiCall("/api/config/advanced","PUT",{values:edits},token);
+                      setAdvancedEdits({});
+                      apiCall("/api/config/advanced","GET",null,token).then(r=>setAdvancedSettings(r));
+                    }catch(e){alert("Erreur: "+e.message);}
+                  };
+                  const groups = groupAdvancedSettingsByMode(advancedSettings);
+                  return ADVANCED_GROUP_META.filter(g=>groups[g.key].length>0).map(g=>(
+                    <div key={g.key} style={{marginBottom:16}}>
+                      <div style={{fontSize:10,fontWeight:700,color:g.color,marginBottom:8,paddingBottom:4,borderBottom:`1px solid ${g.color}33`}}>{g.label}</div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                        {groups[g.key].map(([key,meta])=>{
+                          const isAccumOverride = ACCUM_OVERRIDE_KEYS.has(key);
+                          return (
+                          <div key={key}>
+                            <div style={{fontSize:9,color:"#94a3b8",marginBottom:3}}>{meta.label}</div>
+                            <div style={{display:"flex",gap:4}}>
+                              <input key={`${key}-${meta.value}`} type="number" step="any"
+                                defaultValue={meta.value==null?"":meta.value}
+                                placeholder={isAccumOverride && meta.value==null ? "Hérite du mode normal" : ""}
+                                onChange={e=>{
+                                  if (isAccumOverride) {
+                                    setAdvancedEdits(p=>({...p,[key]: e.target.value===""?null:Number(e.target.value)}));
+                                  } else {
+                                    setAdvancedEdits(p=>({...p,[key]:Number(e.target.value)}));
+                                  }
+                                }}
+                                onBlur={()=>{
+                                  // v4.187 — valide automatiquement CE champ
+                                  // (et tout autre deja en attente) des qu on
+                                  // clique ailleurs, sans attendre le bouton.
+                                  setAdvancedEdits(p=>{
+                                    if (Object.keys(p).length) saveAdvancedEdits(p);
+                                    return p;
+                                  });
+                                }}
+                                style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11}}/>
+                              {isAccumOverride && meta.value!=null && (
+                                <button type="button" title="Réinitialiser (hérite du mode normal)"
+                                  onClick={()=>{ setAdvancedEdits(p=>({...p,[key]:null})); saveAdvancedEdits({...advancedEdits,[key]:null}); }}
+                                  style={{background:"#1e2d4a",border:"1px solid #334155",borderRadius:6,padding:"0 8px",color:"#94a3b8",fontSize:11,cursor:"pointer"}}>↺</button>
+                              )}
+                            </div>
+                          </div>
+                        );})}
                       </div>
                     </div>
-                  );})}
-                </div>
+                  ));
+                })()}
                 <button onClick={async()=>{
                   if(!Object.keys(advancedEdits).length){ alert("Aucun changement a sauvegarder."); return; }
                   try{
@@ -1895,7 +1939,7 @@ Confirmer ?`
                     alert(`${Object.keys(r.applied).length} réglage(s) mis à jour.`);
                   }catch(e){alert("Erreur: "+e.message);}
                 }} style={{width:"100%",background:"linear-gradient(135deg,#1d4ed8,#7c3aed)",border:"none",borderRadius:8,padding:"10px",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer"}}>
-                  💾 Sauvegarder les réglages avancés
+                  💾 Sauvegarder les réglages avancés (ou cliquez simplement ailleurs après une modif)
                 </button>
               </>
             }
