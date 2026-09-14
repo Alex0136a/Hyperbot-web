@@ -652,24 +652,42 @@ def _open_positions() -> List[Dict[str, Any]]:
             # v4.15 — Pic de PnL latent atteint jusqu ici pendant la vie du
             # trade (trailing principal ou protection anticipee, selon
             # lequel est actif) — visible dans le panneau "Trades ouverts".
-            # v4.18 — priorite tier1 > tier0 > pic absolu (des le 1er cycle en
-            # profit, meme sous 0.5%) — voir close_position pour la meme logique.
-            peak_pnl_usd = (
-                state.peak_pnl_usd if state.peak_pnl_usd is not None
-                else state.tier0_peak_pnl_usd if state.tier0_peak_pnl_usd is not None
-                else state.absolute_peak_pnl_usd
-            )
-            # v4.17 — pic en % de mouvement de prix, calcule avec le E et le
-            # levier REELS de CETTE position (pos["size"]/pos["leverage"]),
-            # plus fiables ici que la variable "leverage" ci-dessus (qui peut
-            # provenir d un repli config si l enrichissement DB a echoue).
-            pos_size = pos.get("size", 0)
-            pos_leverage = pos.get("leverage", 1)
-            peak_pnl_pct = (
-                round(peak_pnl_usd / (pos_size * pos_leverage) * 100, 3)
-                if peak_pnl_usd is not None and pos_size and pos_leverage
-                else None
-            )
+            # v4.188 — FIX BUG CRITIQUE : Spot-Accum a son PROPRE traqueur de
+            # pic (state.spot_accum_peak_pnl_pct), separe et JAMAIS mis a
+            # jour via peak_pnl_usd/tier0_peak_pnl_usd (utilises par les
+            # AUTRES modes uniquement) — donnait un pic errone/perime
+            # (parfois INFERIEUR au PnL actuel, incoherent), confirme par
+            # une position reelle observee (pic affiche +0.20% alors que le
+            # PnL courant etait deja a +0.77%).
+            if pos.get("strategy") == "spot_accumulation":
+                peak_pnl_pct = round(state.spot_accum_peak_pnl_pct, 3) if state.spot_accum_peak_pnl_pct is not None else None
+                # v4.188 (suite) — equivalent $ calcule depuis le % (Spot-Accum
+                # ne traque nativement que le %), evite une variable non
+                # definie plus bas dans cette fonction (peak_pnl_usd
+                # reference sans condition pour construire "peak_pnl").
+                peak_pnl_usd = (
+                    round(pos.get("size", 0) * pos.get("leverage", 1) * peak_pnl_pct / 100, 4)
+                    if peak_pnl_pct is not None else None
+                )
+            else:
+                # v4.18 — priorite tier1 > tier0 > pic absolu (des le 1er cycle en
+                # profit, meme sous 0.5%) — voir close_position pour la meme logique.
+                peak_pnl_usd = (
+                    state.peak_pnl_usd if state.peak_pnl_usd is not None
+                    else state.tier0_peak_pnl_usd if state.tier0_peak_pnl_usd is not None
+                    else state.absolute_peak_pnl_usd
+                )
+                # v4.17 — pic en % de mouvement de prix, calcule avec le E et le
+                # levier REELS de CETTE position (pos["size"]/pos["leverage"]),
+                # plus fiables ici que la variable "leverage" ci-dessus (qui peut
+                # provenir d un repli config si l enrichissement DB a echoue).
+                pos_size = pos.get("size", 0)
+                pos_leverage = pos.get("leverage", 1)
+                peak_pnl_pct = (
+                    round(peak_pnl_usd / (pos_size * pos_leverage) * 100, 3)
+                    if peak_pnl_usd is not None and pos_size and pos_leverage
+                    else None
+                )
 
             out.append({
                 "id": slot_key,
@@ -699,7 +717,7 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "spot_accum_arm_pct_used": cfg.get("SPOT_ACCUM_TTP_ARM_PCT"),  # v4.63 — seuil REELLEMENT lu, pour verifier sans deviner
                 "spot_accum_peak_pnl_pct_internal": round(state.spot_accum_peak_pnl_pct, 3) if state.spot_accum_peak_pnl_pct is not None else None,
                 "tier0_armed": state.tier0_armed,
-                "peak_source": "tier1" if state.peak_pnl_usd is not None else ("tier0" if state.tier0_peak_pnl_usd is not None else "absolu (aucun tier arme)"),
+                "peak_source": "spot_accum" if pos.get("strategy") == "spot_accumulation" else ("tier1" if state.peak_pnl_usd is not None else ("tier0" if state.tier0_peak_pnl_usd is not None else "absolu (aucun tier arme)")),
                 "computed_exit_threshold_pct": (
                     round(peak_pnl_pct - cfg.get("TTP_DYNAMIC_TRAIL_GAP_PCT", 0.5), 3)
                     if state.tp_stage == 1 and peak_pnl_pct is not None and cfg.get("TTP_DYNAMIC_FROM_ARM1", True)
