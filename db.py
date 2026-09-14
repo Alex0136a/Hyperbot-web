@@ -157,6 +157,14 @@ def init_db():
                         conn.execute("UPDATE config_overrides SET value=? WHERE key=?", (json.dumps(parsed), dict_key))
                 except (json.JSONDecodeError, TypeError):
                     pass
+        # v4.184 — SUR DEMANDE EXPLICITE : force la mise a jour d un
+        # reglage personnalise DEJA enregistre en base pour
+        # SPOT_ACCUM_TTP_ARM_PCT — un ancien override (1.0, voire 3.0)
+        # continuait de primer sur le nouveau defaut du code (0.4),
+        # empechant le correctif de prendre effet malgre le redeploiement.
+        # Supprime purement et simplement cette ligne : le defaut du code
+        # (0.4) prendra alors le relais naturellement.
+        conn.execute("DELETE FROM config_overrides WHERE key='SPOT_ACCUM_TTP_ARM_PCT' AND value IN ('1.0', '1', '3.0', '3')")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS config_overrides (
                 key TEXT PRIMARY KEY,
