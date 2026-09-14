@@ -725,6 +725,21 @@ def _open_positions() -> List[Dict[str, Any]]:
 
 
 def _trade_row_to_signal(row: Dict[str, Any]) -> Dict[str, Any]:
+    # v4.185 — SUR DEMANDE EXPLICITE : PnL % a la SORTIE, absent jusqu ici
+    # de l historique (seul le $ etait affiche) — calcule a partir des
+    # champs deja stockes (entree, sortie, direction, levier), meme
+    # convention que le correctif recent sur les positions OUVERTES (%
+    # amplifie par le levier, coherent avec ce qu affiche Hyperliquid).
+    exit_pnl_pct = None
+    try:
+        entry_p = row["entry_price"]
+        exit_p = row["exit_price"]
+        if entry_p and exit_p:
+            raw_move_pct = ((exit_p - entry_p) / entry_p * 100) if row["action"] == "LONG" else ((entry_p - exit_p) / entry_p * 100)
+            lev = row["leverage"] if row["leverage"] else 1
+            exit_pnl_pct = round(raw_move_pct * lev, 3)
+    except (TypeError, KeyError, ZeroDivisionError):
+        pass
     return {
         "id": row["id"],
         "coin": row["coin"],
@@ -745,6 +760,7 @@ def _trade_row_to_signal(row: Dict[str, Any]) -> Dict[str, Any]:
         "closed_at": row["closed_at"],
         "exit_price": row["exit_price"],
         "pnl": row["pnl"],
+        "pnl_pct": exit_pnl_pct,
         "reason": row["reason"],
         "strategy": row["strategy"] if "strategy" in row.keys() else "forex",
         "peak_pnl": row["peak_pnl"] if "peak_pnl" in row.keys() else None,
