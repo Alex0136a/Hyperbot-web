@@ -117,6 +117,12 @@ def init_db():
             # des statistiques (win rate, performance) separees par mode
             # reel, jamais melangees entre capital virtuel et capital reel.
             conn.execute("ALTER TABLE trades ADD COLUMN trade_mode TEXT")
+        if "fees_paid" not in existing_cols:
+            # v4.186 — SUR DEMANDE EXPLICITE : frais REELS estimes payes a
+            # Hyperliquid pour ce trade (ouverture + fermeture), uniquement
+            # pour les trades LIVE — jamais pour le paper (simulation, pas
+            # de frais reels).
+            conn.execute("ALTER TABLE trades ADD COLUMN fees_paid REAL")
         # v4.171 — SUR DEMANDE EXPLICITE : renommage complet du mode "normal"
         # en "forex" (desormais dedie au forex/HIP-3) — migre les lignes
         # EXISTANTES en base, une seule fois (idempotent, sans effet si deja
@@ -243,11 +249,11 @@ def insert_open_trade(coin, action, confidence, leverage, position_size_pct,
         return cur.lastrowid
 
 
-def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=None):
+def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=None, fees_paid=None):
     with _lock, _connect() as conn:
         conn.execute(
-            "UPDATE trades SET exit_price=?, pnl=?, reason=?, closed_at=?, peak_pnl=?, peak_pnl_pct=? WHERE id=?",
-            (exit_price, pnl, reason, now_iso(), peak_pnl, peak_pnl_pct, trade_id)
+            "UPDATE trades SET exit_price=?, pnl=?, reason=?, closed_at=?, peak_pnl=?, peak_pnl_pct=?, fees_paid=? WHERE id=?",
+            (exit_price, pnl, reason, now_iso(), peak_pnl, peak_pnl_pct, fees_paid, trade_id)
         )
         conn.commit()
 
