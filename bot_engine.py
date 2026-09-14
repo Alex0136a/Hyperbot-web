@@ -2165,6 +2165,14 @@ def fetch_cpi_events_from_finnhub(api_key):
 # ─────────────────────────────────────────────
 #  STATE PAR SYMBOLE
 # ─────────────────────────────────────────────
+# v4.186 — SUR DEMANDE EXPLICITE : taux de frais taker Hyperliquid, utilise
+# pour ESTIMER les frais reels payes sur les trades LIVE (ouverture +
+# fermeture, le bot utilise des ordres IOC qui sont quasi-toujours taker).
+# Valeur de base par defaut (avant reduction VIP/staking eventuelle) —
+# ajustable si besoin, mais reste une estimation, pas un chiffre exact lu
+# depuis Hyperliquid (l API ne renvoie pas directement le frais par ordre).
+FEE_RATE_TAKER_ESTIMATE = 0.00045  # 0.045%
+
 class SymbolState:
     def __init__(self):
         self.position      = None
@@ -2448,6 +2456,14 @@ class SymbolState:
             if peak_pnl_usd_at_close is not None and E_at_close and leverage_at_close
             else None
         )
+        # v4.186 — SUR DEMANDE EXPLICITE : frais estimes payes a Hyperliquid
+        # (ouverture + fermeture), UNIQUEMENT pour les trades LIVE — le
+        # paper n a aucun frais reel. Notionnel = E x levier, applique aux
+        # deux jambes (ouverture et fermeture) du trade.
+        fees_paid = None
+        if trade_mode == "live":
+            notional = E_at_close * leverage_at_close
+            fees_paid = round(notional * FEE_RATE_TAKER_ESTIMATE * 2, 4)
         trade = {
             "time": datetime.now().strftime("%H:%M:%S"), "symbol": "",
             "type": p["type"], "entry": p["entry"], "exit": exit_price,
@@ -2457,6 +2473,7 @@ class SymbolState:
             "trade_mode": trade_mode,  # v4.89 — paper ou live REEL de ce trade precis
             "peak_pnl_usd": peak_pnl_usd_at_close,  # v4.15
             "peak_pnl_pct": peak_pnl_pct_at_close,  # v4.17
+            "fees_paid": fees_paid,  # v4.186
         }
         self.closed_trades.append(trade)
         # v4.3 — FIX FUITE MEMOIRE : seul un historique glissant de 24h est
