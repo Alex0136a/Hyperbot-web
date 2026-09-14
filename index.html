@@ -2128,6 +2128,9 @@ Confirmer ?`
                               <div><div style={{fontSize:15,fontWeight:700,color:"#e2e8f0"}}>{perf.open_trades}/{perf.total_trades}</div><div style={{fontSize:8,color:"#94a3b8"}}>OUVERTS/TOTAL</div></div>
                               <div><div style={{fontSize:15,fontWeight:700,color:"#fbbf24"}}>{perf.win_rate}%</div><div style={{fontSize:8,color:"#94a3b8"}}>WIN RATE</div></div>
                               <div style={{gridColumn:"span 2"}}><div style={{fontSize:15,fontWeight:700,color:perf.net_pnl>=0?"#34d399":"#f87171"}}>{perf.net_pnl>=0?"+":""}{perf.net_pnl.toFixed(2)} USDC</div><div style={{fontSize:8,color:"#94a3b8"}}>NET</div></div>
+                              {perf.total_fees_paid>0 && (
+                                <div style={{gridColumn:"span 2"}}><div style={{fontSize:12,fontWeight:700,color:"#94a3b8"}}>-{perf.total_fees_paid.toFixed(2)} USDC</div><div style={{fontSize:8,color:"#64748b"}}>FRAIS HYPERLIQUID (estimés, live uniquement)</div></div>
+                              )}
                             </div>
                           )}
                         </div>
