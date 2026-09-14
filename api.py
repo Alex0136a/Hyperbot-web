@@ -179,7 +179,7 @@ def _consume_events():
                 action = "LONG" if data.get("type") == "long" else "SHORT"
                 trade_id = db.get_open_trade_id_by_coin_action(ticker, action, data.get("strategy"))
                 if trade_id:
-                    db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"), peak_pnl=data.get("peak_pnl_usd"), peak_pnl_pct=data.get("peak_pnl_pct"))
+                    db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"), peak_pnl=data.get("peak_pnl_usd"), peak_pnl_pct=data.get("peak_pnl_pct"), fees_paid=data.get("fees_paid"))
                 else:
                     # v3.2 — diagnostic : auparavant, si aucune ligne ouverte
                     # ne correspondait (coin/action), la fermeture etait
@@ -1673,6 +1673,10 @@ def get_strategy_performance(strategy: str, email: str = Depends(require_user)):
     total_pnl = sum((t.get("pnl") or 0) for t in filtered)
     win_pnl = sum((t.get("pnl") or 0) for t in wins)
     loss_pnl = sum((t.get("pnl") or 0) for t in losses)
+    # v4.186 — SUR DEMANDE EXPLICITE : total des frais REELS estimes payes
+    # a Hyperliquid pour ce mode — uniquement les trades LIVE ont un frais
+    # non-None (voir bot_engine.py close_position), le paper n en a jamais.
+    total_fees = sum((t.get("fees_paid") or 0) for t in filtered)
     open_count = sum(1 for st in bot.states.values() if st.position and (st.position.get("strategy") or "forex") == strategy)
     # v4.121 — SUR DEMANDE EXPLICITE : Accumulation a desormais son PROPRE
     # emplacement (bot.accum_states), jamais compte ci-dessus.
@@ -1688,6 +1692,7 @@ def get_strategy_performance(strategy: str, email: str = Depends(require_user)):
         "net_pnl": round(total_pnl, 4),
         "win_pnl": round(win_pnl, 4),
         "loss_pnl": round(loss_pnl, 4),
+        "total_fees_paid": round(total_fees, 4),
         "refreshed_at": time.time(),
     }
 
