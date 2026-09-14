@@ -619,6 +619,11 @@ CONFIG = {
     # force une perte.
     "MAX_HOLD_DURATION_ENABLED": True,
     "MAX_HOLD_DURATION_HOURS": 12,
+    # v4.182 — SUR DEMANDE EXPLICITE : sortie anticipee des qu une bougie
+    # confirme un retournement, une fois le trailing arme — n attend plus
+    # forcement le seuil de repli complet. Applique a tier0/tier1
+    # (Normal/Accumulation/Funding) et Spot-Accum.
+    "EARLY_REVERSAL_EXIT_ENABLED": True,
     # v4.154 — SUR DEMANDE EXPLICITE : meme principe de patience, applique
     # au TTP, COUPLE a une confirmation par changement de couleur de
     # bougie — les deux synchronisees sur les memes donnees temps reel
@@ -4873,6 +4878,22 @@ class BotEngine:
             else:
                 if state.spot_accum_peak_pnl_pct is None or pnl_pct > state.spot_accum_peak_pnl_pct:
                     state.spot_accum_peak_pnl_pct = pnl_pct
+                # v4.182 — SUR DEMANDE EXPLICITE : sortie ANTICIPEE des qu
+                # une bougie confirme un retournement — meme principe que
+                # pour tier0/tier1, applique ici a Spot-Accum.
+                elif cfg.get("EARLY_REVERSAL_EXIT_ENABLED", True) and self._candle_color_confirms_reversal(state, "long"):
+                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT (sortie anticipee)")
+                    trade["symbol"] = symbol
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, ticker, pos, self.cfg)
+                    self.emit("trade", trade)
+                    self._register_win(ticker)
+                    state.post_win_confirm_long = True
+                    state.confirm_count_long = 0
+                    self.emit("log", {"msg": f"[{ticker}] 🌱 TTP SORTIE ANTICIPEE Spot-Accum (bougie de retournement) @ ${price:.2f} | pic +{state.spot_accum_peak_pnl_pct:.2f}% | PnL: +${pnl:.2f}", "level": "win"})
+                    self._save_open_positions()
+                    self._persist_capital_snapshot()
+                    return
                 elif pnl_pct <= state.spot_accum_peak_pnl_pct - tolerance_pct:
                     # v4.83 — SUR DEMANDE EXPLICITE : meme filtre "la
                     # tendance tient toujours" que tier0/tier1 (v4.77/v4.82),
@@ -5168,6 +5189,27 @@ class BotEngine:
             # Pic reconverti en % de mouvement de prix (le levier est fixe
             # pour la duree du trade, cette reconversion est donc exacte).
             peak_price_pct = (state.peak_pnl_usd / (E * leverage) * 100) if E and leverage else 0
+
+            # v4.182 — SUR DEMANDE EXPLICITE : sortie ANTICIPEE des qu une
+            # bougie confirme un retournement — meme principe que pour
+            # tier0, applique ici a tier1.
+            if cfg.get("EARLY_REVERSAL_EXIT_ENABLED", True) and self._candle_color_confirms_reversal(state, pos["type"]):
+                pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT (sortie anticipee)")
+                trade["symbol"] = symbol
+                if mode == "live" and self.exchange:
+                    close_order(self.exchange, ticker, pos, self.cfg)
+                self.emit("trade", trade)
+                self._register_win(ticker)
+                if pos["type"] == "long":
+                    state.post_win_confirm_long = True
+                    state.confirm_count_long = 0
+                else:
+                    state.post_win_confirm_short = True
+                    state.confirm_count_short = 0
+                self.emit("log", {"msg": f"[{ticker}] {strat_tag}TTP SORTIE ANTICIPEE (bougie de retournement) @ ${price:.2f} | pic +{peak_price_pct:.2f}% | PnL: +${pnl:.2f}", "level": "win"})
+                self._save_open_positions()
+                self._persist_capital_snapshot()
+                return
 
             # v4.60 — SUR DEMANDE EXPLICITE : des l armement (tier 1), le
             # trailing devient IMMEDIATEMENT dynamique — sortie = pic - marge
