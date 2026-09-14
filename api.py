@@ -598,9 +598,18 @@ def _open_positions() -> List[Dict[str, Any]]:
             ticker = be.ticker_from_slot_key(slot_key)
             price = state.current_price or pos["entry"]
             if pos["type"] == "long":
-                pnl_pct = (price - pos["entry"]) / pos["entry"] * 100
+                raw_price_move_pct = (price - pos["entry"]) / pos["entry"] * 100
             else:
-                pnl_pct = (pos["entry"] - price) / pos["entry"] * 100
+                raw_price_move_pct = (pos["entry"] - price) / pos["entry"] * 100
+            # v4.183 — FIX BUG CRITIQUE : ni le $ ni le % affiches n
+            # appliquaient le levier — Hyperliquid affiche un PNL (ROE%)
+            # relatif a la MARGE reellement postee (E), donc amplifie par
+            # le levier, exactement comme le $ reel. Un trade x3 affichait
+            # ainsi un PnL 3 FOIS plus petit que la realite (confirme avec
+            # des donnees utilisateur reelles : $0.06 affiche vs $0.19 reel
+            # sur Hyperliquid, ratio exact de 3x = le levier du trade).
+            leverage_for_pnl = pos.get("leverage", 1)
+            pnl_pct = raw_price_move_pct * leverage_for_pnl
             pnl = pos["size"] * pnl_pct / 100
 
             # opened_at est stocke par bot_engine.py au format "%d/%m/%Y %H:%M:%S"
