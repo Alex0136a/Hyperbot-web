@@ -3412,19 +3412,35 @@ class BotEngine:
         support memorise a l entree. SHORT : rupture CONFIRMEE de la
         resistance memorisee a l entree. Confirmation = patience
         (SL_PATIENCE_CYCLES) + changement de couleur de bougie, exactement
-        comme le mecanisme Spot-Accum d origine."""
+        comme le mecanisme Spot-Accum d origine.
+        v4.190 — FIX BUG CRITIQUE : l ancien compteur STRICTEMENT
+        consecutif se remettait a 0 des qu un SEUL cycle repassait au-dessus
+        du niveau — dans un marche qui descend de facon IRREGULIERE
+        (remonte brievement plusieurs fois avant de continuer sa chute), ce
+        compteur n atteignait JAMAIS le seuil, laissant le prix deriver tres
+        loin sous le support SANS AUCUNE protection (perte de -6% observee
+        sur un cas reel, POL). Remplace par une FENETRE GLISSANTE : compte
+        les cycles "casses" sur les N derniers cycles (N = 1.5x la
+        patience), tolerant les breves remontees sans tout reinitialiser."""
         cfg = self.cfg
         direction = pos.get("type", "long")
         level = pos.get("support_at_entry") if direction == "long" else pos.get("resistance_at_entry")
         if level is None:
             return False
         broken = (price < level) if direction == "long" else (price > level)
-        if broken:
-            state.sl_breach_streak = getattr(state, "sl_breach_streak", 0) + 1
-        else:
-            state.sl_breach_streak = 0
         patience = cfg.get("SL_PATIENCE_CYCLES", 10)
-        return broken and state.sl_breach_streak >= patience and self._candle_color_confirms_reversal(state, direction)
+        window_size = int(patience * 1.5)
+        if not hasattr(state, "sl_breach_window") or state.sl_breach_window is None:
+            state.sl_breach_window = deque(maxlen=window_size)
+        elif state.sl_breach_window.maxlen != window_size:
+            state.sl_breach_window = deque(state.sl_breach_window, maxlen=window_size)
+        state.sl_breach_window.append(broken)
+        breach_count = sum(state.sl_breach_window)
+        # Diagnostic — SUR DEMANDE EXPLICITE, pour comprendre les FUTURS cas
+        # de derive prolongee sous le support sans declenchement du SL.
+        if broken and breach_count >= patience // 2 and breach_count < patience:
+            print(f"[SL-STRUCT-DIAG] {pos.get('strategy')} {direction} — prix sous niveau depuis {breach_count}/{window_size} cycles recents (seuil {patience}), niveau={level:.6f}, prix={price:.6f}")
+        return breach_count >= patience and self._candle_color_confirms_reversal(state, direction)
 
     def _candle_color_confirms_reversal(self, state, direction):
         """v4.162 — SUR DEMANDE EXPLICITE : extrait de _ttp_confirmed_to_close
