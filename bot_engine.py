@@ -3916,7 +3916,22 @@ class BotEngine:
             # symboles tradés) — permet a l API web d afficher un marche
             # complet (jusqu a 30 cryptos) sans avoir besoin d ouvrir une
             # position sur chacun.
-            self.all_mids = mids
+            # v4.199 — FIX BUG CRITIQUE : remplace l ECRASEMENT complet
+            # (self.all_mids = mids) par une FUSION — l ancien code effacait
+            # systematiquement les cles forex ("xyz:EUR" etc., ajoutees par
+            # _on_ws_allmids_forex) a chaque tick crypto, qui survient bien
+            # plus frequemment — confirme par des logs reels montrant le
+            # forex reçu via WS mais absent de self.all_mids au moment ou le
+            # cycle principal le consultait 10s plus tard.
+            if not isinstance(self.all_mids, dict):
+                self.all_mids = {}
+            self.all_mids.update(mids)
+            # v4.199 (suite) — les cles NATIVES absentes du dernier message
+            # (actif temporairement sans mise a jour) doivent neanmoins
+            # rester disponibles — mids contient TOUJOURS l ensemble complet
+            # des actifs natifs a chaque tick (contrairement au forex, qui
+            # arrive par un flux separe), donc aucun risque de cle crypto
+            # perimee ici.
             # v4.36 — SUR DEMANDE EXPLICITE : suit le plus HAUT/BAS reel de
             # TOUS les actifs (pas seulement ceux en position) a chaque tick
             # WebSocket — alimente de vraies bougies OHLC pour l EMA200 et un
