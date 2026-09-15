@@ -4595,9 +4595,20 @@ class BotEngine:
                         if sym in prices:
                             self.states[sym].current_price = prices[sym]
                     # Continuer a gerer les positions ouvertes (SL / Trailing TP)
+                    forex_syms_fallback_oh = set(cfg.get("FOREX_SYMBOLS", []))
                     for sym in cfg["SYMBOLS"]:
                         if sym in prices and self.states[sym].position:
                             self._process_with_timeout(sym, prices[sym])
+                        elif (sym not in prices and ticker_from_slot_key(sym) in forex_syms_fallback_oh
+                              and self.states[sym].position and isinstance(self.all_mids, dict)):
+                            fb_price = self.all_mids.get(ticker_from_slot_key(sym))
+                            if fb_price is not None:
+                                try:
+                                    fb_price = float(fb_price)
+                                    if fb_price > 0:
+                                        self._process_with_timeout(sym, fb_price)
+                                except (TypeError, ValueError):
+                                    pass
                     self._save_open_positions()
                     self._save_confidence_thresholds()
                     self._save_indicator_state()
@@ -4614,9 +4625,28 @@ class BotEngine:
                 self._pending_accumulation_candidates = []
                 self._pending_funding_candidates = []
                 self._pending_spot_accum_candidates = []
+                # v4.198 — SUR DEMANDE EXPLICITE : filet de secours pour le
+                # forex — si le ticker est absent du dict REST (prices,
+                # get_prices()) mais present dans self.all_mids (alimente
+                # separement par le WebSocket dedie au DEX "xyz", qui peut
+                # fonctionner meme quand le REST echoue) — utilise cette
+                # valeur plutot que de sauter completement le traitement de
+                # ce cycle. Confirme par un cas reel : WS recevait bien les
+                # prix forex, mais prices (REST) ne les contenait jamais,
+                # empechant _process d etre appele du tout pour ces tickers.
+                forex_syms_fallback = set(cfg.get("FOREX_SYMBOLS", []))
                 for sym in cfg["SYMBOLS"]:
                     if sym in prices:
                         self._process_with_timeout(sym, prices[sym])
+                    elif ticker_from_slot_key(sym) in forex_syms_fallback and isinstance(self.all_mids, dict):
+                        fallback_price = self.all_mids.get(ticker_from_slot_key(sym))
+                        if fallback_price is not None:
+                            try:
+                                fallback_price = float(fallback_price)
+                                if fallback_price > 0:
+                                    self._process_with_timeout(sym, fallback_price)
+                            except (TypeError, ValueError):
+                                pass
                 self._finalize_pending_candidates()
                 self._finalize_pending_accumulation_candidates()
                 self._finalize_pending_funding_candidates()
