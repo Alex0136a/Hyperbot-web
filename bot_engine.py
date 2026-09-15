@@ -3351,6 +3351,21 @@ class BotEngine:
         leverage = 2 + ratio * (cfg.get("SPOT_ACCUM_MAX_DYNAMIC_LEVERAGE", 5) - 2)
         return round(leverage)
 
+    def _compute_accumulation_dynamic_leverage(self, ticker):
+        """v4.191 — SUR DEMANDE EXPLICITE : miroir exact de
+        _compute_spot_accum_dynamic_leverage, pour Accumulation (desormais
+        l oppose de Spot-Accum — short uniquement)."""
+        cfg = self.cfg
+        base = cfg.get("CONFIDENCE_MIN_PCT", 65.0)
+        ceiling = cfg.get("CONFIDENCE_MAX_PCT", 87.0)
+        threshold = self.confidence_thresholds.get(ticker, base)
+        if ceiling <= base:
+            return 2
+        ratio = (ceiling - threshold) / (ceiling - base)
+        ratio = max(0.0, min(1.0, ratio))
+        leverage = 2 + ratio * (cfg.get("ACCUMULATION_MAX_DYNAMIC_LEVERAGE", 5) - 2)
+        return round(leverage)
+
     def _compute_prudent_leverage(self, ticker, confidence, rsi_mode):
         """v3.2 — Levier prudent, calcule INDIVIDUELLEMENT pour chaque trade
         (plus une valeur fixe globale). Trois garde-fous cumulatifs :
@@ -6509,438 +6524,101 @@ class BotEngine:
     def _check_accumulation_signal(self, symbol, ticker, price, support, resistance,
                                     rsi, momentum_pct, ema200, trend_up, trend_down,
                                     prices, state, accum_state):
-        """v4.16 — Mode ACCUMULATION : strategie independante de la logique
-        RSI/tendance habituelle. LONG si le prix est proche du SUPPORT
-        recent, SHORT si proche de la RESISTANCE recente — logique de
-        rebond/rejet sur un niveau cle, pas de suivi de tendance. Tourne EN
-        PARALLELE de la logique normale, evaluee independamment a CHAQUE
-        cycle (plus seulement en repli quand la logique normale ne trouve
-        rien) — sur demande explicite. Alimente
-        self._pending_accumulation_candidates, plafond et execution geres
-        separement (voir _finalize_pending_accumulation_candidates).
-        v4.121 — SUR DEMANDE EXPLICITE : Accumulation dispose desormais de
-        son PROPRE emplacement (accum_state), independant de celui partage
-        par Normal/Funding/Spot-Accum (state) — un actif deja pris par un
-        autre mode ne bloque plus Accumulation. 'state' reste utilise
-        UNIQUEMENT pour les donnees de MARCHE partagees (stabilite de
-        tendance, historique de bougies pour l ATR) — deja calculees une
-        seule fois par cycle, pas besoin de dupliquer ce calcul.
-        """
+        """v4.191 — SUR DEMANDE EXPLICITE : Accumulation devient l OPPOSE de
+        Spot-Accum — SHORT uniquement, avec la tendance generale baissiere
+        (EMA200), flirt avec la RESISTANCE + bougie ROUGE (baissiere) pour
+        confirmer l entree. SL structurel sur rupture confirmee de la
+        resistance (deja generalise, voir _structural_sl_broken). Levier
+        dynamique 2-5x sur une entree via flirt (voir
+        _compute_accumulation_dynamic_leverage), x1 sur cassure fraiche.
+        L ancienne logique (LONG+SHORT, fenetre de proximite precise,
+        detecteur de range/mode range) est retiree d ici — le mode range
+        devient son PROPRE mode independant (_check_range_signal)."""
         cfg = self.cfg
         snap = {"ts": time.time(), "enabled": cfg.get("ACCUMULATION_ENABLED", False)}
         accum_state.accumulation_gate_snapshot = snap
         if not cfg.get("ACCUMULATION_ENABLED", False):
             snap["blocker"] = "mode desactive"
             return
+        if not self._gate_active_or_auto_activate(ticker, 100, "accumulation"):
+            snap["blocker"] = "actif non selectionne pour ce mode"
+            return
+
+        snap["trend_down"] = trend_down
+        breakout_lookback_ac = cfg.get("ACCUMULATION_BREAKOUT_LOOKBACK_CANDLES", 30)
+        fresh_breakout_ac = self._detect_fresh_breakout(state, "short", breakout_lookback_ac)
+        snap["fresh_breakout"] = fresh_breakout_ac
+        if not trend_down and not fresh_breakout_ac:
+            snap["blocker"] = "pas de tendance baissiere (EMA200)"
+            return
+
+        min_stability_cycles = cfg.get("ACCUMULATION_TREND_STABILITY_CYCLES", 24)
+        snap["trend_down_streak"] = state.trend_down_streak
+        snap["min_stability_cycles"] = min_stability_cycles
+        if state.trend_down_streak < min_stability_cycles and not fresh_breakout_ac:
+            snap["blocker"] = f"tendance trop recente ({state.trend_down_streak}/{min_stability_cycles} cycles)"
+            return
         if support is None or resistance is None or support <= 0:
             snap["blocker"] = "support/resistance indisponible"
             return
-        if not self._gate_active_or_auto_activate(ticker, 100, "accumulation"):
-            snap["blocker"] = "actif non selectionne pour ce mode"
-            return  # actif desactive (Marches) ou exclu manuellement — jamais de trade, quel que soit le mode
 
-        proximity_pct = cfg.get("ACCUMULATION_PROXIMITY_PCT", 1.0)
-        momentum_threshold = cfg.get("MOMENTUM_THRESHOLD_PCT", 0.15)
-        require_trend = cfg.get("ACCUMULATION_REQUIRE_TREND_CONFIRM", False)
-
-        dist_to_support    = (price - support) / support * 100
-        dist_to_resistance = (resistance - price) / price * 100
-
-        # v4.58 — SUR DEMANDE EXPLICITE : direction desormais basee sur les
-        # 3 conditions communes aux 3 modes (tendance + ADX, proximite 1-5%
-        # AVEC cassure conservee en alternative — sur demande explicite,
-        # Accumulation garde sa logique de cassure contrairement a
-        # Spot-Accumulation), amplitude S/R suffisante. Remplace l ancienne
-        # logique base sur ACCUMULATION_PROXIMITY_PCT seul (garde la
-        # variable pour compatibilite mais ne l utilise plus si le mode
-        # unifie est actif). Tout ce qui suit (MACD, ancienne coherence
-        # d amplitude, separation EMA200, confirmation post-trade) reste
-        # inchange, applique EN PLUS de ces 3 conditions.
-        direction = None
-        if cfg.get("UNIFIED_SIMPLIFIED_MODE", True):
-            snap["unified_mode_active"] = True
-            amp_ok = self._unified_sr_amplitude_ok(support, resistance)
-            snap["amplitude_ok"] = amp_ok
-            if not amp_ok:
-                snap["blocker"] = "fourchette S/R trop etroite"
-                return
-            # v4.75 — SUR DEMANDE EXPLICITE : extension de la stabilite de
-            # tendance a Accumulation (meme principe que Spot-Accum).
-            accum_stability_cycles = cfg.get("ACCUMULATION_TREND_STABILITY_CYCLES", 24)
-            accum_adx_threshold = cfg.get("ACCUMULATION_ADX_TREND_THRESHOLD", 20.0)
-            trend_long_ok = self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", accum_stability_cycles, accum_adx_threshold)
-            trend_short_ok = self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", accum_stability_cycles, accum_adx_threshold)
-            # v4.148 — SUR DEMANDE EXPLICITE : en plus de l EMA200/duree
-            # habituels, confirme IMMEDIATEMENT la tendance des qu une
-            # cassure structurelle fraiche est detectee (nouveau plus haut/
-            # plus bas recent) — permet une prise de position DES la
-            # confirmation du mouvement, sans attendre les cycles de
-            # stabilite normalement requis.
-            breakout_lookback = cfg.get("ACCUMULATION_BREAKOUT_LOOKBACK_CANDLES", 60)
-            if self._detect_fresh_breakout(state, "long", breakout_lookback):
-                trend_long_ok = True
-            if self._detect_fresh_breakout(state, "short", breakout_lookback):
-                trend_short_ok = True
-            accum_min_prox = cfg.get("ACCUMULATION_MIN_ABOVE_SUPPORT_PCT", 5.0)
-            accum_max_prox = cfg.get("ACCUMULATION_MAX_ABOVE_SUPPORT_PCT", 20.0)
-            # v4.133 — SUR DEMANDE EXPLICITE : le S/R d Accumulation est
-            # calcule sur 24h (niveaux structurels), mais l amplitude de
-            # reference pour juger la proximite (5-10%) reste basee sur les
-            # 4 dernieres heures (120 bougies ~2min) — plus reactive aux
-            # conditions recentes que l amplitude totale sur 24h.
-            accum_amplitude_candles = list(state.candle_history)[-cfg.get("ACCUMULATION_AMPLITUDE_PERIOD_CANDLES", 120):]
-            if len(accum_amplitude_candles) >= 5:
-                accum_amplitude_4h = max(c[0] for c in accum_amplitude_candles) - min(c[1] for c in accum_amplitude_candles)
-            else:
-                accum_amplitude_4h = None  # pas assez de bougies, repli sur (resistance-support) dans _unified_proximity_ok
-            prox_long_ok = self._unified_proximity_ok(price, support, resistance, "long", min_pct_override=accum_min_prox, max_pct_override=accum_max_prox, amplitude_override=accum_amplitude_4h)
-            prox_short_ok = self._unified_proximity_ok(price, support, resistance, "short", min_pct_override=accum_min_prox, max_pct_override=accum_max_prox, amplitude_override=accum_amplitude_4h)
-            # v4.140 — SUR DEMANDE EXPLICITE : detecte un DEBUT FRAIS de
-            # tendance (streak de stabilite juste au-dessus du minimum
-            # requis, pas encore mature) — dans ce cas, ignore
-            # COMPLETEMENT la fenetre de proximite S/R, pour capturer le
-            # retournement des son debut plutot que d attendre un rejet a
-            # un niveau precis (S/R), qui n a de sens que pour un rebond
-            # tardif, pas pour l amorce d un mouvement. Une tendance deja
-            # mature (streak au-dela de la fenetre "fraiche") continue
-            # d exiger la proximite S/R normalement.
-            fresh_max = cfg.get("ACCUMULATION_FRESH_TREND_MAX_CYCLES", 36)
-            fresh_long = accum_stability_cycles <= state.trend_up_streak <= fresh_max
-            fresh_short = accum_stability_cycles <= state.trend_down_streak <= fresh_max
-            if fresh_long:
-                prox_long_ok = True
-            if fresh_short:
-                prox_short_ok = True
-            # v4.141 — SUR DEMANDE EXPLICITE : complete le mecanisme
-            # ci-dessus pour couvrir aussi une tendance DEJA BIEN ENGAGEE
-            # (au-dela de la fenetre "fraiche") — reutilise la confirmation
-            # longue duree (mouvement reel du prix sur 6h, deja construite
-            # pour capturer les mouvements en "escalier") comme alternative
-            # supplementaire a la proximite S/R, peu importe l age du
-            # streak. Les DEUX mecanismes (fraiche + longue duree) couvrent
-            # ainsi le debut ET la poursuite d un mouvement, sans jamais
-            # exiger la proximite S/R pour Accumulation des qu une tendance
-            # reelle est confirmee d une facon ou d une autre.
-            established_long = self._long_term_momentum_confirmed(state, "long", cfg.get("LONG_TERM_MOMENTUM_LOOKBACK_CANDLES", 180), cfg.get("LONG_TERM_MOMENTUM_MIN_CHANGE_PCT", 2.0))
-            established_short = self._long_term_momentum_confirmed(state, "short", cfg.get("LONG_TERM_MOMENTUM_LOOKBACK_CANDLES", 180), cfg.get("LONG_TERM_MOMENTUM_MIN_CHANGE_PCT", 2.0))
-            if established_long:
-                prox_long_ok = True
-            if established_short:
-                prox_short_ok = True
-            # v4.148 — SUR DEMANDE EXPLICITE : une cassure fraiche contourne
-            # aussi la proximite S/R — sans ca, la confirmation immediate de
-            # tendance (ci-dessus) resterait sans effet, puisqu une cassure
-            # se produit typiquement LOIN d un niveau S/R sur 24h.
-            if self._detect_fresh_breakout(state, "long", breakout_lookback):
-                prox_long_ok = True
-            if self._detect_fresh_breakout(state, "short", breakout_lookback):
-                prox_short_ok = True
-            # v4.139 — SUR DEMANDE EXPLICITE : diagnostic direct visible dans
-            # les logs Railway pour comprendre pourquoi "hors fenetre" bloque
-            # presque systematiquement depuis le passage au S/R 24h + amplitude 4h.
-            if ticker == "BTC":
-                _amp_used = accum_amplitude_4h if accum_amplitude_4h is not None else (resistance - support)
-                _dist_long = (price - support) / _amp_used * 100 if _amp_used > 0 else None
-                _dist_short = (resistance - price) / _amp_used * 100 if _amp_used > 0 else None
-                print(f"[PROX-DIAG] BTC | prix={price:.2f} | support_24h={support:.2f} resistance_24h={resistance:.2f} (ecart={resistance-support:.2f}) | amplitude_4h={_amp_used:.2f} ({len(accum_amplitude_candles)} bougies) | dist_long={_dist_long:.1f}% dist_short={_dist_short:.1f}% | fenetre={accum_min_prox}-{accum_max_prox}%")
-            # v4.127 — SUR DEMANDE EXPLICITE : detecteur de range DIRECT en
-            # PLUS de la fenetre de proximite (conservee) — bloque si le
-            # marche est reellement en range (peu de mouvement recent),
-            # independamment de la position par rapport au support/resistance.
-            # v4.151 — SUR DEMANDE EXPLICITE : le detecteur de range n est
-            # plus un simple bloqueur — il devient un MODE D ENTREE
-            # ALTERNATIF a part entiere. Si le marche est reellement en
-            # range (peu de mouvement recent) ET que le prix est dans la
-            # fenetre de proximite normale, on trade DIRECTEMENT la
-            # fourchette (achat pres du support, vente pres de la
-            # resistance) SANS exiger de confirmation de tendance —
-            # exactement l intention d origine d Accumulation. Si le
-            # marche n est PAS en range, le comportement precedent
-            # s applique inchange (tendance + proximite requises).
-            is_ranging = self._is_market_ranging(state, cfg.get("ACCUMULATION_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("ACCUMULATION_ANTI_RANGE_LOOKBACK", 30))
-            # v4.129 — SUR DEMANDE EXPLICITE : diagnostic direct visible dans
-            # les logs Railway (contrairement a self.emit) — verifie si les
-            # donnees brutes utilisees par le detecteur de range refletent
-            # bien la realite du marche pour BTC, sans deviner.
-            if ticker == "BTC":
-                _mtf_diag = list(state.mtf_prices)[-cfg.get("ACCUMULATION_ANTI_RANGE_LOOKBACK", 30):]
-                if len(_mtf_diag) >= 5:
-                    _range_diag = (max(_mtf_diag) - min(_mtf_diag)) / min(_mtf_diag) * 100
-                    print(f"[RANGE-DIAG] BTC | {len(_mtf_diag)} echantillons | min={min(_mtf_diag):.2f} max={max(_mtf_diag):.2f} | range={_range_diag:.3f}% | is_ranging={is_ranging}")
-                else:
-                    print(f"[RANGE-DIAG] BTC | seulement {len(_mtf_diag)} echantillons (besoin 5+)")
-            entered_via_range_long = False
-            entered_via_range_short = False
-            if is_ranging and cfg.get("ACCUMULATION_TRADE_THE_RANGE", True):
-                if prox_long_ok and not trend_long_ok:
-                    entered_via_range_long = True
-                if prox_short_ok and not trend_short_ok:
-                    entered_via_range_short = True
-                if prox_long_ok:
-                    trend_long_ok = True
-                if prox_short_ok:
-                    trend_short_ok = True
-            snap["entered_via_range_long"] = entered_via_range_long
-            snap["entered_via_range_short"] = entered_via_range_short
-            snap["is_ranging"] = is_ranging
-            snap["trend_up_streak"] = state.trend_up_streak
-            snap["trend_down_streak"] = state.trend_down_streak
-            snap["stability_cycles_required"] = accum_stability_cycles
-            snap["trend_long_ok"] = trend_long_ok
-            snap["trend_short_ok"] = trend_short_ok
-            snap["proximity_long_ok"] = prox_long_ok
-            snap["proximity_short_ok"] = prox_short_ok
-            if trend_long_ok and prox_long_ok:
-                if momentum_pct is None or momentum_pct >= -momentum_threshold:
-                    direction = "long"
-            elif trend_short_ok and prox_short_ok:
-                if momentum_pct is None or momentum_pct <= momentum_threshold:
-                    direction = "short"
-        else:
-            snap["unified_mode_active"] = False
-            if 0 <= dist_to_support <= proximity_pct:
-                # Sens coherent : le mouvement tres recent ne doit pas s effondrer
-                # a travers le support (sinon ce n est plus un rebond, c est une
-                # cassure en cours) — reutilise le meme filtre momentum que la
-                # logique normale.
-                if momentum_pct is None or momentum_pct >= -momentum_threshold:
-                    if not require_trend or trend_up:
-                        direction = "long"
-            elif 0 <= dist_to_resistance <= proximity_pct:
-                if momentum_pct is None or momentum_pct <= momentum_threshold:
-                    if not require_trend or trend_down:
-                        direction = "short"
-
-        if direction is None:
-            if snap.get("unified_mode_active"):
-                # v4.136 — SUR DEMANDE EXPLICITE : separe desormais les
-                # raisons LONG et SHORT (comme le mode normal), au lieu de
-                # les combiner avec un "OU" qui masquait si UN SEUL des deux
-                # sens etait en realite bloque, l autre etant peut-etre pres
-                # de qualifier.
-                up_streak_ok = state.trend_up_streak >= accum_stability_cycles
-                down_streak_ok = state.trend_down_streak >= accum_stability_cycles
-                adx_diag = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
-                adx_threshold_diag = cfg.get("ACCUMULATION_ADX_TREND_THRESHOLD", 20.0)
-                adx_diag_str = f"{adx_diag:.1f}" if adx_diag is not None else "indisponible"
-                # v4.138 — FIX BUG CRITIQUE : le diagnostic affichait l ADX
-                # comme bloquant de facon INCONDITIONNELLE, sans jamais
-                # consulter UNIFIED_REQUIRE_ADX_CONFIRM — alors que la VRAIE
-                # decision (_unified_trend_confirmed) le respecte
-                # correctement et ignore l ADX si desactive. Le diagnostic
-                # mentait donc sur la vraie cause du blocage des que ce
-                # reglage etait desactive (cas actuel).
-                adx_required = cfg.get("UNIFIED_REQUIRE_ADX_CONFIRM", True)
-                adx_ok = (not adx_required) or (adx_diag is not None and adx_diag >= adx_threshold_diag)
-
-                def _build_side_reasons(streak_ok, prox_ok, streak_val, other_streak_val):
-                    raisons_side = []
-                    if not streak_ok:
-                        raisons_side.append(f"duree insuffisante ({streak_val}/{accum_stability_cycles} cycles requis)")
-                    elif not adx_ok:
-                        raisons_side.append(f"duree OK ({streak_val} cycles) mais ADX {adx_diag_str} < {adx_threshold_diag} (tendance pas assez forte)")
-                    if not prox_ok:
-                        if snap.get("is_ranging"):
-                            raisons_side.append(f"en range mais hors zone d'achat/vente ({cfg.get('ACCUMULATION_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('ACCUMULATION_MAX_ABOVE_SUPPORT_PCT', 20.0)}% de l'amplitude)")
-                        else:
-                            raisons_side.append(f"hors fenetre {cfg.get('ACCUMULATION_MIN_ABOVE_SUPPORT_PCT', 5.0)}-{cfg.get('ACCUMULATION_MAX_ABOVE_SUPPORT_PCT', 20.0)}% de l'amplitude (et pas de cassure)")
-                    return ", ".join(raisons_side) if raisons_side else "momentum defavorable ou direction non alignee"
-
-                snap["blocker_long"] = _build_side_reasons(up_streak_ok, snap.get("proximity_long_ok"), state.trend_up_streak, state.trend_down_streak)
-                snap["blocker_short"] = _build_side_reasons(down_streak_ok, snap.get("proximity_short_ok"), state.trend_down_streak, state.trend_up_streak)
-                snap["blocker"] = f"LONG: {snap['blocker_long']} | SHORT: {snap['blocker_short']}"
-            else:
-                snap["blocker"] = "hors zone de proximite support/resistance"
-                snap["blocker_long"] = snap["blocker"]
-                snap["blocker_short"] = snap["blocker"]
-            return
-        snap["blocker"] = None  # rien ne bloque a ce stade, candidat en cours d evaluation
-
-        # v4.37 — SUR DEMANDE EXPLICITE, desactive par defaut (meme switch
-        # que le mode normal) : bloque un LONG si le support est proche ET
-        # en dessous de l EMA200, un SHORT si la resistance est proche ET
-        # au dessus — marche en range pur, sans separation nette de sa
-        # moyenne longue.
-        # v4.144 — SUR DEMANDE EXPLICITE : neutralise par defaut pour
-        # Accumulation (ACCUMULATION_REQUIRE_SR_EMA200_SEPARATION=False) —
-        # ce reglage partage avec le mode normal (active la-bas) s est
-        # avere trop restrictif pour Accumulation specifiquement, qui vise
-        # justement a capturer des tendances/retournements, pas seulement
-        # des cassures nettes hors zone de range.
-        if cfg.get("ACCUMULATION_REQUIRE_SR_EMA200_SEPARATION", False) and ema200 is not None and ema200 > 0:
-            sr_proximity = cfg.get("SR_EMA200_PROXIMITY_PCT", 0.5)
-            if direction == "long" and support < ema200:
-                if (ema200 - support) / ema200 * 100 <= sr_proximity:
-                    snap["blocker"] = "support trop proche de l'EMA200 (marche en range pur)"
-                    return
-            if direction == "short" and resistance > ema200:
-                if (resistance - ema200) / ema200 * 100 <= sr_proximity:
-                    snap["blocker"] = "resistance trop proche de l'EMA200 (marche en range pur)"
-                    return
-
-        # v4.35 — SUR DEMANDE EXPLICITE : Accumulation herite desormais des
-        # memes renforcements que le mode normal (jusqu ici absents, alors
-        # que le mode normal les a tous recus suite a l enquete ARB) —
-        # confirmation MACD, coherence d amplitude ATR, et confirmation
-        # post-trade soutenue. Calcules ici localement (auto-suffisant, la
-        # fonction est appelee avant que macd/amplitude ne soient calcules
-        # plus loin dans _process pour la logique normale).
-        if cfg.get("REQUIRE_DIRECTION_CONFIRM", True):
-            # v4.142 — FIX BUG CRITIQUE : le MACD utilisait "prices" (prix
-            # bruts ~10s), rendant MACD_SLOW=26/MACD_FAST=12 equivalents a
-            # seulement ~4/2 MINUTES — completement deconnecte de la
-            # tendance de plusieurs heures que l on cherche a confirmer,
-            # causant des blocages "MACD ne confirme pas" meme en pleine
-            # tendance reelle (meme defaut deja corrige pour l ADX).
-            # Utilise desormais mtf_prices (memes donnees que EMA200/ADX)
-            # quand suffisant, avec repli sur les prix bruts sinon.
-            macd_min_points = cfg.get("MACD_SLOW", 26) + cfg.get("MACD_SIGNAL", 9)
-            macd_prices = list(state.mtf_prices) if len(state.mtf_prices) >= macd_min_points else prices
-            macd, macd_sig = calc_macd(macd_prices, cfg.get("MACD_FAST", 12), cfg.get("MACD_SLOW", 26), cfg.get("MACD_SIGNAL", 9))
-            if macd is not None and macd_sig is not None:
-                macd_confirmed = (macd > macd_sig) if direction == "long" else (macd < macd_sig)
-                if not macd_confirmed:
-                    # v4.128 — FIX BUG CRITIQUE : ce blocage etait
-                    # INVISIBLE dans le diagnostic — snap["blocker"] restait
-                    # a None (affichant a tort "aucun obstacle particulier")
-                    # alors que la fonction s arretait ici sans jamais
-                    # ouvrir de trade. Meme correctif pour les 2 autres
-                    # filtres non traces plus bas (amplitude ATR, post-win).
-                    snap["blocker"] = f"MACD ne confirme pas la direction {direction}"
-                    return
-
-        # v4.144 — SUR DEMANDE EXPLICITE : neutralise par defaut pour
-        # Accumulation (ACCUMULATION_REQUIRE_AMPLITUDE_COHERENCE=False) —
-        # la fourchette [SL_PCT_OF_E x 0.5 - x 2.5] s est averee trop
-        # stricte pour le marche calme observe (ATR systematiquement sous
-        # le minimum exige sur la quasi-totalite des actifs suivis). Le
-        # mode normal (ligne ~5314) garde son propre comportement inchange.
-        if cfg.get("ACCUMULATION_REQUIRE_AMPLITUDE_COHERENCE", False):
-            # v4.36 — vrai calcul (haut/bas/cloture), repli sur l ancien.
-            _, atr_pct_now = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
-            if atr_pct_now is None:
-                _, atr_pct_now = calc_atr(prices, cfg.get("ATR_PERIOD", 14))
-            sl_pct_ref = cfg.get("SL_PCT_OF_E", 1.0)
-            min_ratio  = cfg.get("MIN_AMPLITUDE_TO_SL_RATIO", 0.5)
-            max_ratio  = cfg.get("MAX_AMPLITUDE_TO_SL_RATIO", 2.5)
-            if atr_pct_now is None or not ((sl_pct_ref * min_ratio) <= atr_pct_now <= (sl_pct_ref * max_ratio)):
-                snap["blocker"] = f"amplitude ATR incoherente (ATR={atr_pct_now:.2f}% hors [{sl_pct_ref*min_ratio:.2f}%-{sl_pct_ref*max_ratio:.2f}%])" if atr_pct_now is not None else "ATR indisponible"
+        if cfg.get("ACCUMULATION_REQUIRE_ADX_CONFIRM", True) and not fresh_breakout_ac:
+            adx_local = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
+            adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
+            snap["adx"] = round(adx_local, 1) if adx_local is not None else None
+            snap["adx_threshold"] = adx_threshold
+            if adx_local is None or adx_local < adx_threshold:
+                snap["blocker"] = f"ADX {snap['adx']} < {adx_threshold} (tendance pas assez forte)"
                 return
 
-        # v4.146 — SUR DEMANDE EXPLICITE : nouvelle approche pour s assurer
-        # d une vraie marge de developpement — compare l AMPLITUDE S/R
-        # elle-meme (pas le SL) a la volatilite recente reelle (ATR). Une
-        # amplitude trop proche du bruit habituel du marche (ATR) signifie
-        # que le support et la resistance ne representent pas une vraie
-        # zone structurelle, juste des fluctuations normales — explique
-        # les petits pics frequents (0.09% en moyenne observes) suivis d
-        # un redonnage quasi total. Actif par defaut (contrairement au
-        # filtre precedent, juge trop strict et desactive).
-        if cfg.get("ACCUMULATION_REQUIRE_AMPLITUDE_VS_ATR", True):
-            # v4.147 — SUR DEMANDE EXPLICITE : periode ATR dediee, plus
-            # longue (4h/120 bougies, au lieu du defaut 14/28min) — un ATR
-            # trop court aurait pu etre gonfle par un pic de volatilite
-            # PONCTUEL et RECENT (exactement le genre de mouvement qu on
-            # veut capturer), bloquant a tort l entree en le comparant a
-            # une amplitude fixe sur 24h — desequilibre d echelle corrige.
-            amp_atr_period = cfg.get("ACCUMULATION_AMPLITUDE_ATR_PERIOD", 120)
-            _, atr_pct_for_amp = calc_true_range_atr(list(state.candle_history), amp_atr_period)
-            if atr_pct_for_amp is None:
-                _, atr_pct_for_amp = calc_atr(prices, amp_atr_period)
-            amplitude_pct_sr = (resistance - support) / support * 100 if support > 0 else None
-            min_amp_atr_ratio = cfg.get("ACCUMULATION_MIN_AMPLITUDE_TO_ATR_RATIO", 3.0)
-            if atr_pct_for_amp is None or amplitude_pct_sr is None or amplitude_pct_sr < (atr_pct_for_amp * min_amp_atr_ratio):
-                snap["blocker"] = f"amplitude S/R trop proche du bruit (amplitude={amplitude_pct_sr:.2f}% < {min_amp_atr_ratio}x ATR={atr_pct_for_amp:.2f}%)" if (atr_pct_for_amp is not None and amplitude_pct_sr is not None) else "ATR ou amplitude indisponible"
-                return
-
-        # Confirmation post-trade soutenue (18 cycles, secours Bollinger a 30
-        # min) — reutilise le MEME etat que le mode normal (post_win_confirm_*,
-        # partage par actif+sens, pas par strategie : un test rate en normal
-        # doit aussi freiner Accumulation sur le meme actif/sens, et inversement).
-        confirm_cycles_needed = cfg.get("POST_WIN_CONFIRM_CYCLES", 18)
-        max_wait_cycles = cfg.get("POST_WIN_MAX_WAIT_CYCLES", 180)
-        if direction == "long" and accum_state.post_win_confirm_long:
-            accum_state.post_win_wait_long += 1
-            accum_state.confirm_count_long += 1
-            if accum_state.confirm_count_long >= confirm_cycles_needed:
-                accum_state.post_win_confirm_long = False
-                accum_state.confirm_count_long = 0
-                accum_state.post_win_wait_long = 0
-            elif accum_state.post_win_wait_long >= max_wait_cycles:
-                bb_up, _, bb_low = calc_bollinger(prices, cfg.get("BB_PERIOD", 20), cfg.get("BB_STD", 2.0))
-                fallback_ok = bb_low is not None and price <= bb_low
-                accum_state.post_win_confirm_long = False
-                accum_state.confirm_count_long = 0
-                accum_state.post_win_wait_long = 0
-                if not fallback_ok:
-                    snap["blocker"] = "confirmation post-trade LONG non validee (secours Bollinger)"
-                    return
-            else:
-                snap["blocker"] = f"confirmation post-trade LONG en attente ({accum_state.confirm_count_long}/{confirm_cycles_needed} cycles)"
-                return
-        if direction == "short" and accum_state.post_win_confirm_short:
-            accum_state.post_win_wait_short += 1
-            accum_state.confirm_count_short += 1
-            if accum_state.confirm_count_short >= confirm_cycles_needed:
-                accum_state.post_win_confirm_short = False
-                accum_state.confirm_count_short = 0
-                accum_state.post_win_wait_short = 0
-            elif accum_state.post_win_wait_short >= max_wait_cycles:
-                bb_up, _, bb_low = calc_bollinger(prices, cfg.get("BB_PERIOD", 20), cfg.get("BB_STD", 2.0))
-                fallback_ok = bb_up is not None and price >= bb_up
-                accum_state.post_win_confirm_short = False
-                accum_state.confirm_count_short = 0
-                accum_state.post_win_wait_short = 0
-                if not fallback_ok:
-                    snap["blocker"] = "confirmation post-trade SHORT non validee (secours Bollinger)"
-                    return
-            else:
-                snap["blocker"] = f"confirmation post-trade SHORT en attente ({accum_state.confirm_count_short}/{confirm_cycles_needed} cycles)"
-                return
-
-        # ── Score de confiance dedie (proximite + position RSI + momentum) ──
-        # Plus le prix est proche du niveau, plus le RSI confirme (survente
-        # pres du support, surachat pres de la resistance), plus le momentum
-        # va franchement dans le sens du rebond attendu -> plus de confiance.
-        # Alimente le meme calcul de levier prudent que le bot normal.
-        dist = dist_to_support if direction == "long" else dist_to_resistance
-        confidence = 65.0
-        if dist <= proximity_pct / 2:
-            confidence += 10.0
-        if direction == "long" and rsi is not None and rsi <= 40:
-            confidence += 10.0
-        elif direction == "short" and rsi is not None and rsi >= 60:
-            confidence += 10.0
-        if momentum_pct is not None:
-            if direction == "long" and momentum_pct > 0:
-                confidence += 5.0
-            elif direction == "short" and momentum_pct < 0:
-                confidence += 5.0
-        confidence = min(confidence, 90.0)
-
-        threshold = self._get_confidence_threshold(ticker)
-        if confidence < threshold:
-            snap["blocker"] = f"confiance {confidence:.0f}% < seuil requis {threshold:.0f}%"
+        is_ranging_ac = self._is_market_ranging(state, cfg.get("ACCUMULATION_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("ACCUMULATION_ANTI_RANGE_LOOKBACK", 30))
+        snap["is_ranging"] = is_ranging_ac
+        if is_ranging_ac:
+            snap["blocker"] = f"marche en range (mouvement < {cfg.get('ACCUMULATION_ANTI_RANGE_MIN_PCT', 2.0)}% sur {cfg.get('ACCUMULATION_ANTI_RANGE_LOOKBACK', 30)} echantillons)"
             return
 
-        level_label = "support" if direction == "long" else "resistance"
-        level_price = support if direction == "long" else resistance
+        dist_below_resistance_pct = (resistance - price) / (resistance - support) * 100 if resistance != support else 0
+        snap["dist_below_resistance_pct"] = round(dist_below_resistance_pct, 2)
+        if not fresh_breakout_ac:
+            near_resistance = self._is_near_level_simple(price, resistance, cfg.get("ENTRY_LEVEL_PROXIMITY_PCT", 1.0))
+            snap["near_resistance"] = near_resistance
+            if not near_resistance:
+                snap["blocker"] = f"pas assez proche de la resistance (${resistance:.4f})"
+                return
+            if cfg.get("REQUIRE_ENTRY_CANDLE_COLOR", True):
+                bearish_now = self._is_candle_bearish_now(state)
+                if bearish_now is False:
+                    snap["blocker"] = "bougie actuelle non baissiere"
+                    return
+        snap["entered_via_flirt"] = not fresh_breakout_ac
+
+        sr_range = resistance - support
+        min_below_pct = cfg.get("ACCUMULATION_MIN_BELOW_RESISTANCE_PCT", 5.0)
+        position_in_range_pct = ((resistance - price) / sr_range * 100) if sr_range > 0 else 50.0
+        confidence = 65.0 + min(max(position_in_range_pct - min_below_pct, 0) / 50.0 * 20.0, 20.0)
+        confidence = min(confidence, 85.0)
+        snap["confidence"] = round(confidence, 1)
+
+        conf_threshold = self._get_confidence_threshold(ticker)
+        snap["confidence_threshold"] = conf_threshold
+        if confidence < conf_threshold:
+            snap["blocker"] = f"confiance {confidence:.0f}% < seuil {conf_threshold:.0f}%"
+            return
+
+        snap["blocker"] = None
+
         reasons = [
-            f"🎯 Accumulation : prix a {dist:.2f}% du {level_label} (${level_price:.2f})",
+            f"🎯 Accumulation (short) : {dist_below_resistance_pct:.2f}% sous la resistance, tendance baissiere confirmee",
             f"RSI {rsi:.1f}" if rsi is not None else "RSI ?",
         ]
-        if momentum_pct is not None:
-            reasons.append(f"momentum {momentum_pct:+.2f}%")
-        if require_trend:
-            reasons.append("tendance EMA200 confirmee")
 
-        entered_via_range = entered_via_range_long if direction == "long" else entered_via_range_short
         self._pending_accumulation_candidates.append({
-            "symbol": symbol, "ticker": ticker, "state": accum_state, "signal": direction,
+            "symbol": symbol, "ticker": ticker, "state": accum_state, "signal": "short",
             "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": "accumulation",
             "reasons": reasons, "prices": prices, "conf_breakdown": {},
-            "strategy": "accumulation", "entered_via_range": entered_via_range,
+            "strategy": "accumulation", "entered_via_range": False,
             "support": support, "resistance": resistance,
+            "entered_via_flirt": snap.get("entered_via_flirt", False),
         })
 
     def _check_funding_contrarian_signal(self, symbol, ticker, price, rsi, prices, state):
@@ -7333,6 +7011,13 @@ class BotEngine:
         if strategy == "spot_accumulation":
             if cand.get("entered_via_flirt", False):
                 leverage = self._compute_spot_accum_dynamic_leverage(ticker)
+            else:
+                leverage = 1
+        elif strategy == "accumulation":
+            # v4.191 — SUR DEMANDE EXPLICITE : meme principe que Spot-Accum
+            # (miroir exact), Accumulation etant desormais l oppose (short).
+            if cand.get("entered_via_flirt", False):
+                leverage = self._compute_accumulation_dynamic_leverage(ticker)
             else:
                 leverage = 1
         else:
