@@ -5902,7 +5902,14 @@ class BotEngine:
             self._check_funding_contrarian_signal(symbol, ticker, price, rsi, prices, state)
 
             # v4.43 — Mode Spot-Accumulation, lui aussi EN PARALLELE.
-            self._check_spot_accumulation_signal(symbol, ticker, price, support, resistance, rsi, trend_up, prices, state)
+            # v4.196 — SUR DEMANDE EXPLICITE : utilise desormais le MEME S/R
+            # 24h qu Accumulation (support_accum/resistance_accum), au lieu
+            # du S/R generique ~3h20 — evite que support et resistance
+            # representent deux structures de marche DIFFERENTES et
+            # deconnectees (confirme par un cas reel : Accumulation signale
+            # une resistance 24h pendant que Spot-Accum signale encore un
+            # support ~3h20, sans rapport reel entre les deux niveaux).
+            self._check_spot_accumulation_signal(symbol, ticker, price, support_accum, resistance_accum, rsi, trend_up, prices, state)
         else:
             # v4.170 — SUR DEMANDE EXPLICITE : message explicite plutot que
             # de laisser un instantane perime ("pas encore de donnees") —
