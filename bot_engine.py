@@ -4655,6 +4655,11 @@ class BotEngine:
                         self._process_with_timeout(sym, prices[sym])
                     elif ticker_from_slot_key(sym) in forex_syms_fallback and isinstance(self.all_mids, dict):
                         fallback_price = self.all_mids.get(ticker_from_slot_key(sym))
+                        # v4.200 — SUR DEMANDE EXPLICITE : diagnostic direct
+                        # du chemin de repli forex — confirme si ce bloc est
+                        # atteint, et ce qu il trouve (ou ne trouve pas)
+                        # dans self.all_mids a cet instant precis.
+                        print(f"[FOREX-FALLBACK-DIAG] sym={sym} ticker={ticker_from_slot_key(sym)} in_forex_list={ticker_from_slot_key(sym) in forex_syms_fallback} fallback_price={fallback_price} all_mids_size={len(self.all_mids) if isinstance(self.all_mids, dict) else 'N/A'}")
                         if fallback_price is not None:
                             try:
                                 fallback_price = float(fallback_price)
@@ -5517,6 +5522,11 @@ class BotEngine:
         is_forex_ticker = ticker in cfg.get("FOREX_SYMBOLS", [])
         if ticker == "BTC":
             print(f"[MTF-DIAG] _process ENTREE pour BTC, prix={price}, collecting={state.collecting}")
+        if is_forex_ticker:
+            # v4.200 — SUR DEMANDE EXPLICITE : diagnostic direct pour
+            # confirmer si _process est reellement appelee pour le forex,
+            # et avec quelle valeur de prix exacte.
+            print(f"[FOREX-PROCESS-DIAG] _process ENTREE pour {ticker}, prix={price}, collecting={state.collecting}")
         # v3.2 — FIX : ne pas ecraser le prix avec la valeur REST (cycle,
         # potentiellement vieille de 15s) si le WebSocket est sain — il
         # fournit deja une valeur plus fraiche en continu pour les actifs en
