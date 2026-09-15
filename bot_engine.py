@@ -4959,23 +4959,12 @@ class BotEngine:
             else:
                 if state.spot_accum_peak_pnl_pct is None or pnl_pct > state.spot_accum_peak_pnl_pct:
                     state.spot_accum_peak_pnl_pct = pnl_pct
-                # v4.182 — SUR DEMANDE EXPLICITE : sortie ANTICIPEE des qu
-                # une bougie confirme un retournement — meme principe que
-                # pour tier0/tier1, applique ici a Spot-Accum.
-                elif cfg.get("EARLY_REVERSAL_EXIT_ENABLED", True) and self._candle_color_confirms_reversal(state, "long"):
-                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT (sortie anticipee)")
-                    trade["symbol"] = symbol
-                    if mode == "live" and self.exchange:
-                        close_order(self.exchange, ticker, pos, self.cfg)
-                    self.emit("trade", trade)
-                    self._register_win(ticker)
-                    state.post_win_confirm_long = True
-                    state.confirm_count_long = 0
-                    self.emit("log", {"msg": f"[{ticker}] 🌱 TTP SORTIE ANTICIPEE Spot-Accum (bougie de retournement) @ ${price:.2f} | pic +{state.spot_accum_peak_pnl_pct:.2f}% | PnL: +${pnl:.2f}", "level": "win"})
-                    self._save_open_positions()
-                    self._persist_capital_snapshot()
-                    return
-                elif pnl_pct <= state.spot_accum_peak_pnl_pct - tolerance_pct:
+                # v4.197 — SUR DEMANDE EXPLICITE : INVERSE la logique — retire
+                # la sortie IMMEDIATE sur simple changement de couleur,
+                # remplacee par une PORTE vers la verification de tolerance
+                # ci-dessous (meme principe que tier0/tier1).
+                color_reversed_sa = cfg.get("EARLY_REVERSAL_EXIT_ENABLED", True) and self._candle_color_confirms_reversal(state, "long")
+                if color_reversed_sa and pnl_pct <= state.spot_accum_peak_pnl_pct - tolerance_pct:
                     # v4.83 — SUR DEMANDE EXPLICITE : meme filtre "la
                     # tendance tient toujours" que tier0/tier1 (v4.77/v4.82),
                     # etendu a Spot-Accum — le seuil structurel (support +
@@ -5210,7 +5199,18 @@ class BotEngine:
                 tier0_peak_pct = (state.tier0_peak_pnl_usd / (E * leverage) * 100) if E and leverage else 0
                 tier0_lock_pct = tier0_peak_pct - tier0_gap_pct
 
-                if pnl_pct <= tier0_lock_pct:
+                # v4.197 — SUR DEMANDE EXPLICITE : INVERSE la logique de
+                # sortie anticipee — tant que la bougie EN COURS confirme
+                # TOUJOURS la tendance (pas de retournement), on laisse
+                # COURIR le trailing SANS AUCUNE limite de repli (le pic
+                # peut grandir librement). Des que la couleur de bougie
+                # confirme un retournement, la verification de tolerance
+                # habituelle (giveback depuis le pic) prend le relais
+                # normalement — remplace l ancienne sortie IMMEDIATE sur
+                # simple changement de couleur (jugee trop agressive,
+                # coupait des mouvements encore valides).
+                color_reversed_t0 = cfg.get("EARLY_REVERSAL_EXIT_ENABLED", True) and self._candle_color_confirms_reversal(state, pos["type"])
+                if color_reversed_t0 and pnl_pct <= tier0_lock_pct:
                     # v4.82 — SUR DEMANDE EXPLICITE : meme filtre "la
                     # tendance tient toujours" que le tier1 (v4.77), etendu
                     # au tier0 — c est justement le tier0 (armement plus bas,
@@ -5297,26 +5297,14 @@ class BotEngine:
             # pour la duree du trade, cette reconversion est donc exacte).
             peak_price_pct = (state.peak_pnl_usd / (E * leverage) * 100) if E and leverage else 0
 
-            # v4.182 — SUR DEMANDE EXPLICITE : sortie ANTICIPEE des qu une
-            # bougie confirme un retournement — meme principe que pour
-            # tier0, applique ici a tier1.
-            if cfg.get("EARLY_REVERSAL_EXIT_ENABLED", True) and self._candle_color_confirms_reversal(state, pos["type"]):
-                pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT (sortie anticipee)")
-                trade["symbol"] = symbol
-                if mode == "live" and self.exchange:
-                    close_order(self.exchange, ticker, pos, self.cfg)
-                self.emit("trade", trade)
-                self._register_win(ticker)
-                if pos["type"] == "long":
-                    state.post_win_confirm_long = True
-                    state.confirm_count_long = 0
-                else:
-                    state.post_win_confirm_short = True
-                    state.confirm_count_short = 0
-                self.emit("log", {"msg": f"[{ticker}] {strat_tag}TTP SORTIE ANTICIPEE (bougie de retournement) @ ${price:.2f} | pic +{peak_price_pct:.2f}% | PnL: +${pnl:.2f}", "level": "win"})
-                self._save_open_positions()
-                self._persist_capital_snapshot()
-                return
+            # v4.197 — SUR DEMANDE EXPLICITE : INVERSE la logique — retire la
+            # sortie IMMEDIATE sur simple changement de couleur (jugee trop
+            # agressive), remplacee par une PORTE vers la verification de
+            # tolerance habituelle ci-dessous : tant que la bougie confirme
+            # TOUJOURS la tendance, aucune limite de repli ne s applique (le
+            # pic grandit librement) — des que la couleur confirme un
+            # retournement, le TTP normal (pic - marge) reprend la main.
+            color_reversed_t1 = cfg.get("EARLY_REVERSAL_EXIT_ENABLED", True) and self._candle_color_confirms_reversal(state, pos["type"])
 
             # v4.60 — SUR DEMANDE EXPLICITE : des l armement (tier 1), le
             # trailing devient IMMEDIATEMENT dynamique — sortie = pic - marge
@@ -5347,7 +5335,7 @@ class BotEngine:
             else:
                 current_lock_pct = lock1_price_pct
 
-            if pnl_pct <= current_lock_pct:
+            if color_reversed_t1 and pnl_pct <= current_lock_pct:
                 # v4.77 — SUR DEMANDE EXPLICITE : avant de fermer via le
                 # trailing, verifie si la TENDANCE DE FOND tient toujours
                 # (EMA200 dans le bon sens, verification simple et rapide —
