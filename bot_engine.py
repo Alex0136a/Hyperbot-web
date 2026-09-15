@@ -624,6 +624,12 @@ CONFIG = {
     # forcement le seuil de repli complet. Applique a tier0/tier1
     # (Normal/Accumulation/Funding) et Spot-Accum.
     "EARLY_REVERSAL_EXIT_ENABLED": True,
+    # v4.193 — SUR DEMANDE EXPLICITE : filet de securite immediat pour le SL
+    # structurel — ferme sans attendre la confirmation complete (patience +
+    # couleur de bougie) des que la perte atteint ce plafond, evitant une
+    # derive prolongee (perte de -6% observee sur un cas reel avant ce
+    # correctif). Applique a tous les modes utilisant le SL structurel.
+    "STRUCTURAL_SL_HARD_CAP_PCT": 0.5,
     # v4.154 — SUR DEMANDE EXPLICITE : meme principe de patience, applique
     # au TTP, COUPLE a une confirmation par changement de couleur de
     # bougie — les deux synchronisees sur les memes donnees temps reel
@@ -3368,29 +3374,56 @@ class BotEngine:
 
     def _compute_prudent_leverage(self, ticker, confidence, rsi_mode):
         """v3.2 — Levier prudent, calcule INDIVIDUELLEMENT pour chaque trade
-        (plus une valeur fixe globale). Trois garde-fous cumulatifs :
-        1. JAMAIS de levier en mode "reversal" — un pari a contre-courant
-           est deja plus risque par nature, pas besoin d en rajouter.
-           v4.8 — le mode Accumulation (rsi_mode="accumulation") est
-           desormais traite comme "trend" ici, sur demande explicite : meme
-           calcul de levier que le bot normal, pas de restriction propre.
-        2. JAMAIS de levier sur un actif actuellement en "penalite" (son
-           seuil de confiance dynamique est deja releve suite a une perte
-           recente) — pas de raison de prendre plus de risque sur un actif
-           qui vient de mal se comporter.
-        3. Sinon, levier croissant avec la force du signal, plafonne a x3 :
-           65-74% confiance -> x1 | 75-84% -> x2 | 85%+ -> x3.
+        (plus une valeur fixe globale).
+        v4.194 — SUR DEMANDE EXPLICITE : remplace l ancien palier fixe
+        (x1/x2/x3 selon la confiance) par le MEME degrade progressif que
+        Accumulation/Spot-Accum (2-5x, base sur la performance historique
+        REELLE de l actif via confidence_thresholds) — coherence totale
+        entre les 4 modes : penalise les mauvais actifs (seuil releve ->
+        levier bas), favorise les bons (seuil bas -> levier haut). JAMAIS
+        de levier en mode "reversal" (deja plus risque par nature).
         """
         if rsi_mode not in ("trend", "accumulation"):
             return 1
-        base_threshold = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
-        if self.confidence_thresholds.get(ticker, base_threshold) > base_threshold:
-            return 1
-        if confidence >= 85:
-            return 3
-        elif confidence >= 75:
+        return self._compute_performance_leverage(ticker)
+
+    def _compute_performance_leverage(self, ticker):
+        """v4.194 — SUR DEMANDE EXPLICITE : fonction UNIQUE de levier
+        base-performance, partagee par les 4 modes (remplace les 3
+        fonctions quasi-identiques _compute_prudent_leverage/
+        _compute_accumulation_dynamic_leverage/
+        _compute_spot_accum_dynamic_leverage, qui restent pour
+        compatibilite mais delegue desormais ici)."""
+        cfg = self.cfg
+        base = cfg.get("CONFIDENCE_MIN_PCT", 65.0)
+        ceiling = cfg.get("CONFIDENCE_MAX_PCT", 87.0)
+        threshold = self.confidence_thresholds.get(ticker, base)
+        if ceiling <= base:
             return 2
-        return 1
+        ratio = (ceiling - threshold) / (ceiling - base)
+        ratio = max(0.0, min(1.0, ratio))
+        leverage = 2 + ratio * (cfg.get("MAX_DYNAMIC_LEVERAGE", 5) - 2)
+        return round(leverage)
+
+    def _compute_performance_size_multiplier(self, ticker):
+        """v4.194 — SUR DEMANDE EXPLICITE : multiplicateur de TAILLE de
+        position (independant du levier) — 0.5x pour un actif au plafond
+        de penalite (CONFIDENCE_MAX_PCT), 1.5x pour un actif au sommet de
+        sa performance (CONFIDENCE_MIN_PCT, jamais penalise). Applique a
+        la taille de base (deja calculee par equity/max_trades) sur les 4
+        modes — favorise les gagnants, penalise les mauvais actifs sur les
+        DEUX dimensions (levier ET taille), pas seulement le levier."""
+        cfg = self.cfg
+        base = cfg.get("CONFIDENCE_MIN_PCT", 65.0)
+        ceiling = cfg.get("CONFIDENCE_MAX_PCT", 87.0)
+        threshold = self.confidence_thresholds.get(ticker, base)
+        if ceiling <= base:
+            return 1.0
+        ratio = (ceiling - threshold) / (ceiling - base)
+        ratio = max(0.0, min(1.0, ratio))
+        min_mult = cfg.get("PERFORMANCE_SIZE_MULT_MIN", 0.5)
+        max_mult = cfg.get("PERFORMANCE_SIZE_MULT_MAX", 1.5)
+        return round(min_mult + ratio * (max_mult - min_mult), 3)
 
     def _is_candle_bullish_now(self, state):
         """v4.175 — SUR DEMANDE EXPLICITE : la bougie EN COURS est-elle verte
@@ -5015,6 +5048,32 @@ class BotEngine:
         )
         if use_structural_sl:
             structural_level = pos.get("support_at_entry") if pos["type"] == "long" else pos.get("resistance_at_entry")
+            # v4.193 — SUR DEMANDE EXPLICITE : filet de securite IMMEDIAT,
+            # SANS attendre la confirmation (patience + couleur de bougie)
+            # du SL structurel — la confirmation complete peut prendre trop
+            # de temps (fenetre glissante de 15 cycles, ~150s), laissant le
+            # temps a une perte significative de se creuser avant de
+            # declencher. Ferme immediatement des que la perte atteint ce
+            # plafond, meme si la rupture structurelle n est pas encore
+            # confirmee.
+            hard_cap_pct = cfg.get("STRUCTURAL_SL_HARD_CAP_PCT", 0.5)
+            if pnl_pct <= -hard_cap_pct:
+                pnl, _, trade = state.close_position(price, "STOP LOSS (plafond immediat)")
+                trade["symbol"] = symbol
+                if mode == "live" and self.exchange:
+                    close_order(self.exchange, ticker, pos, self.cfg)
+                self.emit("trade", trade)
+                self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS plafond immediat : perte {pnl_pct:.2f}% >= {hard_cap_pct}% @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "loss"})
+                if pos["type"] == "long":
+                    state.post_win_confirm_long = True
+                    state.confirm_count_long = 0
+                else:
+                    state.post_win_confirm_short = True
+                    state.confirm_count_short = 0
+                self._register_max_loss(ticker, pos.get("confidence"))
+                self._save_open_positions()
+                self._persist_capital_snapshot()
+                return
             if self._structural_sl_broken(state, pos, price):
                 level_label = "support" if pos["type"] == "long" else "resistance"
                 pnl, _, trade = state.close_position(price, f"STOP LOSS ({level_label} rompu)")
@@ -6998,6 +7057,17 @@ class BotEngine:
         if size <= 0:
             self.emit("log", {"msg": f"[{ticker}] Capital insuffisant pour E=${self.batch_entry_size:.2f} (disponible ${capital_available:.2f})", "level": "warn"})
             return
+
+        # v4.194 — SUR DEMANDE EXPLICITE : penalise les mauvais actifs /
+        # favorise les gagnants sur la TAILLE de position (en plus du
+        # levier, deja fait) — s applique aux 4 modes, base sur la MEME
+        # performance historique (confidence_thresholds) que le levier.
+        if cfg.get("PERFORMANCE_SIZE_ADJUST_ENABLED", True):
+            size_mult = self._compute_performance_size_multiplier(ticker)
+            size = min(size * size_mult, capital_available)
+            if size <= 0:
+                self.emit("log", {"msg": f"[{ticker}] Capital insuffisant apres ajustement performance (x{size_mult})", "level": "warn"})
+                return
 
         # v3.2 — le levier prudent doit etre connu AVANT le calcul du SL de
         # securite, puisque le notionnel reel (taille x levier) determine le
