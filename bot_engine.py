@@ -624,6 +624,10 @@ CONFIG = {
     # forcement le seuil de repli complet. Applique a tier0/tier1
     # (Normal/Accumulation/Funding) et Spot-Accum.
     "EARLY_REVERSAL_EXIT_ENABLED": True,
+    # v4.203 — SUR DEMANDE EXPLICITE : confirmation d entree par tendance
+    # dynamique (point de depart + retournement confirme sur 3 bougies 1h)
+    # et MACD 1h — Accumulation (short) et Spot-Accum (long) uniquement.
+    "DYNAMIC_TREND_CONFIRM_ENABLED": True,
     # v4.193 — SUR DEMANDE EXPLICITE : filet de securite immediat pour le SL
     # structurel — ferme sans attendre la confirmation complete (patience +
     # couleur de bougie) des que la perte atteint ce plafond, evitant une
@@ -2276,6 +2280,20 @@ class SymbolState:
         self.window_high = None   # plus haut vu depuis le dernier point de bougie
         self.window_low  = None   # plus bas vu depuis le dernier point de bougie
         self.candle_history = deque(maxlen=750)  # v4.132 - 750 pour couvrir 24h+ (720 requis) avec marge, (high, low, close) par bougie ~2min
+        # v4.202 — SUR DEMANDE EXPLICITE : bougies 1h agregees depuis
+        # candle_history (~2min/bougie -> ~30 bougies = 1h), pour le MACD 1h
+        # et la tendance dynamique (Accumulation/Spot-Accum uniquement).
+        self.candle_history_1h = deque(maxlen=200)  # (high, low, close) par bougie 1h, ~8 jours d historique
+        self.current_1h_high = None
+        self.current_1h_low = None
+        self.current_1h_candles_count = 0  # compteur de bougies ~2min accumulees vers la prochaine bougie 1h
+        # v4.202 (suite) — tendance dynamique : direction courante, point de
+        # depart (S/R qui s etend aux nouveaux extremes), et compteur de
+        # bougies 1h CONSECUTIVES en sens oppose (retournement confirme a 3).
+        self.dynamic_trend_direction = None  # "up", "down", ou None (pas encore etabli)
+        self.dynamic_trend_support = None    # plus bas atteint depuis le debut de la tendance en cours
+        self.dynamic_trend_resistance = None  # plus haut atteint depuis le debut de la tendance en cours
+        self.dynamic_trend_reversal_streak = 0  # bougies 1h consecutives en sens oppose
         # v4.39 — FIX BUG CRITIQUE : l echantillonnage MTF (bougies + EMA200)
         # se basait sur len(price_history) % MTF_STEP == 0 — hors
         # price_history est une deque PLAFONNEE (maxlen=500), dont la
@@ -2347,6 +2365,14 @@ class SymbolState:
         self.window_high = None
         self.window_low  = None
         self.candle_history = deque(maxlen=750)  # v4.132 - coherent avec le nouveau maxlen
+        self.candle_history_1h = deque(maxlen=200)
+        self.current_1h_high = None
+        self.current_1h_low = None
+        self.current_1h_candles_count = 0
+        self.dynamic_trend_direction = None
+        self.dynamic_trend_support = None
+        self.dynamic_trend_resistance = None
+        self.dynamic_trend_reversal_streak = 0
         self.cycle_count = 0
         self.last_gate_snapshot = {}
         self.indicator_history = deque(maxlen=300)
@@ -3424,6 +3450,108 @@ class BotEngine:
         min_mult = cfg.get("PERFORMANCE_SIZE_MULT_MIN", 0.5)
         max_mult = cfg.get("PERFORMANCE_SIZE_MULT_MAX", 1.5)
         return round(min_mult + ratio * (max_mult - min_mult), 3)
+
+    def _compute_macd_1h(self, state):
+        """v4.203 — SUR DEMANDE EXPLICITE : MACD calcule sur les VRAIES
+        bougies 1h Hyperliquid (closes de state.candle_history_1h), pas sur
+        l echantillonnage ~2min habituel. Retourne (macd_line, signal_line)
+        ou (None, None) si pas assez d historique (35 bougies 1h minimum,
+        ~1.5 jours)."""
+        closes = [c[2] for c in state.candle_history_1h]
+        return calc_macd(closes)
+
+    def _fetch_1h_candles(self, ticker, count=60):
+        """v4.203 — SUR DEMANDE EXPLICITE : recupere les VRAIES bougies 1h
+        d Hyperliquid (alignees sur l horloge, via l endpoint candleSnapshot
+        officiel) — remplace l agregation synthetique de bougies ~2min, qui
+        ne correspondait pas a de vraies bougies 1h. Retourne une liste de
+        (high, low, close), la plus ancienne en premier, ou [] en cas d
+        echec (reseau, ticker invalide, etc.).
+        v4.204 — SUR DEMANDE EXPLICITE : exclut la bougie EN COURS de
+        formation — sa duree annoncee est 1h, mais sa VALEUR (high/low/
+        close) varie en continu tant qu elle n est pas cloturee. L inclure
+        rendrait la tendance dynamique et le MACD instables (a chaque
+        rafraichissement, cette bougie "en cours" aurait une valeur
+        differente). Ne garde que les bougies dont le temps de cloture (T,
+        en ms) est deja PASSE au moment de la requete."""
+        try:
+            end_ms = int(time.time() * 1000)
+            start_ms = end_ms - count * 3600 * 1000
+            req = {"coin": ticker, "interval": "1h", "startTime": start_ms, "endTime": end_ms}
+            raw = self.info.post("/info", {"type": "candleSnapshot", "req": req})
+            if not raw or not isinstance(raw, list):
+                return []
+            now_ms = int(time.time() * 1000)
+            closed_only = [c for c in raw if c.get("T", 0) <= now_ms]
+            return [(float(c["h"]), float(c["l"]), float(c["c"])) for c in closed_only]
+        except Exception as e:
+            print(f"[1H-CANDLES] Echec recuperation bougies 1h pour {ticker} : {e}")
+            return []
+
+    def _update_dynamic_trend(self, state):
+        """v4.203 — SUR DEMANDE EXPLICITE : tendance dynamique — suit une
+        direction depuis son POINT DE DEPART (S/R qui s etend aux nouveaux
+        extremes a chaque bougie 1h) jusqu a un retournement CONFIRME sur 3
+        bougies 1h CONSECUTIVES en sens oppose. Retraite l INTEGRALITE de
+        state.candle_history_1h depuis le debut a chaque appel — plus
+        simple et plus sur qu un suivi incremental, puisque cet historique
+        est desormais rafraichi PERIODIQUEMENT (voir
+        _maybe_refresh_dynamic_trend) via les VRAIES bougies 1h Hyperliquid,
+        pas ajoute bougie par bougie. Utilisee par Accumulation et
+        Spot-Accum uniquement."""
+        candles_1h = list(state.candle_history_1h)
+        if len(candles_1h) < 2:
+            return
+        direction = None
+        support = None
+        resistance = None
+        reversal_streak = 0
+        for i in range(1, len(candles_1h)):
+            high_now, low_now, close_now = candles_1h[i]
+            close_prev = candles_1h[i - 1][2]
+            candle_up = close_now >= close_prev
+
+            if direction is None:
+                direction = "up" if candle_up else "down"
+                support = low_now
+                resistance = high_now
+                reversal_streak = 0
+                continue
+
+            trend_matches = (candle_up and direction == "up") or (not candle_up and direction == "down")
+            if trend_matches:
+                reversal_streak = 0
+                if low_now < support:
+                    support = low_now
+                if high_now > resistance:
+                    resistance = high_now
+            else:
+                reversal_streak += 1
+                if reversal_streak >= 3:
+                    last_3 = candles_1h[i-2:i+1]
+                    direction = "down" if direction == "up" else "up"
+                    support = min(c[1] for c in last_3)
+                    resistance = max(c[0] for c in last_3)
+                    reversal_streak = 0
+
+        state.dynamic_trend_direction = direction
+        state.dynamic_trend_support = support
+        state.dynamic_trend_resistance = resistance
+        state.dynamic_trend_reversal_streak = reversal_streak
+
+    def _maybe_refresh_dynamic_trend(self, ticker, state):
+        """v4.203 — SUR DEMANDE EXPLICITE : rafraichit les VRAIES bougies 1h
+        (et la tendance dynamique qui en decoule) au maximum une fois par
+        heure par actif — evite de spammer l API a chaque cycle (~10s)."""
+        now = time.time()
+        last_refresh = getattr(state, "dynamic_trend_last_refresh", 0)
+        if now - last_refresh < 3600 and state.candle_history_1h:
+            return
+        candles = self._fetch_1h_candles(ticker, count=60)
+        if candles:
+            state.candle_history_1h = deque(candles, maxlen=200)
+            self._update_dynamic_trend(state)
+            state.dynamic_trend_last_refresh = now
 
     def _is_candle_bullish_now(self, state):
         """v4.175 — SUR DEMANDE EXPLICITE : la bougie EN COURS est-elle verte
@@ -5606,6 +5734,14 @@ class BotEngine:
             candle_high = state.window_high if state.window_high is not None else price
             candle_low  = state.window_low  if state.window_low  is not None else price
             state.candle_history.append((candle_high, candle_low, price))
+            # v4.203 — SUR DEMANDE EXPLICITE : la bougie 1h dynamique/MACD
+            # utilise desormais les VRAIES bougies 1h Hyperliquid (rafraichi
+            # periodiquement, voir _maybe_refresh_dynamic_trend), plus une
+            # agregation synthetique depuis nos echantillons ~2min.
+            # Uniquement pour Accumulation/Spot-Accum (seuls modes
+            # utilisant ce mecanisme) — pas de cout inutile pour les autres.
+            if cfg.get("ACCUMULATION_ENABLED", False) or cfg.get("SPOT_ACCUM_ENABLED", True):
+                self._maybe_refresh_dynamic_trend(ticker, state)
             # Nouvelle fenetre : redemarre le suivi haut/bas a partir de ce
             # point de cloture (qui devient l ouverture approximative de la
             # bougie suivante).
@@ -6701,6 +6837,20 @@ class BotEngine:
                     return
         snap["entered_via_flirt"] = not fresh_breakout_ac
 
+        # v4.203 — SUR DEMANDE EXPLICITE : confirmation supplementaire par
+        # MACD 1h + tendance dynamique (Accumulation = short uniquement,
+        # exige donc une confirmation BAISSIERE des deux).
+        if cfg.get("DYNAMIC_TREND_CONFIRM_ENABLED", True):
+            if state.dynamic_trend_direction != "down":
+                snap["blocker"] = f"tendance dynamique pas baissiere ({state.dynamic_trend_direction})"
+                return
+            macd_line, signal_line = self._compute_macd_1h(state)
+            snap["macd_1h"] = round(macd_line, 6) if macd_line is not None else None
+            snap["macd_1h_signal"] = round(signal_line, 6) if signal_line is not None else None
+            if macd_line is not None and signal_line is not None and macd_line >= signal_line:
+                snap["blocker"] = "MACD 1h ne confirme pas la baisse"
+                return
+
         sr_range = resistance - support
         min_below_pct = cfg.get("ACCUMULATION_MIN_BELOW_RESISTANCE_PCT", 5.0)
         position_in_range_pct = ((resistance - price) / sr_range * 100) if sr_range > 0 else 50.0
@@ -6919,6 +7069,20 @@ class BotEngine:
         # via le flirt S/R (pas via une cassure fraiche) — determine si le
         # levier dynamique 2-5x s applique (uniquement dans ce cas).
         snap["entered_via_flirt"] = not fresh_breakout_sa
+
+        # v4.203 — SUR DEMANDE EXPLICITE : confirmation supplementaire par
+        # MACD 1h + tendance dynamique (Spot-Accum = long uniquement, exige
+        # donc une confirmation HAUSSIERE des deux).
+        if cfg.get("DYNAMIC_TREND_CONFIRM_ENABLED", True):
+            if state.dynamic_trend_direction != "up":
+                snap["blocker"] = f"tendance dynamique pas haussiere ({state.dynamic_trend_direction})"
+                return
+            macd_line, signal_line = self._compute_macd_1h(state)
+            snap["macd_1h"] = round(macd_line, 6) if macd_line is not None else None
+            snap["macd_1h_signal"] = round(signal_line, 6) if signal_line is not None else None
+            if macd_line is not None and signal_line is not None and macd_line <= signal_line:
+                snap["blocker"] = "MACD 1h ne confirme pas la hausse"
+                return
         # v4.150 — SUR DEMANDE EXPLICITE : une cassure fraiche contourne
         # ces deux blocages — une vraie cassure depasse PAR DEFINITION la
         # resistance recente, ce que le blocage ci-dessus interdirait
