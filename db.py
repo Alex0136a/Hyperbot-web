@@ -171,6 +171,23 @@ def init_db():
         # Supprime purement et simplement cette ligne : le defaut du code
         # (0.4) prendra alors le relais naturellement.
         conn.execute("DELETE FROM config_overrides WHERE key='SPOT_ACCUM_TTP_ARM_PCT' AND value IN ('1.0', '1', '3.0', '3')")
+        # v4.201 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : un override
+        # DEJA enregistre en base pour "SYMBOLS" (et "ACTIVE_COINS"),
+        # datant d avant l ajout du forex cette session, continuait de
+        # primer sur le nouveau defaut du code (qui inclut EUR/JPY/KRW/
+        # DXY) — confirme par la ligne de demarrage montrant ces 4 tickers
+        # absents malgre le code correctement mis a jour. Supprime ces deux
+        # overrides s ils ne contiennent PAS "xyz:EUR" — le defaut du code
+        # (avec forex inclus) prend alors le relais naturellement.
+        for stale_key in ("SYMBOLS", "ACTIVE_COINS"):
+            row = conn.execute("SELECT value FROM config_overrides WHERE key=?", (stale_key,)).fetchone()
+            if row:
+                try:
+                    parsed_list = json.loads(row["value"])
+                    if isinstance(parsed_list, list) and "xyz:EUR" not in parsed_list:
+                        conn.execute("DELETE FROM config_overrides WHERE key=?", (stale_key,))
+                except (json.JSONDecodeError, TypeError):
+                    pass
         conn.execute("""
             CREATE TABLE IF NOT EXISTS config_overrides (
                 key TEXT PRIMARY KEY,
