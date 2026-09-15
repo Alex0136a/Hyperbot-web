@@ -601,16 +601,21 @@ def _open_positions() -> List[Dict[str, Any]]:
                 raw_price_move_pct = (price - pos["entry"]) / pos["entry"] * 100
             else:
                 raw_price_move_pct = (pos["entry"] - price) / pos["entry"] * 100
-            # v4.183 — FIX BUG CRITIQUE : ni le $ ni le % affiches n
-            # appliquaient le levier — Hyperliquid affiche un PNL (ROE%)
-            # relatif a la MARGE reellement postee (E), donc amplifie par
-            # le levier, exactement comme le $ reel. Un trade x3 affichait
-            # ainsi un PnL 3 FOIS plus petit que la realite (confirme avec
-            # des donnees utilisateur reelles : $0.06 affiche vs $0.19 reel
-            # sur Hyperliquid, ratio exact de 3x = le levier du trade).
+            # v4.189 — FIX BUG CRITIQUE : v4.183 (ci-dessous) avait
+            # multiplie le % affiche par le levier pour matcher Hyperliquid
+            # (ROE%) — mais bot_engine.py compare ses SEUILS internes
+            # (SL_PCT_OF_E, TTP_ARM_PCT, etc.) au mouvement de prix BRUT,
+            # JAMAIS leverage-ajuste. Le % affiche ne correspondait donc
+            # plus a ce que le bot compare reellement en interne pour
+            # decider d armer le trailing — confirme avec une position
+            # reelle (PnL affiche 0.508% > seuil 0.4%, mais JAMAIS arme,
+            # car en interne 0.508/5=0.102% < 0.4%). pnl_pct revient donc
+            # au mouvement BRUT (coherent avec le texte "seuil actif" et la
+            # decision reelle du bot) — SEUL le montant $ reste corrige par
+            # le levier (v4.183), qui lui restait exact et necessaire.
             leverage_for_pnl = pos.get("leverage", 1)
-            pnl_pct = raw_price_move_pct * leverage_for_pnl
-            pnl = pos["size"] * pnl_pct / 100
+            pnl_pct = raw_price_move_pct
+            pnl = pos["size"] * leverage_for_pnl * pnl_pct / 100
 
             # opened_at est stocke par bot_engine.py au format "%d/%m/%Y %H:%M:%S"
             # (francais, sans fuseau) — converti en ISO pour que new Date(...) le
