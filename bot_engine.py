@@ -2753,12 +2753,6 @@ class BotEngine:
         # Normaliser : si cfg["SYMBOLS"] contient deja des slot_keys, les extraire
         raw_symbols = [ticker_from_slot_key(s) for s in cfg["SYMBOLS"]]
         self._original_symbols = raw_symbols[:]  # ["BTC", "PAXG", "SOL"]
-        # v4.205 — SUR DEMANDE EXPLICITE : diagnostic direct (print, visible
-        # dans Railway) du contenu REEL de cfg["SYMBOLS"] au demarrage —
-        # verifie definitivement si le forex y est present ou non, sans
-        # ambiguite sur l onglet de logs consulte.
-        print(f"[SYMBOLS-DIAG] cfg['SYMBOLS'] contient {len(cfg['SYMBOLS'])} entrees | forex present : {[s for s in cfg['SYMBOLS'] if 'xyz:' in str(s)]}")
-        print(f"[SYMBOLS-DIAG] cfg['ACTIVE_COINS'] contient {len(cfg.get('ACTIVE_COINS', []))} entrees | forex present : {[s for s in cfg.get('ACTIVE_COINS', []) if 'xyz:' in str(s)]}")
 
         # Construire les slot_keys proprement : "BTC_0", "PAXG_1", "SOL_2"
         slot_keys = [f"{s}_{i}" for i, s in enumerate(raw_symbols)]
@@ -2772,10 +2766,6 @@ class BotEngine:
         self.accum_states = {k: SymbolState() for k in slot_keys}
         cfg["SYMBOLS"] = slot_keys
         self._all_symbols = slot_keys[:]
-        # v4.206 — SUR DEMANDE EXPLICITE : diagnostic APRES la transformation
-        # en slot_keys — confirme ce que la boucle principale utilise
-        # REELLEMENT (different du cfg["SYMBOLS"] brut vu avant cette ligne).
-        print(f"[SYMBOLS-DIAG-2] slot_keys final contient {len(slot_keys)} entrees | forex present : {[s for s in slot_keys if 'xyz:' in str(s)]}")
         # Chargement capital persistant — interets composes
         self.capital, self.sessions, self.total_pnl_all = load_capital(cfg["CAPITAL_USD"])
         # v4.89 — SUR DEMANDE EXPLICITE : pot de capital LIVE, SEPARE du
@@ -4145,12 +4135,6 @@ class BotEngine:
         try:
             data = msg.get("data", {}) if isinstance(msg, dict) else {}
             mids = data.get("mids", {})
-            # v4.167 — SUR DEMANDE EXPLICITE : diagnostic direct visible dans
-            # les logs Railway (print, pas self.emit) — verifie si ce
-            # callback est reellement appele et ce que contient le message
-            # brut recu, sans deviner.
-            forex_keys_found = {k: v for k, v in mids.items() if k in ("xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY")}
-            print(f"[WS-FOREX-DIAG] callback appele | mids recus={len(mids)} | cles forex trouvees={forex_keys_found} | 20 premieres cles recues={list(mids.keys())[:20]}")
             if not mids:
                 return
             self._last_ws_tick = time.time()
@@ -4788,23 +4772,11 @@ class BotEngine:
                 # prix forex, mais prices (REST) ne les contenait jamais,
                 # empechant _process d etre appele du tout pour ces tickers.
                 forex_syms_fallback = set(cfg.get("FOREX_MODE_SYMBOLS", []))
-                # v4.206 — SUR DEMANDE EXPLICITE : confirme, a CHAQUE cycle,
-                # ce que la boucle voit reellement dans cfg["SYMBOLS"] pour
-                # le forex — permet de recouper avec les diagnostics au
-                # demarrage (__init__), qui pourraient differer si cfg est
-                # reconstruit/remplace entre-temps.
-                forex_in_loop = [s for s in cfg["SYMBOLS"] if "xyz:" in str(s)]
-                print(f"[LOOP-SYMBOLS-DIAG] cfg['SYMBOLS'] vu par la boucle du cycle : {len(cfg['SYMBOLS'])} entrees | forex : {forex_in_loop} | FOREX_SYMBOLS config: {forex_syms_fallback}")
                 for sym in cfg["SYMBOLS"]:
                     if sym in prices:
                         self._process_with_timeout(sym, prices[sym])
                     elif ticker_from_slot_key(sym) in forex_syms_fallback and isinstance(self.all_mids, dict):
                         fallback_price = self.all_mids.get(ticker_from_slot_key(sym))
-                        # v4.200 — SUR DEMANDE EXPLICITE : diagnostic direct
-                        # du chemin de repli forex — confirme si ce bloc est
-                        # atteint, et ce qu il trouve (ou ne trouve pas)
-                        # dans self.all_mids a cet instant precis.
-                        print(f"[FOREX-FALLBACK-DIAG] sym={sym} ticker={ticker_from_slot_key(sym)} in_forex_list={ticker_from_slot_key(sym) in forex_syms_fallback} fallback_price={fallback_price} all_mids_size={len(self.all_mids) if isinstance(self.all_mids, dict) else 'N/A'}")
                         if fallback_price is not None:
                             try:
                                 fallback_price = float(fallback_price)
@@ -5667,11 +5639,6 @@ class BotEngine:
         is_forex_ticker = ticker in cfg.get("FOREX_MODE_SYMBOLS", [])
         if ticker == "BTC":
             print(f"[MTF-DIAG] _process ENTREE pour BTC, prix={price}, collecting={state.collecting}")
-        if is_forex_ticker:
-            # v4.200 — SUR DEMANDE EXPLICITE : diagnostic direct pour
-            # confirmer si _process est reellement appelee pour le forex,
-            # et avec quelle valeur de prix exacte.
-            print(f"[FOREX-PROCESS-DIAG] _process ENTREE pour {ticker}, prix={price}, collecting={state.collecting}")
         # v3.2 — FIX : ne pas ecraser le prix avec la valeur REST (cycle,
         # potentiellement vieille de 15s) si le WebSocket est sain — il
         # fournit deja une valeur plus fraiche en continu pour les actifs en
