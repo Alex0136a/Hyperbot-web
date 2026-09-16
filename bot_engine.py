@@ -120,7 +120,7 @@ CONFIG = {
     # trader ; les autres modes (Accumulation/Funding/Spot-Accum) les
     # ignorent completement, et inversement Normal ignore desormais les
     # cryptos (voir isolation dans _process).
-    "FOREX_SYMBOLS": ["xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY", "PAXG"],
+    "FOREX_MODE_SYMBOLS": ["xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY", "PAXG"],
     # v4.163 — marge ISOLEE obligatoire pour les marches HIP-3 (contrairement
     # aux cryptos, en marge croisee) — voir application dans le passage d
     # ordre et l ajustement de levier.
@@ -1661,7 +1661,7 @@ def get_prices(info, slot_keys, cfg):
         # WebSocket, corrigee ici pour le chemin REST (cycle classique).
         # Repli specifique, ne s active que si des tickers forex manquent
         # encore apres les tentatives ci-dessus.
-        forex_syms = set(cfg.get("FOREX_SYMBOLS", []))
+        forex_syms = set(cfg.get("FOREX_MODE_SYMBOLS", []))
         still_missing = [k for k in slot_keys if k not in result and ticker_from_slot_key(k) in forex_syms]
         if still_missing:
             try:
@@ -4160,7 +4160,7 @@ class BotEngine:
                 self.all_mids = {}
             self.all_mids.update(mids)
 
-            forex_tickers = set(self.cfg.get("FOREX_SYMBOLS", []))
+            forex_tickers = set(self.cfg.get("FOREX_MODE_SYMBOLS", []))
             for slot_key, state in self.states.items():
                 ticker = ticker_from_slot_key(slot_key)
                 if ticker not in forex_tickers:
@@ -4748,7 +4748,7 @@ class BotEngine:
                         if sym in prices:
                             self.states[sym].current_price = prices[sym]
                     # Continuer a gerer les positions ouvertes (SL / Trailing TP)
-                    forex_syms_fallback_oh = set(cfg.get("FOREX_SYMBOLS", []))
+                    forex_syms_fallback_oh = set(cfg.get("FOREX_MODE_SYMBOLS", []))
                     for sym in cfg["SYMBOLS"]:
                         if sym in prices and self.states[sym].position:
                             self._process_with_timeout(sym, prices[sym])
@@ -4787,7 +4787,7 @@ class BotEngine:
                 # ce cycle. Confirme par un cas reel : WS recevait bien les
                 # prix forex, mais prices (REST) ne les contenait jamais,
                 # empechant _process d etre appele du tout pour ces tickers.
-                forex_syms_fallback = set(cfg.get("FOREX_SYMBOLS", []))
+                forex_syms_fallback = set(cfg.get("FOREX_MODE_SYMBOLS", []))
                 # v4.206 — SUR DEMANDE EXPLICITE : confirme, a CHAQUE cycle,
                 # ce que la boucle voit reellement dans cfg["SYMBOLS"] pour
                 # le forex — permet de recouper avec les diagnostics au
@@ -5664,7 +5664,7 @@ class BotEngine:
         # ticker forex (marge croisee incompatible avec l exigence de
         # marge isolee des marches HIP-3), et qu Normal continue d
         # evaluer des cryptos alors qu il est desormais dedie au forex.
-        is_forex_ticker = ticker in cfg.get("FOREX_SYMBOLS", [])
+        is_forex_ticker = ticker in cfg.get("FOREX_MODE_SYMBOLS", [])
         if ticker == "BTC":
             print(f"[MTF-DIAG] _process ENTREE pour BTC, prix={price}, collecting={state.collecting}")
         if is_forex_ticker:
@@ -5902,7 +5902,7 @@ class BotEngine:
                 return
 
         # Pour les symboles or (PAXG) — respecter les horaires Forex + periode de chauffe
-        if ticker in cfg.get("FOREX_SYMBOLS", []):
+        if ticker in cfg.get("FOREX_MODE_SYMBOLS", []):
             forex_now = is_forex_open()
 
             # Detection de la transition ferme → ouvert
