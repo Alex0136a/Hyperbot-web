@@ -179,15 +179,27 @@ def init_db():
         # absents malgre le code correctement mis a jour. Supprime ces deux
         # overrides s ils ne contiennent PAS "xyz:EUR" — le defaut du code
         # (avec forex inclus) prend alors le relais naturellement.
-        for stale_key in ("SYMBOLS", "ACTIVE_COINS", "FOREX_SYMBOLS"):
-            row = conn.execute("SELECT value FROM config_overrides WHERE key=?", (stale_key,)).fetchone()
-            if row:
-                try:
-                    parsed_list = json.loads(row["value"])
-                    if isinstance(parsed_list, list) and "xyz:EUR" not in parsed_list:
-                        conn.execute("DELETE FROM config_overrides WHERE key=?", (stale_key,))
-                except (json.JSONDecodeError, TypeError):
-                    pass
+        # v4.207 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : "SYMBOLS" et
+        # "FOREX_SYMBOLS" ne sont PAS destines a etre personnalises via l
+        # interface (contrairement a ACTIVE_COINS, pilotable depuis l
+        # onglet Marches) — supprimes SANS CONDITION a chaque demarrage, le
+        # defaut du code doit TOUJOURS s appliquer pour ces deux-la.
+        conn.execute("DELETE FROM config_overrides WHERE key IN ('SYMBOLS', 'FOREX_SYMBOLS')")
+        # ACTIVE_COINS, lui, reste modifiable par l utilisateur (Marches) —
+        # au lieu de le supprimer entierement (ce qui effacerait ses choix
+        # d activation/desactivation), on AJOUTE simplement les tickers
+        # forex manquants a la liste EXISTANTE, sans toucher au reste.
+        row_ac = conn.execute("SELECT value FROM config_overrides WHERE key='ACTIVE_COINS'").fetchone()
+        if row_ac:
+            try:
+                parsed_ac = json.loads(row_ac["value"])
+                if isinstance(parsed_ac, list):
+                    missing_forex = [t for t in ("xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY") if t not in parsed_ac]
+                    if missing_forex:
+                        parsed_ac.extend(missing_forex)
+                        conn.execute("UPDATE config_overrides SET value=? WHERE key='ACTIVE_COINS'", (json.dumps(parsed_ac),))
+            except (json.JSONDecodeError, TypeError):
+                pass
         conn.execute("""
             CREATE TABLE IF NOT EXISTS config_overrides (
                 key TEXT PRIMARY KEY,
