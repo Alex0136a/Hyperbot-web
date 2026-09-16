@@ -136,7 +136,7 @@ def init_db():
         # deja personnalise pour ce mode serait orphelin (le code cherche
         # desormais FOREX_*, ces lignes resteraient invisibles).
         key_renames = {
-            "NORMAL_FOREX_SYMBOLS": "FOREX_SYMBOLS",
+            "NORMAL_FOREX_SYMBOLS": "FOREX_MODE_SYMBOLS",
             "NORMAL_FOREX_ISOLATED_MARGIN": "FOREX_ISOLATED_MARGIN",
             "NORMAL_ANTI_RANGE_LOOKBACK": "FOREX_ANTI_RANGE_LOOKBACK",
             "NORMAL_ANTI_RANGE_MIN_PCT": "FOREX_ANTI_RANGE_MIN_PCT",
@@ -179,12 +179,16 @@ def init_db():
         # absents malgre le code correctement mis a jour. Supprime ces deux
         # overrides s ils ne contiennent PAS "xyz:EUR" — le defaut du code
         # (avec forex inclus) prend alors le relais naturellement.
-        # v4.207 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : "SYMBOLS" et
-        # "FOREX_SYMBOLS" ne sont PAS destines a etre personnalises via l
-        # interface (contrairement a ACTIVE_COINS, pilotable depuis l
-        # onglet Marches) — supprimes SANS CONDITION a chaque demarrage, le
-        # defaut du code doit TOUJOURS s appliquer pour ces deux-la.
-        conn.execute("DELETE FROM config_overrides WHERE key IN ('SYMBOLS', 'FOREX_SYMBOLS')")
+        # v4.208 — FIX BUG CRITIQUE : "FOREX_SYMBOLS" est en realite un
+        # reglage PRE-EXISTANT et DIFFERENT (["PAXG"], delai de "chauffe"
+        # du marche pour PAXG apres reouverture du forex traditionnel) —
+        # la collision de nom avec ma nouvelle liste d isolation forex
+        # (renommee "FOREX_MODE_SYMBOLS" pour eviter tout conflit futur)
+        # expliquait le blocage persistant : le code lisait par erreur
+        # cette valeur ["PAXG"] a la place de la vraie liste forex. Cible
+        # desormais le bon nom, sans jamais toucher a "FOREX_SYMBOLS" (qui
+        # garde sa valeur legitime pour la chauffe PAXG).
+        conn.execute("DELETE FROM config_overrides WHERE key IN ('SYMBOLS', 'FOREX_MODE_SYMBOLS')")
         # ACTIVE_COINS, lui, reste modifiable par l utilisateur (Marches) —
         # au lieu de le supprimer entierement (ce qui effacerait ses choix
         # d activation/desactivation), on AJOUTE simplement les tickers
