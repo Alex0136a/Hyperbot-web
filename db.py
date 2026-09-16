@@ -179,7 +179,7 @@ def init_db():
         # absents malgre le code correctement mis a jour. Supprime ces deux
         # overrides s ils ne contiennent PAS "xyz:EUR" — le defaut du code
         # (avec forex inclus) prend alors le relais naturellement.
-        for stale_key in ("SYMBOLS", "ACTIVE_COINS"):
+        for stale_key in ("SYMBOLS", "ACTIVE_COINS", "FOREX_SYMBOLS"):
             row = conn.execute("SELECT value FROM config_overrides WHERE key=?", (stale_key,)).fetchone()
             if row:
                 try:
