@@ -2753,6 +2753,12 @@ class BotEngine:
         # Normaliser : si cfg["SYMBOLS"] contient deja des slot_keys, les extraire
         raw_symbols = [ticker_from_slot_key(s) for s in cfg["SYMBOLS"]]
         self._original_symbols = raw_symbols[:]  # ["BTC", "PAXG", "SOL"]
+        # v4.205 — SUR DEMANDE EXPLICITE : diagnostic direct (print, visible
+        # dans Railway) du contenu REEL de cfg["SYMBOLS"] au demarrage —
+        # verifie definitivement si le forex y est present ou non, sans
+        # ambiguite sur l onglet de logs consulte.
+        print(f"[SYMBOLS-DIAG] cfg['SYMBOLS'] contient {len(cfg['SYMBOLS'])} entrees | forex present : {[s for s in cfg['SYMBOLS'] if 'xyz:' in str(s)]}")
+        print(f"[SYMBOLS-DIAG] cfg['ACTIVE_COINS'] contient {len(cfg.get('ACTIVE_COINS', []))} entrees | forex present : {[s for s in cfg.get('ACTIVE_COINS', []) if 'xyz:' in str(s)]}")
 
         # Construire les slot_keys proprement : "BTC_0", "PAXG_1", "SOL_2"
         slot_keys = [f"{s}_{i}" for i, s in enumerate(raw_symbols)]
