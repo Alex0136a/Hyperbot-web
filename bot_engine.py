@@ -238,7 +238,11 @@ CONFIG = {
     # sans aucun rapport avec la structure du marche". Reduit mecaniquement
     # le nombre de trades, chacun restant structurellement justifie.
     "REQUIRE_LEVEL_RESPECT":      True,
-    "ENTRY_LEVEL_PROXIMITY_PCT":  1.0,   # "proche" du support/resistance = a moins de ce % de distance (rebond)
+    "ENTRY_LEVEL_PROXIMITY_PCT":  1.0,   # v4.209 — repli uniquement si l ATR n est pas encore disponible (voir ENTRY_ATR_PROXIMITY_MULTIPLIER, desormais utilise en priorite)
+    # v4.209 — SUR DEMANDE EXPLICITE : proximite S/R desormais relative a l
+    # ATR (volatilite reelle de l actif) plutot qu un % fixe identique pour
+    # tous — "proche" = a moins de ce multiple de l ATR du niveau.
+    "ENTRY_ATR_PROXIMITY_MULTIPLIER": 1.0,
 
     # v4.20 — SUR DEMANDE EXPLICITE, suite a un lot de trades fouettes par le
     # bruit apres la fusion du respect des niveaux (pics minuscules 0.01% a
@@ -3576,10 +3580,32 @@ class BotEngine:
         proximite precise (5-15% de l amplitude) par un simple "assez
         proche" — % de distance directe au niveau (pas relatif a l
         amplitude), la couleur de bougie faisant desormais le plus gros du
-        travail de confirmation plutot qu une precision de zone."""
+        travail de confirmation plutot qu une precision de zone.
+        v4.209 — CONSERVEE pour compatibilite, mais remplacee partout par
+        _is_near_level_atr (proximite relative a la volatilite reelle de
+        l actif, pas un % fixe identique pour tous)."""
         if level is None or level <= 0 or price is None:
             return False
         return abs(price - level) / level * 100 <= max_pct
+
+    def _is_near_level_atr(self, state, price, level, atr_multiplier=1.0):
+        """v4.209 — SUR DEMANDE EXPLICITE : remplace la proximite % FIXE
+        (identique pour tous les actifs, ex: 1.0%) par une proximite
+        RELATIVE A LA VOLATILITE REELLE de l actif (ATR) — un actif tres
+        volatil (grand ATR) a une fenetre de "proximite" plus large, un
+        actif calme (petit ATR) une fenetre plus etroite. Corrige le
+        handicap signale : un % fixe est structurellement trop strict pour
+        les actifs volatils (ratant de bons signaux) et trop laxiste pour
+        les actifs calmes. Repli sur ENTRY_LEVEL_PROXIMITY_PCT (ancien
+        comportement) si l ATR n est pas encore disponible (historique
+        insuffisant)."""
+        if level is None or level <= 0 or price is None:
+            return False
+        atr_abs, _ = calc_true_range_atr(list(state.candle_history), self.cfg.get("ATR_PERIOD", 14))
+        if atr_abs is None or atr_abs <= 0:
+            fallback_pct = self.cfg.get("ENTRY_LEVEL_PROXIMITY_PCT", 1.0)
+            return abs(price - level) / level * 100 <= fallback_pct
+        return abs(price - level) <= atr_abs * atr_multiplier
 
     def _structural_sl_broken(self, state, pos, price):
         """v4.176 — SUR DEMANDE EXPLICITE : generalise a TOUS les modes (sauf
@@ -6089,13 +6115,15 @@ class BotEngine:
         # variables restent True (aucune restriction ajoutee — comportement
         # d avant ce changement).
         if cfg.get("REQUIRE_LEVEL_RESPECT", True):
-            level_proximity_pct = cfg.get("ENTRY_LEVEL_PROXIMITY_PCT", 1.0)
+            # v4.209 — SUR DEMANDE EXPLICITE : remplace le % fixe par une
+            # proximite relative a l ATR (volatilite reelle de l actif).
+            atr_mult = cfg.get("ENTRY_ATR_PROXIMITY_MULTIPLIER", 1.0)
             long_level_ok = (
-                (support is not None and 0 <= (price - support) / support * 100 <= level_proximity_pct)
+                (support is not None and price >= support and self._is_near_level_atr(state, price, support, atr_mult))
                 or (resistance is not None and price > resistance)
             )
             short_level_ok = (
-                (resistance is not None and 0 <= (resistance - price) / price * 100 <= level_proximity_pct)
+                (resistance is not None and price <= resistance and self._is_near_level_atr(state, price, resistance, atr_mult))
                 or (support is not None and price < support)
             )
             # v4.175 — SUR DEMANDE EXPLICITE : exige AUSSI une bougie de la
@@ -6809,7 +6837,7 @@ class BotEngine:
         dist_below_resistance_pct = (resistance - price) / (resistance - support) * 100 if resistance != support else 0
         snap["dist_below_resistance_pct"] = round(dist_below_resistance_pct, 2)
         if not fresh_breakout_ac:
-            near_resistance = self._is_near_level_simple(price, resistance, cfg.get("ENTRY_LEVEL_PROXIMITY_PCT", 1.0))
+            near_resistance = self._is_near_level_atr(state, price, resistance, cfg.get("ENTRY_ATR_PROXIMITY_MULTIPLIER", 1.0))
             snap["near_resistance"] = near_resistance
             if not near_resistance:
                 snap["blocker"] = f"pas assez proche de la resistance (${resistance:.4f})"
@@ -7039,7 +7067,7 @@ class BotEngine:
         dist_above_support_pct = (price - support) / (resistance - support) * 100 if resistance != support else 0
         snap["dist_above_support_pct"] = round(dist_above_support_pct, 2)
         if not fresh_breakout_sa:
-            near_support = self._is_near_level_simple(price, support, cfg.get("ENTRY_LEVEL_PROXIMITY_PCT", 1.0))
+            near_support = self._is_near_level_atr(state, price, support, cfg.get("ENTRY_ATR_PROXIMITY_MULTIPLIER", 1.0))
             snap["near_support"] = near_support
             if not near_support:
                 snap["blocker"] = f"pas assez proche du support (${support:.4f})"
