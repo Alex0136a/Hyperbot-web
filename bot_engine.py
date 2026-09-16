@@ -2772,6 +2772,10 @@ class BotEngine:
         self.accum_states = {k: SymbolState() for k in slot_keys}
         cfg["SYMBOLS"] = slot_keys
         self._all_symbols = slot_keys[:]
+        # v4.206 — SUR DEMANDE EXPLICITE : diagnostic APRES la transformation
+        # en slot_keys — confirme ce que la boucle principale utilise
+        # REELLEMENT (different du cfg["SYMBOLS"] brut vu avant cette ligne).
+        print(f"[SYMBOLS-DIAG-2] slot_keys final contient {len(slot_keys)} entrees | forex present : {[s for s in slot_keys if 'xyz:' in str(s)]}")
         # Chargement capital persistant — interets composes
         self.capital, self.sessions, self.total_pnl_all = load_capital(cfg["CAPITAL_USD"])
         # v4.89 — SUR DEMANDE EXPLICITE : pot de capital LIVE, SEPARE du
@@ -4784,6 +4788,13 @@ class BotEngine:
                 # prix forex, mais prices (REST) ne les contenait jamais,
                 # empechant _process d etre appele du tout pour ces tickers.
                 forex_syms_fallback = set(cfg.get("FOREX_SYMBOLS", []))
+                # v4.206 — SUR DEMANDE EXPLICITE : confirme, a CHAQUE cycle,
+                # ce que la boucle voit reellement dans cfg["SYMBOLS"] pour
+                # le forex — permet de recouper avec les diagnostics au
+                # demarrage (__init__), qui pourraient differer si cfg est
+                # reconstruit/remplace entre-temps.
+                forex_in_loop = [s for s in cfg["SYMBOLS"] if "xyz:" in str(s)]
+                print(f"[LOOP-SYMBOLS-DIAG] cfg['SYMBOLS'] vu par la boucle du cycle : {len(cfg['SYMBOLS'])} entrees | forex : {forex_in_loop} | FOREX_SYMBOLS config: {forex_syms_fallback}")
                 for sym in cfg["SYMBOLS"]:
                     if sym in prices:
                         self._process_with_timeout(sym, prices[sym])
