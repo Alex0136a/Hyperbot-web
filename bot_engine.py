@@ -2757,6 +2757,10 @@ class BotEngine:
         # Normaliser : si cfg["SYMBOLS"] contient deja des slot_keys, les extraire
         raw_symbols = [ticker_from_slot_key(s) for s in cfg["SYMBOLS"]]
         self._original_symbols = raw_symbols[:]  # ["BTC", "PAXG", "SOL"]
+        # v4.210 — SUR DEMANDE EXPLICITE : diagnostic direct des reglages SL
+        # structurel au demarrage — verifie s ils correspondent aux
+        # defauts attendus ou si un override en base les a modifies.
+        print(f"[SL-CONFIG-DIAG] STRUCTURAL_SL_HARD_CAP_PCT={cfg.get('STRUCTURAL_SL_HARD_CAP_PCT', 0.5)} | SPOT_ACCUM_HARD_SL_PCT={cfg.get('SPOT_ACCUM_HARD_SL_PCT', 5.0)} | EXCHANGE_SAFETY_SL_MULT={cfg.get('EXCHANGE_SAFETY_SL_MULT', 2.0)} | SL_PATIENCE_CYCLES={cfg.get('SL_PATIENCE_CYCLES', 10)}")
 
         # Construire les slot_keys proprement : "BTC_0", "PAXG_1", "SOL_2"
         slot_keys = [f"{s}_{i}" for i, s in enumerate(raw_symbols)]
@@ -5239,6 +5243,8 @@ class BotEngine:
             # plafond, meme si la rupture structurelle n est pas encore
             # confirmee.
             hard_cap_pct = cfg.get("STRUCTURAL_SL_HARD_CAP_PCT", 0.5)
+            if pnl_pct <= -hard_cap_pct * 0.8:  # se declenche un peu avant, pour voir venir
+                print(f"[SL-HARDCAP-DIAG] {pos.get('strategy')} {ticker} : pnl_pct={pnl_pct:.3f}% | hard_cap_pct configure={hard_cap_pct}")
             if pnl_pct <= -hard_cap_pct:
                 pnl, _, trade = state.close_position(price, "STOP LOSS (plafond immediat)")
                 trade["symbol"] = symbol
@@ -7492,6 +7498,7 @@ class BotEngine:
         # interne du bot utiliserait pour fermer en premier.
         if strategy == "spot_accumulation":
             spot_accum_reference_sl_pct = cfg.get("SPOT_ACCUM_HARD_SL_PCT", 5.0)
+            print(f"[SL-EXCHANGE-DIAG] Spot-Accum {ticker} : SPOT_ACCUM_HARD_SL_PCT={spot_accum_reference_sl_pct} | EXCHANGE_SAFETY_SL_MULT={cfg.get('EXCHANGE_SAFETY_SL_MULT', 2.0)}")
             safety_sl_pct = spot_accum_reference_sl_pct * cfg.get("EXCHANGE_SAFETY_SL_MULT", 2.0)
         else:
             safety_sl_usd = size * sl_pct_of_e / 100 * cfg.get("EXCHANGE_SAFETY_SL_MULT", 2.0)
