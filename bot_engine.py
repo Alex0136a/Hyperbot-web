@@ -628,6 +628,11 @@ CONFIG = {
     # forcement le seuil de repli complet. Applique a tier0/tier1
     # (Normal/Accumulation/Funding) et Spot-Accum.
     "EARLY_REVERSAL_EXIT_ENABLED": True,
+    # v4.213 — SUR DEMANDE EXPLICITE : filet de securite inconditionnel
+    # (Accumulation/Spot-Accum) — ferme si le repli depuis le pic atteint
+    # ce seuil, MEME SANS confirmation de couleur de bougie (protege contre
+    # une degradation progressive du pic sur des bougies ambigues).
+    "TTP_UNCONDITIONAL_GIVEBACK_PCT": 1.0,
     # v4.203 — SUR DEMANDE EXPLICITE : confirmation d entree par tendance
     # dynamique (point de depart + retournement confirme sur 3 bougies 1h)
     # et MACD 1h — Accumulation (short) et Spot-Accum (long) uniquement.
@@ -5147,6 +5152,34 @@ class BotEngine:
             else:
                 if state.spot_accum_peak_pnl_pct is None or pnl_pct > state.spot_accum_peak_pnl_pct:
                     state.spot_accum_peak_pnl_pct = pnl_pct
+                # v4.213 — SUR DEMANDE EXPLICITE : filet de securite
+                # INCONDITIONNEL — INDEPENDANT de la couleur de bougie. La
+                # logique inversee (v4.197) n applique AUCUNE limite de
+                # repli tant que la bougie ne confirme pas un retournement
+                # — si les bougies restent ambigues (jamais 2 consecutives
+                # de meme couleur), un pic pourrait se degrader
+                # integralement sans jamais declencher de protection. Ce
+                # filet ferme QUOI QU IL ARRIVE au-dela de ce repli maximal
+                # depuis le pic, peu importe la couleur de bougie.
+                unconditional_giveback_pct = cfg.get("TTP_UNCONDITIONAL_GIVEBACK_PCT", 1.0)
+                if state.spot_accum_peak_pnl_pct - pnl_pct >= unconditional_giveback_pct:
+                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT (repli maximal)")
+                    trade["symbol"] = symbol
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, ticker, pos, self.cfg)
+                    self.emit("trade", trade)
+                    if pnl > 0:
+                        self._register_win(ticker)
+                    if pos["type"] == "long":
+                        state.post_win_confirm_long = True
+                        state.confirm_count_long = 0
+                    else:
+                        state.post_win_confirm_short = True
+                        state.confirm_count_short = 0
+                    self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} repli maximal atteint (pic +{state.spot_accum_peak_pnl_pct:.2f}%, repli {unconditional_giveback_pct}%, sans confirmation de couleur) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+                    self._save_open_positions()
+                    self._persist_capital_snapshot()
+                    return
                 # v4.197 — SUR DEMANDE EXPLICITE : INVERSE la logique — retire
                 # la sortie IMMEDIATE sur simple changement de couleur,
                 # remplacee par une PORTE vers la verification de tolerance
