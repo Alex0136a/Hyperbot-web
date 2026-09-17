@@ -6873,7 +6873,17 @@ class BotEngine:
         dist_below_resistance_pct = (resistance - price) / (resistance - support) * 100 if resistance != support else 0
         snap["dist_below_resistance_pct"] = round(dist_below_resistance_pct, 2)
         if not fresh_breakout_ac:
-            near_resistance = self._is_near_level_atr(state, price, resistance, cfg.get("ENTRY_ATR_PROXIMITY_MULTIPLIER", 1.0))
+            # v4.215 — SUR DEMANDE EXPLICITE : utilise desormais le S/R
+            # ancre au dernier retournement confirme (tendance dynamique,
+            # voir _update_dynamic_trend) au lieu du S/R sur fenetre
+            # glissante fixe — celui-ci pouvait "bouger sous les pieds" du
+            # prix sans rapport avec un vrai changement de marche (un
+            # nouveau plus bas ailleurs dans la fenetre suffisait a
+            # deplacer le niveau, meme si le prix lui-meme etait stable).
+            # Repli sur l ancien calcul si la tendance dynamique n est pas
+            # encore etablie (historique 1h insuffisant).
+            resistance_for_proximity = state.dynamic_trend_resistance if state.dynamic_trend_resistance is not None else resistance
+            near_resistance = self._is_near_level_atr(state, price, resistance_for_proximity, cfg.get("ENTRY_ATR_PROXIMITY_MULTIPLIER", 1.0))
             snap["near_resistance"] = near_resistance
             if not near_resistance:
                 snap["blocker"] = f"pas assez proche de la resistance (${resistance:.4f})"
@@ -7103,7 +7113,11 @@ class BotEngine:
         dist_above_support_pct = (price - support) / (resistance - support) * 100 if resistance != support else 0
         snap["dist_above_support_pct"] = round(dist_above_support_pct, 2)
         if not fresh_breakout_sa:
-            near_support = self._is_near_level_atr(state, price, support, cfg.get("ENTRY_ATR_PROXIMITY_MULTIPLIER", 1.0))
+            # v4.215 — SUR DEMANDE EXPLICITE : meme principe qu Accumulation
+            # — S/R ancre au dernier retournement confirme, plus stable
+            # qu une fenetre glissante fixe.
+            support_for_proximity = state.dynamic_trend_support if state.dynamic_trend_support is not None else support
+            near_support = self._is_near_level_atr(state, price, support_for_proximity, cfg.get("ENTRY_ATR_PROXIMITY_MULTIPLIER", 1.0))
             snap["near_support"] = near_support
             if not near_support:
                 snap["blocker"] = f"pas assez proche du support (${support:.4f})"
