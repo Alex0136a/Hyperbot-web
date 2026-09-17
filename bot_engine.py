@@ -633,6 +633,10 @@ CONFIG = {
     # ce seuil, MEME SANS confirmation de couleur de bougie (protege contre
     # une degradation progressive du pic sur des bougies ambigues).
     "TTP_UNCONDITIONAL_GIVEBACK_PCT": 1.0,
+    # v4.216 — SUR DEMANDE EXPLICITE : le filet inconditionnel ci-dessus ne
+    # s active que si le pic a atteint au moins ce seuil — priorite au
+    # trailing normal (couleur de bougie) pour les pics plus modestes.
+    "TTP_UNCONDITIONAL_GIVEBACK_MIN_PEAK_PCT": 2.0,
     # v4.203 — SUR DEMANDE EXPLICITE : confirmation d entree par tendance
     # dynamique (point de depart + retournement confirme sur 3 bougies 1h)
     # et MACD 1h — Accumulation (short) et Spot-Accum (long) uniquement.
@@ -5161,8 +5165,17 @@ class BotEngine:
                 # integralement sans jamais declencher de protection. Ce
                 # filet ferme QUOI QU IL ARRIVE au-dela de ce repli maximal
                 # depuis le pic, peu importe la couleur de bougie.
+                # v4.216 — SUR DEMANDE EXPLICITE : priorite au trailing
+                # normal (0.4%, avec confirmation de couleur) pour les
+                # PETITS pics — ce filet inconditionnel ne s active
+                # desormais QUE si le pic a atteint au moins ce seuil
+                # minimal, laissant le mecanisme normal seul gerer les
+                # pics plus modestes (accepte le risque de redonnage total
+                # sur un tres petit pic en echange de ne jamais fermer
+                # prematurement sur une simple ambiguite de bougie).
                 unconditional_giveback_pct = cfg.get("TTP_UNCONDITIONAL_GIVEBACK_PCT", 1.0)
-                if state.spot_accum_peak_pnl_pct - pnl_pct >= unconditional_giveback_pct:
+                min_peak_for_unconditional = cfg.get("TTP_UNCONDITIONAL_GIVEBACK_MIN_PEAK_PCT", 2.0)
+                if state.spot_accum_peak_pnl_pct >= min_peak_for_unconditional and state.spot_accum_peak_pnl_pct - pnl_pct >= unconditional_giveback_pct:
                     pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT (repli maximal)")
                     trade["symbol"] = symbol
                     if mode == "live" and self.exchange:
