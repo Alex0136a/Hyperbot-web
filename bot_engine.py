@@ -4995,13 +4995,17 @@ class BotEngine:
                     close_order(self.exchange, symbol, pos, cfg)
                 return
 
-        # v4.43 — SUR DEMANDE EXPLICITE : gestion de sortie ENTIEREMENT
-        # DEDIEE pour Spot-Accumulation — different de tous les autres modes
-        # (pas de Stop Loss par defaut, objectif base sur la distance
-        # support-resistance, trailing avec ses propres seuils). Retourne
-        # immediatement apres, ne passe JAMAIS par la logique SL/TTP normale
-        # ci-dessous, qui ne s applique pas a ce mode.
-        if pos.get("strategy") == "spot_accumulation":
+        # v4.212 — SUR DEMANDE EXPLICITE : Accumulation utilise desormais
+        # EXACTEMENT le meme mecanisme de sortie dedie que Spot-Accum
+        # (SL structurel, TTP arme/tolerance uniques, retournement confirme)
+        # — plus AUCUNE trace de son ancien systeme (tier0/tier1 partage
+        # avec Forex). Generalise pour fonctionner en LONG (Spot-Accum) et
+        # SHORT (Accumulation) via pos["type"], au lieu du "long" fige en
+        # dur d origine.
+        if pos.get("strategy") in ("spot_accumulation", "accumulation"):
+            # v4.212 — label dynamique pour les messages, correct pour les
+            # deux modes partageant desormais ce meme bloc de sortie.
+            mode_label_sa = "🌱 Spot-Accum" if pos.get("strategy") == "spot_accumulation" else "🎯 Accumulation"
 
             # 0) v4.70 — SUR DEMANDE EXPLICITE : PLAFOND DUR en dernier
             #    recours — ferme QUOI QU IL ARRIVE au-dela de ce seuil,
@@ -5019,7 +5023,7 @@ class BotEngine:
                     pnl, _, trade = state.close_position(price, "STOP LOSS")
                     trade["symbol"] = symbol
                     self.emit("trade", trade)
-                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum PLAFOND DUR atteint ({hard_sl_pct:.1f}% du PnL, sans condition de retournement) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
+                    self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} PLAFOND DUR atteint ({hard_sl_pct:.1f}% du PnL, sans condition de retournement) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
                     self._register_max_loss(ticker, pos.get("confidence"))
                     self._save_open_positions()
                     if mode == "live" and self.exchange:
@@ -5073,9 +5077,9 @@ class BotEngine:
 
                 confirm_needed = cfg.get("SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES", 180)  # ~30 min par defaut
                 if state.spot_accum_reversal_count >= confirm_needed:
-                    # v4.162 — SUR DEMANDE EXPLICITE : meme protection
-                    # supplementaire que la version Accumulation ci-dessus.
-                    if not self._candle_color_confirms_reversal(state, "long"):
+                    # v4.212 — generalise via pos["type"] (long pour
+                    # Spot-Accum, short pour Accumulation).
+                    if not self._candle_color_confirms_reversal(state, pos["type"]):
                         self._save_open_positions()
                         return
                     pnl, _, trade = state.close_position(price, "RETOURNEMENT CONFIRME")
@@ -5085,7 +5089,7 @@ class BotEngine:
                         self._register_win(ticker)
                     else:
                         self._register_max_loss(ticker, pos.get("confidence"))
-                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum RETOURNEMENT CONFIRME (prix sous l'EMA200 depuis {confirm_needed} cycles, donnees matures et saines) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "warn"})
+                    self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} RETOURNEMENT CONFIRME (prix sous l'EMA200 depuis {confirm_needed} cycles, donnees matures et saines) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "warn"})
                     state.spot_accum_reversal_count = 0
                     self._save_open_positions()
                     if mode == "live" and self.exchange:
@@ -5115,7 +5119,7 @@ class BotEngine:
                 trade["symbol"] = symbol
                 self.emit("trade", trade)
                 self._register_win(ticker)
-                self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum OBJECTIF ATTEINT (80% distance S/R) @ ${price:.2f} | PnL: +${pnl:.2f}", "level": "win"})
+                self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} OBJECTIF ATTEINT (80% distance S/R) @ ${price:.2f} | PnL: +${pnl:.2f}", "level": "win"})
                 self._save_open_positions()
                 if mode == "live" and self.exchange:
                     close_order(self.exchange, symbol, pos, cfg)
@@ -5147,7 +5151,7 @@ class BotEngine:
                 # la sortie IMMEDIATE sur simple changement de couleur,
                 # remplacee par une PORTE vers la verification de tolerance
                 # ci-dessous (meme principe que tier0/tier1).
-                color_reversed_sa = cfg.get("EARLY_REVERSAL_EXIT_ENABLED", True) and self._candle_color_confirms_reversal(state, "long")
+                color_reversed_sa = cfg.get("EARLY_REVERSAL_EXIT_ENABLED", True) and self._candle_color_confirms_reversal(state, pos["type"])
                 if color_reversed_sa and pnl_pct <= state.spot_accum_peak_pnl_pct - tolerance_pct:
                     # v4.83 — SUR DEMANDE EXPLICITE : meme filtre "la
                     # tendance tient toujours" que tier0/tier1 (v4.77/v4.82),
@@ -5162,7 +5166,7 @@ class BotEngine:
                     if cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
                         ema200_hold_sa = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
                         if ema200_hold_sa is not None:
-                            trend_still_intact_sa = price > ema200_hold_sa  # Spot-Accum est LONG uniquement
+                            trend_still_intact_sa = (price > ema200_hold_sa) if pos["type"] == "long" else (price < ema200_hold_sa)
                     if trend_still_intact_sa:
                         # v4.103 — SUR DEMANDE EXPLICITE : le plafond pour
                         # les PETITS pics (< min_peak_for_cap) est retire —
@@ -5183,14 +5187,14 @@ class BotEngine:
                             self._save_open_positions()
                             return
                         # sinon : plafond de redonnage atteint — v4.154, exige aussi la confirmation patience+bougie
-                        if not self._ttp_confirmed_to_close(state, "long"):
+                        if not self._ttp_confirmed_to_close(state, pos["type"]):
                             self._save_open_positions()
                             return
                     pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
                     trade["symbol"] = symbol
                     self.emit("trade", trade)
                     self._register_win(ticker)
-                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum TTP @ ${price:.2f} | pic +{state.spot_accum_peak_pnl_pct:.2f}% | PnL: +${pnl:.2f}", "level": "win"})
+                    self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} TTP @ ${price:.2f} | pic +{state.spot_accum_peak_pnl_pct:.2f}% | PnL: +${pnl:.2f}", "level": "win"})
                     self._save_open_positions()
                     if mode == "live" and self.exchange:
                         close_order(self.exchange, symbol, pos, cfg)
