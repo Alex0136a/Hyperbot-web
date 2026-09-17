@@ -2760,7 +2760,7 @@ class BotEngine:
         # v4.210 — SUR DEMANDE EXPLICITE : diagnostic direct des reglages SL
         # structurel au demarrage — verifie s ils correspondent aux
         # defauts attendus ou si un override en base les a modifies.
-        print(f"[SL-CONFIG-DIAG] STRUCTURAL_SL_HARD_CAP_PCT={cfg.get('STRUCTURAL_SL_HARD_CAP_PCT', 0.5)} | SPOT_ACCUM_HARD_SL_PCT={cfg.get('SPOT_ACCUM_HARD_SL_PCT', 5.0)} | EXCHANGE_SAFETY_SL_MULT={cfg.get('EXCHANGE_SAFETY_SL_MULT', 2.0)} | SL_PATIENCE_CYCLES={cfg.get('SL_PATIENCE_CYCLES', 10)}")
+        print(f"[SL-CONFIG-DIAG] STRUCTURAL_SL_HARD_CAP_PCT={cfg.get('STRUCTURAL_SL_HARD_CAP_PCT', 0.5)} | SPOT_ACCUM_HARD_SL_PCT={cfg.get('SPOT_ACCUM_HARD_SL_PCT', 5.0)} | EXCHANGE_SAFETY_SL_MULT={cfg.get('EXCHANGE_SAFETY_SL_MULT', 2.0)} | SL_PATIENCE_CYCLES={cfg.get('SL_PATIENCE_CYCLES', 10)} | SPOT_ACCUM_SL_ENABLED={cfg.get('SPOT_ACCUM_SL_ENABLED', False)} | SPOT_ACCUM_SL_PCT_OF_PNL={cfg.get('SPOT_ACCUM_SL_PCT_OF_PNL', 1.5)}")
 
         # Construire les slot_keys proprement : "BTC_0", "PAXG_1", "SOL_2"
         slot_keys = [f"{s}_{i}" for i, s in enumerate(raw_symbols)]
@@ -5026,27 +5026,14 @@ class BotEngine:
                         close_order(self.exchange, symbol, pos, cfg)
                     return
 
-            # 1) SL simple, en % du PnL (PAS % de E comme le reste du
-            #    bot) — desactive par defaut, une position perdante reste
-            #    ouverte indefiniment sauf si explicitement active.
-            # v4.74 — SUR DEMANDE EXPLICITE : retour a un seuil SIMPLE et
-            # INCONDITIONNEL — la version conditionnelle (exigeant aussi un
-            # retournement instantane) est retiree, jugee pas satisfaisante
-            # a l usage. Le retournement confirme (30 min soutenues, voir
-            # plus bas) reste le mecanisme dedie pour les sorties liees a
-            # un changement de tendance, independamment de ce SL.
-            if cfg.get("SPOT_ACCUM_SL_ENABLED", False):
-                sl_threshold_pnl = cfg.get("SPOT_ACCUM_SL_PCT_OF_PNL", 1.5)
-                if pnl_pct <= -sl_threshold_pnl:
-                    pnl, _, trade = state.close_position(price, "STOP LOSS")
-                    trade["symbol"] = symbol
-                    self.emit("trade", trade)
-                    self.emit("log", {"msg": f"[{ticker}] 🌱 Spot-Accum STOP LOSS ({sl_threshold_pnl:.1f}% du PnL) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
-                    self._register_max_loss(ticker, pos.get("confidence"))
-                    self._save_open_positions()
-                    if mode == "live" and self.exchange:
-                        close_order(self.exchange, symbol, pos, cfg)
-                    return
+            # v4.211 — SUR DEMANDE EXPLICITE : ancien SL simple (%PnL) retire
+            # — faisait doublon avec le SL structurel (rupture de support
+            # confirmee + plafond immediat de securite), et s executait
+            # PLUS TOT dans cette fonction, court-circuitant systematiquement
+            # la logique structurelle des qu il etait active. Confirme comme
+            # cause reelle d un clustering de pertes a exactement -1.5% (sa
+            # valeur par defaut), incompatible avec la variabilite attendue
+            # d un SL base sur la structure de marche.
 
             # v4.47/v4.54 — SUR DEMANDE EXPLICITE : fermeture si un
             # RETOURNEMENT DE TENDANCE est CONFIRME. v4.54 corrige une vraie
