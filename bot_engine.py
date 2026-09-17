@@ -5195,7 +5195,13 @@ class BotEngine:
                     # minuscule. Sans ce filtre, un simple repli de 0.5%
                     # depuis ce pic deja tres bas suffisait a fermer, meme
                     # en pleine tendance haussiere intacte.
-                    trend_still_intact_sa = False
+                    # v4.214 — SUR DEMANDE EXPLICITE : par defaut True (pas
+                    # False) si l EMA200 n est pas encore disponible (donnees
+                    # insuffisantes, position tres recente) — donne le
+                    # benefice du doute plutot que de fermer aveuglement une
+                    # position dont on ne peut pas encore confirmer que la
+                    # tendance de fond a genuinement change.
+                    trend_still_intact_sa = True
                     if cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
                         ema200_hold_sa = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
                         if ema200_hold_sa is not None:
