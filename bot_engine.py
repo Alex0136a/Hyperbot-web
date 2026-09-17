@@ -991,6 +991,15 @@ PROFILE_SWING = {
     # (pas la volatilite proxy) confirme un etat d accumulation genuine
     # pendant une phase de range detectee.
     "ACCUMULATION_VOLUME_CONFIRM_BONUS": 5.0,
+    # v4.219 — SUR DEMANDE EXPLICITE : chemin d entree DEDIE, base
+    # uniquement sur une forte confirmation de volume pendant une
+    # consolidation deja detectee — permet d entrer PENDANT l accumulation,
+    # sans attendre une tendance ou une cassure de prix. Applique a
+    # Accumulation ET Spot-Accum (miroir). Volontairement plus strict
+    # (1.5x) que le bonus de confiance simple (1.15x), puisqu il permet ici
+    # de CONTOURNER des exigences, pas seulement de renforcer un score.
+    "ACCUMULATION_VOLUME_ENTRY_ENABLED": True,
+    "ACCUMULATION_VOLUME_ENTRY_MIN_RATIO": 1.5,
     # v4.130 — SUR DEMANDE EXPLICITE : meme raisonnement que Spot-Accum.
     # v4.131 — SUR DEMANDE EXPLICITE : meme alignement que Spot-Accum.
     "ACCUMULATION_ANTI_RANGE_LOOKBACK": 30,
@@ -6894,21 +6903,42 @@ class BotEngine:
         breakout_lookback_ac = cfg.get("ACCUMULATION_BREAKOUT_LOOKBACK_CANDLES", 30)
         fresh_breakout_ac = self._detect_fresh_breakout(state, "short", breakout_lookback_ac)
         snap["fresh_breakout"] = fresh_breakout_ac
-        if not trend_down and not fresh_breakout_ac:
+
+        # v4.219 — SUR DEMANDE EXPLICITE : chemin d entree DEDIE, base
+        # UNIQUEMENT sur une forte confirmation de volume pendant une
+        # consolidation DEJA detectee — permet d entrer PENDANT
+        # l accumulation elle-meme, sans attendre qu une tendance ou une
+        # cassure de prix se manifeste. Volontairement CONSERVATEUR : exige
+        # (1) un range genuinement detecte (pas juste calme par hasard),
+        # (2) un volume recent tres nettement eleve (1.5x, plus strict que
+        # le bonus de confiance 1.15x), (3) le prix proche du bord
+        # resistance de ce range (coherent avec Accumulation = short). Si
+        # ces 3 conditions sont reunies, contourne l exigence de tendance
+        # EMA200/stabilite/ADX (naturellement non etablies pendant une
+        # vraie accumulation, par definition).
+        is_ranging_ac_early = self._is_market_ranging(state, cfg.get("ACCUMULATION_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("ACCUMULATION_ANTI_RANGE_LOOKBACK", 30))
+        volume_breakout_ac = False
+        if cfg.get("ACCUMULATION_VOLUME_ENTRY_ENABLED", True) and is_ranging_ac_early and support is not None and resistance is not None and resistance > support:
+            vol_confirms_entry = self._volume_confirms_accumulation(state, min_ratio=cfg.get("ACCUMULATION_VOLUME_ENTRY_MIN_RATIO", 1.5))
+            near_resistance_early = self._is_near_level_atr(state, price, resistance, cfg.get("ENTRY_ATR_PROXIMITY_MULTIPLIER", 1.0))
+            volume_breakout_ac = bool(vol_confirms_entry) and near_resistance_early
+        snap["volume_breakout"] = volume_breakout_ac
+
+        if not trend_down and not fresh_breakout_ac and not volume_breakout_ac:
             snap["blocker"] = "pas de tendance baissiere (EMA200)"
             return
 
         min_stability_cycles = cfg.get("ACCUMULATION_TREND_STABILITY_CYCLES", 24)
         snap["trend_down_streak"] = state.trend_down_streak
         snap["min_stability_cycles"] = min_stability_cycles
-        if state.trend_down_streak < min_stability_cycles and not fresh_breakout_ac:
+        if state.trend_down_streak < min_stability_cycles and not fresh_breakout_ac and not volume_breakout_ac:
             snap["blocker"] = f"tendance trop recente ({state.trend_down_streak}/{min_stability_cycles} cycles)"
             return
         if support is None or resistance is None or support <= 0:
             snap["blocker"] = "support/resistance indisponible"
             return
 
-        if cfg.get("ACCUMULATION_REQUIRE_ADX_CONFIRM", False) and not fresh_breakout_ac:
+        if cfg.get("ACCUMULATION_REQUIRE_ADX_CONFIRM", False) and not fresh_breakout_ac and not volume_breakout_ac:
             adx_local = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
             adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
             snap["adx"] = round(adx_local, 1) if adx_local is not None else None
@@ -6946,7 +6976,7 @@ class BotEngine:
                 if bearish_now is False:
                     snap["blocker"] = "bougie actuelle non baissiere"
                     return
-        snap["entered_via_flirt"] = not fresh_breakout_ac
+        snap["entered_via_flirt"] = not fresh_breakout_ac and not volume_breakout_ac
 
         # v4.203 — SUR DEMANDE EXPLICITE : confirmation supplementaire par
         # MACD 1h + tendance dynamique (Accumulation = short uniquement,
@@ -6988,8 +7018,9 @@ class BotEngine:
 
         snap["blocker"] = None
 
+        entry_reason_ac = "🎯 Accumulation (short, volume pendant consolidation)" if volume_breakout_ac else "🎯 Accumulation (short)"
         reasons = [
-            f"🎯 Accumulation (short) : {dist_below_resistance_pct:.2f}% sous la resistance, tendance baissiere confirmee",
+            f"{entry_reason_ac} : {dist_below_resistance_pct:.2f}% sous la resistance, tendance baissiere confirmee",
             f"RSI {rsi:.1f}" if rsi is not None else "RSI ?",
         ]
 
@@ -7104,7 +7135,19 @@ class BotEngine:
         breakout_lookback_sa = cfg.get("SPOT_ACCUM_BREAKOUT_LOOKBACK_CANDLES", cfg.get("ACCUMULATION_BREAKOUT_LOOKBACK_CANDLES", 30))
         fresh_breakout_sa = self._detect_fresh_breakout(state, "long", breakout_lookback_sa)
         snap["fresh_breakout"] = fresh_breakout_sa
-        if not trend_up and not fresh_breakout_sa:
+
+        # v4.219 — SUR DEMANDE EXPLICITE : meme chemin d entree base sur le
+        # volume qu Accumulation (miroir, cote support/long) — voir
+        # commentaire detaille dans _check_accumulation_signal.
+        is_ranging_sa_early = self._is_market_ranging(state, cfg.get("ACCUMULATION_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("ACCUMULATION_ANTI_RANGE_LOOKBACK", 30))
+        volume_breakout_sa = False
+        if cfg.get("ACCUMULATION_VOLUME_ENTRY_ENABLED", True) and is_ranging_sa_early and support is not None and resistance is not None and resistance > support:
+            vol_confirms_entry_sa = self._volume_confirms_accumulation(state, min_ratio=cfg.get("ACCUMULATION_VOLUME_ENTRY_MIN_RATIO", 1.5))
+            near_support_early = self._is_near_level_atr(state, price, support, cfg.get("ENTRY_ATR_PROXIMITY_MULTIPLIER", 1.0))
+            volume_breakout_sa = bool(vol_confirms_entry_sa) and near_support_early
+        snap["volume_breakout"] = volume_breakout_sa
+
+        if not trend_up and not fresh_breakout_sa and not volume_breakout_sa:
             snap["blocker"] = "pas de tendance haussiere (EMA200)"
             return  # exige la tendance generale haussiere (EMA200), sauf cassure fraiche
         # v4.75 — SUR DEMANDE EXPLICITE : la tendance doit aussi etre STABLE
@@ -7113,7 +7156,7 @@ class BotEngine:
         min_stability_cycles = cfg.get("SPOT_ACCUM_TREND_STABILITY_CYCLES", 24)
         snap["trend_up_streak"] = state.trend_up_streak
         snap["min_stability_cycles"] = min_stability_cycles
-        if state.trend_up_streak < min_stability_cycles and not fresh_breakout_sa:
+        if state.trend_up_streak < min_stability_cycles and not fresh_breakout_sa and not volume_breakout_sa:
             snap["blocker"] = f"tendance trop recente ({state.trend_up_streak}/{min_stability_cycles} cycles)"
             return
         if support is None or resistance is None or support <= 0:
@@ -7194,7 +7237,7 @@ class BotEngine:
         # v4.178 — SUR DEMANDE EXPLICITE : marque si cette entree qualifie
         # via le flirt S/R (pas via une cassure fraiche) — determine si le
         # levier dynamique 2-5x s applique (uniquement dans ce cas).
-        snap["entered_via_flirt"] = not fresh_breakout_sa
+        snap["entered_via_flirt"] = not fresh_breakout_sa and not volume_breakout_sa
 
         # v4.203 — SUR DEMANDE EXPLICITE : confirmation supplementaire par
         # MACD 1h + tendance dynamique (Spot-Accum = long uniquement, exige
