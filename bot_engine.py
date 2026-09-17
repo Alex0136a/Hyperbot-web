@@ -947,12 +947,19 @@ PROFILE_SWING = {
     # nouveau plus haut/plus bas. Confirme la tendance ET contourne la
     # proximite S/R IMMEDIATEMENT des detection, pour une prise de
     # position des la confirmation du mouvement.
-    "ACCUMULATION_BREAKOUT_LOOKBACK_CANDLES": 30,
+    # v4.217 — SUR DEMANDE EXPLICITE : elargi de 30 a 60 (1h -> 2h) — donne
+    # plus de chances de capturer une vraie transition accumulation ->
+    # mouvement, plutot que de se limiter a la derniere heure seulement.
+    "ACCUMULATION_BREAKOUT_LOOKBACK_CANDLES": 60,
     # v4.156 — SUR DEMANDE EXPLICITE : les bougies precedant une cassure
     # doivent former une vraie consolidation (mouvement <= ce %) — evite de
     # declencher sur une simple poursuite de tendance deja fluide.
-    "BREAKOUT_MAX_PRIOR_CONSOLIDATION_PCT": 3.0,
-    "BREAKOUT_MAX_CONSOLIDATION_DIRECTIONALITY": 0.5,
+    # v4.217 — SUR DEMANDE EXPLICITE : assoupli (3.0->4.5% et 0.5->0.65) —
+    # renforce le chemin "cassure fraiche" pour mieux capturer la
+    # transition accumulation -> mouvement, sans exiger une consolidation
+    # parfaitement plate.
+    "BREAKOUT_MAX_PRIOR_CONSOLIDATION_PCT": 4.5,
+    "BREAKOUT_MAX_CONSOLIDATION_DIRECTIONALITY": 0.65,
     # v4.140 — SUR DEMANDE EXPLICITE : fenetre de tendance "fraiche" pour
     # Accumulation — entre le minimum de cycles requis (12) et cette valeur,
     # la fenetre de proximite S/R est completement ignoree, pour capturer
@@ -980,6 +987,10 @@ PROFILE_SWING = {
     # (desactivee) comme outil anti-range, en plus de la fenetre de
     # proximite (conservee, inchangee).
     "ACCUMULATION_ANTI_RANGE_MIN_PCT": 2.0,
+    # v4.218 — SUR DEMANDE EXPLICITE : bonus de confiance si le VRAI volume
+    # (pas la volatilite proxy) confirme un etat d accumulation genuine
+    # pendant une phase de range detectee.
+    "ACCUMULATION_VOLUME_CONFIRM_BONUS": 5.0,
     # v4.130 — SUR DEMANDE EXPLICITE : meme raisonnement que Spot-Accum.
     # v4.131 — SUR DEMANDE EXPLICITE : meme alignement que Spot-Accum.
     "ACCUMULATION_ANTI_RANGE_LOOKBACK": 30,
@@ -3468,6 +3479,29 @@ class BotEngine:
         max_mult = cfg.get("PERFORMANCE_SIZE_MULT_MAX", 1.5)
         return round(min_mult + ratio * (max_mult - min_mult), 3)
 
+    def _volume_confirms_accumulation(self, state, recent_candles=6, baseline_candles=48, min_ratio=1.15):
+        """v4.218 — SUR DEMANDE EXPLICITE : confirme un vrai etat
+        d accumulation via le VRAI volume (pas la volatilite du proxy
+        "vol_history") — une accumulation genuine s accompagne souvent
+        d un volume anormalement ELEVE, malgre un prix qui bouge peu.
+        Compare le volume MOYEN des dernieres heures (recent_candles) a une
+        base plus longue (baseline_candles) — retourne True si le volume
+        recent depasse ce ratio minimal, None si l historique 1h est
+        insuffisant (ne bloque jamais sur donnees manquantes, c est a l
+        appelant de decider quoi faire de None)."""
+        candles = list(state.candle_history_1h)
+        if len(candles) < baseline_candles:
+            return None
+        recent_vols = [c[3] for c in candles[-recent_candles:]]
+        baseline_vols = [c[3] for c in candles[-baseline_candles:]]
+        if not baseline_vols or sum(baseline_vols) <= 0:
+            return None
+        recent_avg = sum(recent_vols) / len(recent_vols)
+        baseline_avg = sum(baseline_vols) / len(baseline_vols)
+        if baseline_avg <= 0:
+            return None
+        return (recent_avg / baseline_avg) >= min_ratio
+
     def _compute_macd_1h(self, state):
         """v4.203 — SUR DEMANDE EXPLICITE : MACD calcule sur les VRAIES
         bougies 1h Hyperliquid (closes de state.candle_history_1h), pas sur
@@ -3482,15 +3516,21 @@ class BotEngine:
         d Hyperliquid (alignees sur l horloge, via l endpoint candleSnapshot
         officiel) — remplace l agregation synthetique de bougies ~2min, qui
         ne correspondait pas a de vraies bougies 1h. Retourne une liste de
-        (high, low, close), la plus ancienne en premier, ou [] en cas d
-        echec (reseau, ticker invalide, etc.).
+        (high, low, close, volume), la plus ancienne en premier, ou [] en
+        cas d echec (reseau, ticker invalide, etc.).
         v4.204 — SUR DEMANDE EXPLICITE : exclut la bougie EN COURS de
         formation — sa duree annoncee est 1h, mais sa VALEUR (high/low/
         close) varie en continu tant qu elle n est pas cloturee. L inclure
         rendrait la tendance dynamique et le MACD instables (a chaque
         rafraichissement, cette bougie "en cours" aurait une valeur
         differente). Ne garde que les bougies dont le temps de cloture (T,
-        en ms) est deja PASSE au moment de la requete."""
+        en ms) est deja PASSE au moment de la requete.
+        v4.218 — SUR DEMANDE EXPLICITE : ajoute le VRAI volume de
+        transactions (champ "v" de l API, jamais utilise jusqu ici — le
+        "vol_history" existant mesurait en realite la VOLATILITE du prix,
+        pas un vrai volume) — permet de confirmer un vrai etat
+        d accumulation (volume eleve, prix stable), pas juste une derive
+        sans interet."""
         try:
             end_ms = int(time.time() * 1000)
             start_ms = end_ms - count * 3600 * 1000
@@ -3500,7 +3540,7 @@ class BotEngine:
                 return []
             now_ms = int(time.time() * 1000)
             closed_only = [c for c in raw if c.get("T", 0) <= now_ms]
-            return [(float(c["h"]), float(c["l"]), float(c["c"])) for c in closed_only]
+            return [(float(c["h"]), float(c["l"]), float(c["c"]), float(c.get("v", 0))) for c in closed_only]
         except Exception as e:
             print(f"[1H-CANDLES] Echec recuperation bougies 1h pour {ticker} : {e}")
             return []
@@ -3524,7 +3564,7 @@ class BotEngine:
         resistance = None
         reversal_streak = 0
         for i in range(1, len(candles_1h)):
-            high_now, low_now, close_now = candles_1h[i]
+            high_now, low_now, close_now = candles_1h[i][:3]
             close_prev = candles_1h[i - 1][2]
             candle_up = close_now >= close_prev
 
@@ -6868,7 +6908,7 @@ class BotEngine:
             snap["blocker"] = "support/resistance indisponible"
             return
 
-        if cfg.get("ACCUMULATION_REQUIRE_ADX_CONFIRM", True) and not fresh_breakout_ac:
+        if cfg.get("ACCUMULATION_REQUIRE_ADX_CONFIRM", False) and not fresh_breakout_ac:
             adx_local = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
             adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
             snap["adx"] = round(adx_local, 1) if adx_local is not None else None
@@ -6926,6 +6966,17 @@ class BotEngine:
         min_below_pct = cfg.get("ACCUMULATION_MIN_BELOW_RESISTANCE_PCT", 5.0)
         position_in_range_pct = ((resistance - price) / sr_range * 100) if sr_range > 0 else 50.0
         confidence = 65.0 + min(max(position_in_range_pct - min_below_pct, 0) / 50.0 * 20.0, 20.0)
+        # v4.218 — SUR DEMANDE EXPLICITE : renfort de confiance si le VRAI
+        # volume confirme un etat d accumulation genuine (volume recent
+        # eleve vs base plus longue) — surtout pertinent pendant une phase
+        # de range detectee (is_ranging_ac), ou l on veut distinguer une
+        # vraie accumulation d une simple derive sans interet. N EST
+        # JAMAIS un blocage — juste un bonus de confiance quand disponible
+        # et confirme, sans effet si l historique 1h est insuffisant.
+        volume_confirms = self._volume_confirms_accumulation(state) if is_ranging_ac else None
+        snap["volume_confirms_accumulation"] = volume_confirms
+        if volume_confirms:
+            confidence += cfg.get("ACCUMULATION_VOLUME_CONFIRM_BONUS", 5.0)
         confidence = min(confidence, 85.0)
         snap["confidence"] = round(confidence, 1)
 
