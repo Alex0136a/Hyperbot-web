@@ -2406,7 +2406,11 @@ Confirmer ?`
                   ) : openFiltered.map(trade=>{
                     const isSpotAccum = trade.strategy==="spot_accumulation";
                     const slOn = config?.spot_accum_sl_enabled;
-                    const slPct = advancedSettings?.SPOT_ACCUM_SL_PCT_OF_PNL?.value;
+                    // v4.192 — FIX : SPOT_ACCUM_SL_PCT_OF_PNL n est PLUS
+                    // utilise depuis le passage au SL structurel (rupture
+                    // de support confirmee) — ce % etait un residu trompeur,
+                    // sans lien avec le declencheur reel (deja affiche par
+                    // ailleurs via le champ "SL: $X" sur la carte).
                     return (
                     <div key={trade.id} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:10,marginBottom:6}}>
                       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -2427,7 +2431,7 @@ Confirmer ?`
                           )}
                           {isSpotAccum && (
                             <span style={{marginLeft:6,background:slOn?"#052e16":"#2d0a0a",color:slOn?"#34d399":"#f87171",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>
-                              {slOn ? `SL actif à -${slPct}%` : "⚠️ Aucun SL"}
+                              {slOn ? "SL actif (rupture de support)" : "⚠️ Aucun SL"}
                             </span>
                           )}
                         </div>
@@ -2550,6 +2554,9 @@ Confirmer ?`
                             ) : s.peak_pnl!=null && (
                               <span style={{marginLeft:6,color:"#c084fc",fontSize:9}}>🏔️ pic +{s.peak_pnl.toFixed(2)}$</span>
                             )}
+                            <span style={{marginLeft:6,color:"#64748b",fontSize:9}}>
+                              {s.created_at ? `ouvert ${new Date(s.created_at).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}` : ""}
+                            </span>
                             <span style={{marginLeft:6,color:"#64748b",fontSize:9}}>
                               {s.closed_at ? new Date(s.closed_at).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",year:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"}) : "?"}
                             </span>
