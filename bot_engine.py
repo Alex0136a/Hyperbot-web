@@ -5210,14 +5210,25 @@ class BotEngine:
         strat_tag = "🎯 " if pos.get("strategy") == "accumulation" else ""  # v4.8 — visible dans les logs de sortie
 
         # ── PnL latent en $ ───────────────────────────────────────────────
+        # v4.229 — SUR DEMANDE EXPLICITE, FIX ARCHITECTURAL : pnl_pct
+        # represente desormais le PnL AMPLIFIE PAR LE LEVIER (comme le
+        # ROE% affiche par Hyperliquid), pas le simple mouvement de prix
+        # brut. Corrige a la SOURCE plutot que d ajuster chaque seuil
+        # individuellement (hard cap, TTP arm/tolerance, etc.) — TOUT ce
+        # qui compare pnl_pct plus loin dans cette fonction devient
+        # AUTOMATIQUEMENT coherent avec le vrai risque en dollars, quel
+        # que soit le levier du trade (essentiel depuis l introduction du
+        # levier DYNAMIQUE 2-5x pour Accumulation/Spot-Accum). Le PnL
+        # AFFICHE par le bot correspond ainsi exactement a celui
+        # d Hyperliquid, eliminant la confusion entre deux sources qui
+        # divergeaient selon le levier applique.
+        leverage_now = pos.get("leverage", 1) or 1
         if pos["type"] == "long":
-            pnl_pct = (price - pos["entry"]) / pos["entry"] * 100
+            raw_price_pct = (price - pos["entry"]) / pos["entry"] * 100
         else:
-            pnl_pct = (pos["entry"] - price) / pos["entry"] * 100
-        # le levier amplifie le PnL reel (notionnel = E x levier), essentiel
-        # pour que Stop Loss/TTP restent coherents avec le levier prudent
-        # applique par trade (voir _compute_prudent_leverage).
-        pnl_usd = E * pos.get("leverage", 1) * pnl_pct / 100
+            raw_price_pct = (pos["entry"] - price) / pos["entry"] * 100
+        pnl_pct = raw_price_pct * leverage_now
+        pnl_usd = E * pnl_pct / 100
 
         # v4.179 — SUR DEMANDE EXPLICITE : plafond de duree maximale (12h)
         # pour tous les modes SAUF Spot-Accum (philosophie explicitement
@@ -5623,16 +5634,17 @@ class BotEngine:
             # declencher. Ferme immediatement des que la perte atteint ce
             # plafond, meme si la rupture structurelle n est pas encore
             # confirmee.
+            # v4.229 — pnl_pct integre desormais deja le levier a la
+            # source (voir plus haut) — hard_cap_pct reste tel quel, sans
+            # division supplementaire (qui aurait double-compte le levier).
             hard_cap_pct = cfg.get("STRUCTURAL_SL_HARD_CAP_PCT", 0.5)
-            if pnl_pct <= -hard_cap_pct * 0.8:  # se declenche un peu avant, pour voir venir
-                print(f"[SL-HARDCAP-DIAG] {pos.get('strategy')} {ticker} : pnl_pct={pnl_pct:.3f}% | hard_cap_pct configure={hard_cap_pct}")
             if pnl_pct <= -hard_cap_pct:
                 pnl, _, trade = state.close_position(price, "STOP LOSS (plafond immediat)")
                 trade["symbol"] = symbol
                 if mode == "live" and self.exchange:
                     close_order(self.exchange, ticker, pos, self.cfg)
                 self.emit("trade", trade)
-                self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS plafond immediat : perte {pnl_pct:.2f}% >= {hard_cap_pct}% @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "loss"})
+                self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS plafond immediat : perte {pnl_pct:.2f}% (x{leverage_now}) >= {hard_cap_pct:.2f}% @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "loss"})
                 if pos["type"] == "long":
                     state.post_win_confirm_long = True
                     state.confirm_count_long = 0
