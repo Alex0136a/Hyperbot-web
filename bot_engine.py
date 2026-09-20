@@ -1000,6 +1000,13 @@ PROFILE_SWING = {
     # de CONTOURNER des exigences, pas seulement de renforcer un score.
     "ACCUMULATION_VOLUME_ENTRY_ENABLED": True,
     "ACCUMULATION_VOLUME_ENTRY_MIN_RATIO": 1.5,
+    # v4.221 — SUR DEMANDE EXPLICITE : detection de cassure RATEE (fausse
+    # cassure) — signal fort et INDEPENDANT du RSI/MACD, bypass ces
+    # exigences quand detecte. Empeche un marche en tendance forte
+    # (MACD structurellement dans un seul sens) de bloquer indefiniment ce
+    # signal local pourtant clair.
+    "FAILED_BREAKOUT_DETECTION_ENABLED": True,
+    "FAILED_BREAKOUT_LOOKBACK_CANDLES": 20,
     # v4.130 — SUR DEMANDE EXPLICITE : meme raisonnement que Spot-Accum.
     # v4.131 — SUR DEMANDE EXPLICITE : meme alignement que Spot-Accum.
     "ACCUMULATION_ANTI_RANGE_LOOKBACK": 30,
@@ -3747,6 +3754,41 @@ class BotEngine:
         color_ok = self._candle_color_confirms_reversal(state, direction)
         return patience_ok and color_ok
 
+    def _detect_failed_breakout(self, state, direction, level, lookback_candles=20):
+        """v4.221 — SUR DEMANDE EXPLICITE : detecte une CASSURE RATEE
+        (fausse cassure) — un signal technique fort et INDEPENDANT du
+        RSI/MACD. Principe : le prix a recemment DEPASSE un niveau cle
+        (resistance pour un futur SHORT, support pour un futur LONG), mais
+        n a PAS tenu — il est retombe de l autre cote. Ce pattern piege les
+        traders qui avaient suivi la cassure initiale, et precede souvent
+        un retournement franc, quel que soit l etat du RSI/MACD a cet
+        instant (qui peuvent rester dans le sens de la tendance de fond
+        malgre ce signal local fort).
+        direction="short" : cherche une cassure RATEE au-DESSUS d une
+        resistance (level) — signal de vente.
+        direction="long" : cherche une cassure RATEE en-DESSOUS d un
+        support (level) — signal d achat.
+        Retourne True si detecte, False sinon (jamais bloquant — c est un
+        BYPASS supplementaire, pas une exigence)."""
+        if level is None or level <= 0:
+            return False
+        candles = list(state.candle_history)
+        if len(candles) < lookback_candles:
+            return False
+        recent = candles[-lookback_candles:]
+        current_close = recent[-1][2]
+        if direction == "short":
+            # A-t-on recemment depasse la resistance (high > level sur au
+            # moins une bougie de la fenetre, EXCLUANT la toute derniere,
+            # qui doit maintenant etre repassee EN DESSOUS) ?
+            broke_above = any(c[0] > level for c in recent[:-1])
+            back_below = current_close < level
+            return broke_above and back_below
+        else:
+            broke_below = any(c[1] < level for c in recent[:-1])
+            back_above = current_close > level
+            return broke_below and back_above
+
     def _detect_fresh_breakout(self, state, direction, lookback_candles):
         """v4.148 — SUR DEMANDE EXPLICITE : detecte le DEBUT d un mouvement
         de facon IMMEDIATE — contrairement a l EMA200 (lent par nature,
@@ -6360,6 +6402,24 @@ class BotEngine:
         long_level_ok  = long_level_ok and direction_confirmed_long and amplitude_coherent and sr_ema_long_ok
         short_level_ok = short_level_ok and direction_confirmed_short and amplitude_coherent and sr_ema_short_ok
 
+        # v4.221 — SUR DEMANDE EXPLICITE : une CASSURE RATEE (fausse
+        # cassure) est un signal fort et INDEPENDANT du RSI/MACD — bypass
+        # les exigences ci-dessus (direction_confirmed, amplitude_coherent,
+        # sr_ema) si detectee, evitant qu un marche en tendance forte
+        # (MACD structurellement dans un seul sens) bloque INDEFINIMENT ce
+        # signal local, meme quand il se produit clairement.
+        failed_breakout_short = False
+        failed_breakout_long = False
+        if cfg.get("FAILED_BREAKOUT_DETECTION_ENABLED", True):
+            if resistance is not None:
+                failed_breakout_short = self._detect_failed_breakout(state, "short", resistance, cfg.get("FAILED_BREAKOUT_LOOKBACK_CANDLES", 20))
+            if support is not None:
+                failed_breakout_long = self._detect_failed_breakout(state, "long", support, cfg.get("FAILED_BREAKOUT_LOOKBACK_CANDLES", 20))
+            if failed_breakout_short:
+                short_level_ok = True
+            if failed_breakout_long:
+                long_level_ok = True
+
         # v4.25/v4.26 — SUR DEMANDE EXPLICITE, suite a une repetition observee
         # de trades LONG sur un actif choppy (ARB : re-declenchement "frais"
         # techniquement toutes les 40-70 min, mais pas un vrai signal nouveau
@@ -6924,21 +6984,28 @@ class BotEngine:
             volume_breakout_ac = bool(vol_confirms_entry) and near_resistance_early
         snap["volume_breakout"] = volume_breakout_ac
 
-        if not trend_down and not fresh_breakout_ac and not volume_breakout_ac:
+        # v4.221 — SUR DEMANDE EXPLICITE : cassure ratee, meme principe que
+        # Forex — signal fort et INDEPENDANT de l EMA200/ADX.
+        failed_breakout_ac = False
+        if cfg.get("FAILED_BREAKOUT_DETECTION_ENABLED", True) and resistance is not None:
+            failed_breakout_ac = self._detect_failed_breakout(state, "short", resistance, cfg.get("FAILED_BREAKOUT_LOOKBACK_CANDLES", 20))
+        snap["failed_breakout"] = failed_breakout_ac
+
+        if not trend_down and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac:
             snap["blocker"] = "pas de tendance baissiere (EMA200)"
             return
 
         min_stability_cycles = cfg.get("ACCUMULATION_TREND_STABILITY_CYCLES", 24)
         snap["trend_down_streak"] = state.trend_down_streak
         snap["min_stability_cycles"] = min_stability_cycles
-        if state.trend_down_streak < min_stability_cycles and not fresh_breakout_ac and not volume_breakout_ac:
+        if state.trend_down_streak < min_stability_cycles and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac:
             snap["blocker"] = f"tendance trop recente ({state.trend_down_streak}/{min_stability_cycles} cycles)"
             return
         if support is None or resistance is None or support <= 0:
             snap["blocker"] = "support/resistance indisponible"
             return
 
-        if cfg.get("ACCUMULATION_REQUIRE_ADX_CONFIRM", False) and not fresh_breakout_ac and not volume_breakout_ac:
+        if cfg.get("ACCUMULATION_REQUIRE_ADX_CONFIRM", False) and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac:
             adx_local = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
             adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
             snap["adx"] = round(adx_local, 1) if adx_local is not None else None
@@ -6955,7 +7022,7 @@ class BotEngine:
 
         dist_below_resistance_pct = (resistance - price) / (resistance - support) * 100 if resistance != support else 0
         snap["dist_below_resistance_pct"] = round(dist_below_resistance_pct, 2)
-        if not fresh_breakout_ac:
+        if not fresh_breakout_ac and not failed_breakout_ac:
             # v4.215 — SUR DEMANDE EXPLICITE : utilise desormais le S/R
             # ancre au dernier retournement confirme (tendance dynamique,
             # voir _update_dynamic_trend) au lieu du S/R sur fenetre
@@ -6976,7 +7043,7 @@ class BotEngine:
                 if bearish_now is False:
                     snap["blocker"] = "bougie actuelle non baissiere"
                     return
-        snap["entered_via_flirt"] = not fresh_breakout_ac and not volume_breakout_ac
+        snap["entered_via_flirt"] = not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac
 
         # v4.203 — SUR DEMANDE EXPLICITE : confirmation supplementaire par
         # MACD 1h + tendance dynamique (Accumulation = short uniquement,
@@ -7147,7 +7214,13 @@ class BotEngine:
             volume_breakout_sa = bool(vol_confirms_entry_sa) and near_support_early
         snap["volume_breakout"] = volume_breakout_sa
 
-        if not trend_up and not fresh_breakout_sa and not volume_breakout_sa:
+        # v4.221 — SUR DEMANDE EXPLICITE : cassure ratee (miroir Accumulation).
+        failed_breakout_sa = False
+        if cfg.get("FAILED_BREAKOUT_DETECTION_ENABLED", True) and support is not None:
+            failed_breakout_sa = self._detect_failed_breakout(state, "long", support, cfg.get("FAILED_BREAKOUT_LOOKBACK_CANDLES", 20))
+        snap["failed_breakout"] = failed_breakout_sa
+
+        if not trend_up and not fresh_breakout_sa and not volume_breakout_sa and not failed_breakout_sa:
             snap["blocker"] = "pas de tendance haussiere (EMA200)"
             return  # exige la tendance generale haussiere (EMA200), sauf cassure fraiche
         # v4.75 — SUR DEMANDE EXPLICITE : la tendance doit aussi etre STABLE
@@ -7156,7 +7229,7 @@ class BotEngine:
         min_stability_cycles = cfg.get("SPOT_ACCUM_TREND_STABILITY_CYCLES", 24)
         snap["trend_up_streak"] = state.trend_up_streak
         snap["min_stability_cycles"] = min_stability_cycles
-        if state.trend_up_streak < min_stability_cycles and not fresh_breakout_sa and not volume_breakout_sa:
+        if state.trend_up_streak < min_stability_cycles and not fresh_breakout_sa and not volume_breakout_sa and not failed_breakout_sa:
             snap["blocker"] = f"tendance trop recente ({state.trend_up_streak}/{min_stability_cycles} cycles)"
             return
         if support is None or resistance is None or support <= 0:
@@ -7168,7 +7241,7 @@ class BotEngine:
         # meme seuil que le reste du bot (ADX_TREND_THRESHOLD, 25 par
         # defaut), calcule ici localement (pas encore disponible a ce point
         # du cycle pour la logique normale).
-        if cfg.get("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", True) and not fresh_breakout_sa:
+        if cfg.get("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", True) and not fresh_breakout_sa and not failed_breakout_sa:
             adx_local = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
             adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
             snap["adx"] = round(adx_local, 1) if adx_local is not None else None
@@ -7219,7 +7292,7 @@ class BotEngine:
         # support) est abandonnee au profit de cette approche unifiee.
         dist_above_support_pct = (price - support) / (resistance - support) * 100 if resistance != support else 0
         snap["dist_above_support_pct"] = round(dist_above_support_pct, 2)
-        if not fresh_breakout_sa:
+        if not fresh_breakout_sa and not failed_breakout_sa:
             # v4.215 — SUR DEMANDE EXPLICITE : meme principe qu Accumulation
             # — S/R ancre au dernier retournement confirme, plus stable
             # qu une fenetre glissante fixe.
@@ -7237,7 +7310,7 @@ class BotEngine:
         # v4.178 — SUR DEMANDE EXPLICITE : marque si cette entree qualifie
         # via le flirt S/R (pas via une cassure fraiche) — determine si le
         # levier dynamique 2-5x s applique (uniquement dans ce cas).
-        snap["entered_via_flirt"] = not fresh_breakout_sa and not volume_breakout_sa
+        snap["entered_via_flirt"] = not fresh_breakout_sa and not volume_breakout_sa and not failed_breakout_sa
 
         # v4.203 — SUR DEMANDE EXPLICITE : confirmation supplementaire par
         # MACD 1h + tendance dynamique (Spot-Accum = long uniquement, exige
