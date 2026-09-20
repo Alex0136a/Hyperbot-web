@@ -614,21 +614,21 @@ def _open_positions() -> List[Dict[str, Any]]:
                 raw_price_move_pct = (price - pos["entry"]) / pos["entry"] * 100
             else:
                 raw_price_move_pct = (pos["entry"] - price) / pos["entry"] * 100
-            # v4.189 — FIX BUG CRITIQUE : v4.183 (ci-dessous) avait
-            # multiplie le % affiche par le levier pour matcher Hyperliquid
-            # (ROE%) — mais bot_engine.py compare ses SEUILS internes
-            # (SL_PCT_OF_E, TTP_ARM_PCT, etc.) au mouvement de prix BRUT,
-            # JAMAIS leverage-ajuste. Le % affiche ne correspondait donc
-            # plus a ce que le bot compare reellement en interne pour
-            # decider d armer le trailing — confirme avec une position
-            # reelle (PnL affiche 0.508% > seuil 0.4%, mais JAMAIS arme,
-            # car en interne 0.508/5=0.102% < 0.4%). pnl_pct revient donc
-            # au mouvement BRUT (coherent avec le texte "seuil actif" et la
-            # decision reelle du bot) — SEUL le montant $ reste corrige par
-            # le levier (v4.183), qui lui restait exact et necessaire.
+            # v4.189 — historique : bot_engine.py comparait alors ses SEUILS
+            # internes au mouvement de prix BRUT, jamais leverage-ajuste —
+            # le % affiche (leverage-ajuste) ne correspondait donc plus a la
+            # decision reelle du bot, d ou un retour au % BRUT ici.
+            # v4.229 — SUR DEMANDE EXPLICITE, FIX ARCHITECTURAL : ce
+            # decalage est desormais resolu a la source — bot_engine.py
+            # calcule pnl_pct comme le PnL AMPLIFIE PAR LE LEVIER (comme le
+            # ROE% d Hyperliquid), et TOUS ses seuils internes (SL, TTP)
+            # comparent directement cette valeur amplifiee. Le % affiche
+            # ici doit donc REDEVENIR amplifie par le levier pour
+            # correspondre exactement a Hyperliquid ET a la decision reelle
+            # du bot — les deux sont desormais UNE SEULE ET MEME valeur.
             leverage_for_pnl = pos.get("leverage", 1)
-            pnl_pct = raw_price_move_pct
-            pnl = pos["size"] * leverage_for_pnl * pnl_pct / 100
+            pnl_pct = raw_price_move_pct * leverage_for_pnl
+            pnl = pos["size"] * pnl_pct / 100
 
             # opened_at est stocke par bot_engine.py au format "%d/%m/%Y %H:%M:%S"
             # (francais, sans fuseau) — converti en ISO pour que new Date(...) le
@@ -679,12 +679,11 @@ def _open_positions() -> List[Dict[str, Any]]:
             # PnL courant etait deja a +0.77%).
             if pos.get("strategy") == "spot_accumulation":
                 peak_pnl_pct = round(state.spot_accum_peak_pnl_pct, 3) if state.spot_accum_peak_pnl_pct is not None else None
-                # v4.188 (suite) — equivalent $ calcule depuis le % (Spot-Accum
-                # ne traque nativement que le %), evite une variable non
-                # definie plus bas dans cette fonction (peak_pnl_usd
-                # reference sans condition pour construire "peak_pnl").
+                # v4.229 — spot_accum_peak_pnl_pct est desormais DEJA
+                # amplifie par le levier a la source (bot_engine.py) — plus
+                # de multiplication supplementaire ici (double comptage).
                 peak_pnl_usd = (
-                    round(pos.get("size", 0) * pos.get("leverage", 1) * peak_pnl_pct / 100, 4)
+                    round(pos.get("size", 0) * peak_pnl_pct / 100, 4)
                     if peak_pnl_pct is not None else None
                 )
             else:
@@ -695,15 +694,15 @@ def _open_positions() -> List[Dict[str, Any]]:
                     else state.tier0_peak_pnl_usd if state.tier0_peak_pnl_usd is not None
                     else state.absolute_peak_pnl_usd
                 )
-                # v4.17 — pic en % de mouvement de prix, calcule avec le E et le
-                # levier REELS de CETTE position (pos["size"]/pos["leverage"]),
-                # plus fiables ici que la variable "leverage" ci-dessus (qui peut
-                # provenir d un repli config si l enrichissement DB a echoue).
+                # v4.229 — peak_pnl_usd est deja en dollars REELS (incluant
+                # le levier) — diviser par (size*leverage) annulerait cet
+                # ajustement et redonnerait un % BRUT, incoherent avec
+                # pnl_pct (desormais amplifie). Diviser par size SEUL
+                # conserve la coherence.
                 pos_size = pos.get("size", 0)
-                pos_leverage = pos.get("leverage", 1)
                 peak_pnl_pct = (
-                    round(peak_pnl_usd / (pos_size * pos_leverage) * 100, 3)
-                    if peak_pnl_usd is not None and pos_size and pos_leverage
+                    round(peak_pnl_usd / pos_size * 100, 3)
+                    if peak_pnl_usd is not None and pos_size
                     else None
                 )
 
