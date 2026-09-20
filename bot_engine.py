@@ -1562,10 +1562,16 @@ def reconcile_closed_positions(info, wallet_address, saved_positions, cfg):
     avec ce qu Hyperliquid retourne. Si une position n existe plus sur la bourse,
     c est qu elle a ete fermee pendant la deconnexion (SL ou TP touche).
     Retourne une liste de trades reconstitues pour mise a jour du capital et historique.
-    """
+    v4.226 — SUR DEMANDE EXPLICITE : retourne AUSSI un dict {coin: vrai prix
+    d entree} pour les positions ENCORE ouvertes, permettant de corriger le
+    prix d entree enregistre localement s il divergeait du vrai prix
+    confirme par Hyperliquid (meme correctif que pour les nouvelles
+    ouvertures, applique retroactivement aux positions deja en cours avant
+    un redeploiement)."""
     ghost_trades = []
+    real_entry_prices = {}
     if not saved_positions:
-        return ghost_trades
+        return ghost_trades, real_entry_prices
     try:
         state      = info.user_state(wallet_address)
         open_coins = set()
@@ -1575,6 +1581,10 @@ def reconcile_closed_positions(info, wallet_address, saved_positions, cfg):
             szi  = float(pos.get("szi", 0))
             if coin and szi != 0:
                 open_coins.add(coin)
+                try:
+                    real_entry_prices[coin] = float(pos.get("entryPx", 0) or 0)
+                except (TypeError, ValueError):
+                    pass
 
         # Recuperer l historique recent des fills pour connaitre le prix de cloture reel
         try:
@@ -1640,7 +1650,7 @@ def reconcile_closed_positions(info, wallet_address, saved_positions, cfg):
 
     except Exception as e:
         print(f"[RECONCILE] Erreur : {e}")
-    return ghost_trades
+    return ghost_trades, real_entry_prices
 
 def emergency_close_all(exchange, info, wallet_address, cfg):
     """Fermeture d'urgence de toutes les positions ouvertes sur Hyperliquid.
@@ -1798,8 +1808,18 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
             result = exchange.market_open(api_ticker, is_buy, sz)
             entry_ok = result and result.get("status") == "ok"
             spot_err_msg = None
+            real_fill_price_spot = None
             if not entry_ok:
                 spot_err_msg = str(result)[:300] if result else "Aucune reponse de l'exchange (spot)"
+            else:
+                # v4.226 — meme extraction du vrai prix de remplissage que
+                # le chemin perp, voir commentaire detaille plus bas.
+                try:
+                    spot_statuses = result.get("response", {}).get("data", {}).get("statuses", [])
+                    if spot_statuses and isinstance(spot_statuses[0], dict) and "filled" in spot_statuses[0]:
+                        real_fill_price_spot = float(spot_statuses[0]["filled"]["avgPx"])
+                except (KeyError, TypeError, ValueError, AttributeError):
+                    pass
 
             if entry_ok:
                 position_mock = {"type": "long" if is_buy else "short", "entry": price, "size": size_usd}
@@ -1825,7 +1845,7 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
                     if not prot_ok:
                         print(f"[ORDER] SL/TP spot {ticker} non poses — protection interne uniquement")
 
-            return entry_ok, spot_err_msg
+            return entry_ok, spot_err_msg, real_fill_price_spot
 
         # ── PERP : entree + SL + TP en groupe atomique normalTpsl ──
         notional_usd = size_usd * max(leverage, 1)
@@ -1837,7 +1857,7 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
         if notional_usd < 10.0:
             err_msg = f"Notionnel ${notional_usd:.2f} sous le minimum Hyperliquid de $10 — augmentez la taille par trade ou le levier."
             print(f"[ORDER] {ticker} : {err_msg}")
-            return False, err_msg
+            return False, err_msg, None
         sz = format_size_hl(max(notional_usd / price, 0), sz_decimals)
         close_side = not is_buy
         # v4.5 — pos_mock["size"] doit etre le NOTIONNEL reel (deja leverage)
@@ -1887,15 +1907,32 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
             if statuses and "error" in statuses[0]:
                 err_msg = statuses[0]["error"]
                 print(f"[ORDER] Erreur place_order {ticker} : {err_msg}")
-                return False, err_msg
-            return bool(statuses), None
+                return False, err_msg, None
+            # v4.226 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : extrait le
+            # VRAI prix moyen de remplissage (avgPx) confirme par
+            # Hyperliquid — jusqu ici totalement ignore, le bot utilisait
+            # son propre prix VISE (celui vu au moment de decider d ouvrir),
+            # different du prix REELLEMENT execute (slippage). Confirme par
+            # un cas reel : $0.03 d ecart de PnL entre le bot et
+            # Hyperliquid sur un trade de seulement 7 minutes, sans lien
+            # avec le funding. Utiliser ce prix reel comme point de
+            # reference elimine cet ecart a la source, essentiel pour un
+            # timing SL/TTP precis (une seule source de verite au lieu de
+            # deux qui divergent).
+            real_fill_price = None
+            if statuses and isinstance(statuses[0], dict) and "filled" in statuses[0]:
+                try:
+                    real_fill_price = float(statuses[0]["filled"]["avgPx"])
+                except (KeyError, TypeError, ValueError):
+                    pass
+            return bool(statuses), None, real_fill_price
         err_msg = str(result)[:300] if result else "Aucune reponse de l'exchange"
         print(f"[ORDER] Echec place_order {ticker} : {err_msg}")
-        return False, err_msg
+        return False, err_msg, None
 
     except Exception as e:
         print(f"[ORDER] Erreur place_order {ticker} : {e}")
-        return False, str(e)
+        return False, str(e), None
 
 def close_order(exchange, symbol, position, cfg):
     """Ferme une position — perp ou spot selon le symbole."""
@@ -4743,7 +4780,7 @@ class BotEngine:
             # ── Reconciliation : trades fermes par Hyperliquid pendant la deconnexion ──
             saved_positions = self._load_saved_positions()
             if saved_positions:
-                ghost_trades = reconcile_closed_positions(self.info, cfg["WALLET_ADDRESS"], saved_positions, cfg)
+                ghost_trades, real_entry_prices = reconcile_closed_positions(self.info, cfg["WALLET_ADDRESS"], saved_positions, cfg)
                 for gt in ghost_trades:
                     sym = gt["symbol"]
                     # v4.126 — FIX BUG CRITIQUE : utilise desormais slot_key
@@ -7890,10 +7927,19 @@ class BotEngine:
                 self.emit("log", {"msg": f"[{ticker}] Echec application levier prudent x{leverage} : {e} — poursuite avec le levier deja en place.", "level": "warn"})
             # tp_price=None : plus d ordre TP fixe sur Hyperliquid, la prise de
             # profit est entierement geree par le bot (Quick Profit / Trailing)
-            ok, order_err = place_order(self.exchange, ticker, signal == "long", size, price, cfg, sl_price=sl_p, tp_price=None, leverage=leverage)
+            ok, order_err, real_fill_price = place_order(self.exchange, ticker, signal == "long", size, price, cfg, sl_price=sl_p, tp_price=None, leverage=leverage)
             if not ok:
                 self.emit("log", {"msg": f"[{ticker}] Ordre non execute — {order_err or 'raison inconnue'}", "level": "warn"})
                 return
+            # v4.226 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : utilise le
+            # VRAI prix de remplissage confirme par Hyperliquid (quand
+            # disponible) comme point de reference pour CE trade, au lieu
+            # du prix VISE par le bot avant l ouverture — elimine l ecart
+            # de PnL entre le bot et Hyperliquid observe sur des trades
+            # reels (slippage jamais reflete auparavant), essentiel pour un
+            # timing SL/TTP precis base sur UNE SEULE source de verite.
+            if real_fill_price is not None and real_fill_price > 0:
+                price = real_fill_price
             # v4.160 — FIX BUG CRITIQUE : update_leverage() ne verifiait
             # jamais si le levier REELLEMENT applique par Hyperliquid
             # correspondait a celui demande — pour certains actifs
