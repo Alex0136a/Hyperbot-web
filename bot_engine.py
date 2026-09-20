@@ -1027,6 +1027,14 @@ PROFILE_SWING = {
     "FAILED_BREAKOUT_STRONG_MAGNITUDE_MULTIPLIER": 2.5,
     "FAILED_BREAKOUT_REQUIRE_VOLUME": True,
     "FAILED_BREAKOUT_VOLUME_MIN_RATIO": 1.3,
+    # v4.227 — SUR DEMANDE EXPLICITE : detection d etoile filante (motif de
+    # bougie japonaise, signal baissier) — entree short (Forex/Accumulation,
+    # bypass EMA200/ADX si confirmee) et sortie de position longue
+    # existante (Forex/Spot-Accum), une fois confirmee sur la duree ci-dessous.
+    "SHOOTING_STAR_DETECTION_ENABLED": True,
+    "SHOOTING_STAR_MIN_UPPER_WICK_RATIO": 2.0,
+    "SHOOTING_STAR_MAX_LOWER_WICK_RATIO": 0.3,
+    "SHOOTING_STAR_CONFIRM_MINUTES": 30,
     # v4.130 — SUR DEMANDE EXPLICITE : meme raisonnement que Spot-Accum.
     # v4.131 — SUR DEMANDE EXPLICITE : meme alignement que Spot-Accum.
     "ACCUMULATION_ANTI_RANGE_LOOKBACK": 30,
@@ -3812,6 +3820,72 @@ class BotEngine:
         color_ok = self._candle_color_confirms_reversal(state, direction)
         return patience_ok and color_ok
 
+    def _detect_shooting_star_pattern(self, state):
+        """v4.227 — SUR DEMANDE EXPLICITE : detecte le motif de bougie
+        japonaise "etoile filante" (shooting star) — petit corps, longue
+        meche HAUTE (au moins 2x le corps), meche basse quasi inexistante.
+        Signal baissier classique, typiquement apres une hausse — les
+        acheteurs ont pousse le prix plus haut, mais les vendeurs ont
+        rejete cette hausse avant la cloture.
+        Approxime le prix d ouverture par la cloture de la bougie
+        PRECEDENTE (candle_history ne stocke pas l ouverture explicitement,
+        approximation standard largement utilisee ailleurs dans ce bot).
+        Retourne (est_etoile_filante, est_rouge) ou (False, None) si
+        historique insuffisant."""
+        candles = list(state.candle_history)
+        if len(candles) < 2:
+            return False, None
+        high, low, close = candles[-1]
+        open_approx = candles[-2][2]
+        body = abs(close - open_approx)
+        upper_wick = high - max(open_approx, close)
+        lower_wick = min(open_approx, close) - low
+        if body <= 0 and upper_wick <= 0:
+            return False, None
+        min_upper_wick_ratio = self.cfg.get("SHOOTING_STAR_MIN_UPPER_WICK_RATIO", 2.0)
+        max_lower_wick_ratio = self.cfg.get("SHOOTING_STAR_MAX_LOWER_WICK_RATIO", 0.3)
+        is_shooting_star = (
+            body > 0
+            and upper_wick >= body * min_upper_wick_ratio
+            and lower_wick <= upper_wick * max_lower_wick_ratio
+        )
+        is_red = close < open_approx
+        return is_shooting_star, is_red
+
+    def _shooting_star_confirmed(self, state):
+        """v4.227 — SUR DEMANDE EXPLICITE : suit la confirmation d une
+        etoile filante ROUGE sur une duree soutenue (30 min par defaut)
+        avant de la considerer confirmee — evite d agir sur un simple
+        motif ponctuel sans suite reelle. Appelee a CHAQUE cycle : detecte
+        le motif, demarre/maintient un chronometre de confirmation tant
+        que le prix reste sous la cloture de la bougie ayant declenche le
+        signal, et renvoie True une fois la duree requise atteinte."""
+        is_star, is_red = self._detect_shooting_star_pattern(state)
+        confirm_minutes = self.cfg.get("SHOOTING_STAR_CONFIRM_MINUTES", 30)
+        now = time.time()
+
+        if is_star and is_red:
+            if getattr(state, "shooting_star_pending_close", None) is None:
+                state.shooting_star_pending_close = state.candle_history[-1][2]
+                state.shooting_star_pending_since = now
+        pending_close = getattr(state, "shooting_star_pending_close", None)
+        if pending_close is None:
+            return False
+
+        # Le retournement doit se maintenir — prix reste sous la cloture
+        # ayant declenche le signal. Une remontee au-dessus invalide/reset.
+        if state.current_price is not None and state.current_price > pending_close:
+            state.shooting_star_pending_close = None
+            state.shooting_star_pending_since = None
+            return False
+
+        pending_since = getattr(state, "shooting_star_pending_since", None)
+        if pending_since is None:
+            return False
+        if now - pending_since >= confirm_minutes * 60:
+            return True
+        return False
+
     def _detect_failed_breakout(self, state, direction, level, lookback_candles=20):
         """v4.221 — SUR DEMANDE EXPLICITE : detecte une CASSURE RATEE
         (fausse cassure) — un signal technique fort et INDEPENDANT du
@@ -5239,6 +5313,26 @@ class BotEngine:
             # deux modes partageant desormais ce meme bloc de sortie.
             mode_label_sa = "🌱 Spot-Accum" if pos.get("strategy") == "spot_accumulation" else "🎯 Accumulation"
 
+            # v4.227 — SUR DEMANDE EXPLICITE : etoile filante ROUGE
+            # confirmee sur 30 min — signal de sortie pour une position
+            # LONG existante (Spot-Accum). Verifiee tot dans le bloc,
+            # independamment du SL/TTP normal — un signal technique fort
+            # justifie une sortie proactive, pas seulement reactive.
+            if pos["type"] == "long" and cfg.get("SHOOTING_STAR_DETECTION_ENABLED", True) and self._shooting_star_confirmed(state):
+                pnl, _, trade = state.close_position(price, "ETOILE FILANTE CONFIRMEE")
+                trade["symbol"] = symbol
+                if mode == "live" and self.exchange:
+                    close_order(self.exchange, ticker, pos, self.cfg)
+                self.emit("trade", trade)
+                if pnl > 0:
+                    self._register_win(ticker)
+                state.post_win_confirm_long = True
+                state.confirm_count_long = 0
+                self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} ETOILE FILANTE confirmee (30 min) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+                self._save_open_positions()
+                self._persist_capital_snapshot()
+                return
+
             # 0) v4.70 — SUR DEMANDE EXPLICITE : PLAFOND DUR en dernier
             #    recours — ferme QUOI QU IL ARRIVE au-dela de ce seuil,
             #    INDEPENDANT du retournement (contrairement au SL
@@ -5498,6 +5592,27 @@ class BotEngine:
             pos.get("strategy") != "funding_contrarian"
             and not pos.get("entered_via_range", False)
         )
+
+        # v4.227 — SUR DEMANDE EXPLICITE : etoile filante ROUGE confirmee —
+        # signal de sortie pour une position LONG (Forex), meme principe
+        # que pour Spot-Accum. Funding exclu, coherent avec le reste des
+        # mecanismes bases sur la structure de prix.
+        if (pos["type"] == "long" and pos.get("strategy") != "funding_contrarian"
+                and cfg.get("SHOOTING_STAR_DETECTION_ENABLED", True) and self._shooting_star_confirmed(state)):
+            pnl, _, trade = state.close_position(price, "ETOILE FILANTE CONFIRMEE")
+            trade["symbol"] = symbol
+            if mode == "live" and self.exchange:
+                close_order(self.exchange, ticker, pos, self.cfg)
+            self.emit("trade", trade)
+            if pnl > 0:
+                self._register_win(ticker)
+            state.post_win_confirm_long = True
+            state.confirm_count_long = 0
+            self.emit("log", {"msg": f"[{ticker}] {strat_tag}ETOILE FILANTE confirmee (30 min) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+            self._save_open_positions()
+            self._persist_capital_snapshot()
+            return
+
         if use_structural_sl:
             structural_level = pos.get("support_at_entry") if pos["type"] == "long" else pos.get("resistance_at_entry")
             # v4.193 — SUR DEMANDE EXPLICITE : filet de securite IMMEDIAT,
@@ -6552,6 +6667,12 @@ class BotEngine:
             if failed_breakout_long:
                 long_level_ok = True
 
+        # v4.227 — SUR DEMANDE EXPLICITE : etoile filante ROUGE confirmee
+        # sur 30 min — signal baissier, s applique au SHORT uniquement
+        # (une etoile filante n a pas d equivalent haussier logique ici).
+        if cfg.get("SHOOTING_STAR_DETECTION_ENABLED", True) and self._shooting_star_confirmed(state):
+            short_level_ok = True
+
         # v4.25/v4.26 — SUR DEMANDE EXPLICITE, suite a une repetition observee
         # de trades LONG sur un actif choppy (ARB : re-declenchement "frais"
         # techniquement toutes les 40-70 min, mais pas un vrai signal nouveau
@@ -7123,21 +7244,29 @@ class BotEngine:
             failed_breakout_ac = self._detect_failed_breakout(state, "short", resistance, cfg.get("FAILED_BREAKOUT_LOOKBACK_CANDLES", 20))
         snap["failed_breakout"] = failed_breakout_ac
 
-        if not trend_down and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac:
+        # v4.227 — SUR DEMANDE EXPLICITE : etoile filante ROUGE confirmee
+        # sur 30 min — meme esprit que la cassure ratee (signal fort,
+        # INDEPENDANT de l EMA200/ADX), bypass ces exigences.
+        shooting_star_ac = False
+        if cfg.get("SHOOTING_STAR_DETECTION_ENABLED", True):
+            shooting_star_ac = self._shooting_star_confirmed(state)
+        snap["shooting_star_confirmed"] = shooting_star_ac
+
+        if not trend_down and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac and not shooting_star_ac:
             snap["blocker"] = "pas de tendance baissiere (EMA200)"
             return
 
         min_stability_cycles = cfg.get("ACCUMULATION_TREND_STABILITY_CYCLES", 24)
         snap["trend_down_streak"] = state.trend_down_streak
         snap["min_stability_cycles"] = min_stability_cycles
-        if state.trend_down_streak < min_stability_cycles and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac:
+        if state.trend_down_streak < min_stability_cycles and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac and not shooting_star_ac:
             snap["blocker"] = f"tendance trop recente ({state.trend_down_streak}/{min_stability_cycles} cycles)"
             return
         if support is None or resistance is None or support <= 0:
             snap["blocker"] = "support/resistance indisponible"
             return
 
-        if cfg.get("ACCUMULATION_REQUIRE_ADX_CONFIRM", False) and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac:
+        if cfg.get("ACCUMULATION_REQUIRE_ADX_CONFIRM", False) and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac and not shooting_star_ac:
             adx_local = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
             adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
             snap["adx"] = round(adx_local, 1) if adx_local is not None else None
@@ -7154,7 +7283,7 @@ class BotEngine:
 
         dist_below_resistance_pct = (resistance - price) / (resistance - support) * 100 if resistance != support else 0
         snap["dist_below_resistance_pct"] = round(dist_below_resistance_pct, 2)
-        if not fresh_breakout_ac and not failed_breakout_ac:
+        if not fresh_breakout_ac and not failed_breakout_ac and not shooting_star_ac:
             # v4.215 — SUR DEMANDE EXPLICITE : utilise desormais le S/R
             # ancre au dernier retournement confirme (tendance dynamique,
             # voir _update_dynamic_trend) au lieu du S/R sur fenetre
@@ -7175,7 +7304,7 @@ class BotEngine:
                 if bearish_now is False:
                     snap["blocker"] = "bougie actuelle non baissiere"
                     return
-        snap["entered_via_flirt"] = not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac
+        snap["entered_via_flirt"] = not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac and not shooting_star_ac
 
         # v4.203/225 — SUR DEMANDE EXPLICITE : confirmation par MACD 1h +
         # tendance dynamique (Accumulation = short) — ETAIT un blocage dur,
@@ -7543,6 +7672,40 @@ class BotEngine:
         if state.position:
             self.emit("log", {"msg": f"[{ticker}] Candidat {strategy} abandonne — slot deja pris ce cycle par l autre strategie.", "level": "dim"})
             return
+
+        # v4.195 — SUR DEMANDE EXPLICITE — REIMPLANTE apres une perte
+        # accidentelle en cours de session : Accumulation (short) et
+        # Spot-Accum (long) peuvent desormais cibler le MEME actif en sens
+        # OPPOSES — sur Hyperliquid, un seul et meme compte/position par
+        # actif existe (le bot les traite en interne comme INDEPENDANTS,
+        # mais l exchange les NETTE silencieusement l un contre l autre,
+        # confirme par un cas reel : short Accumulation jamais visible sur
+        # Hyperliquid, netté contre un long Spot-Accum deja ouvert). Ferme
+        # PROACTIVEMENT la position opposee existante avant d ouvrir la
+        # nouvelle — on ne peut pas avoir deux tendances inversees sur le
+        # meme actif.
+        if strategy == "accumulation" and signal == "short":
+            opposing_state = self.states.get(symbol)
+            if opposing_state and opposing_state.position and opposing_state.position.get("strategy") == "spot_accumulation":
+                self.emit("log", {"msg": f"[{ticker}] ⚠️ Conflit detecte : fermeture du long Spot-Accum existant avant d ouvrir le short Accumulation (memes actif, sens opposes).", "level": "warn"})
+                close_price = state.current_price or price
+                pnl, _, trade = opposing_state.close_position(close_price, "CONFLIT SENS OPPOSE (Accumulation)")
+                trade["symbol"] = symbol
+                if self._effective_mode("spot_accumulation") == "live" and self.exchange:
+                    close_order(self.exchange, ticker, opposing_state.position, self.cfg)
+                self.emit("trade", trade)
+                self._save_open_positions()
+        elif strategy == "spot_accumulation" and signal == "long":
+            opposing_accum_state = self.accum_states.get(symbol)
+            if opposing_accum_state and opposing_accum_state.position and opposing_accum_state.position.get("strategy") == "accumulation":
+                self.emit("log", {"msg": f"[{ticker}] ⚠️ Conflit detecte : fermeture du short Accumulation existant avant d ouvrir le long Spot-Accum (memes actif, sens opposes).", "level": "warn"})
+                close_price = opposing_accum_state.current_price or price
+                pnl, _, trade = opposing_accum_state.close_position(close_price, "CONFLIT SENS OPPOSE (Spot-Accum)")
+                trade["symbol"] = symbol
+                if self._effective_mode("accumulation") == "live" and self.exchange:
+                    close_order(self.exchange, ticker, opposing_accum_state.position, self.cfg)
+                self.emit("trade", trade)
+                self._save_open_positions()
 
         # v4.9 — Cooldown de reentree dans le MEME sens : si le dernier trade
         # ferme sur cet actif allait deja dans cette direction et que le
