@@ -282,6 +282,30 @@ def insert_open_trade(coin, action, confidence, leverage, position_size_pct,
         return cur.lastrowid
 
 
+def insert_orphaned_closed_trade(coin, action, entry_price, exit_price, pnl, reason,
+                                  strategy=None, trade_mode=None, peak_pnl=None,
+                                  peak_pnl_pct=None, fees_paid=None):
+    """v4.220 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : filet de recuperation
+    quand get_open_trade_id_by_coin_action ne trouve AUCUNE ligne ouverte
+    correspondante (confirme par un cas reel : fermeture SEI/LONG perdue en
+    silence, la position etait bien fermee en memoire mais son historique
+    a completement disparu). Cree directement un enregistrement DEJA FERME,
+    avec les seules donnees disponibles a la fermeture (pas de confidence/
+    levier/SL-TP d origine, inconnus a ce stade) — prefere un enregistrement
+    incomplet a une perte totale de la donnee (PnL, statistiques)."""
+    with _lock, _connect() as conn:
+        now = now_iso()
+        cur = conn.execute("""
+            INSERT INTO trades (coin, action, entry_price, exit_price, pnl, reason,
+                                 strategy, trade_mode, peak_pnl, peak_pnl_pct, fees_paid,
+                                 created_at, closed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (coin, action, entry_price, exit_price, pnl, reason, strategy, trade_mode,
+              peak_pnl, peak_pnl_pct, fees_paid, now, now))
+        conn.commit()
+        return cur.lastrowid
+
+
 def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=None, fees_paid=None):
     with _lock, _connect() as conn:
         conn.execute(
