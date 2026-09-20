@@ -186,9 +186,22 @@ def _consume_events():
                     # perdue EN SILENCE (le trade restait "ouvert" en base
                     # pour toujours, jamais comptabilise dans le Bilan, meme
                     # si la position etait bien fermee en memoire).
-                    msg = f"[event_consumer] ATTENTION : aucun trade ouvert trouve en base pour {ticker}/{action} (symbol brut={data.get('symbol')!r}, type brut={data.get('type')!r}) — fermeture perdue !"
+                    # v4.220 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : ne
+                    # se contente plus de logger — cree un enregistrement de
+                    # secours directement, pour ne plus jamais perdre le
+                    # PnL/statistiques de cette fermeture, meme sans pouvoir
+                    # retrouver la ligne d ouverture d origine (confidence,
+                    # levier, SL/TP initiaux resteront vides pour cette
+                    # ligne specifiquement, mais le PnL est preserve).
+                    msg = f"[event_consumer] ATTENTION : aucun trade ouvert trouve en base pour {ticker}/{action} (symbol brut={data.get('symbol')!r}, type brut={data.get('type')!r}) — creation d un enregistrement de secours."
                     print(msg)
                     _push_log("error", msg)
+                    db.insert_orphaned_closed_trade(
+                        ticker, action, data.get("entry"), data.get("exit"), data.get("pnl"),
+                        data.get("reason"), strategy=data.get("strategy"), trade_mode=data.get("trade_mode"),
+                        peak_pnl=data.get("peak_pnl_usd"), peak_pnl_pct=data.get("peak_pnl_pct"),
+                        fees_paid=data.get("fees_paid"),
+                    )
             elif etype == "startup_ready":
                 # v3.2 — "programme balai" automatique au demarrage : a ce
                 # stade, la reconciliation Hyperliquid (mode live) ou la
