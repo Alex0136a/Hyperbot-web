@@ -641,6 +641,13 @@ CONFIG = {
     # dynamique (point de depart + retournement confirme sur 3 bougies 1h)
     # et MACD 1h — Accumulation (short) et Spot-Accum (long) uniquement.
     "DYNAMIC_TREND_CONFIRM_ENABLED": True,
+    # v4.225 — SUR DEMANDE EXPLICITE : bonus de confiance (jamais bloquant)
+    # quand la tendance dynamique + MACD 1h confirment — remplace l ancien
+    # blocage dur, qui causait une regression (Spot-Accum moins reactif
+    # sur de vraies hausses crypto, la tendance dynamique horaire pouvant
+    # rester temporairement dans le mauvais sens meme au sein d une
+    # tendance de fond deja favorable).
+    "DYNAMIC_TREND_CONFIRM_BONUS": 5.0,
     # v4.193 — SUR DEMANDE EXPLICITE : filet de securite immediat pour le SL
     # structurel — ferme sans attendre la confirmation complete (patience +
     # couleur de bougie) des que la perte atteint ce plafond, evitant une
@@ -7132,19 +7139,23 @@ class BotEngine:
                     return
         snap["entered_via_flirt"] = not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac
 
-        # v4.203 — SUR DEMANDE EXPLICITE : confirmation supplementaire par
-        # MACD 1h + tendance dynamique (Accumulation = short uniquement,
-        # exige donc une confirmation BAISSIERE des deux).
-        if cfg.get("DYNAMIC_TREND_CONFIRM_ENABLED", True):
-            if state.dynamic_trend_direction != "down":
-                snap["blocker"] = f"tendance dynamique pas baissiere ({state.dynamic_trend_direction})"
-                return
+        # v4.203/225 — SUR DEMANDE EXPLICITE : confirmation par MACD 1h +
+        # tendance dynamique (Accumulation = short) — ETAIT un blocage dur,
+        # converti en BONUS DE CONFIANCE non-bloquant suite a une
+        # regression observee (Spot-Accum devenu moins reactif sur de
+        # vraies hausses crypto, la tendance dynamique horaire pouvant
+        # rester temporairement dans le mauvais sens meme au sein d une
+        # tendance de fond plus large deja favorable). Ne bloque plus
+        # JAMAIS — ajoute simplement au score de confiance quand elle
+        # confirme.
+        dynamic_trend_confirms_ac = False
+        if cfg.get("DYNAMIC_TREND_CONFIRM_ENABLED", True) and state.dynamic_trend_direction == "down":
             macd_line, signal_line = self._compute_macd_1h(state)
             snap["macd_1h"] = round(macd_line, 6) if macd_line is not None else None
             snap["macd_1h_signal"] = round(signal_line, 6) if signal_line is not None else None
-            if macd_line is not None and signal_line is not None and macd_line >= signal_line:
-                snap["blocker"] = "MACD 1h ne confirme pas la baisse"
-                return
+            if macd_line is not None and signal_line is not None and macd_line < signal_line:
+                dynamic_trend_confirms_ac = True
+        snap["dynamic_trend_confirms"] = dynamic_trend_confirms_ac
 
         sr_range = resistance - support
         min_below_pct = cfg.get("ACCUMULATION_MIN_BELOW_RESISTANCE_PCT", 5.0)
@@ -7161,6 +7172,8 @@ class BotEngine:
         snap["volume_confirms_accumulation"] = volume_confirms
         if volume_confirms:
             confidence += cfg.get("ACCUMULATION_VOLUME_CONFIRM_BONUS", 5.0)
+        if dynamic_trend_confirms_ac:
+            confidence += cfg.get("DYNAMIC_TREND_CONFIRM_BONUS", 5.0)
         confidence = min(confidence, 85.0)
         snap["confidence"] = round(confidence, 1)
 
@@ -7399,19 +7412,19 @@ class BotEngine:
         # levier dynamique 2-5x s applique (uniquement dans ce cas).
         snap["entered_via_flirt"] = not fresh_breakout_sa and not volume_breakout_sa and not failed_breakout_sa
 
-        # v4.203 — SUR DEMANDE EXPLICITE : confirmation supplementaire par
-        # MACD 1h + tendance dynamique (Spot-Accum = long uniquement, exige
-        # donc une confirmation HAUSSIERE des deux).
-        if cfg.get("DYNAMIC_TREND_CONFIRM_ENABLED", True):
-            if state.dynamic_trend_direction != "up":
-                snap["blocker"] = f"tendance dynamique pas haussiere ({state.dynamic_trend_direction})"
-                return
+        # v4.203/225 — SUR DEMANDE EXPLICITE : confirmation par MACD 1h +
+        # tendance dynamique (Spot-Accum = long) — ETAIT un blocage dur,
+        # converti en BONUS DE CONFIANCE non-bloquant (voir la meme
+        # correction miroir dans _check_accumulation_signal pour le
+        # raisonnement complet). Ne bloque plus JAMAIS.
+        dynamic_trend_confirms_sa = False
+        if cfg.get("DYNAMIC_TREND_CONFIRM_ENABLED", True) and state.dynamic_trend_direction == "up":
             macd_line, signal_line = self._compute_macd_1h(state)
             snap["macd_1h"] = round(macd_line, 6) if macd_line is not None else None
             snap["macd_1h_signal"] = round(signal_line, 6) if signal_line is not None else None
-            if macd_line is not None and signal_line is not None and macd_line <= signal_line:
-                snap["blocker"] = "MACD 1h ne confirme pas la hausse"
-                return
+            if macd_line is not None and signal_line is not None and macd_line > signal_line:
+                dynamic_trend_confirms_sa = True
+        snap["dynamic_trend_confirms"] = dynamic_trend_confirms_sa
         # v4.150 — SUR DEMANDE EXPLICITE : une cassure fraiche contourne
         # ces deux blocages — une vraie cassure depasse PAR DEFINITION la
         # resistance recente, ce que le blocage ci-dessus interdirait
@@ -7425,6 +7438,8 @@ class BotEngine:
         sr_range = resistance - support
         position_in_range_pct = ((price - support) / sr_range * 100) if sr_range > 0 else 50.0
         confidence = 65.0 + min(max(position_in_range_pct - min_above_pct, 0) / 50.0 * 20.0, 20.0)
+        if dynamic_trend_confirms_sa:
+            confidence += cfg.get("DYNAMIC_TREND_CONFIRM_BONUS", 5.0)
         confidence = min(confidence, 85.0)
         snap["confidence"] = round(confidence, 1)
 
