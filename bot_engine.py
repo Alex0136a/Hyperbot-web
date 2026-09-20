@@ -637,6 +637,13 @@ CONFIG = {
     # s active que si le pic a atteint au moins ce seuil — priorite au
     # trailing normal (couleur de bougie) pour les pics plus modestes.
     "TTP_UNCONDITIONAL_GIVEBACK_MIN_PEAK_PCT": 2.0,
+    # v4.230 — SUR DEMANDE EXPLICITE : tolerance TTP relative a l ATR
+    # (volatilite reelle) plutot qu un % fixe, et declencheur de VITESSE de
+    # repli (independant de l ampleur absolue) — reagit a un retournement
+    # rapide meme sous le seuil du filet inconditionnel ci-dessus.
+    "TTP_ATR_TOLERANCE_MULTIPLIER": 1.0,
+    "TTP_VELOCITY_WINDOW_SEC": 60,
+    "TTP_VELOCITY_GIVEBACK_PCT": 0.6,
     # v4.203 — SUR DEMANDE EXPLICITE : confirmation d entree par tendance
     # dynamique (point de depart + retournement confirme sur 3 bougies 1h)
     # et MACD 1h — Accumulation (short) et Spot-Accum (long) uniquement.
@@ -5470,7 +5477,20 @@ class BotEngine:
             #    premier), puis suit le pic avec une marge de
             #    SPOT_ACCUM_TTP_TOLERANCE_PCT (0.5% par defaut).
             arm_pct = cfg.get("SPOT_ACCUM_TTP_ARM_PCT", 3.0)
-            tolerance_pct = cfg.get("SPOT_ACCUM_TTP_TOLERANCE_PCT", 0.5)
+            # v4.230 — SUR DEMANDE EXPLICITE : tolerance desormais relative
+            # a la volatilite REELLE de l actif (ATR), pas un % fixe
+            # identique pour tous — un actif volatil a une tolerance plus
+            # large, un actif calme plus stricte. Convertit l ATR (prix
+            # absolu) en % de PnL EQUIVALENT (integre le levier, puisque
+            # pnl_pct est desormais lui-meme amplifie par le levier depuis
+            # v4.229) — repli sur l ancien % fixe si l ATR n est pas encore
+            # disponible.
+            atr_abs_ttp, _ = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
+            if atr_abs_ttp is not None and atr_abs_ttp > 0 and price > 0:
+                atr_pct_of_price = atr_abs_ttp / price * 100
+                tolerance_pct = atr_pct_of_price * leverage_now * cfg.get("TTP_ATR_TOLERANCE_MULTIPLIER", 1.0)
+            else:
+                tolerance_pct = cfg.get("SPOT_ACCUM_TTP_TOLERANCE_PCT", 0.5)
             # v4.173 — SUR DEMANDE EXPLICITE : retire l armement via le prix
             # structurel (support + 70% de la distance S/R) — pouvait armer
             # le trailing sur un PnL minuscule (0.29% observe) des que ce
@@ -5501,6 +5521,39 @@ class BotEngine:
                 # pics plus modestes (accepte le risque de redonnage total
                 # sur un tres petit pic en echange de ne jamais fermer
                 # prematurement sur une simple ambiguite de bougie).
+                # v4.230 — SUR DEMANDE EXPLICITE : declencheur de VITESSE de
+                # repli — independant de l ampleur absolue (contrairement
+                # au filet ci-dessous). Un repli RAPIDE depuis le pic est un
+                # signal fort en soi, meme si son ampleur totale reste sous
+                # le seuil du filet inconditionnel (2% de pic minimum).
+                # Suit un "checkpoint" du PnL toutes les
+                # TTP_VELOCITY_WINDOW_SEC secondes, et compare la vitesse de
+                # repli depuis ce point de reference.
+                velocity_window_sec = cfg.get("TTP_VELOCITY_WINDOW_SEC", 60)
+                velocity_giveback_pct = cfg.get("TTP_VELOCITY_GIVEBACK_PCT", 0.6)
+                now_ts = time.time()
+                checkpoint = getattr(state, "spot_accum_velocity_checkpoint", None)
+                if checkpoint is None or now_ts - checkpoint[0] >= velocity_window_sec:
+                    state.spot_accum_velocity_checkpoint = (now_ts, pnl_pct)
+                elif checkpoint[1] - pnl_pct >= velocity_giveback_pct:
+                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT (repli rapide)")
+                    trade["symbol"] = symbol
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, ticker, pos, self.cfg)
+                    self.emit("trade", trade)
+                    if pnl > 0:
+                        self._register_win(ticker)
+                    if pos["type"] == "long":
+                        state.post_win_confirm_long = True
+                        state.confirm_count_long = 0
+                    else:
+                        state.post_win_confirm_short = True
+                        state.confirm_count_short = 0
+                    self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} repli RAPIDE detecte ({checkpoint[1]:.2f}% -> {pnl_pct:.2f}% en moins de {velocity_window_sec}s) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+                    self._save_open_positions()
+                    self._persist_capital_snapshot()
+                    return
+
                 unconditional_giveback_pct = cfg.get("TTP_UNCONDITIONAL_GIVEBACK_PCT", 1.0)
                 min_peak_for_unconditional = cfg.get("TTP_UNCONDITIONAL_GIVEBACK_MIN_PEAK_PCT", 2.0)
                 if state.spot_accum_peak_pnl_pct >= min_peak_for_unconditional and state.spot_accum_peak_pnl_pct - pnl_pct >= unconditional_giveback_pct:
