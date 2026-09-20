@@ -1007,6 +1007,19 @@ PROFILE_SWING = {
     # signal local pourtant clair.
     "FAILED_BREAKOUT_DETECTION_ENABLED": True,
     "FAILED_BREAKOUT_LOOKBACK_CANDLES": 20,
+    # v4.221/222/223/224 — SUR DEMANDE EXPLICITE : detection de cassure
+    # RATEE (fausse cassure), signal fort et INDEPENDANT du RSI/MACD.
+    # 3 garde-fous OBLIGATOIRES (magnitude, recence, anti-repetition) —
+    # voir _detect_failed_breakout pour le raisonnement complet sur
+    # pourquoi couleur de bougie est retiree (redondante) et volume traite
+    # en alternative plutot qu en 4e condition bloquante (evite que 5+
+    # garde-fous cumulatifs ne s alignent jamais).
+    "FAILED_BREAKOUT_MIN_MAGNITUDE_PCT": 0.3,
+    "FAILED_BREAKOUT_RECENCY_CANDLES": 8,
+    "FAILED_BREAKOUT_COOLDOWN_SEC": 1800,
+    "FAILED_BREAKOUT_STRONG_MAGNITUDE_MULTIPLIER": 2.5,
+    "FAILED_BREAKOUT_REQUIRE_VOLUME": True,
+    "FAILED_BREAKOUT_VOLUME_MIN_RATIO": 1.3,
     # v4.130 — SUR DEMANDE EXPLICITE : meme raisonnement que Spot-Accum.
     # v4.131 — SUR DEMANDE EXPLICITE : meme alignement que Spot-Accum.
     "ACCUMULATION_ANTI_RANGE_LOOKBACK": 30,
@@ -3769,7 +3782,29 @@ class BotEngine:
         direction="long" : cherche une cassure RATEE en-DESSOUS d un
         support (level) — signal d achat.
         Retourne True si detecte, False sinon (jamais bloquant — c est un
-        BYPASS supplementaire, pas une exigence)."""
+        BYPASS supplementaire, pas une exigence).
+
+        v4.222/223/224 — SUR DEMANDE EXPLICITE : conception finale, apres
+        reflexion sur la LOGIQUE de chaque garde-fou (pas juste leur
+        nombre) :
+        - MAGNITUDE, ANTI-REPETITION, RECENCE : 3 garde-fous OBLIGATOIRES,
+          non-redondants entre eux (chacun protege contre un risque
+          DIFFERENT : bruit, spam, coincidence retardee).
+        - COULEUR DE BOUGIE : retiree — largement REDONDANTE avec la
+          magnitude (une cloture qui depasse deja nettement le seuil de
+          retour est mecaniquement de la bonne couleur dans l ecrasante
+          majorite des cas).
+        - VOLUME : contrairement a la couleur, le volume est une
+          information VRAIMENT INDEPENDANTE du prix (participation reelle
+          du marche) — le retirer purement et simplement etait une erreur.
+          Mais l ajouter comme 4e condition OBLIGATOIRE recreait le risque
+          initial (garde-fous qui ne s alignent jamais). Solution retenue :
+          le signal se valide si le volume confirme, OU si le mouvement de
+          prix est EXCEPTIONNELLEMENT fort (largement au-dessus du minimum
+          requis) — un mouvement assez dramatique se suffit a lui-meme,
+          meme sans confirmation de volume, evitant qu un volume
+          insuffisant/indisponible ne bloque un signal par ailleurs tres
+          clair."""
         if level is None or level <= 0:
             return False
         candles = list(state.candle_history)
@@ -3777,17 +3812,69 @@ class BotEngine:
             return False
         recent = candles[-lookback_candles:]
         current_close = recent[-1][2]
+
+        # Garde-fou RECENCE : la cassure initiale doit avoir eu lieu dans
+        # une fenetre COURTE et RECENTE (pas n importe ou dans les 20
+        # bougies) — exclut la toute derniere bougie (le retour lui-meme).
+        recency_window = self.cfg.get("FAILED_BREAKOUT_RECENCY_CANDLES", 8)
+        breakout_search_window = recent[-(recency_window + 1):-1]
+        if not breakout_search_window:
+            return False
+
+        min_magnitude_pct = self.cfg.get("FAILED_BREAKOUT_MIN_MAGNITUDE_PCT", 0.3)
+        # Seuil "exceptionnel" pour le chemin alternatif sans volume —
+        # multiple du minimum requis, pas une valeur independante a régler.
+        strong_multiplier = self.cfg.get("FAILED_BREAKOUT_STRONG_MAGNITUDE_MULTIPLIER", 2.5)
+
         if direction == "short":
-            # A-t-on recemment depasse la resistance (high > level sur au
-            # moins une bougie de la fenetre, EXCLUANT la toute derniere,
-            # qui doit maintenant etre repassee EN DESSOUS) ?
-            broke_above = any(c[0] > level for c in recent[:-1])
-            back_below = current_close < level
-            return broke_above and back_below
+            # Garde-fou MAGNITUDE : la cassure au-dessus doit depasser le
+            # niveau d au moins ce %, pas un simple depassement de bruit.
+            breakout_threshold = level * (1 + min_magnitude_pct / 100)
+            matching_breakout_highs = [c[0] for c in breakout_search_window if c[0] > breakout_threshold]
+            if not matching_breakout_highs:
+                return False
+            breakout_extent_pct = (max(matching_breakout_highs) - level) / level * 100
+            # Le retour en dessous doit AUSSI depasser ce % minimal.
+            return_threshold = level * (1 - min_magnitude_pct / 100)
+            if current_close >= return_threshold:
+                return False
+            return_extent_pct = (level - current_close) / level * 100
         else:
-            broke_below = any(c[1] < level for c in recent[:-1])
-            back_above = current_close > level
-            return broke_below and back_above
+            breakout_threshold = level * (1 - min_magnitude_pct / 100)
+            matching_breakout_lows = [c[1] for c in breakout_search_window if c[1] < breakout_threshold]
+            if not matching_breakout_lows:
+                return False
+            breakout_extent_pct = (level - min(matching_breakout_lows)) / level * 100
+            return_threshold = level * (1 + min_magnitude_pct / 100)
+            if current_close <= return_threshold:
+                return False
+            return_extent_pct = (current_close - level) / level * 100
+
+        # Chemin VOLUME-ou-MAGNITUDE-EXCEPTIONNELLE — voir docstring.
+        movement_is_exceptional = (
+            breakout_extent_pct >= min_magnitude_pct * strong_multiplier
+            or return_extent_pct >= min_magnitude_pct * strong_multiplier
+        )
+        if not movement_is_exceptional and self.cfg.get("FAILED_BREAKOUT_REQUIRE_VOLUME", True):
+            vol_confirms_fb = self._volume_confirms_accumulation(
+                state, recent_candles=2,
+                min_ratio=self.cfg.get("FAILED_BREAKOUT_VOLUME_MIN_RATIO", 1.3),
+            )
+            if vol_confirms_fb is False:
+                return False
+            # vol_confirms_fb is None (historique 1h insuffisant) ou True
+            # (confirme) -> le signal passe dans les deux cas.
+
+        # Garde-fou ANTI-REPETITION : cooldown minimal entre deux
+        # declenchements sur le MEME actif+direction.
+        cooldown_sec = self.cfg.get("FAILED_BREAKOUT_COOLDOWN_SEC", 1800)
+        cooldown_attr = f"_last_failed_breakout_{direction}"
+        last_trigger = getattr(state, cooldown_attr, 0)
+        now = time.time()
+        if now - last_trigger < cooldown_sec:
+            return False
+        setattr(state, cooldown_attr, now)
+        return True
 
     def _detect_fresh_breakout(self, state, direction, lookback_candles):
         """v4.148 — SUR DEMANDE EXPLICITE : detecte le DEBUT d un mouvement
