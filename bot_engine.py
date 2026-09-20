@@ -1925,6 +1925,7 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
                     real_fill_price = float(statuses[0]["filled"]["avgPx"])
                 except (KeyError, TypeError, ValueError):
                     pass
+            print(f"[FILL-PRICE-DIAG] {ticker} : statuses brut = {statuses} | real_fill_price extrait = {real_fill_price}")
             return bool(statuses), None, real_fill_price
         err_msg = str(result)[:300] if result else "Aucune reponse de l'exchange"
         print(f"[ORDER] Echec place_order {ticker} : {err_msg}")
