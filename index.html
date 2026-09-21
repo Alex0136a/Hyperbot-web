@@ -2492,6 +2492,7 @@ Confirmer ?`
                       Accum a son propre armement (spot_accum_armed), separe de
                       tp_stage/tier0_armed utilises par les 3 autres modes. */}
                       <div style={{fontSize:9,color:"#64748b",marginTop:4}}>
+                        {trade.entry_mechanism && <>Entrée via : {trade.entry_mechanism}<br/></>}
                         {usesUnifiedExit ? (
                           <>Trailing : {trade.spot_accum_armed?`armé (pic interne +${trade.spot_accum_peak_pnl_pct_internal}%)`:`pas encore armé (seuil actif : ${trade.spot_accum_arm_pct_used}% de PnL, PnL actuel : ${trade.pnl_pct}%)`}</>
                         ) : (
