@@ -1099,6 +1099,20 @@ PROFILE_SWING = {
     # probablement engage ailleurs) — evite les tentatives repetees
     # inutiles a chaque cycle, tant que rien n a change entre-temps.
     "INSUFFICIENT_NOTIONAL_COOLDOWN_SEC": 180,
+    # v4.254 — SUR DEMANDE EXPLICITE : integration du flux de transactions
+    # dans le TTP, sur 3 axes — (1) sortie ACCELEREE sur retournement
+    # brutal, independant de la cloture de bougie (repond a un cas reel :
+    # bougie verte devenant etoile filante EN COURS, rendant le profit
+    # avant meme la cloture) ; (2) le flux peut ouvrir la porte de
+    # retournement en alternative a la couleur de bougie ; (3) prolonge la
+    # tolerance si le flux confirme toujours la direction.
+    "TTP_FLOW_REVERSAL_EXIT_ENABLED": True,
+    "TTP_FLOW_REVERSAL_THRESHOLD": -0.4,
+    "TTP_FLOW_REVERSAL_MIN_PEAK_PCT": 0.3,
+    "TTP_FLOW_GATE_THRESHOLD": 0.15,
+    "TTP_FLOW_EXTEND_TOLERANCE_ENABLED": True,
+    "TTP_FLOW_EXTEND_THRESHOLD": 0.2,
+    "TTP_FLOW_EXTEND_MULTIPLIER": 1.5,
     # v4.130 — SUR DEMANDE EXPLICITE : meme raisonnement que Spot-Accum.
     # v4.131 — SUR DEMANDE EXPLICITE : meme alignement que Spot-Accum.
     "ACCUMULATION_ANTI_RANGE_LOOKBACK": 12,
@@ -5888,6 +5902,19 @@ class BotEngine:
                 tolerance_pct = atr_pct_of_price * cfg.get("TTP_ATR_TOLERANCE_MULTIPLIER", 1.0)
             else:
                 tolerance_pct = cfg.get("SPOT_ACCUM_TTP_TOLERANCE_PCT", 0.5)
+            # v4.254 — SUR DEMANDE EXPLICITE : prolonge la tolerance si le
+            # flux de transactions confirme TOUJOURS la direction du trade
+            # — une vraie conviction de marche qui perdure justifie de
+            # laisser un peu plus de marge avant de couper, plutot qu une
+            # tolerance fixe ignorant si le marche soutient encore le
+            # mouvement.
+            if ticker is not None and cfg.get("TTP_FLOW_EXTEND_TOLERANCE_ENABLED", True):
+                flow_pressure_extend = self._compute_trade_flow_pressure(ticker, price_now=price)
+                if flow_pressure_extend is not None:
+                    favorable_threshold = cfg.get("TTP_FLOW_EXTEND_THRESHOLD", 0.2)
+                    flow_still_favorable = (flow_pressure_extend >= favorable_threshold) if pos["type"] == "long" else (flow_pressure_extend <= -favorable_threshold)
+                    if flow_still_favorable:
+                        tolerance_pct *= cfg.get("TTP_FLOW_EXTEND_MULTIPLIER", 1.5)
             # v4.173 — SUR DEMANDE EXPLICITE : retire l armement via le prix
             # structurel (support + 70% de la distance S/R) — pouvait armer
             # le trailing sur un PnL minuscule (0.29% observe) des que ce
@@ -5901,6 +5928,47 @@ class BotEngine:
             else:
                 if state.spot_accum_peak_pnl_pct is None or pnl_pct > state.spot_accum_peak_pnl_pct:
                     state.spot_accum_peak_pnl_pct = pnl_pct
+
+                # v4.254 — SUR DEMANDE EXPLICITE : sortie ACCELEREE sur
+                # retournement BRUTAL du flux de transactions reel —
+                # repond a un cas reel observe : une bougie verte pleine se
+                # transformant en etoile filante EN COURS DE FORMATION,
+                # rendant tout le profit AVANT meme que la bougie ne
+                # cloture (les verifications de couleur/motif ne se
+                # declenchent qu a la CLOTURE, ratant ce mouvement en
+                # cours). Le flux de transactions, lui, se met a jour en
+                # CONTINU — une inversion brutale et forte de la pression
+                # (ex: passe d achat dominant a vente fortement dominante)
+                # peut etre detectee PENDANT la formation de la bougie,
+                # permettant de sortir avant que le profit ne soit
+                # integralement rendu. INDEPENDANT de l etat de la bougie
+                # en cours, contrairement au reste du mecanisme TTP.
+                if cfg.get("TTP_FLOW_REVERSAL_EXIT_ENABLED", True) and ticker is not None:
+                    flow_pressure_ttp = self._compute_trade_flow_pressure(ticker, price_now=price)
+                    if flow_pressure_ttp is not None:
+                        flow_reversal_threshold = cfg.get("TTP_FLOW_REVERSAL_THRESHOLD", -0.4) if pos["type"] == "long" else cfg.get("TTP_FLOW_REVERSAL_THRESHOLD", -0.4) * -1
+                        flow_reversed = (flow_pressure_ttp <= flow_reversal_threshold) if pos["type"] == "long" else (flow_pressure_ttp >= -flow_reversal_threshold)
+                        # N agit que si un pic significatif existe deja (pas
+                        # sur un trade a peine ouvert, sans profit a proteger).
+                        if flow_reversed and state.spot_accum_peak_pnl_pct >= cfg.get("TTP_FLOW_REVERSAL_MIN_PEAK_PCT", 0.3):
+                            pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT (retournement flux)")
+                            trade["symbol"] = symbol
+                            if mode == "live" and self.exchange:
+                                close_order(self.exchange, ticker, pos, self.cfg)
+                            self.emit("trade", trade)
+                            if pnl > 0:
+                                self._register_win(ticker)
+                            if pos["type"] == "long":
+                                state.post_win_confirm_long = True
+                                state.confirm_count_long = 0
+                            else:
+                                state.post_win_confirm_short = True
+                                state.confirm_count_short = 0
+                            self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} retournement BRUTAL du flux detecte (pression {flow_pressure_ttp:+.2f}, pic +{state.spot_accum_peak_pnl_pct:.2f}%) — sortie avant cloture de bougie @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+                            self._save_open_positions()
+                            self._persist_capital_snapshot()
+                            return
+
                 # v4.213 — SUR DEMANDE EXPLICITE : filet de securite
                 # INCONDITIONNEL — INDEPENDANT de la couleur de bougie. La
                 # logique inversee (v4.197) n applique AUCUNE limite de
@@ -5976,6 +6044,16 @@ class BotEngine:
                 # remplacee par une PORTE vers la verification de tolerance
                 # ci-dessous (meme principe que tier0/tier1).
                 color_reversed_sa = cfg.get("EARLY_REVERSAL_EXIT_ENABLED", True) and self._candle_color_confirms_reversal(state, pos["type"])
+                # v4.254 — SUR DEMANDE EXPLICITE : le flux de transactions
+                # peut AUSSI ouvrir cette porte, independamment de la
+                # couleur de bougie — un retournement de pression reel est
+                # au moins aussi fiable qu une simple couleur de bougie, et
+                # reagit plus vite (pas besoin d attendre la cloture).
+                if not color_reversed_sa and cfg.get("TTP_FLOW_REVERSAL_EXIT_ENABLED", True) and ticker is not None:
+                    flow_pressure_gate = self._compute_trade_flow_pressure(ticker, price_now=price)
+                    if flow_pressure_gate is not None:
+                        gate_threshold = cfg.get("TTP_FLOW_GATE_THRESHOLD", 0.15)
+                        color_reversed_sa = (flow_pressure_gate <= -gate_threshold) if pos["type"] == "long" else (flow_pressure_gate >= gate_threshold)
                 if color_reversed_sa and pnl_pct <= state.spot_accum_peak_pnl_pct - tolerance_pct:
                     # v4.83 — SUR DEMANDE EXPLICITE : meme filtre "la
                     # tendance tient toujours" que tier0/tier1 (v4.77/v4.82),
