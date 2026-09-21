@@ -1061,6 +1061,12 @@ PROFILE_SWING = {
     "TRADE_FLOW_SAMPLE_SIZE": 100,
     "TREND_PERSISTENCE_MIN_SAMPLES": 6,
     "TREND_PERSISTENCE_PRESSURE_THRESHOLD": 0.15,
+    # v4.242 — SUR DEMANDE EXPLICITE : 2 garde-fous ajoutes pour reduire le
+    # risque de faux signaux — volume notionnel minimal (evite les
+    # marches creux) et correlation avec le mouvement de prix reel (evite
+    # une "pression" sans reaction reelle du marche).
+    "TRADE_FLOW_MIN_NOTIONAL_USD": 5000.0,
+    "TREND_PERSISTENCE_MIN_PRICE_MOVE_PCT": 0.1,
     # v4.130 — SUR DEMANDE EXPLICITE : meme raisonnement que Spot-Accum.
     # v4.131 — SUR DEMANDE EXPLICITE : meme alignement que Spot-Accum.
     "ACCUMULATION_ANTI_RANGE_LOOKBACK": 12,
@@ -3652,7 +3658,7 @@ class BotEngine:
             print(f"[TRADES-FLOW] Echec recuperation flux transactions pour {ticker} : {e}")
             return []
 
-    def _compute_trade_flow_pressure(self, ticker):
+    def _compute_trade_flow_pressure(self, ticker, price_now=None):
         """v4.240 — SUR DEMANDE EXPLICITE : calcule la PRESSION
         DIRECTIONNELLE reelle sur les dernieres transactions — ratio du
         volume achete de facon agressive (side='B') contre vendu de facon
@@ -3661,7 +3667,13 @@ class BotEngine:
         donnees. Comble un trou identifie : une tendance DEJA engagee,
         loin de tout support/resistance, n etait auparavant jamais
         capturee par aucun mecanisme d entree (tous bases sur des niveaux
-        de prix ou des bougies, pas sur la pression reelle du marche)."""
+        de prix ou des bougies, pas sur la pression reelle du marche).
+        v4.242 — SUR DEMANDE EXPLICITE : garde-fou VOLUME MINIMAL — une
+        poignee de petites transactions sur un marche creux pouvait
+        auparavant generer un ratio extreme sans representer un vrai
+        mouvement de marche. Exige desormais un volume NOTIONNEL total
+        minimal (en $) sur l echantillon, sinon retourne None (donnee
+        jugee non fiable) plutot qu un signal trompeur."""
         trades = self._fetch_recent_trades(ticker, count=self.cfg.get("TRADE_FLOW_SAMPLE_SIZE", 100))
         if len(trades) < 20:
             return None
@@ -3680,6 +3692,14 @@ class BotEngine:
         total = buy_volume + sell_volume
         if total <= 0:
             return None
+        # Garde-fou volume minimal — approxime le notionnel avec le prix
+        # actuel (les prix individuels des transactions sont proches sur
+        # un echantillon aussi court).
+        if price_now and price_now > 0:
+            notional_total = total * price_now
+            min_notional = self.cfg.get("TRADE_FLOW_MIN_NOTIONAL_USD", 5000.0)
+            if notional_total < min_notional:
+                return None
         return (buy_volume - sell_volume) / total
 
     def _maybe_refresh_trade_flow(self, ticker, state):
@@ -3687,13 +3707,22 @@ class BotEngine:
         directionnelle au maximum une fois toutes les 60s par actif, et
         maintient un historique COURT pour exiger une pression SOUTENUE
         dans le temps (pas un simple pic ponctuel) avant de la considerer
-        comme un signal fiable."""
+        comme un signal fiable.
+        v4.242 — SUR DEMANDE EXPLICITE : maintient aussi un historique du
+        PRIX a chaque rafraichissement, pour permettre la verification de
+        corr elation prix/pression (voir _trend_persistence_confirmed)."""
         now = time.time()
         last_refresh = getattr(state, "trade_flow_last_refresh", 0)
         if now - last_refresh < 60:
             return
-        pressure = self._compute_trade_flow_pressure(ticker)
+        pressure = self._compute_trade_flow_pressure(ticker, price_now=state.current_price)
         state.trade_flow_last_refresh = now
+        price_history = getattr(state, "trade_flow_price_history", None)
+        if price_history is None:
+            price_history = deque(maxlen=10)
+            state.trade_flow_price_history = price_history
+        if state.current_price is not None:
+            price_history.append(state.current_price)
         if pressure is None:
             return
         history = getattr(state, "trade_flow_history", None)
@@ -3709,7 +3738,13 @@ class BotEngine:
         soient TOUTES au-dela d un seuil minimal, dans le sens demande.
         direction="long" : pression acheteuse soutenue. direction="short" :
         pression vendeuse soutenue. Retourne False si historique
-        insuffisant (jamais bloquant — c est un BYPASS supplementaire)."""
+        insuffisant (jamais bloquant — c est un BYPASS supplementaire).
+        v4.242 — SUR DEMANDE EXPLICITE : garde-fou CORRELATION PRIX —
+        exige desormais que le prix ait REELLEMENT bouge dans le meme
+        sens que la pression rapportee, sur la meme fenetre. Sans ce
+        garde-fou, une "pression acheteuse" pouvait exister sans que le
+        prix ne reagisse (absorbee par des vendeurs, mur de liquidite) —
+        un signal trompeur, non confirme par le marche lui-meme."""
         history = getattr(state, "trade_flow_history", None)
         min_samples = self.cfg.get("TREND_PERSISTENCE_MIN_SAMPLES", 6)
         if not history or len(history) < min_samples:
@@ -3717,9 +3752,22 @@ class BotEngine:
         threshold = self.cfg.get("TREND_PERSISTENCE_PRESSURE_THRESHOLD", 0.15)
         recent = list(history)[-min_samples:]
         if direction == "long":
-            return all(p >= threshold for p in recent)
+            pressure_ok = all(p >= threshold for p in recent)
         else:
-            return all(p <= -threshold for p in recent)
+            pressure_ok = all(p <= -threshold for p in recent)
+        if not pressure_ok:
+            return False
+
+        price_history = getattr(state, "trade_flow_price_history", None)
+        if not price_history or len(price_history) < min_samples:
+            return False
+        price_recent = list(price_history)[-min_samples:]
+        price_move_pct = (price_recent[-1] - price_recent[0]) / price_recent[0] * 100 if price_recent[0] else 0
+        min_price_move = self.cfg.get("TREND_PERSISTENCE_MIN_PRICE_MOVE_PCT", 0.1)
+        if direction == "long":
+            return price_move_pct >= min_price_move
+        else:
+            return price_move_pct <= -min_price_move
 
     def _fetch_candles(self, ticker, interval="1h", count=60):
         """v4.203/236 — SUR DEMANDE EXPLICITE : recupere les VRAIES bougies
