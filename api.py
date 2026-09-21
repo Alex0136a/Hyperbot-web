@@ -678,7 +678,15 @@ def _open_positions() -> List[Dict[str, Any]]:
             # (parfois INFERIEUR au PnL actuel, incoherent), confirme par
             # une position reelle observee (pic affiche +0.20% alors que le
             # PnL courant etait deja a +0.77%).
-            if pos.get("strategy") == "spot_accumulation":
+            # v4.241 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : ces 4
+            # strategies partagent desormais TOUTES le meme mecanisme de
+            # sortie unifie, qui met a jour EXCLUSIVEMENT
+            # state.spot_accum_peak_pnl_pct — les autres champs (tier0/
+            # tier1/absolu, lus dans la branche "else" ci-dessous) ne sont
+            # plus jamais mis a jour pour Accumulation/Forex/Funding
+            # depuis l unification, risquant d y afficher un pic obsolete
+            # ou absent.
+            if pos.get("strategy") in ("spot_accumulation", "accumulation", "forex", "funding_contrarian"):
                 peak_pnl_pct = round(state.spot_accum_peak_pnl_pct, 3) if state.spot_accum_peak_pnl_pct is not None else None
                 # v4.231 — ROLLBACK URGENT de v4.229 (voir bot_engine.py) :
                 # spot_accum_peak_pnl_pct est de nouveau un % BRUT — la
@@ -735,7 +743,15 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "spot_accum_arm_pct_used": cfg.get("SPOT_ACCUM_TTP_ARM_PCT"),  # v4.63 — seuil REELLEMENT lu, pour verifier sans deviner
                 "spot_accum_peak_pnl_pct_internal": round(state.spot_accum_peak_pnl_pct, 3) if state.spot_accum_peak_pnl_pct is not None else None,
                 "tier0_armed": state.tier0_armed,
-                "peak_source": "spot_accum" if pos.get("strategy") == "spot_accumulation" else ("tier1" if state.peak_pnl_usd is not None else ("tier0" if state.tier0_peak_pnl_usd is not None else "absolu (aucun tier arme)")),
+                # v4.241 — SUR DEMANDE EXPLICITE, FIX BUG D AFFICHAGE : ces
+                # 4 strategies partagent desormais TOUTES le meme mecanisme
+                # de sortie unifie (state.spot_accum_armed), pas seulement
+                # "spot_accumulation" — l ancienne condition affichait a
+                # tort "aucun tier arme" pour Accumulation/Forex/Funding,
+                # meme quand un pic avait reellement arme le trailing
+                # (confirme par un cas reel : PENDLE short, pic +0.84%,
+                # jamais montre comme arme).
+                "peak_source": "spot_accum" if pos.get("strategy") in ("spot_accumulation", "accumulation", "forex", "funding_contrarian") else ("tier1" if state.peak_pnl_usd is not None else ("tier0" if state.tier0_peak_pnl_usd is not None else "absolu (aucun tier arme)")),
                 "computed_exit_threshold_pct": (
                     round(peak_pnl_pct - cfg.get("TTP_DYNAMIC_TRAIL_GAP_PCT", 0.5), 3)
                     if state.tp_stage == 1 and peak_pnl_pct is not None and cfg.get("TTP_DYNAMIC_FROM_ARM1", True)
