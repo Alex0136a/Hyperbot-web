@@ -2659,6 +2659,7 @@ class SymbolState:
             "peak_pnl_usd": peak_pnl_usd_at_close,  # v4.15
             "peak_pnl_pct": peak_pnl_pct_at_close,  # v4.17
             "fees_paid": fees_paid,  # v4.186
+            "entry_mechanism": p.get("entry_mechanism", "Non enregistré"),  # v4.243
         }
         self.closed_trades.append(trade)
         # v4.3 — FIX FUITE MEMOIRE : seul un historique glissant de 24h est
