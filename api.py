@@ -752,6 +752,12 @@ def _open_positions() -> List[Dict[str, Any]]:
                 # (confirme par un cas reel : PENDLE short, pic +0.84%,
                 # jamais montre comme arme).
                 "peak_source": "spot_accum" if pos.get("strategy") in ("spot_accumulation", "accumulation", "forex", "funding_contrarian") else ("tier1" if state.peak_pnl_usd is not None else ("tier0" if state.tier0_peak_pnl_usd is not None else "absolu (aucun tier arme)")),
+                # v4.243 — SUR DEMANDE EXPLICITE : tracabilite explicite du
+                # mecanisme ayant valide cette entree (flirt, cassure
+                # fraiche, volume, cassure ratee, etoile filante, pression
+                # directionnelle, signal standard) — memorise a l ouverture,
+                # jamais recalcule apres coup.
+                "entry_mechanism": pos.get("entry_mechanism", "Non enregistré (position antérieure à ce suivi)"),
                 "computed_exit_threshold_pct": (
                     round(peak_pnl_pct - cfg.get("TTP_DYNAMIC_TRAIL_GAP_PCT", 0.5), 3)
                     if state.tp_stage == 1 and peak_pnl_pct is not None and cfg.get("TTP_DYNAMIC_FROM_ARM1", True)
