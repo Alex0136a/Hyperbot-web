@@ -4852,7 +4852,23 @@ class BotEngine:
         # (self.live_capital_base), plus jamais self.capital/CAPITAL_USD qui
         # restent reserves au paper — evite d ecraser le capital virtuel de
         # session avec un solde reel des qu UN SEUL mode tourne en live.
-        if cfg["MODE"] == "live":
+        # v4.232 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : cfg["MODE"]
+        # est le mode GLOBAL unique — mais chaque strategie peut basculer
+        # INDEPENDAMMENT en live via STRATEGY_MODE_OVERRIDE (_effective_mode).
+        # Ce bloc (sync capital, reconciliation, recuperation de positions)
+        # etait conditionne UNIQUEMENT sur ce mode global : si celui-ci
+        # restait "paper" (ex: Forex, mode par defaut) alors qu une AUTRE
+        # strategie (Spot-Accum) tournait reellement en live, tout ce bloc
+        # etait saute — les positions live de CETTE strategie n etaient
+        # JAMAIS recuperees au redemarrage, confirme par un cas reel (3
+        # positions Spot-Accum orphelines sur Hyperliquid, jamais
+        # retrouvees malgre plusieurs redeploiements). Se declenche
+        # desormais si AU MOINS UNE strategie est effectivement live.
+        any_strategy_live = cfg["MODE"] == "live" or any(
+            self._effective_mode(s) == "live"
+            for s in ("forex", "accumulation", "spot_accumulation", "funding_contrarian")
+        )
+        if any_strategy_live:
             real_balance = sync_capital_from_hyperliquid(self.info, cfg["WALLET_ADDRESS"])
             if real_balance is not None and real_balance > 0:
                 self.live_capital_base = real_balance
