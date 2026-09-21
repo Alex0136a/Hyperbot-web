@@ -1874,6 +1874,7 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
             print(f"[ORDER] {ticker} : {err_msg}")
             return False, err_msg, None
         sz = format_size_hl(max(notional_usd / price, 0), sz_decimals)
+        print(f"[SIZE-DIAG] {ticker} : size_usd(E)={size_usd} | leverage={leverage} | notional_usd={notional_usd} | price={price} | sz_decimals={sz_decimals} | sz calcule={sz}")
         close_side = not is_buy
         # v4.5 — pos_mock["size"] doit etre le NOTIONNEL reel (deja leverage)
         # pour que _build_sl_order/_build_tp_order calculent la meme
