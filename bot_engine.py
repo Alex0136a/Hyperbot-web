@@ -1067,6 +1067,21 @@ PROFILE_SWING = {
     # une "pression" sans reaction reelle du marche).
     "TRADE_FLOW_MIN_NOTIONAL_USD": 5000.0,
     "TREND_PERSISTENCE_MIN_PRICE_MOVE_PCT": 0.1,
+    # v4.246 — SUR DEMANDE EXPLICITE : confirmation IMMEDIATE (pas soutenue
+    # dans le temps, contrairement a TREND_PERSISTENCE ci-dessus) par le
+    # flux de transactions reel, pour l entree "flirt classique" — rejette
+    # l entree si le flux contredit CLAIREMENT la direction attendue,
+    # evite d entrer sur une simple bougie rouge/verte ponctuelle sans
+    # vraie conviction du marche derriere.
+    "ENTRY_FLOW_CONFIRM_ENABLED": True,
+    "ENTRY_FLOW_CONTRADICTION_THRESHOLD": 0.3,
+    # v4.247 — SUR DEMANDE EXPLICITE : confirmation par flux de
+    # transactions reel, ajoutee a la cassure ratee (renforce/remplace le
+    # volume par bougie) et a l etoile filante (n avait aucune
+    # confirmation de ce type auparavant).
+    "FAILED_BREAKOUT_FLOW_THRESHOLD": 0.15,
+    "SHOOTING_STAR_FLOW_CONFIRM_ENABLED": True,
+    "SHOOTING_STAR_FLOW_THRESHOLD": 0.1,
     # v4.130 — SUR DEMANDE EXPLICITE : meme raisonnement que Spot-Accum.
     # v4.131 — SUR DEMANDE EXPLICITE : meme alignement que Spot-Accum.
     "ACCUMULATION_ANTI_RANGE_LOOKBACK": 12,
@@ -4052,20 +4067,32 @@ class BotEngine:
         is_red = close < open_approx
         return is_shooting_star, is_red
 
-    def _shooting_star_confirmed(self, state):
+    def _shooting_star_confirmed(self, state, ticker=None):
         """v4.227 — SUR DEMANDE EXPLICITE : suit la confirmation d une
         etoile filante ROUGE sur une duree soutenue (30 min par defaut)
         avant de la considerer confirmee — evite d agir sur un simple
         motif ponctuel sans suite reelle. Appelee a CHAQUE cycle : detecte
         le motif, demarre/maintient un chronometre de confirmation tant
         que le prix reste sous la cloture de la bougie ayant declenche le
-        signal, et renvoie True une fois la duree requise atteinte."""
+        signal, et renvoie True une fois la duree requise atteinte.
+        v4.247 — SUR DEMANDE EXPLICITE : si un ticker est fourni (usage
+        cote ENTREE — l usage cote SORTIE reste inchange, ticker=None),
+        exige EN PLUS une confirmation par le VRAI flux de transactions au
+        moment ou le motif se forme — une vraie meche de rejet devrait
+        s accompagner d une poussee de vente agressive au sommet. Ne
+        bloque QUE si le flux est disponible et contredit clairement
+        (jamais bloquant si donnees insuffisantes)."""
         is_star, is_red = self._detect_shooting_star_pattern(state)
         confirm_minutes = self.cfg.get("SHOOTING_STAR_CONFIRM_MINUTES", 30)
         now = time.time()
 
         if is_star and is_red:
-            if getattr(state, "shooting_star_pending_close", None) is None:
+            flow_ok = True
+            if ticker is not None and self.cfg.get("SHOOTING_STAR_FLOW_CONFIRM_ENABLED", True):
+                flow_pressure_ss = self._compute_trade_flow_pressure(ticker, price_now=state.current_price)
+                if flow_pressure_ss is not None:
+                    flow_ok = flow_pressure_ss <= -self.cfg.get("SHOOTING_STAR_FLOW_THRESHOLD", 0.1)
+            if flow_ok and getattr(state, "shooting_star_pending_close", None) is None:
                 state.shooting_star_pending_close = state.candle_history[-1][2]
                 state.shooting_star_pending_since = now
         pending_close = getattr(state, "shooting_star_pending_close", None)
@@ -4086,7 +4113,7 @@ class BotEngine:
             return True
         return False
 
-    def _detect_failed_breakout(self, state, direction, level, lookback_candles=20):
+    def _detect_failed_breakout(self, state, direction, level, lookback_candles=20, ticker=None):
         """v4.221 — SUR DEMANDE EXPLICITE : detecte une CASSURE RATEE
         (fausse cassure) — un signal technique fort et INDEPENDANT du
         RSI/MACD. Principe : le prix a recemment DEPASSE un niveau cle
@@ -4169,7 +4196,12 @@ class BotEngine:
                 return False
             return_extent_pct = (current_close - level) / level * 100
 
-        # Chemin VOLUME-ou-MAGNITUDE-EXCEPTIONNELLE — voir docstring.
+        # Chemin VOLUME-ou-FLUX-ou-MAGNITUDE-EXCEPTIONNELLE — voir docstring.
+        # v4.247 — SUR DEMANDE EXPLICITE : ajoute le VRAI flux de
+        # transactions (plus precis que le volume par bougie, transaction
+        # par transaction) comme voie de confirmation supplementaire — une
+        # cassure ratee devrait s accompagner d une poussee agressive dans
+        # le sens du retournement au moment du rejet.
         movement_is_exceptional = (
             breakout_extent_pct >= min_magnitude_pct * strong_multiplier
             or return_extent_pct >= min_magnitude_pct * strong_multiplier
@@ -4179,10 +4211,20 @@ class BotEngine:
                 state, recent_candles=2,
                 min_ratio=self.cfg.get("FAILED_BREAKOUT_VOLUME_MIN_RATIO", 1.3),
             )
-            if vol_confirms_fb is False:
+            flow_confirms_fb = None
+            if ticker is not None:
+                flow_pressure_fb = self._compute_trade_flow_pressure(ticker, price_now=state.current_price)
+                if flow_pressure_fb is not None:
+                    flow_threshold = self.cfg.get("FAILED_BREAKOUT_FLOW_THRESHOLD", 0.15)
+                    flow_confirms_fb = (flow_pressure_fb <= -flow_threshold) if direction == "short" else (flow_pressure_fb >= flow_threshold)
+            # N importe laquelle des deux sources DISPONIBLES qui confirme
+            # suffit. Rejette UNIQUEMENT si AU MOINS UNE source est
+            # disponible et qu AUCUNE ne confirme (les deux absentes ->
+            # laisse passer, coherent avec "donnees insuffisantes, jamais
+            # bloquant").
+            readings = [r for r in (vol_confirms_fb, flow_confirms_fb) if r is not None]
+            if readings and not any(readings):
                 return False
-            # vol_confirms_fb is None (historique 1h insuffisant) ou True
-            # (confirme) -> le signal passe dans les deux cas.
 
         # Garde-fou ANTI-REPETITION : cooldown minimal entre deux
         # declenchements sur le MEME actif+direction.
@@ -7034,9 +7076,9 @@ class BotEngine:
         failed_breakout_long = False
         if cfg.get("FAILED_BREAKOUT_DETECTION_ENABLED", True):
             if resistance is not None:
-                failed_breakout_short = self._detect_failed_breakout(state, "short", resistance, cfg.get("FAILED_BREAKOUT_LOOKBACK_CANDLES", 20))
+                failed_breakout_short = self._detect_failed_breakout(state, "short", resistance, cfg.get("FAILED_BREAKOUT_LOOKBACK_CANDLES", 20), ticker=ticker)
             if support is not None:
-                failed_breakout_long = self._detect_failed_breakout(state, "long", support, cfg.get("FAILED_BREAKOUT_LOOKBACK_CANDLES", 20))
+                failed_breakout_long = self._detect_failed_breakout(state, "long", support, cfg.get("FAILED_BREAKOUT_LOOKBACK_CANDLES", 20), ticker=ticker)
             if failed_breakout_short:
                 short_level_ok = True
             if failed_breakout_long:
@@ -7045,7 +7087,7 @@ class BotEngine:
         # v4.227 — SUR DEMANDE EXPLICITE : etoile filante ROUGE confirmee
         # sur 30 min — signal baissier, s applique au SHORT uniquement
         # (une etoile filante n a pas d equivalent haussier logique ici).
-        if cfg.get("SHOOTING_STAR_DETECTION_ENABLED", True) and self._shooting_star_confirmed(state):
+        if cfg.get("SHOOTING_STAR_DETECTION_ENABLED", True) and self._shooting_star_confirmed(state, ticker=ticker):
             short_level_ok = True
 
         # v4.240 — SUR DEMANDE EXPLICITE : pression directionnelle soutenue
@@ -7629,7 +7671,7 @@ class BotEngine:
         # Forex — signal fort et INDEPENDANT de l EMA200/ADX.
         failed_breakout_ac = False
         if cfg.get("FAILED_BREAKOUT_DETECTION_ENABLED", True) and resistance is not None:
-            failed_breakout_ac = self._detect_failed_breakout(state, "short", resistance, cfg.get("FAILED_BREAKOUT_LOOKBACK_CANDLES", 20))
+            failed_breakout_ac = self._detect_failed_breakout(state, "short", resistance, cfg.get("FAILED_BREAKOUT_LOOKBACK_CANDLES", 20), ticker=ticker)
         snap["failed_breakout"] = failed_breakout_ac
 
         # v4.227 — SUR DEMANDE EXPLICITE : etoile filante ROUGE confirmee
@@ -7637,7 +7679,7 @@ class BotEngine:
         # INDEPENDANT de l EMA200/ADX), bypass ces exigences.
         shooting_star_ac = False
         if cfg.get("SHOOTING_STAR_DETECTION_ENABLED", True):
-            shooting_star_ac = self._shooting_star_confirmed(state)
+            shooting_star_ac = self._shooting_star_confirmed(state, ticker=ticker)
         snap["shooting_star_confirmed"] = shooting_star_ac
 
         # v4.240 — SUR DEMANDE EXPLICITE : pression directionnelle soutenue
@@ -7699,6 +7741,23 @@ class BotEngine:
                 bearish_now = self._is_candle_bearish_now(state)
                 if bearish_now is False:
                     snap["blocker"] = "bougie actuelle non baissiere"
+                    return
+            # v4.246 — SUR DEMANDE EXPLICITE : confirmation IMMEDIATE par le
+            # VRAI flux de transactions — une seule bougie rouge pres de la
+            # resistance peut n etre qu un soubresaut ponctuel, pas un vrai
+            # debut de baisse (confirme par un motif recurrent : entrees
+            # Accumulation qui repartent immediatement a la hausse apres
+            # ouverture, declenchant le plafond de securite). Contrairement
+            # a la pression SOUTENUE (10 min) utilisee comme contournement
+            # complet ailleurs, ceci est une lecture UNIQUE et immediate —
+            # ne bloque QUE si le flux contredit CLAIREMENT la baisse
+            # attendue (achat net agressif), sans exiger une confirmation
+            # parfaite.
+            if cfg.get("ENTRY_FLOW_CONFIRM_ENABLED", True):
+                flow_pressure = self._compute_trade_flow_pressure(ticker, price_now=price)
+                snap["entry_flow_pressure"] = flow_pressure
+                if flow_pressure is not None and flow_pressure >= cfg.get("ENTRY_FLOW_CONTRADICTION_THRESHOLD", 0.3):
+                    snap["blocker"] = f"flux de transactions contredit la baisse (pression achat {flow_pressure:+.2f})"
                     return
         snap["entered_via_flirt"] = not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac and not shooting_star_ac and not trend_persistence_ac
 
@@ -7880,7 +7939,7 @@ class BotEngine:
         # v4.221 — SUR DEMANDE EXPLICITE : cassure ratee (miroir Accumulation).
         failed_breakout_sa = False
         if cfg.get("FAILED_BREAKOUT_DETECTION_ENABLED", True) and support is not None:
-            failed_breakout_sa = self._detect_failed_breakout(state, "long", support, cfg.get("FAILED_BREAKOUT_LOOKBACK_CANDLES", 20))
+            failed_breakout_sa = self._detect_failed_breakout(state, "long", support, cfg.get("FAILED_BREAKOUT_LOOKBACK_CANDLES", 20), ticker=ticker)
         snap["failed_breakout"] = failed_breakout_sa
 
         # v4.240 — SUR DEMANDE EXPLICITE : pression directionnelle soutenue
@@ -7977,6 +8036,15 @@ class BotEngine:
                 bullish_now = self._is_candle_bullish_now(state)
                 if bullish_now is False:
                     snap["blocker"] = "bougie actuelle non haussiere"
+                    return
+            # v4.246 — SUR DEMANDE EXPLICITE : confirmation immediate par le
+            # flux de transactions reel — voir Accumulation pour le
+            # raisonnement complet (miroir, cote achat).
+            if cfg.get("ENTRY_FLOW_CONFIRM_ENABLED", True):
+                flow_pressure_sa = self._compute_trade_flow_pressure(ticker, price_now=price)
+                snap["entry_flow_pressure"] = flow_pressure_sa
+                if flow_pressure_sa is not None and flow_pressure_sa <= -cfg.get("ENTRY_FLOW_CONTRADICTION_THRESHOLD", 0.3):
+                    snap["blocker"] = f"flux de transactions contredit la hausse (pression vente {flow_pressure_sa:+.2f})"
                     return
         # v4.178 — SUR DEMANDE EXPLICITE : marque si cette entree qualifie
         # via le flirt S/R (pas via une cassure fraiche) — determine si le
