@@ -674,6 +674,11 @@ CONFIG = {
     # recuperation de position (voir ensure_sl_on_hyperliquid) — un vrai
     # filet de catastrophe, pas le SL de gestion quotidienne.
     "RECOVERY_RESCUE_SL_PCT": 15.0,
+    # v4.237 — SUR DEMANDE EXPLICITE : marge minimale de confiance qu un
+    # nouveau signal doit depasser pour renverser une position existante
+    # opposee (Accumulation vs Spot-Accum sur le meme actif) — sinon mis en
+    # attente plutot que de fermer systematiquement l existant.
+    "CONFLICT_RESOLUTION_MIN_CONFIDENCE_MARGIN": 5.0,
 
     # Trailing Take Profit (TTP), en % de MOUVEMENT DE PRIX REEL (v4.7) :
     #   - v4.7 — SUR DEMANDE EXPLICITE : contrairement au SL (reste en % de
@@ -7835,7 +7840,7 @@ class BotEngine:
             self.emit("log", {"msg": f"[{ticker}] Candidat {strategy} abandonne — slot deja pris ce cycle par l autre strategie.", "level": "dim"})
             return
 
-        # v4.195 — SUR DEMANDE EXPLICITE — REIMPLANTE apres une perte
+        # v4.195/237 — SUR DEMANDE EXPLICITE — REIMPLANTE apres une perte
         # accidentelle en cours de session : Accumulation (short) et
         # Spot-Accum (long) peuvent desormais cibler le MEME actif en sens
         # OPPOSES — sur Hyperliquid, un seul et meme compte/position par
@@ -7846,10 +7851,25 @@ class BotEngine:
         # PROACTIVEMENT la position opposee existante avant d ouvrir la
         # nouvelle — on ne peut pas avoir deux tendances inversees sur le
         # meme actif.
+        # v4.237 — SUR DEMANDE EXPLICITE : au lieu de TOUJOURS donner la
+        # priorite au nouveau signal (peu importe sa force), compare
+        # desormais les scores de CONFIANCE des deux cotes — confirme par
+        # un lot reel : 28% des trades Accumulation se terminaient par ce
+        # conflit, souvent sur des signaux faibles des deux cotes. Si la
+        # position EXISTANTE a une confiance egale ou superieure au NOUVEAU
+        # candidat (au-dela d une marge minimale), le nouveau candidat est
+        # mis en ATTENTE (abandonne ce cycle, sans fermer l existant) —
+        # seul un signal CLAIREMENT plus fort peut desormais renverser une
+        # position en cours.
+        conflict_margin = cfg.get("CONFLICT_RESOLUTION_MIN_CONFIDENCE_MARGIN", 5.0)
         if strategy == "accumulation" and signal == "short":
             opposing_state = self.states.get(symbol)
             if opposing_state and opposing_state.position and opposing_state.position.get("strategy") == "spot_accumulation":
-                self.emit("log", {"msg": f"[{ticker}] ⚠️ Conflit detecte : fermeture du long Spot-Accum existant avant d ouvrir le short Accumulation (memes actif, sens opposes).", "level": "warn"})
+                existing_confidence = opposing_state.position.get("confidence", 0) or 0
+                if existing_confidence >= confidence - conflict_margin:
+                    self.emit("log", {"msg": f"[{ticker}] Conflit avec Spot-Accum (confiance {existing_confidence:.0f}% vs {confidence:.0f}%) — position existante jugee au moins aussi solide, nouveau signal short mis en attente.", "level": "dim"})
+                    return
+                self.emit("log", {"msg": f"[{ticker}] ⚠️ Conflit detecte : fermeture du long Spot-Accum existant (confiance {existing_confidence:.0f}%) avant d ouvrir le short Accumulation, plus solide (confiance {confidence:.0f}%).", "level": "warn"})
                 close_price = state.current_price or price
                 pnl, _, trade = opposing_state.close_position(close_price, "CONFLIT SENS OPPOSE (Accumulation)")
                 trade["symbol"] = symbol
@@ -7860,7 +7880,11 @@ class BotEngine:
         elif strategy == "spot_accumulation" and signal == "long":
             opposing_accum_state = self.accum_states.get(symbol)
             if opposing_accum_state and opposing_accum_state.position and opposing_accum_state.position.get("strategy") == "accumulation":
-                self.emit("log", {"msg": f"[{ticker}] ⚠️ Conflit detecte : fermeture du short Accumulation existant avant d ouvrir le long Spot-Accum (memes actif, sens opposes).", "level": "warn"})
+                existing_confidence = opposing_accum_state.position.get("confidence", 0) or 0
+                if existing_confidence >= confidence - conflict_margin:
+                    self.emit("log", {"msg": f"[{ticker}] Conflit avec Accumulation (confiance {existing_confidence:.0f}% vs {confidence:.0f}%) — position existante jugee au moins aussi solide, nouveau signal long mis en attente.", "level": "dim"})
+                    return
+                self.emit("log", {"msg": f"[{ticker}] ⚠️ Conflit detecte : fermeture du short Accumulation existant (confiance {existing_confidence:.0f}%) avant d ouvrir le long Spot-Accum, plus solide (confiance {confidence:.0f}%).", "level": "warn"})
                 close_price = opposing_accum_state.current_price or price
                 pnl, _, trade = opposing_accum_state.close_position(close_price, "CONFLIT SENS OPPOSE (Spot-Accum)")
                 trade["symbol"] = symbol
