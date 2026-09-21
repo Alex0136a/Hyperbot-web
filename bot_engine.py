@@ -1710,6 +1710,21 @@ def reconcile_closed_positions(info, wallet_address, saved_positions, cfg):
             if coin in open_coins:
                 continue  # position encore ouverte, rien a faire
 
+            # v4.253 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : cette
+            # reconciliation compare UNIQUEMENT contre les positions
+            # REELLES sur Hyperliquid — une position PAPER n y a jamais
+            # existe, par design, donc son absence ne signifie PAS qu elle
+            # a ete "fermee via SL/TP Hyperliquid" (aucun ordre reel n a
+            # jamais ete place). Sans ce filtre, TOUTE position paper
+            # sauvegardee etait a tort traitee comme "fermee pendant la
+            # deconnexion" avec un motif "SL/TP HYPERLIQUID" trompeur,
+            # confirme par un cas reel (trades Accumulation PAPER affichant
+            # ce motif). Ignore desormais completement les positions paper
+            # dans cette reconciliation — gerees normalement par ailleurs
+            # (aucune synchronisation exchange necessaire pour elles).
+            if pos.get("effective_mode", "paper") != "live":
+                continue
+
             # La position a disparu pendant la deconnexion
             entry  = pos["entry"]
             size   = pos["size"]
