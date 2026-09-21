@@ -1082,6 +1082,11 @@ PROFILE_SWING = {
     "FAILED_BREAKOUT_FLOW_THRESHOLD": 0.15,
     "SHOOTING_STAR_FLOW_CONFIRM_ENABLED": True,
     "SHOOTING_STAR_FLOW_THRESHOLD": 0.1,
+    # v4.248 — SUR DEMANDE EXPLICITE : bonus de confiance MAXIMAL
+    # (module par l intensite 0.0-1.0 du signal) quand une cassure ratee
+    # valide l entree — privilegie la force du signal lui-meme plutot que
+    # la tendance externe (en retard sur ce type d evenement).
+    "FAILED_BREAKOUT_MAX_CONFIDENCE_BONUS": 10.0,
     # v4.130 — SUR DEMANDE EXPLICITE : meme raisonnement que Spot-Accum.
     # v4.131 — SUR DEMANDE EXPLICITE : meme alignement que Spot-Accum.
     "ACCUMULATION_ANTI_RANGE_LOOKBACK": 12,
@@ -4235,6 +4240,18 @@ class BotEngine:
         if now - last_trigger < cooldown_sec:
             return False
         setattr(state, cooldown_attr, now)
+        # v4.248 — SUR DEMANDE EXPLICITE : calcule une INTENSITE du signal
+        # (0.0-1.0) — plutot que de filtrer sur la tendance externe (en
+        # retard sur ce type d evenement par nature), utilise la force du
+        # signal LUI-MEME : magnitude de la cassure + du retour,
+        # normalisee par rapport au seuil "exceptionnel". Le score de
+        # confiance du trade resultant sera module par cette intensite —
+        # une cassure ratee franche merite plus de confiance qu une
+        # cassure ratee a peine au-dessus du minimum requis, meme si
+        # toutes deux "valident" techniquement le signal.
+        strong_threshold_calc = min_magnitude_pct * strong_multiplier
+        intensity = min(1.0, (breakout_extent_pct + return_extent_pct) / (strong_threshold_calc * 2)) if strong_threshold_calc > 0 else 0.5
+        state.failed_breakout_intensity = round(intensity, 3)
         return True
 
     def _detect_fresh_breakout(self, state, direction, lookback_candles):
@@ -7442,6 +7459,8 @@ class BotEngine:
                 state.consec_bull, min_consec, cfg,
                 support=support, resistance=resistance
             )
+            if failed_breakout_long:
+                confidence += getattr(state, "failed_breakout_intensity", 0.5) * cfg.get("FAILED_BREAKOUT_MAX_CONFIDENCE_BONUS", 10.0)
             conf_threshold = self._get_confidence_threshold(ticker)
             if confidence < conf_threshold:
                 self.emit("log", {
@@ -7557,6 +7576,11 @@ class BotEngine:
                 state.consec_bear, min_consec, cfg,
                 support=support, resistance=resistance
             )
+            # v4.248 — SUR DEMANDE EXPLICITE : bonus de confiance
+            # proportionnel a l intensite de la cassure ratee — voir
+            # Accumulation pour le raisonnement complet.
+            if failed_breakout_short:
+                confidence += getattr(state, "failed_breakout_intensity", 0.5) * cfg.get("FAILED_BREAKOUT_MAX_CONFIDENCE_BONUS", 10.0)
             conf_threshold = self._get_confidence_threshold(ticker)
             if confidence < conf_threshold:
                 self.emit("log", {
@@ -7796,6 +7820,12 @@ class BotEngine:
             confidence += cfg.get("ACCUMULATION_VOLUME_CONFIRM_BONUS", 5.0)
         if dynamic_trend_confirms_ac:
             confidence += cfg.get("DYNAMIC_TREND_CONFIRM_BONUS", 5.0)
+        # v4.248 — SUR DEMANDE EXPLICITE : bonus de confiance proportionnel
+        # a l intensite de la cassure ratee, quand c est elle qui a valide
+        # l entree — une cassure ratee franche merite plus de confiance
+        # qu une a peine au-dessus du minimum requis.
+        if failed_breakout_ac:
+            confidence += getattr(state, "failed_breakout_intensity", 0.5) * cfg.get("FAILED_BREAKOUT_MAX_CONFIDENCE_BONUS", 10.0)
         confidence = min(confidence, 85.0)
         snap["confidence"] = round(confidence, 1)
 
@@ -8079,6 +8109,10 @@ class BotEngine:
         confidence = 65.0 + min(max(position_in_range_pct - min_above_pct, 0) / 50.0 * 20.0, 20.0)
         if dynamic_trend_confirms_sa:
             confidence += cfg.get("DYNAMIC_TREND_CONFIRM_BONUS", 5.0)
+        # v4.248 — SUR DEMANDE EXPLICITE : voir Accumulation pour le
+        # raisonnement complet (miroir).
+        if failed_breakout_sa:
+            confidence += getattr(state, "failed_breakout_intensity", 0.5) * cfg.get("FAILED_BREAKOUT_MAX_CONFIDENCE_BONUS", 10.0)
         confidence = min(confidence, 85.0)
         snap["confidence"] = round(confidence, 1)
 
