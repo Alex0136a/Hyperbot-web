@@ -320,6 +320,13 @@ CONFIG = {
         "spot_accumulation": True,
     },
     "FUNDING_ANNUAL_THRESHOLD_PCT": 25.0,  # funding annualise au-dela duquel le positionnement est juge "extreme"
+    # v4.249 — SUR DEMANDE EXPLICITE : sortie dediee quand le taux revient
+    # DANS la fourchette normale (these d entree resolue) — ratio du seuil
+    # d entree en dessous duquel on considere le taux "normalise" (0.4 =
+    # 10% si le seuil d entree est 25%, nettement en dessous, pas juste
+    # a peine repasse sous le seuil d entree).
+    "FUNDING_EXIT_ON_RATE_NORMALIZED": True,
+    "FUNDING_EXIT_NORMALIZE_RATIO": 0.4,
     "FUNDING_MODE_MAX_TRADES": 3,          # plafond de trades simultanes, independant des autres modes
     "FUNDING_REFRESH_SEC": 300,            # frequence de rafraichissement du funding (5 min, evite de spammer l API)
 
@@ -5653,7 +5660,14 @@ class BotEngine:
         # "spot_accumulation" apres une recuperation orpheline) n a plus
         # d impact sur la LOGIQUE de sortie, puisque tous les modes
         # partagent desormais ce meme mecanisme.
-        if pos.get("strategy") in ("spot_accumulation", "accumulation", "forex", "funding_contrarian"):
+        # v4.249 — SUR DEMANDE EXPLICITE : Funding retire de ce mecanisme
+        # unifie (etait ajoute en v4.234) — reconsideration honnete : ce
+        # mecanisme est pense pour du SUIVI DE TENDANCE (laisser courir
+        # tant que la bougie confirme), philosophiquement incompatible
+        # avec Funding, qui parie sur un retour RAPIDE et BREF a la
+        # moyenne apres un exces de taux de financement — voir le nouveau
+        # mecanisme dedie plus bas (_manage_funding_position).
+        if pos.get("strategy") in ("spot_accumulation", "accumulation", "forex"):
             # v4.212 — label dynamique pour les messages, correct pour les
             # deux modes partageant desormais ce meme bloc de sortie.
             _label_map_sa = {
@@ -6015,6 +6029,33 @@ class BotEngine:
         # a la demande explicite) et les entrees Accumulation qualifiees
         # specifiquement via son mode "trader le range" (garde son propre
         # SL % de prix classique, coherent avec sa logique dediee).
+        # v4.249 — SUR DEMANDE EXPLICITE : mecanisme de sortie DEDIE pour
+        # Funding — sa these d entree (taux de financement EXTREME) est
+        # elle-meme le meilleur signal de sortie : une fois le taux revenu
+        # DANS la fourchette normale, la these d origine est resolue,
+        # independamment du PnL du moment (peut sortir en gain OU en
+        # perte modeste — l objectif est de ne pas s attarder une fois la
+        # raison d etre du trade disparue, coherent avec la nature de
+        # retour a la moyenne RAPIDE de ce mode).
+        if pos.get("strategy") == "funding_contrarian" and cfg.get("FUNDING_EXIT_ON_RATE_NORMALIZED", True):
+            hourly_rate_now = self.funding_rates.get(ticker)
+            if hourly_rate_now is not None:
+                annual_pct_now = hourly_rate_now * 24 * 365 * 100
+                normalize_threshold = cfg.get("FUNDING_ANNUAL_THRESHOLD_PCT", 25.0) * cfg.get("FUNDING_EXIT_NORMALIZE_RATIO", 0.4)
+                rate_normalized = abs(annual_pct_now) < normalize_threshold
+                if rate_normalized:
+                    pnl, _, trade = state.close_position(price, "TAUX DE FINANCEMENT NORMALISE")
+                    trade["symbol"] = symbol
+                    if mode == "live" and self.exchange:
+                        close_order(self.exchange, ticker, pos, self.cfg)
+                    self.emit("trade", trade)
+                    if pnl > 0:
+                        self._register_win(ticker)
+                    self.emit("log", {"msg": f"[{ticker}] 💰 Funding : taux normalise ({annual_pct_now:+.1f}% annualise, sous le seuil de sortie) — these d entree resolue @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+                    self._save_open_positions()
+                    self._persist_capital_snapshot()
+                    return
+
         use_structural_sl = (
             pos.get("strategy") != "funding_contrarian"
             and not pos.get("entered_via_range", False)
