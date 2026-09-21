@@ -315,6 +315,28 @@ def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=N
         conn.commit()
 
 
+def get_open_trade_strategy(coin, action):
+    """v4.233 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : retrouve la
+    VRAIE strategie d origine d une position via la base de donnees
+    DURABLE (table trades, ligne encore ouverte : closed_at IS NULL), au
+    lieu du fichier positions.json EPHEMERE — celui-ci est vide des qu une
+    position a deja ete (a tort) fermee cote bot, rendant toute
+    reconciliation basee dessus impossible. Confirme par un cas reel :
+    des positions Spot-Accum orphelines, reclassees "forex" par defaut
+    faute de reference locale, geree ensuite avec la MAUVAISE logique de
+    sortie (tier0/tier1 au lieu du mecanisme dedie). La base SQLite,
+    elle, garde la trace du trade ORIGINAL tant qu il n a jamais ete
+    marque ferme — une source bien plus fiable pour ce cas precis.
+    Retourne la strategie (str) ou None si aucune correspondance."""
+    with _lock, _connect() as conn:
+        row = conn.execute("""
+            SELECT strategy FROM trades
+            WHERE coin=? AND action=? AND closed_at IS NULL
+            ORDER BY created_at DESC LIMIT 1
+        """, (coin, action)).fetchone()
+        return row["strategy"] if row and row["strategy"] else None
+
+
 def get_open_trade_id_by_coin_action(coin, action, strategy=None):
     """Retrouve le dernier trade ouvert (non ferme) pour ce coin/action —
     utilise quand on ne connait pas l id (ouverture geree par bot_engine,
