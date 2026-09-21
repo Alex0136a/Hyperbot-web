@@ -52,6 +52,14 @@ os.chdir(_DATA_DIR)
 #  INITIALISATION
 # ─────────────────────────────────────────────────────────────────────────
 db.init_db()
+# v4.244 — SUR DEMANDE EXPLICITE : purge le journal permanent au
+# demarrage (rythme naturel de redeploiement de ce bot, suffisant pour
+# eviter une croissance illimitee sans necessiter de tache planifiee
+# separee).
+try:
+    db.purge_log_history()
+except Exception as e:
+    print(f"[LOG-HISTORY] Echec purge au demarrage : {e}")
 
 # Nos 6 symboles reellement supportes (voir bot_engine.CONFIG["SYMBOLS"]).
 # L interface propose 30 cryptos (ALL_COINS) — on ne peut en activer que
@@ -116,11 +124,21 @@ _LEVEL_MAP = {"ok": "success", "win": "success", "warn": "warning", "loss": "err
 
 
 def _push_log(level_raw: str, msg: str):
+    now = datetime.now(timezone.utc).isoformat()
     log_buffer.append({
-        "time": datetime.now(timezone.utc).isoformat(),
+        "time": now,
         "level": _LEVEL_MAP.get(level_raw, "info"),
         "message": msg,
     })
+    # v4.244 — SUR DEMANDE EXPLICITE : persiste EGALEMENT les niveaux
+    # significatifs (pas le bruit "info"/"dim"/"signal" repete a chaque
+    # cycle) dans le journal permanent, consultable au-dela du buffer en
+    # memoire (3000 lignes, quelques heures seulement).
+    if level_raw in ("warn", "error", "ok", "win", "loss"):
+        try:
+            db.append_log_history(now, level_raw, msg)
+        except Exception as e:
+            print(f"[LOG-HISTORY] Echec ecriture journal permanent : {e}")
 
 
 for _w in _startup_warnings:
@@ -1553,6 +1571,21 @@ def bot_logs(persistent: bool = Query(False), limit: int = Query(200), search: s
         except FileNotFoundError:
             return {"logs": []}
     return {"logs": list(log_buffer)[-limit:]}
+
+
+@app.get("/api/bot/logs/history")
+def bot_logs_history(limit: int = Query(200), before_id: int = Query(None), level: str = Query(None), email: str = Depends(require_user)):
+    """v4.244 — SUR DEMANDE EXPLICITE : journal PERSISTANT en base de
+    donnees (survit aux redemarrages, retention 30 jours) — distinct du
+    buffer en memoire (quelques heures) et du fichier 24h existant
+    (?persistent=true sur /api/bot/logs). Pagination via before_id (id du
+    plus ancien deja recu, pour charger la page precedente/plus ancienne).
+    Filtre optionnel par niveau (warn/error/ok/win/loss)."""
+    try:
+        rows = db.query_log_history(limit=min(limit, 500), before_id=before_id, level=level)
+        return {"logs": rows, "has_more": len(rows) == min(limit, 500)}
+    except Exception as e:
+        return {"logs": [], "has_more": False, "error": str(e)}
 
 
 # ─────────────────────────────────────────────────────────────────────────
