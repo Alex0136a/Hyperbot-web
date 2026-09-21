@@ -1094,6 +1094,11 @@ PROFILE_SWING = {
     # valide l entree — privilegie la force du signal lui-meme plutot que
     # la tendance externe (en retard sur ce type d evenement).
     "FAILED_BREAKOUT_MAX_CONFIDENCE_BONUS": 10.0,
+    # v4.251 — SUR DEMANDE EXPLICITE : cooldown avant de retenter un trade
+    # dont le notionnel projete est sous le minimum Hyperliquid (capital
+    # probablement engage ailleurs) — evite les tentatives repetees
+    # inutiles a chaque cycle, tant que rien n a change entre-temps.
+    "INSUFFICIENT_NOTIONAL_COOLDOWN_SEC": 180,
     # v4.130 — SUR DEMANDE EXPLICITE : meme raisonnement que Spot-Accum.
     # v4.131 — SUR DEMANDE EXPLICITE : meme alignement que Spot-Accum.
     "ACCUMULATION_ANTI_RANGE_LOOKBACK": 12,
@@ -8334,6 +8339,24 @@ class BotEngine:
             self.emit("log", {"msg": f"[{ticker}] Capital insuffisant (${capital_available:.2f})", "level": "warn"})
             return
 
+        # v4.252 — SUR DEMANDE EXPLICITE : verification PRECOCE, avant de
+        # traverser le reste de la logique d entree (calcul SL/TP, mise a
+        # jour du levier sur l exchange, etc.) — le levier final n est pas
+        # encore connu ici. Seuil prudent (2$, pas 10$) pour ne pas
+        # rejeter a tort un capital qui resterait viable avec un levier
+        # dynamique eleve (jusqu a x5 pour Accumulation/Spot-Accum) — le
+        # controle PRECIS (avec le levier REEL determine) reste en place
+        # plus loin, pour trancher les cas limites correctement.
+        if capital_available < 2.0:
+            cooldown_sec = cfg.get("INSUFFICIENT_NOTIONAL_COOLDOWN_SEC", 180)
+            last_attempt = getattr(state, "_last_insufficient_notional_attempt", 0)
+            now_ts = time.time()
+            if now_ts - last_attempt < cooldown_sec:
+                return
+            state._last_insufficient_notional_attempt = now_ts
+            self.emit("log", {"msg": f"[{ticker}] Capital disponible (${capital_available:.2f}) trop faible pour atteindre le minimum Hyperliquid ($10), meme avec un levier eleve — capital probablement engage ailleurs, nouvelle tentative dans {cooldown_sec//60} min.", "level": "warn"})
+            return
+
         if open_count == 0 or self.batch_entry_size is None:
             self.batch_entry_size = equity * cfg["POSITION_SIZE_PCT"] / 100
             save_batch_entry_size(self.batch_entry_size)
@@ -8657,6 +8680,25 @@ class BotEngine:
                 self.emit("log", {"msg": f"[{ticker}] Echec application levier prudent x{leverage} : {e} — poursuite avec le levier deja en place.", "level": "warn"})
             # tp_price=None : plus d ordre TP fixe sur Hyperliquid, la prise de
             # profit est entierement geree par le bot (Quick Profit / Trailing)
+            # v4.251 — SUR DEMANDE EXPLICITE, FIX : verifie le notionnel
+            # minimal AVANT d appeler place_order (pas apres son echec) —
+            # evite de retenter la MEME commande vouee a l echec a CHAQUE
+            # cycle quand le capital disponible est insuffisant (confirme
+            # par un cas reel : LINK, 7+ tentatives identiques en moins de
+            # 2 minutes, meme notionnel $1.91 a chaque fois, tant que le
+            # capital reste bloque dans d autres positions). Cooldown de
+            # quelques minutes avant de retenter CE ticket specifiquement,
+            # le temps qu un autre trade se ferme et libere du capital.
+            projected_notional = size * max(leverage, 1)
+            if projected_notional < 10.0:
+                cooldown_sec = cfg.get("INSUFFICIENT_NOTIONAL_COOLDOWN_SEC", 180)
+                last_attempt = getattr(state, "_last_insufficient_notional_attempt", 0)
+                now_ts = time.time()
+                if now_ts - last_attempt < cooldown_sec:
+                    return
+                state._last_insufficient_notional_attempt = now_ts
+                self.emit("log", {"msg": f"[{ticker}] Notionnel projete ${projected_notional:.2f} sous le minimum Hyperliquid de $10 — capital probablement engage ailleurs, nouvelle tentative dans {cooldown_sec//60} min.", "level": "warn"})
+                return
             ok, order_err, real_fill_price = place_order(self.exchange, ticker, signal == "long", size, price, cfg, sl_price=sl_p, tp_price=None, leverage=leverage)
             if not ok:
                 self.emit("log", {"msg": f"[{ticker}] Ordre non execute — {order_err or 'raison inconnue'}", "level": "warn"})
