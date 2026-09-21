@@ -4917,14 +4917,28 @@ class BotEngine:
                         # ecrite dans self.states (partage par Normal/
                         # Funding/Spot-Accum), jamais dans self.accum_states,
                         # la rendant invisible ou incorrectement classee.
-                        # Croise avec la sauvegarde locale (cles prefixees
-                        # "ACCUM__") pour retrouver la VRAIE strategie
-                        # d origine et router vers le bon emplacement.
+                        # v4.233 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE :
+                        # priorite desormais a la base de donnees DURABLE
+                        # (get_open_trade_strategy) plutot qu au fichier
+                        # positions.json EPHEMERE (saved_positions) — celui-
+                        # ci est vide des qu une position a deja ete
+                        # (a tort) fermee cote bot, rendant la classification
+                        # impossible et provoquant un repli errone vers
+                        # "forex" (confirme par un cas reel : des positions
+                        # Spot-Accum orphelines geree ensuite avec la
+                        # MAUVAISE logique de sortie). La base garde la trace
+                        # tant que le trade n a jamais ete marque ferme, quel
+                        # que soit l etat du fichier local.
+                        real_strategy = db.get_open_trade_strategy(ticker_sym, pos.get("type", "").upper())
                         saved_accum = saved_positions.get(f"ACCUM__{slot_key}") if saved_positions else None
-                        if saved_accum and saved_accum.get("type") == pos.get("type"):
+                        if real_strategy == "accumulation" or (saved_accum and saved_accum.get("type") == pos.get("type")):
                             pos["strategy"] = "accumulation"
                             target_state = self.accum_states[slot_key]
-                            self.emit("log", {"msg": f"[{ticker_sym}] Position identifiee comme Accumulation (via sauvegarde locale) — routee vers son emplacement dedie.", "level": "warn"})
+                            self.emit("log", {"msg": f"[{ticker_sym}] Position identifiee comme Accumulation (via {'base de donnees' if real_strategy == 'accumulation' else 'sauvegarde locale'}) — routee vers son emplacement dedie.", "level": "warn"})
+                        elif real_strategy in ("spot_accumulation", "forex", "funding_contrarian"):
+                            pos["strategy"] = real_strategy
+                            target_state = self.states[slot_key]
+                            self.emit("log", {"msg": f"[{ticker_sym}] Position identifiee comme {real_strategy} (via base de donnees) — strategie d origine preservee.", "level": "warn"})
                         else:
                             pos.setdefault("strategy", "forex")
                             target_state = self.states[slot_key]
