@@ -1552,7 +1552,9 @@ def recover_open_positions(info, wallet_address, symbols, cfg):
             szi  = float(pos.get("szi", 0))      # positif = long, negatif = short
             entry = float(pos.get("entryPx", 0) or 0)
             if coin not in symbols or szi == 0 or entry == 0:
+                print(f"[RECOVER-DIAG] {coin} IGNORE — coin_in_symbols={coin in symbols} | szi={szi} | entry={entry}")
                 continue
+            print(f"[RECOVER-DIAG] {coin} RETENU — szi={szi} | entry={entry}")
             direction = "long" if szi > 0 else "short"
             size_usd  = abs(szi) * entry
             sl_pct = cfg.get("SYMBOL_SL_PCT", {}).get(coin, cfg["STOP_LOSS_PCT"])
@@ -4868,6 +4870,7 @@ class BotEngine:
             self._effective_mode(s) == "live"
             for s in ("forex", "accumulation", "spot_accumulation", "funding_contrarian")
         )
+        print(f"[RECOVER-DIAG] any_strategy_live={any_strategy_live} | cfg[MODE]={cfg['MODE']} | forex={self._effective_mode('forex')} | accumulation={self._effective_mode('accumulation')} | spot_accumulation={self._effective_mode('spot_accumulation')} | funding_contrarian={self._effective_mode('funding_contrarian')}")
         if any_strategy_live:
             real_balance = sync_capital_from_hyperliquid(self.info, cfg["WALLET_ADDRESS"])
             if real_balance is not None and real_balance > 0:
