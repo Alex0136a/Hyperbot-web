@@ -5452,6 +5452,36 @@ class BotEngine:
                 self._persist_capital_snapshot()
                 return
 
+            # v4.238 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : si les DEUX
+            # seuils (0.5% structurel ET 5% plafond dur) sont deja depasses
+            # au MEME cycle (ex: prix ayant fortement chute pendant que le
+            # bot etait momentanement moins reactif), le plafond DUR (5%,
+            # verifie plus bas dans le code jusqu ici) l emportait
+            # TOUJOURS sur le seuil plus protecteur (0.5%), qui n avait
+            # alors JAMAIS sa chance — confirme par un cas reel (ARB fermee
+            # a -5.05% via ce plafond, alors que le seuil de 0.5% aurait du
+            # proteger bien avant). Verifie desormais le seuil le PLUS
+            # PROTECTEUR en priorite absolue, quel que soit son
+            # emplacement dans le reste du code.
+            immediate_cap_pct = cfg.get("STRUCTURAL_SL_HARD_CAP_PCT", 0.5)
+            if pnl_pct <= -immediate_cap_pct:
+                pnl, _, trade = state.close_position(price, "STOP LOSS (plafond immediat)")
+                trade["symbol"] = symbol
+                if mode == "live" and self.exchange:
+                    close_order(self.exchange, ticker, pos, self.cfg)
+                self.emit("trade", trade)
+                self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} STOP LOSS plafond immediat : perte {pnl_pct:.2f}% >= {immediate_cap_pct:.2f}% @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "loss"})
+                if pos["type"] == "long":
+                    state.post_win_confirm_long = True
+                    state.confirm_count_long = 0
+                else:
+                    state.post_win_confirm_short = True
+                    state.confirm_count_short = 0
+                self._register_max_loss(ticker, pos.get("confidence"))
+                self._save_open_positions()
+                self._persist_capital_snapshot()
+                return
+
             # 0) v4.70 — SUR DEMANDE EXPLICITE : PLAFOND DUR en dernier
             #    recours — ferme QUOI QU IL ARRIVE au-dela de ce seuil,
             #    INDEPENDANT du retournement (contrairement au SL
@@ -8302,14 +8332,32 @@ class BotEngine:
             # desormais apres coup et corrige si un ecart est detecte.
             try:
                 real_state = self.info.user_state(cfg["WALLET_ADDRESS"])
+                position_confirmed_on_exchange = False
                 for item in real_state.get("assetPositions", []):
                     p_check = item.get("position", {})
                     if p_check.get("coin") == ticker:
+                        real_szi = float(p_check.get("szi", 0) or 0)
+                        if real_szi != 0:
+                            position_confirmed_on_exchange = True
                         real_leverage = p_check.get("leverage", {}).get("value")
                         if real_leverage and real_leverage != leverage:
                             self.emit("log", {"msg": f"[{ticker}] ⚠️ Levier reellement applique par Hyperliquid (x{real_leverage}) different de celui demande (x{leverage}) — correction du suivi interne.", "level": "warn"})
                             leverage = real_leverage
                         break
+                # v4.239 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : place_order
+                # peut retourner ok=True (statuses non vide) alors que la
+                # position n existe PAS reellement sur Hyperliquid (ex:
+                # rejet partiel dans un batch d ordres, race condition) —
+                # confirme par un cas reel (5 positions Accumulation
+                # visibles cote bot en mode live, mais JAMAIS ouvertes sur
+                # Hyperliquid). Verifie desormais ACTIVEMENT la presence
+                # reelle de la position avant d enregistrer le suivi
+                # interne — sans cette confirmation, le bot croirait gerer
+                # une position reelle (SL/TTP, PnL) qui n existe nulle part
+                # ailleurs que dans sa propre memoire.
+                if not position_confirmed_on_exchange:
+                    self.emit("log", {"msg": f"[{ticker}] ⚠️ ANNULE : ordre signale reussi mais AUCUNE position reelle trouvee sur Hyperliquid — suivi interne non enregistre pour eviter une position fantome.", "level": "error"})
+                    return
             except Exception as e:
                 print(f"[LEVERAGE-VERIF] Impossible de verifier le levier reel pour {ticker} : {e}")
 
