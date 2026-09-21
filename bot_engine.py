@@ -669,6 +669,11 @@ CONFIG = {
     # (un peu plus court que le SL, car le TTP protege deja un gain).
     "TTP_PATIENCE_CYCLES":    5,
     "EXCHANGE_SAFETY_SL_MULT": 2.0,  # SL pose sur Hyperliquid = ce multiple du SL bot (filet de securite uniquement)
+    # v4.235 — SUR DEMANDE EXPLICITE : marge du SL de SECOURS pose sur
+    # Hyperliquid uniquement si aucun SL n est deja detecte lors d une
+    # recuperation de position (voir ensure_sl_on_hyperliquid) — un vrai
+    # filet de catastrophe, pas le SL de gestion quotidienne.
+    "RECOVERY_RESCUE_SL_PCT": 15.0,
 
     # Trailing Take Profit (TTP), en % de MOUVEMENT DE PRIX REEL (v4.7) :
     #   - v4.7 — SUR DEMANDE EXPLICITE : contrairement au SL (reste en % de
@@ -1558,7 +1563,19 @@ def recover_open_positions(info, wallet_address, symbols, cfg):
             print(f"[RECOVER-DIAG] {coin} RETENU — szi={szi} | entry={entry}")
             direction = "long" if szi > 0 else "short"
             size_usd  = abs(szi) * entry
-            sl_pct = cfg.get("SYMBOL_SL_PCT", {}).get(coin, cfg["STOP_LOSS_PCT"])
+            # v4.235 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : ce SL est
+            # un FILET DE SECOURS "catastrophe" (place sur Hyperliquid
+            # UNIQUEMENT si aucun SL n est deja detecte, voir
+            # ensure_sl_on_hyperliquid) — PAS le SL de gestion normale
+            # (gere en interne une fois le suivi repris). L ancienne
+            # formule (STOP_LOSS_PCT generique, ~1.5%) etait bien trop
+            # serree pour ce role, confirme par un cas reel : une position
+            # Spot-Accum recuperee (marge normale attendue ~10%) a ete
+            # fermee prematurement par CE SL de secours a 1.5%, sans lien
+            # avec la logique de sortie du bot. Utilise desormais une
+            # marge large et fixe, coherente avec un VRAI filet de
+            # catastrophe plutot qu un SL de gestion quotidienne.
+            sl_pct = cfg.get("RECOVERY_RESCUE_SL_PCT", 15.0)
             tp_pct = cfg.get("SYMBOL_TP_PCT", {}).get(coin, cfg["TAKE_PROFIT_PCT"])
             sl_p = entry * (1 - sl_pct/100) if direction == "long" else entry * (1 + sl_pct/100)
             tp_p = entry * (1 + tp_pct/100) if direction == "long" else entry * (1 - tp_pct/100)
