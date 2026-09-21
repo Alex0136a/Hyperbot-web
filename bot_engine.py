@@ -378,7 +378,7 @@ CONFIG = {
     # EMA200 (200 echantillons = 6h40), qui reste un vrai "EMA200" standard
     # — les deux systemes partagent deja la meme source (state.mtf_prices),
     # ils atteignent desormais leur pleine maturite au meme moment.
-    "SPOT_ACCUM_ANTI_RANGE_LOOKBACK": 200,
+    "SPOT_ACCUM_ANTI_RANGE_LOOKBACK": 80,
     "SPOT_ACCUM_TTP_ARM_PCT": 0.4,             # v4.180 SUR DEMANDE EXPLICITE : abaisse de 1.0% a 0.4% — des pics de 0.64-0.89% observes n armaient jamais le trailing (sous l ancien seuil de 1.0%), laissant le prix redonner integralement jusqu en perte sans aucune protection
     "SPOT_ACCUM_TTP_TOLERANCE_PCT": 0.4,       # v4.181 SUR DEMANDE EXPLICITE : reduit de 0.5% a 0.4%, marge de repli depuis le pic, une fois arme
     "SPOT_ACCUM_TARGET_SR_PCT": 80.0,          # objectif = ce % de la distance support-resistance (mesuree a l entree)
@@ -1050,7 +1050,7 @@ PROFILE_SWING = {
     "SHOOTING_STAR_CONFIRM_MINUTES": 30,
     # v4.130 — SUR DEMANDE EXPLICITE : meme raisonnement que Spot-Accum.
     # v4.131 — SUR DEMANDE EXPLICITE : meme alignement que Spot-Accum.
-    "ACCUMULATION_ANTI_RANGE_LOOKBACK": 30,
+    "ACCUMULATION_ANTI_RANGE_LOOKBACK": 12,
     # v4.151 — SUR DEMANDE EXPLICITE : quand le marche est en range (voir
     # ci-dessus) ET que le prix est dans la fenetre de proximite normale,
     # trade DIRECTEMENT la fourchette (achat pres du support, vente pres
@@ -3621,30 +3621,24 @@ class BotEngine:
         closes = [c[2] for c in state.candle_history_1h]
         return calc_macd(closes)
 
-    def _fetch_1h_candles(self, ticker, count=60):
-        """v4.203 — SUR DEMANDE EXPLICITE : recupere les VRAIES bougies 1h
+    def _fetch_candles(self, ticker, interval="1h", count=60):
+        """v4.203/236 — SUR DEMANDE EXPLICITE : recupere les VRAIES bougies
         d Hyperliquid (alignees sur l horloge, via l endpoint candleSnapshot
-        officiel) — remplace l agregation synthetique de bougies ~2min, qui
-        ne correspondait pas a de vraies bougies 1h. Retourne une liste de
-        (high, low, close, volume), la plus ancienne en premier, ou [] en
-        cas d echec (reseau, ticker invalide, etc.).
-        v4.204 — SUR DEMANDE EXPLICITE : exclut la bougie EN COURS de
-        formation — sa duree annoncee est 1h, mais sa VALEUR (high/low/
-        close) varie en continu tant qu elle n est pas cloturee. L inclure
-        rendrait la tendance dynamique et le MACD instables (a chaque
-        rafraichissement, cette bougie "en cours" aurait une valeur
-        differente). Ne garde que les bougies dont le temps de cloture (T,
-        en ms) est deja PASSE au moment de la requete.
-        v4.218 — SUR DEMANDE EXPLICITE : ajoute le VRAI volume de
-        transactions (champ "v" de l API, jamais utilise jusqu ici — le
-        "vol_history" existant mesurait en realite la VOLATILITE du prix,
-        pas un vrai volume) — permet de confirmer un vrai etat
-        d accumulation (volume eleve, prix stable), pas juste une derive
-        sans interet."""
+        officiel), pour l intervalle demande — remplace l agregation
+        synthetique de bougies ~2min du bot (mtf_prices), qui n est PAS
+        alignee sur les vraies bougies Hyperliquid (confirme par un cas
+        reel : un desaccord entre le range detecte par le bot et le
+        mouvement reel observe sur le graphique Hyperliquid, pour la meme
+        periode approximative). Retourne une liste de (high, low, close,
+        volume), la plus ancienne en premier, ou [] en cas d echec.
+        v4.204 — exclut la bougie EN COURS de formation (valeur instable
+        tant que non cloturee).
+        v4.218 — inclut le VRAI volume de transactions (champ "v")."""
         try:
+            interval_sec = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}.get(interval, 3600)
             end_ms = int(time.time() * 1000)
-            start_ms = end_ms - count * 3600 * 1000
-            req = {"coin": ticker, "interval": "1h", "startTime": start_ms, "endTime": end_ms}
+            start_ms = end_ms - count * interval_sec * 1000
+            req = {"coin": ticker, "interval": interval, "startTime": start_ms, "endTime": end_ms}
             raw = self.info.post("/info", {"type": "candleSnapshot", "req": req})
             if not raw or not isinstance(raw, list):
                 return []
@@ -3652,8 +3646,12 @@ class BotEngine:
             closed_only = [c for c in raw if c.get("T", 0) <= now_ms]
             return [(float(c["h"]), float(c["l"]), float(c["c"]), float(c.get("v", 0))) for c in closed_only]
         except Exception as e:
-            print(f"[1H-CANDLES] Echec recuperation bougies 1h pour {ticker} : {e}")
+            print(f"[CANDLES] Echec recuperation bougies {interval} pour {ticker} : {e}")
             return []
+
+    def _fetch_1h_candles(self, ticker, count=60):
+        """Repli de compatibilite — voir _fetch_candles (intervalle generalise)."""
+        return self._fetch_candles(ticker, "1h", count)
 
     def _update_dynamic_trend(self, state):
         """v4.203 — SUR DEMANDE EXPLICITE : tendance dynamique — suit une
@@ -3719,6 +3717,24 @@ class BotEngine:
             state.candle_history_1h = deque(candles, maxlen=200)
             self._update_dynamic_trend(state)
             state.dynamic_trend_last_refresh = now
+
+    def _maybe_refresh_5m_candles(self, ticker, state):
+        """v4.236 — SUR DEMANDE EXPLICITE : rafraichit les VRAIES bougies 5
+        minutes d Hyperliquid (alignees sur l horloge) — utilisees par la
+        detection de range, au lieu de mtf_prices (echantillonnage interne
+        du bot, PAS aligne sur les vraies bougies, confirme comme source
+        de confusion : un desaccord entre le range detecte par le bot et
+        le mouvement reel visible sur le graphique Hyperliquid, pour une
+        periode pourtant similaire). Rafraichit au maximum toutes les 5
+        minutes par actif."""
+        now = time.time()
+        last_refresh = getattr(state, "candles_5m_last_refresh", 0)
+        if now - last_refresh < 300 and getattr(state, "candle_history_5m", None):
+            return
+        candles = self._fetch_candles(ticker, "5m", count=60)
+        if candles:
+            state.candle_history_5m = deque(candles, maxlen=200)
+            state.candles_5m_last_refresh = now
 
     def _is_candle_bullish_now(self, state):
         """v4.175 — SUR DEMANDE EXPLICITE : la bougie EN COURS est-elle verte
@@ -4139,14 +4155,24 @@ class BotEngine:
 
     def _is_market_ranging(self, state, min_range_pct, lookback):
         """v4.127 — SUR DEMANDE EXPLICITE : detecteur de range DIRECT, base
-        sur le mouvement REEL du prix (mtf_prices, ~2 min par echantillon —
-        memes donnees que EMA200/ADX), plutot que sur l amplitude
-        support-resistance (calcul juge peu fiable/mal interprete). Mesure
-        simplement : le prix a-t-il bouge de plus de min_range_pct sur les
-        'lookback' derniers echantillons ? Si non, marche considere en
-        range, bloque l entree. Retourne False (ne bloque pas) si pas
-        encore assez de donnees — evite un nouveau blocage systematique
-        juste apres un redemarrage."""
+        sur le mouvement REEL du prix. Mesure simplement : le prix a-t-il
+        bouge de plus de min_range_pct sur les 'lookback' dernieres
+        bougies ? Si non, marche considere en range, bloque l entree.
+        v4.236 — SUR DEMANDE EXPLICITE : utilise desormais de VRAIES
+        bougies 5 min d Hyperliquid (alignees sur l horloge), au lieu de
+        mtf_prices (echantillonnage interne du bot, PAS synchronise avec
+        les bougies reelles) — confirme comme source de confusion : un
+        desaccord entre le range detecte et le mouvement visible sur le
+        graphique Hyperliquid pour une periode pourtant similaire.
+        'lookback' s exprime desormais en bougies 5 min. Repli sur
+        mtf_prices si les bougies 5 min ne sont pas encore disponibles."""
+        candles_5m = getattr(state, "candle_history_5m", None)
+        if candles_5m and len(candles_5m) >= 5:
+            recent = list(candles_5m)[-lookback:]
+            highs = [c[0] for c in recent]
+            lows = [c[1] for c in recent]
+            price_range_pct = (max(highs) - min(lows)) / min(lows) * 100
+            return price_range_pct < min_range_pct
         mtf = list(state.mtf_prices)[-lookback:]
         if len(mtf) < 5:
             return False
@@ -6274,6 +6300,7 @@ class BotEngine:
             # utilisant ce mecanisme) — pas de cout inutile pour les autres.
             if cfg.get("ACCUMULATION_ENABLED", False) or cfg.get("SPOT_ACCUM_ENABLED", True):
                 self._maybe_refresh_dynamic_trend(ticker, state)
+                self._maybe_refresh_5m_candles(ticker, state)
             # Nouvelle fenetre : redemarre le suivi haut/bas a partir de ce
             # point de cloture (qui devient l ouverture approximative de la
             # bougie suivante).
