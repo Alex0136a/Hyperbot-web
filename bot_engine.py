@@ -5358,10 +5358,27 @@ class BotEngine:
         # avec Forex). Generalise pour fonctionner en LONG (Spot-Accum) et
         # SHORT (Accumulation) via pos["type"], au lieu du "long" fige en
         # dur d origine.
-        if pos.get("strategy") in ("spot_accumulation", "accumulation"):
+        # v4.234 — SUR DEMANDE EXPLICITE : generalise le mecanisme de
+        # sortie dynamique (SL structurel, TTP arme/tolerance ATR-relative,
+        # filet inconditionnel, vitesse de repli, retournement confirme) a
+        # TOUS les modes bases sur le support/resistance — Forex,
+        # Accumulation, Spot-Accum, et Funding (tente, la nature mean-
+        # reversion de ce dernier pourrait s averer moins adaptee a l usage,
+        # a observer). Resout AUSSI la crise de classification recente : la
+        # strategie exacte d une position (mal etiquetee "forex" au lieu de
+        # "spot_accumulation" apres une recuperation orpheline) n a plus
+        # d impact sur la LOGIQUE de sortie, puisque tous les modes
+        # partagent desormais ce meme mecanisme.
+        if pos.get("strategy") in ("spot_accumulation", "accumulation", "forex", "funding_contrarian"):
             # v4.212 — label dynamique pour les messages, correct pour les
             # deux modes partageant desormais ce meme bloc de sortie.
-            mode_label_sa = "🌱 Spot-Accum" if pos.get("strategy") == "spot_accumulation" else "🎯 Accumulation"
+            _label_map_sa = {
+                "spot_accumulation": "🌱 Spot-Accum",
+                "accumulation": "🎯 Accumulation",
+                "forex": "⚡ Forex",
+                "funding_contrarian": "💰 Funding",
+            }
+            mode_label_sa = _label_map_sa.get(pos.get("strategy"), "🎯 Accumulation")
 
             # v4.227 — SUR DEMANDE EXPLICITE : etoile filante ROUGE
             # confirmee sur 30 min — signal de sortie pour une position
