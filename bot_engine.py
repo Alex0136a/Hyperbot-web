@@ -347,7 +347,7 @@ CONFIG = {
     # 0.5% de marge de repli depuis le pic — a corriger si l intention etait
     # differente (ex: fenetre d armement 2.5%-3.5% plutot qu un trailing).
     "SPOT_ACCUM_ENABLED": True,
-    "SPOT_ACCUM_MAX_TRADES": 4,
+    "SPOT_ACCUM_MAX_TRADES": 8,
     # v4.108 — FIX BUG CRITIQUE : desormais en % de l AMPLITUDE (comme le
     # seuil structurel du trailing, 70% de l amplitude), pas du prix du
     # support — recalibre a 5-10% de l amplitude (au lieu de 1-5% du prix).
