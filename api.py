@@ -1929,6 +1929,15 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             "blocker_accumulation_long": blocker_accumulation_long,
             "blocker_accumulation_short": blocker_accumulation_short,
             "accumulation_detail": accum_snap if accum_snap else None,
+            # v4.255 — SUR DEMANDE EXPLICITE : expose directement le flux de
+            # transactions calcule en interne — auparavant jamais visible
+            # nulle part, empechant toute verification concrete que ce
+            # mecanisme fonctionne reellement (donnees recuperees, calcul
+            # correct) plutot que de rester une simple affirmation
+            # theorique. None = pas encore de lecture disponible pour cet
+            # actif a cet instant (historique insuffisant ou echec API).
+            "trade_flow_pressure": snap.get("entry_flow_pressure") if snap.get("entry_flow_pressure") is not None else (spot_snap.get("entry_flow_pressure") if spot_snap else None) or (accum_snap.get("entry_flow_pressure") if accum_snap else None),
+            "trend_persistence_confirmed": snap.get("trend_persistence_confirmed") or (accum_snap.get("trend_persistence_confirmed") if accum_snap else None) or (spot_snap.get("trend_persistence_confirmed") if spot_snap else None),
         })
     results.sort(key=lambda r: r["ticker"])
     return {"results": results}
