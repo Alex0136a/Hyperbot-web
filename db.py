@@ -36,6 +36,19 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
+        # v4.244 — SUR DEMANDE EXPLICITE : journal PERSISTANT (survit aux
+        # redemarrages, contrairement au log_buffer en memoire limite a
+        # 3000 lignes/quelques heures) — permet une vraie consultation
+        # historique depuis l interface, sans dependre des logs Railway.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS log_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                level TEXT NOT NULL,
+                message TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_log_history_ts ON log_history(ts)")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -235,6 +248,57 @@ def init_db():
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
+
+
+# ── Journal persistant ───────────────────────────────────────────────────
+def append_log_history(ts, level, message):
+    """v4.244 — SUR DEMANDE EXPLICITE : enregistre une ligne dans le
+    journal PERSISTANT (survit aux redemarrages)."""
+    with _lock, _connect() as conn:
+        conn.execute(
+            "INSERT INTO log_history (ts, level, message) VALUES (?, ?, ?)",
+            (ts, level, message),
+        )
+        conn.commit()
+
+
+def query_log_history(limit=200, before_id=None, level=None):
+    """v4.244 — SUR DEMANDE EXPLICITE : lit le journal persistant, du plus
+    RECENT au plus ANCIEN, avec pagination (before_id = continuer avant
+    cet id, pour "charger plus ancien") et filtre optionnel par niveau.
+    Retourne une liste de dicts {id, ts, level, message}."""
+    with _lock, _connect() as conn:
+        query = "SELECT id, ts, level, message FROM log_history WHERE 1=1"
+        params = []
+        if before_id is not None:
+            query += " AND id < ?"
+            params.append(before_id)
+        if level:
+            query += " AND level = ?"
+            params.append(level)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+
+def purge_log_history(max_age_days=30, max_rows=500000):
+    """v4.244 — SUR DEMANDE EXPLICITE : purge automatique — evite une
+    croissance illimitee de la base. Supprime les lignes plus vieilles que
+    max_age_days, ET plafonne le nombre total de lignes (garde les plus
+    recentes) si max_rows est depasse malgre tout (rythme de log
+    inhabituellement eleve)."""
+    with _lock, _connect() as conn:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+        conn.execute("DELETE FROM log_history WHERE ts < ?", (cutoff,))
+        count = conn.execute("SELECT COUNT(*) as c FROM log_history").fetchone()["c"]
+        if count > max_rows:
+            excess = count - max_rows
+            conn.execute(
+                "DELETE FROM log_history WHERE id IN (SELECT id FROM log_history ORDER BY id ASC LIMIT ?)",
+                (excess,),
+            )
+        conn.commit()
 
 
 # ── Utilisateurs ─────────────────────────────────────────────────────────
