@@ -5217,25 +5217,26 @@ class BotEngine:
         strat_tag = "🎯 " if pos.get("strategy") == "accumulation" else ""  # v4.8 — visible dans les logs de sortie
 
         # ── PnL latent en $ ───────────────────────────────────────────────
-        # v4.229 — SUR DEMANDE EXPLICITE, FIX ARCHITECTURAL : pnl_pct
-        # represente desormais le PnL AMPLIFIE PAR LE LEVIER (comme le
-        # ROE% affiche par Hyperliquid), pas le simple mouvement de prix
-        # brut. Corrige a la SOURCE plutot que d ajuster chaque seuil
-        # individuellement (hard cap, TTP arm/tolerance, etc.) — TOUT ce
-        # qui compare pnl_pct plus loin dans cette fonction devient
-        # AUTOMATIQUEMENT coherent avec le vrai risque en dollars, quel
-        # que soit le levier du trade (essentiel depuis l introduction du
-        # levier DYNAMIQUE 2-5x pour Accumulation/Spot-Accum). Le PnL
-        # AFFICHE par le bot correspond ainsi exactement a celui
-        # d Hyperliquid, eliminant la confusion entre deux sources qui
-        # divergeaient selon le levier applique.
+        # v4.231 — SUR DEMANDE EXPLICITE, ROLLBACK URGENT DE v4.229 : le
+        # passage a un pnl_pct amplifie par le levier a eu un effet
+        # RETROACTIF DANGEREUX sur les positions DEJA ouvertes au moment du
+        # redeploiement — une position avec une petite perte BRUTE (ex:
+        # -0.15%, jugee sure) et un levier x5 devenait instantanement
+        # -0.75% AMPLIFIE, depassant le plafond de securite (-0.5%) et
+        # declenchant une fermeture IMMEDIATE sur le cote BOT (mais pas
+        # toujours proprement repercutee cote Hyperliquid), confirme par un
+        # cas reel (toutes les positions fermees cote bot au redeploiement,
+        # pas cote Hyperliquid). RETOUR au mouvement de prix BRUT — la
+        # securite des positions existantes prime sur la coherence
+        # d affichage, qui devra etre traitee UNIQUEMENT au niveau de l
+        # affichage (api.py), jamais dans les comparaisons de seuils
+        # internes qui peuvent affecter des positions deja en cours.
         leverage_now = pos.get("leverage", 1) or 1
         if pos["type"] == "long":
-            raw_price_pct = (price - pos["entry"]) / pos["entry"] * 100
+            pnl_pct = (price - pos["entry"]) / pos["entry"] * 100
         else:
-            raw_price_pct = (pos["entry"] - price) / pos["entry"] * 100
-        pnl_pct = raw_price_pct * leverage_now
-        pnl_usd = E * pnl_pct / 100
+            pnl_pct = (pos["entry"] - price) / pos["entry"] * 100
+        pnl_usd = E * leverage_now * pnl_pct / 100
 
         # v4.179 — SUR DEMANDE EXPLICITE : plafond de duree maximale (12h)
         # pour tous les modes SAUF Spot-Accum (philosophie explicitement
@@ -5488,7 +5489,7 @@ class BotEngine:
             atr_abs_ttp, _ = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
             if atr_abs_ttp is not None and atr_abs_ttp > 0 and price > 0:
                 atr_pct_of_price = atr_abs_ttp / price * 100
-                tolerance_pct = atr_pct_of_price * leverage_now * cfg.get("TTP_ATR_TOLERANCE_MULTIPLIER", 1.0)
+                tolerance_pct = atr_pct_of_price * cfg.get("TTP_ATR_TOLERANCE_MULTIPLIER", 1.0)
             else:
                 tolerance_pct = cfg.get("SPOT_ACCUM_TTP_TOLERANCE_PCT", 0.5)
             # v4.173 — SUR DEMANDE EXPLICITE : retire l armement via le prix
