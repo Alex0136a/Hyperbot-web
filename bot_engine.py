@@ -1053,6 +1053,14 @@ PROFILE_SWING = {
     "SHOOTING_STAR_MIN_UPPER_WICK_RATIO": 2.0,
     "SHOOTING_STAR_MAX_LOWER_WICK_RATIO": 0.3,
     "SHOOTING_STAR_CONFIRM_MINUTES": 30,
+    # v4.240 — SUR DEMANDE EXPLICITE : pression directionnelle soutenue,
+    # basee sur le VRAI flux de transactions Hyperliquid (recentTrades) —
+    # capture une tendance DEJA engagee, loin de tout support/resistance
+    # (Forex, Accumulation, Spot-Accum — PAS Funding, retour a la moyenne).
+    "TREND_PERSISTENCE_ENABLED": True,
+    "TRADE_FLOW_SAMPLE_SIZE": 100,
+    "TREND_PERSISTENCE_MIN_SAMPLES": 6,
+    "TREND_PERSISTENCE_PRESSURE_THRESHOLD": 0.15,
     # v4.130 — SUR DEMANDE EXPLICITE : meme raisonnement que Spot-Accum.
     # v4.131 — SUR DEMANDE EXPLICITE : meme alignement que Spot-Accum.
     "ACCUMULATION_ANTI_RANGE_LOOKBACK": 12,
@@ -3625,6 +3633,93 @@ class BotEngine:
         ~1.5 jours)."""
         closes = [c[2] for c in state.candle_history_1h]
         return calc_macd(closes)
+
+    def _fetch_recent_trades(self, ticker, count=100):
+        """v4.240 — SUR DEMANDE EXPLICITE : recupere le VRAI flux de
+        transactions recentes d Hyperliquid (endpoint recentTrades) — pour
+        chaque transaction executee : prix, taille, sens (B=achat agressif,
+        A=vente agressive), horodatage. Source totalement independante des
+        bougies/volume par bougie deja utilisees — permet de mesurer la
+        PRESSION DIRECTIONNELLE reelle (qui frappe le marche, pas
+        seulement combien). Retourne une liste de dicts bruts, ou [] en
+        cas d echec."""
+        try:
+            raw = self.info.post("/info", {"type": "recentTrades", "coin": ticker})
+            if not raw or not isinstance(raw, list):
+                return []
+            return raw[:count]
+        except Exception as e:
+            print(f"[TRADES-FLOW] Echec recuperation flux transactions pour {ticker} : {e}")
+            return []
+
+    def _compute_trade_flow_pressure(self, ticker):
+        """v4.240 — SUR DEMANDE EXPLICITE : calcule la PRESSION
+        DIRECTIONNELLE reelle sur les dernieres transactions — ratio du
+        volume achete de facon agressive (side='B') contre vendu de facon
+        agressive (side='A'). Retourne un float entre -1.0 (100% vente
+        agressive) et +1.0 (100% achat agressif), ou None si pas assez de
+        donnees. Comble un trou identifie : une tendance DEJA engagee,
+        loin de tout support/resistance, n etait auparavant jamais
+        capturee par aucun mecanisme d entree (tous bases sur des niveaux
+        de prix ou des bougies, pas sur la pression reelle du marche)."""
+        trades = self._fetch_recent_trades(ticker, count=self.cfg.get("TRADE_FLOW_SAMPLE_SIZE", 100))
+        if len(trades) < 20:
+            return None
+        buy_volume = 0.0
+        sell_volume = 0.0
+        for t in trades:
+            try:
+                sz = float(t.get("sz", 0))
+                side = t.get("side", "")
+                if side == "B":
+                    buy_volume += sz
+                elif side == "A":
+                    sell_volume += sz
+            except (TypeError, ValueError):
+                continue
+        total = buy_volume + sell_volume
+        if total <= 0:
+            return None
+        return (buy_volume - sell_volume) / total
+
+    def _maybe_refresh_trade_flow(self, ticker, state):
+        """v4.240 — SUR DEMANDE EXPLICITE : rafraichit la pression
+        directionnelle au maximum une fois toutes les 60s par actif, et
+        maintient un historique COURT pour exiger une pression SOUTENUE
+        dans le temps (pas un simple pic ponctuel) avant de la considerer
+        comme un signal fiable."""
+        now = time.time()
+        last_refresh = getattr(state, "trade_flow_last_refresh", 0)
+        if now - last_refresh < 60:
+            return
+        pressure = self._compute_trade_flow_pressure(ticker)
+        state.trade_flow_last_refresh = now
+        if pressure is None:
+            return
+        history = getattr(state, "trade_flow_history", None)
+        if history is None:
+            history = deque(maxlen=10)
+            state.trade_flow_history = history
+        history.append(pressure)
+
+    def _trend_persistence_confirmed(self, state, direction):
+        """v4.240 — SUR DEMANDE EXPLICITE : confirme une PRESSION
+        DIRECTIONNELLE soutenue (pas ponctuelle) — exige que les
+        dernieres lectures de pression (~10 x 60s = ~10 min d historique)
+        soient TOUTES au-dela d un seuil minimal, dans le sens demande.
+        direction="long" : pression acheteuse soutenue. direction="short" :
+        pression vendeuse soutenue. Retourne False si historique
+        insuffisant (jamais bloquant — c est un BYPASS supplementaire)."""
+        history = getattr(state, "trade_flow_history", None)
+        min_samples = self.cfg.get("TREND_PERSISTENCE_MIN_SAMPLES", 6)
+        if not history or len(history) < min_samples:
+            return False
+        threshold = self.cfg.get("TREND_PERSISTENCE_PRESSURE_THRESHOLD", 0.15)
+        recent = list(history)[-min_samples:]
+        if direction == "long":
+            return all(p >= threshold for p in recent)
+        else:
+            return all(p <= -threshold for p in recent)
 
     def _fetch_candles(self, ticker, interval="1h", count=60):
         """v4.203/236 — SUR DEMANDE EXPLICITE : recupere les VRAIES bougies
@@ -6336,6 +6431,11 @@ class BotEngine:
             if cfg.get("ACCUMULATION_ENABLED", False) or cfg.get("SPOT_ACCUM_ENABLED", True):
                 self._maybe_refresh_dynamic_trend(ticker, state)
                 self._maybe_refresh_5m_candles(ticker, state)
+            # v4.240 — SUR DEMANDE EXPLICITE : pression directionnelle
+            # (flux de transactions reel) — applicable a Forex,
+            # Accumulation ET Spot-Accum (pas Funding, dont la philosophie
+            # de retour a la moyenne irait a l encontre de ce signal).
+            self._maybe_refresh_trade_flow(ticker, state)
             # Nouvelle fenetre : redemarre le suivi haut/bas a partir de ce
             # point de cloture (qui devient l ouverture approximative de la
             # bougie suivante).
@@ -6869,6 +6969,19 @@ class BotEngine:
         # (une etoile filante n a pas d equivalent haussier logique ici).
         if cfg.get("SHOOTING_STAR_DETECTION_ENABLED", True) and self._shooting_star_confirmed(state):
             short_level_ok = True
+
+        # v4.240 — SUR DEMANDE EXPLICITE : pression directionnelle soutenue
+        # (flux de transactions reel, independant de tout niveau de prix)
+        # — comble un trou identifie : une tendance DEJA engagee, loin de
+        # tout support/resistance, n etait auparavant jamais capturee (ex:
+        # cas reel BTC, +3.2% soutenu sans aucune reaction du bot). Bypass
+        # les exigences de proximite quand une pression soutenue (~10 min)
+        # confirme la direction.
+        if cfg.get("TREND_PERSISTENCE_ENABLED", True):
+            if self._trend_persistence_confirmed(state, "long"):
+                long_level_ok = True
+            if self._trend_persistence_confirmed(state, "short"):
+                short_level_ok = True
 
         # v4.25/v4.26 — SUR DEMANDE EXPLICITE, suite a une repetition observee
         # de trades LONG sur un actif choppy (ARB : re-declenchement "frais"
@@ -7449,21 +7562,29 @@ class BotEngine:
             shooting_star_ac = self._shooting_star_confirmed(state)
         snap["shooting_star_confirmed"] = shooting_star_ac
 
-        if not trend_down and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac and not shooting_star_ac:
+        # v4.240 — SUR DEMANDE EXPLICITE : pression directionnelle soutenue
+        # (flux de transactions reel) — voir Forex pour le raisonnement
+        # complet.
+        trend_persistence_ac = False
+        if cfg.get("TREND_PERSISTENCE_ENABLED", True):
+            trend_persistence_ac = self._trend_persistence_confirmed(state, "short")
+        snap["trend_persistence_confirmed"] = trend_persistence_ac
+
+        if not trend_down and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac and not shooting_star_ac and not trend_persistence_ac:
             snap["blocker"] = "pas de tendance baissiere (EMA200)"
             return
 
         min_stability_cycles = cfg.get("ACCUMULATION_TREND_STABILITY_CYCLES", 24)
         snap["trend_down_streak"] = state.trend_down_streak
         snap["min_stability_cycles"] = min_stability_cycles
-        if state.trend_down_streak < min_stability_cycles and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac and not shooting_star_ac:
+        if state.trend_down_streak < min_stability_cycles and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac and not shooting_star_ac and not trend_persistence_ac:
             snap["blocker"] = f"tendance trop recente ({state.trend_down_streak}/{min_stability_cycles} cycles)"
             return
         if support is None or resistance is None or support <= 0:
             snap["blocker"] = "support/resistance indisponible"
             return
 
-        if cfg.get("ACCUMULATION_REQUIRE_ADX_CONFIRM", False) and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac and not shooting_star_ac:
+        if cfg.get("ACCUMULATION_REQUIRE_ADX_CONFIRM", False) and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac and not shooting_star_ac and not trend_persistence_ac:
             adx_local = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
             adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
             snap["adx"] = round(adx_local, 1) if adx_local is not None else None
@@ -7480,7 +7601,7 @@ class BotEngine:
 
         dist_below_resistance_pct = (resistance - price) / (resistance - support) * 100 if resistance != support else 0
         snap["dist_below_resistance_pct"] = round(dist_below_resistance_pct, 2)
-        if not fresh_breakout_ac and not failed_breakout_ac and not shooting_star_ac:
+        if not fresh_breakout_ac and not failed_breakout_ac and not shooting_star_ac and not trend_persistence_ac:
             # v4.215 — SUR DEMANDE EXPLICITE : utilise desormais le S/R
             # ancre au dernier retournement confirme (tendance dynamique,
             # voir _update_dynamic_trend) au lieu du S/R sur fenetre
@@ -7501,7 +7622,7 @@ class BotEngine:
                 if bearish_now is False:
                     snap["blocker"] = "bougie actuelle non baissiere"
                     return
-        snap["entered_via_flirt"] = not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac and not shooting_star_ac
+        snap["entered_via_flirt"] = not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac and not shooting_star_ac and not trend_persistence_ac
 
         # v4.203/225 — SUR DEMANDE EXPLICITE : confirmation par MACD 1h +
         # tendance dynamique (Accumulation = short) — ETAIT un blocage dur,
@@ -7684,7 +7805,15 @@ class BotEngine:
             failed_breakout_sa = self._detect_failed_breakout(state, "long", support, cfg.get("FAILED_BREAKOUT_LOOKBACK_CANDLES", 20))
         snap["failed_breakout"] = failed_breakout_sa
 
-        if not trend_up and not fresh_breakout_sa and not volume_breakout_sa and not failed_breakout_sa:
+        # v4.240 — SUR DEMANDE EXPLICITE : pression directionnelle soutenue
+        # (flux de transactions reel) — voir Forex pour le raisonnement
+        # complet.
+        trend_persistence_sa = False
+        if cfg.get("TREND_PERSISTENCE_ENABLED", True):
+            trend_persistence_sa = self._trend_persistence_confirmed(state, "long")
+        snap["trend_persistence_confirmed"] = trend_persistence_sa
+
+        if not trend_up and not fresh_breakout_sa and not volume_breakout_sa and not failed_breakout_sa and not trend_persistence_sa:
             snap["blocker"] = "pas de tendance haussiere (EMA200)"
             return  # exige la tendance generale haussiere (EMA200), sauf cassure fraiche
         # v4.75 — SUR DEMANDE EXPLICITE : la tendance doit aussi etre STABLE
@@ -7693,7 +7822,7 @@ class BotEngine:
         min_stability_cycles = cfg.get("SPOT_ACCUM_TREND_STABILITY_CYCLES", 24)
         snap["trend_up_streak"] = state.trend_up_streak
         snap["min_stability_cycles"] = min_stability_cycles
-        if state.trend_up_streak < min_stability_cycles and not fresh_breakout_sa and not volume_breakout_sa and not failed_breakout_sa:
+        if state.trend_up_streak < min_stability_cycles and not fresh_breakout_sa and not volume_breakout_sa and not failed_breakout_sa and not trend_persistence_sa:
             snap["blocker"] = f"tendance trop recente ({state.trend_up_streak}/{min_stability_cycles} cycles)"
             return
         if support is None or resistance is None or support <= 0:
@@ -7705,7 +7834,7 @@ class BotEngine:
         # meme seuil que le reste du bot (ADX_TREND_THRESHOLD, 25 par
         # defaut), calcule ici localement (pas encore disponible a ce point
         # du cycle pour la logique normale).
-        if cfg.get("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", True) and not fresh_breakout_sa and not failed_breakout_sa:
+        if cfg.get("SPOT_ACCUM_REQUIRE_ADX_CONFIRM", True) and not fresh_breakout_sa and not failed_breakout_sa and not trend_persistence_sa:
             adx_local = calc_adx(list(state.mtf_prices) if len(state.mtf_prices) >= (cfg.get("ADX_PERIOD", 14)*2+1) else prices, cfg.get("ADX_PERIOD", 14))
             adx_threshold = cfg.get("ADX_TREND_THRESHOLD", 25.0)
             snap["adx"] = round(adx_local, 1) if adx_local is not None else None
@@ -7756,7 +7885,7 @@ class BotEngine:
         # support) est abandonnee au profit de cette approche unifiee.
         dist_above_support_pct = (price - support) / (resistance - support) * 100 if resistance != support else 0
         snap["dist_above_support_pct"] = round(dist_above_support_pct, 2)
-        if not fresh_breakout_sa and not failed_breakout_sa:
+        if not fresh_breakout_sa and not failed_breakout_sa and not trend_persistence_sa:
             # v4.215 — SUR DEMANDE EXPLICITE : meme principe qu Accumulation
             # — S/R ancre au dernier retournement confirme, plus stable
             # qu une fenetre glissante fixe.
@@ -7774,7 +7903,7 @@ class BotEngine:
         # v4.178 — SUR DEMANDE EXPLICITE : marque si cette entree qualifie
         # via le flirt S/R (pas via une cassure fraiche) — determine si le
         # levier dynamique 2-5x s applique (uniquement dans ce cas).
-        snap["entered_via_flirt"] = not fresh_breakout_sa and not volume_breakout_sa and not failed_breakout_sa
+        snap["entered_via_flirt"] = not fresh_breakout_sa and not volume_breakout_sa and not failed_breakout_sa and not trend_persistence_sa
 
         # v4.203/225 — SUR DEMANDE EXPLICITE : confirmation par MACD 1h +
         # tendance dynamique (Spot-Accum = long) — ETAIT un blocage dur,
