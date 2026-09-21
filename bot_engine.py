@@ -1605,6 +1605,13 @@ def recover_open_positions(info, wallet_address, symbols, cfg):
                 "tp":    tp_p,
                 "size":  size_usd,
                 "peak":  entry,
+                # v4.245 — SUR DEMANDE EXPLICITE : sans heure d ouverture
+                # reelle connue (position recuperee), utilise l heure de
+                # RECUPERATION comme repli raisonnable — evite l affichage
+                # "OUVERT --"/"DUREE --" et permet au plafond de duree
+                # maximale de fonctionner normalement a partir de
+                # maintenant (mieux qu une duree indefiniment inconnue).
+                "opened_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
             }
             print(f"[RECOVER] {coin} {direction.upper()} @ ${entry:.2f} | SL ${sl_p:.2f} | TP ${tp_p:.2f}")
     except Exception as e:
@@ -5157,6 +5164,28 @@ class BotEngine:
                             target_state.absolute_peak_pnl_usd = saved.get("_absolute_peak_pnl_usd")  # v4.18
                             target_state.spot_accum_armed = saved.get("_spot_accum_armed", False)  # v4.63
                             target_state.spot_accum_peak_pnl_pct = saved.get("_spot_accum_peak_pnl_pct")  # v4.63
+                        else:
+                            # v4.245 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE :
+                            # sans sauvegarde locale correspondante (position
+                            # ORPHELINE, cas frequent cette session), ces
+                            # champs de suivi n etaient JAMAIS reinitialises —
+                            # target_state etant un objet REUTILISE par slot/
+                            # ticker, il pouvait conserver des valeurs
+                            # OBSOLETES d un trade PRECEDENT (armement deja
+                            # actif, pic d un ancien trade) — confirme par un
+                            # cas reel (SUI recupere, comportement TTP
+                            # incoherent). Repart desormais TOUJOURS d un etat
+                            # propre dans ce cas, coherent avec un NOUVEAU
+                            # trade qui n a encore rien accumule.
+                            target_state.peak_pnl_usd = None
+                            target_state.tp_stage = 0
+                            target_state.trailing_tp_active = False
+                            target_state.tier0_armed = False
+                            target_state.tier0_peak_pnl_usd = None
+                            target_state.absolute_peak_pnl_usd = None
+                            target_state.spot_accum_armed = False
+                            target_state.spot_accum_peak_pnl_pct = None
+                            self.emit("log", {"msg": f"[{ticker_sym}] Aucune sauvegarde locale correspondante — suivi du pic/trailing reinitialise a zero pour cette position recuperee.", "level": "warn"})
                         self.emit("log", {"msg": f"[{ticker_sym}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} reintegree | SL ${pos['sl']:.2f} | TP ${pos['tp']:.2f}", "level": "warn"})
                         ensure_sl_on_hyperliquid(self.exchange, self.info, cfg["WALLET_ADDRESS"], ticker_sym, pos, cfg)
                         self.emit("log", {"msg": f"[{ticker_sym}] Verification SL Hyperliquid effectuee", "level": "ok"})
