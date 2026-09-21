@@ -2405,6 +2405,14 @@ Confirmer ?`
                     <div style={{fontSize:11,color:"#94a3b8",marginBottom:14}}>Aucun trade ouvert dans ce mode.</div>
                   ) : openFiltered.map(trade=>{
                     const isSpotAccum = trade.strategy==="spot_accumulation";
+                    // v4.241 — SUR DEMANDE EXPLICITE, FIX BUG D AFFICHAGE :
+                    // Accumulation/Forex/Funding partagent desormais le
+                    // meme mecanisme de sortie que Spot-Accum
+                    // (spot_accum_armed), plus l ancien tp_stage/
+                    // tier0_armed — le texte "Trailing" doit donc utiliser
+                    // le meme affichage pour les 4 strategies, pas
+                    // seulement "spot_accumulation".
+                    const usesUnifiedExit = ["spot_accumulation", "accumulation", "forex", "funding_contrarian"].includes(trade.strategy);
                     const slOn = config?.spot_accum_sl_enabled;
                     // v4.192 — FIX : SPOT_ACCUM_SL_PCT_OF_PNL n est PLUS
                     // utilise depuis le passage au SL structurel (rupture
@@ -2484,7 +2492,7 @@ Confirmer ?`
                       Accum a son propre armement (spot_accum_armed), separe de
                       tp_stage/tier0_armed utilises par les 3 autres modes. */}
                       <div style={{fontSize:9,color:"#64748b",marginTop:4}}>
-                        {isSpotAccum ? (
+                        {usesUnifiedExit ? (
                           <>Trailing : {trade.spot_accum_armed?`armé (pic interne +${trade.spot_accum_peak_pnl_pct_internal}%)`:`pas encore armé (seuil actif : ${trade.spot_accum_arm_pct_used}% de PnL, PnL actuel : ${trade.pnl_pct}%)`}</>
                         ) : (
                           <>
