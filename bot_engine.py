@@ -3738,6 +3738,18 @@ class BotEngine:
                 return []
             return raw[:count]
         except Exception as e:
+            # v4.262 — SUR DEMANDE EXPLICITE : rendu VISIBLE dans l
+            # interface (pas seulement les logs bruts Railway, que l
+            # utilisateur ne consulte pas systematiquement) — throttle a
+            # une alerte toutes les 10 min par ticker pour eviter le bruit
+            # si l echec est repete/persistant.
+            now_ts = time.time()
+            last_warned = self._trade_flow_fetch_warn_ts.get(ticker, 0) if hasattr(self, "_trade_flow_fetch_warn_ts") else 0
+            if now_ts - last_warned > 600:
+                if not hasattr(self, "_trade_flow_fetch_warn_ts"):
+                    self._trade_flow_fetch_warn_ts = {}
+                self._trade_flow_fetch_warn_ts[ticker] = now_ts
+                self.emit("log", {"msg": f"[{ticker}] ⚠️ Echec recuperation flux de transactions : {e}", "level": "warn"})
             print(f"[TRADES-FLOW] Echec recuperation flux transactions pour {ticker} : {e}")
             return []
 
@@ -6829,6 +6841,15 @@ class BotEngine:
         # marge isolee des marches HIP-3), et qu Normal continue d
         # evaluer des cryptos alors qu il est desormais dedie au forex.
         is_forex_ticker = ticker in cfg.get("FOREX_MODE_SYMBOLS", [])
+        # v4.262 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : deplace ici
+        # depuis un bloc qui ne s executait qu une fois toutes les ~2
+        # minutes (echantillonnage MTF, usage totalement different) —
+        # cause reelle du probleme "jamais de donnees" signale. Ce point,
+        # en tout debut de _process, s execute a CHAQUE appel — le
+        # throttle de 60s deja present DANS _maybe_refresh_trade_flow
+        # reste la seule limite de frequence desormais, independante de
+        # tout autre mecanisme.
+        self._maybe_refresh_trade_flow(ticker, state)
         if ticker == "BTC":
             print(f"[MTF-DIAG] _process ENTREE pour BTC, prix={price}, collecting={state.collecting}")
         # v3.2 — FIX : ne pas ecraser le prix avec la valeur REST (cycle,
@@ -6919,11 +6940,6 @@ class BotEngine:
             if cfg.get("ACCUMULATION_ENABLED", False) or cfg.get("SPOT_ACCUM_ENABLED", True):
                 self._maybe_refresh_dynamic_trend(ticker, state)
                 self._maybe_refresh_5m_candles(ticker, state)
-            # v4.240 — SUR DEMANDE EXPLICITE : pression directionnelle
-            # (flux de transactions reel) — applicable a Forex,
-            # Accumulation ET Spot-Accum (pas Funding, dont la philosophie
-            # de retour a la moyenne irait a l encontre de ce signal).
-            self._maybe_refresh_trade_flow(ticker, state)
             # Nouvelle fenetre : redemarre le suivi haut/bas a partir de ce
             # point de cloture (qui devient l ouverture approximative de la
             # bougie suivante).
