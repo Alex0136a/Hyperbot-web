@@ -5242,7 +5242,22 @@ class BotEngine:
                         # MAUVAISE logique de sortie). La base garde la trace
                         # tant que le trade n a jamais ete marque ferme, quel
                         # que soit l etat du fichier local.
-                        real_strategy = db.get_open_trade_strategy(ticker_sym, pos.get("type", "").upper())
+                        # v4.257 — SUR DEMANDE EXPLICITE, FIX : recupere AUSSI
+                        # la VRAIE heure d ouverture d origine depuis cette
+                        # meme requete — auparavant, une position orpheline
+                        # recuperee voyait son "opened_at" reinitialise a
+                        # l heure de la RECUPERATION (pas la vraie heure
+                        # d origine), faussant la duree affichee a CHAQUE
+                        # redeploiement necessitant une reconciliation — un
+                        # vrai handicap pour le suivi, confirme explicitement.
+                        db_trade_info = db.get_open_trade_info(ticker_sym, pos.get("type", "").upper())
+                        real_strategy = db_trade_info["strategy"] if db_trade_info else None
+                        if db_trade_info and db_trade_info.get("created_at"):
+                            try:
+                                real_opened_dt = datetime.fromisoformat(db_trade_info["created_at"].replace("Z", "+00:00"))
+                                pos["opened_at"] = real_opened_dt.astimezone().strftime("%d/%m/%Y %H:%M:%S")
+                            except (ValueError, TypeError):
+                                pass
                         saved_accum = saved_positions.get(f"ACCUM__{slot_key}") if saved_positions else None
                         if real_strategy == "accumulation" or (saved_accum and saved_accum.get("type") == pos.get("type")):
                             pos["strategy"] = "accumulation"
