@@ -31,7 +31,8 @@ async function apiCall(path, method="GET", body=null, token=null) {
   const r = await fetch(`${API}${path}`, {
     method, headers, body: body ? JSON.stringify(body) : null
   });
-  const data = await r.json();
+  let data = {};
+  try { data = await r.json(); } catch(_) { data = { detail: `Erreur serveur (${r.status})` }; }
   if (!r.ok) {
     // v4.4 — FIX : un token invalide/expire (401) faisait rester l app
     // bloquee sur "Chargement..." indefiniment — Promise.all (voir loadData)
@@ -39,7 +40,10 @@ async function apiCall(path, method="GET", body=null, token=null) {
     // et l ecran de connexion ne revenait jamais tout seul. On detecte
     // desormais ce cas precis : on efface le token perime et on recharge la
     // page, ce qui ramene automatiquement a l ecran de connexion.
-    if (r.status === 401) {
+    // v4.264 — seulement si on ETAIT connecte (token envoye) : sur l ecran
+    // de connexion, un 401 = mauvais identifiants, le message doit rester
+    // affiche au lieu d etre efface par un rechargement de page.
+    if (r.status === 401 && token) {
       localStorage.removeItem("hb_token");
       localStorage.removeItem("hb_email");
       if (!window.__hbRedirectingToLogin) {
@@ -1891,6 +1895,7 @@ Confirmer ?`
                     try{
                       const r = await apiCall("/api/config/advanced","PUT",{values:edits},token);
                       setAdvancedEdits({});
+                      if (r.ignored && r.ignored.length) alert("Réglage(s) refusé(s) : "+r.ignored.join(", "));
                       apiCall("/api/config/advanced","GET",null,token).then(r=>setAdvancedSettings(r));
                     }catch(e){alert("Erreur: "+e.message);}
                   };
@@ -1911,6 +1916,10 @@ Confirmer ?`
                                 onChange={e=>{
                                   if (isAccumOverride) {
                                     setAdvancedEdits(p=>({...p,[key]: e.target.value===""?null:Number(e.target.value)}));
+                                  } else if (e.target.value === "" || !isFinite(Number(e.target.value))) {
+                                    // v4.264 — champ vide/invalide : on n envoie RIEN
+                                    // (Number("") valait 0 et etait sauvegarde au blur).
+                                    setAdvancedEdits(p=>{ const n={...p}; delete n[key]; return n; });
                                   } else {
                                     setAdvancedEdits(p=>({...p,[key]:Number(e.target.value)}));
                                   }
@@ -1919,10 +1928,9 @@ Confirmer ?`
                                   // v4.187 — valide automatiquement CE champ
                                   // (et tout autre deja en attente) des qu on
                                   // clique ailleurs, sans attendre le bouton.
-                                  setAdvancedEdits(p=>{
-                                    if (Object.keys(p).length) saveAdvancedEdits(p);
-                                    return p;
-                                  });
+                                  // v4.264 — sauvegarde hors du "updater" setState
+                                  // (effet de bord pouvant s executer deux fois).
+                                  if (Object.keys(advancedEdits).length) saveAdvancedEdits(advancedEdits);
                                 }}
                                 style={{width:"100%",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11}}/>
                               {isAccumOverride && meta.value!=null && (
@@ -2490,7 +2498,7 @@ Confirmer ?`
                           <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:10}}>({trade.pnl_pct>=0?"+":""}{trade.pnl_pct?.toFixed(2)}%)</span>
                           <button onClick={async()=>{
                             if(!confirm(`Fermer ${trade.coin} manuellement ?`)) return;
-                            await apiCall("/api/paper/close","POST",{trade_id:trade.id,reason:"MANUEL"},token);
+                            try { await apiCall("/api/paper/close","POST",{trade_id:trade.id,reason:"MANUEL"},token); } catch(e) { alert("Fermeture non effectuée : "+e.message); }
                             loadData();
                           }} style={{background:"#2d0a0a",border:"1px solid #f87171",borderRadius:5,padding:"4px 10px",color:"#f87171",fontSize:10,cursor:"pointer",fontWeight:700}}>
                             ✕ Fermer
@@ -2763,7 +2771,7 @@ Confirmer ?`
                       {trade.peak_pnl_pct!=null ? <span style={{color:"#c084fc",fontSize:11}}>🏔️ pic +{trade.peak_pnl_pct.toFixed(2)}%</span>
                         : trade.peak_pnl!=null && <span style={{color:"#c084fc",fontSize:11}}>🏔️ pic +{trade.peak_pnl.toFixed(2)}$</span>}
                       <button onClick={async()=>{
-                        await apiCall("/api/paper/close","POST",{trade_id:trade.id,reason:"MANUEL"},token);
+                        try { await apiCall("/api/paper/close","POST",{trade_id:trade.id,reason:"MANUEL"},token); } catch(e) { alert("Fermeture non effectuée : "+e.message); }
                         loadData();
                       }} style={{background:"#2d0a0a",border:"1px solid #f87171",borderRadius:5,padding:"3px 10px",color:"#f87171",fontSize:10,fontWeight:700}}>
                         Fermer
