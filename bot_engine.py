@@ -5227,6 +5227,42 @@ class BotEngine:
                     # Trouver la slot_key correspondant a ce ticker
                     slot_key = next((s for s in self.states if ticker_from_slot_key(s) == ticker_sym), None)
                     if slot_key:
+                        # v4.260 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE
+                        # D ARCHITECTURE : cette recuperation s executait
+                        # JUSQU ICI de facon INCONDITIONNELLE a CHAQUE
+                        # redemarrage — meme quand RIEN n avait crashe et
+                        # que la position etait DEJA correctement suivie
+                        # localement (avec sa vraie heure d ouverture, son
+                        # armement TTP, son suivi de pic...). Elle
+                        # RECONSTRUISAIT et ECRASAIT systematiquement cet
+                        # etat correct depuis Hyperliquid, causant
+                        # precisement le probleme signale : heure d
+                        # ouverture reinitialisee a CHAQUE redeploiement,
+                        # pas seulement apres un vrai crash. Verifie
+                        # desormais D ABORD si un etat local DEJA
+                        # COHERENT existe (meme type, prix d entree
+                        # proche) pour ce ticker — si oui, ignore
+                        # COMPLETEMENT la reconstruction et preserve l
+                        # etat existant tel quel. Ne reconstruit que les
+                        # positions GENUINEMENT orphelines (aucun etat
+                        # local coherent trouve) — coherent avec le
+                        # comportement d origine, avant l accumulation de
+                        # ces mecanismes de recuperation.
+                        already_tracked = False
+                        for candidate_state in (self.states.get(slot_key), self.accum_states.get(slot_key)):
+                            if candidate_state and candidate_state.position:
+                                existing_pos = candidate_state.position
+                                same_type = existing_pos.get("type") == pos.get("type")
+                                entry_close = (
+                                    existing_pos.get("entry") and pos.get("entry")
+                                    and abs(existing_pos["entry"] - pos["entry"]) / pos["entry"] < 0.005
+                                )
+                                if same_type and entry_close:
+                                    already_tracked = True
+                                    break
+                        if already_tracked:
+                            continue
+
                         # v4.125 — FIX BUG CRITIQUE : recover_open_positions
                         # ne connait PAS la strategie d origine (Hyperliquid
                         # ne stocke pas ce concept, propre au bot) — une
