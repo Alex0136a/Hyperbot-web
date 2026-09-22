@@ -72,9 +72,21 @@ cfg = dict(be.CONFIG)
 # fixer les actifs actifs sans dependre d un Volume Railway (comme pour les
 # cles Hyperliquid/Finnhub). Une eventuelle valeur enregistree en base (via
 # l interface web, necessite un Volume) reste prioritaire si presente.
+def _norm_ticker(t: str) -> str:
+    """v4.264 — normalise un ticker SANS casser les marches HIP-3 : "btc" ->
+    "BTC", mais "xyz:eur"/"XYZ:EUR" -> "xyz:EUR" (prefixe DEX en minuscules,
+    comme dans toute la configuration). Un simple .upper() produisait
+    "XYZ:EUR", qui ne correspondait plus jamais a rien."""
+    t = (t or "").strip()
+    if ":" in t:
+        dex, coin = t.split(":", 1)
+        return f"{dex.lower()}:{coin.upper()}"
+    return t.upper()
+
+
 _env_active_coins = os.environ.get("HYPERBOT_ACTIVE_COINS", "").strip()
 if _env_active_coins:
-    cfg["ACTIVE_COINS"] = [c.strip().upper() for c in _env_active_coins.split(",") if c.strip()]
+    cfg["ACTIVE_COINS"] = [_norm_ticker(c) for c in _env_active_coins.split(",") if c.strip()]
 
 for k, v in db.get_all_config_overrides().items():
     cfg[k] = v
@@ -151,14 +163,21 @@ def _compute_protected_trade_ids():
     a la fois par le nettoyage manuel et le balayage automatique au
     demarrage."""
     protected_ids = []
-    for slot_key, s in bot.states.items():
-        if not s.position:
-            continue
-        ticker = be.ticker_from_slot_key(slot_key)
-        action = "LONG" if s.position["type"] == "long" else "SHORT"
-        tid = db.get_open_trade_id_by_coin_action(ticker, action, s.position.get("strategy"))
-        if tid:
-            protected_ids.append(tid)
+    # v4.264 — FIX BUG CRITIQUE : ne parcourait que bot.states — les
+    # positions Accumulation (bot.accum_states) n etaient jamais protegees,
+    # leur ligne etait supprimee par le nettoyage au demarrage, puis la
+    # position etait reclassee "forex" au redeploiement suivant.
+    for states in (bot.states, bot.accum_states):
+        for slot_key, s in states.items():
+            if not s.position:
+                continue
+            tid = db.get_open_trade_id_by_uid(s.position.get("trade_uid"))
+            if not tid:
+                ticker = be.ticker_from_slot_key(slot_key)
+                action = "LONG" if s.position["type"] == "long" else "SHORT"
+                tid = db.get_open_trade_id_by_coin_action(ticker, action, s.position.get("strategy"))
+            if tid:
+                protected_ids.append(tid)
     return protected_ids
 
 
@@ -177,25 +196,18 @@ def _consume_events():
             elif etype == "ws_event":
                 db.insert_ws_event(data.get("kind", "unknown"), data.get("message", ""))
             elif etype == "trade_opened":
-                db.insert_open_trade(
-                    coin=data["coin"], action=data["action"], confidence=data["confidence"],
-                    leverage=data["leverage"], position_size_pct=data["position_size_pct"],
-                    risk_reward=data["risk_reward"], timeframe=data["timeframe"],
-                    entry_price=data["entry"], stop_loss=data["stop_loss"],
-                    take_profit1=data["take_profit1"], take_profit2=data["take_profit2"],
-                    rsi=data.get("rsi"), entry_reasons=data.get("entry_reasons"),
-                    confidence_breakdown=data.get("confidence_breakdown"),
-                    strategy=data.get("strategy", "forex"),
-                    size_usd=data.get("size_usd"),
-                    sl_pct_used=data.get("sl_pct_used"),
-                    ttp_arm1_pct_used=data.get("ttp_arm1_pct_used"),
-                    adaptive_sl_ttp=data.get("adaptive_sl_ttp"),
-                    trade_mode=data.get("trade_mode", "paper"),
-                )
+                # v4.264 — deja ecrit de facon synchrone par bot_engine (trace
+                # indexee par trade_uid) ; sinon repli : insertion/completion.
+                if not data.get("persisted"):
+                    db.upsert_open_trade(data)
             elif etype == "trade":
                 ticker = be.ticker_from_slot_key(data.get("symbol", ""))
                 action = "LONG" if data.get("type") == "long" else "SHORT"
-                trade_id = db.get_open_trade_id_by_coin_action(ticker, action, data.get("strategy"))
+                # v4.264 — correspondance EXACTE par identifiant de trade,
+                # repli sur coin/sens/strategie pour les trades anciens.
+                trade_id = db.get_open_trade_id_by_uid(data.get("trade_uid"))
+                if not trade_id:
+                    trade_id = db.get_open_trade_id_by_coin_action(ticker, action, data.get("strategy"))
                 if trade_id:
                     db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"), peak_pnl=data.get("peak_pnl_usd"), peak_pnl_pct=data.get("peak_pnl_pct"), fees_paid=data.get("fees_paid"))
                 else:
@@ -370,6 +382,10 @@ def require_user(authorization: Optional[str] = Header(None)) -> str:
     email = auth.decode_token(token)
     if not email:
         raise HTTPException(401, "Token invalide ou expire")
+    # v4.264 — le compte doit toujours exister (un token d un compte supprime
+    # ne donne plus acces au bot).
+    if not db.get_user_by_email(email):
+        raise HTTPException(401, "Compte inconnu")
     return email
 
 
@@ -997,6 +1013,52 @@ def get_advanced_config(email: str = Depends(require_user)):
     }
 
 
+# v4.264 — FIX BUG CRITIQUE : le corps de requete type les valeurs en float,
+# donc RSI_PERIOD=14 devenait 14.0 — et `prices[-(period + 1):]` leve alors
+# TypeError (slice indices must be integers) : modifier une periode depuis
+# l interface cassait l analyse de TOUS les actifs. Les reglages entiers
+# (periodes, cycles, compteurs, heures) sont desormais convertis en int et
+# bornes ; None n est accepte que pour les reglages "herite" (defaut None).
+_RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
+_ZERO_ALLOWED_INT_KEYS = {"CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
+                          "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN"}
+
+
+def _is_int_setting(key: str) -> bool:
+    default = ADVANCED_SETTINGS.get(key, {}).get("default")
+    return isinstance(default, int) and not isinstance(default, bool) and key not in _RSI_FLOAT_THRESHOLDS
+
+
+def _coerce_advanced_value(key: str, value):
+    """Retourne (True, valeur_propre) ou (False, raison)."""
+    default = ADVANCED_SETTINGS[key]["default"]
+    if value is None:
+        return (True, None) if default is None else (False, "valeur vide refusee pour ce reglage")
+    if value != value or value in (float("inf"), float("-inf")):
+        return False, "valeur invalide"
+    if _is_int_setting(key):
+        value = int(round(value))
+        if key.endswith("_UTC") and not 0 <= value <= 23:
+            return False, "heure hors plage 0-23"
+        if value < (0 if key in _ZERO_ALLOWED_INT_KEYS else 1):
+            return False, "doit etre >= 1" if key not in _ZERO_ALLOWED_INT_KEYS else "doit etre >= 0"
+    return True, value
+
+
+def _normalize_loaded_advanced_settings():
+    """Corrige les valeurs deja enregistrees en base (floats 14.0 ecrits par
+    les versions precedentes) au chargement."""
+    for key in ADVANCED_SETTINGS:
+        if key in cfg and cfg[key] is not None and _is_int_setting(key):
+            try:
+                cfg[key] = int(round(float(cfg[key])))
+            except (TypeError, ValueError):
+                cfg[key] = ADVANCED_SETTINGS[key]["default"]
+
+
+_normalize_loaded_advanced_settings()
+
+
 class AdvancedConfigBody(BaseModel):
     # v4.42 — Optional[float] (pas juste float) : autorise l envoi explicite
     # de None pour REINITIALISER un reglage Accumulation dedie et revenir a
@@ -1011,8 +1073,12 @@ def put_advanced_config(body: AdvancedConfigBody, email: str = Depends(require_u
         if key not in ADVANCED_SETTINGS:
             ignored.append(key)
             continue
-        _apply_and_persist(key, value)
-        applied[key] = value
+        ok, clean = _coerce_advanced_value(key, value)
+        if not ok:
+            ignored.append(f"{key} ({clean})")
+            continue
+        _apply_and_persist(key, clean)
+        applied[key] = clean
     return {"ok": True, "applied": applied, "ignored": ignored}
 
 
@@ -1170,7 +1236,7 @@ def put_mode_coins(body: ModeCoinBody, email: str = Depends(require_user)):
         current = list(cfg.get("ACTIVE_COINS") or [])
     else:
         current = list(current)
-    ticker = body.ticker.upper()
+    ticker = _norm_ticker(body.ticker)
     if body.active and ticker not in current:
         current.append(ticker)
     elif not body.active and ticker in current:
@@ -1669,7 +1735,7 @@ def get_indicator_history(ticker: str, email: str = Depends(require_user)):
     support/resistance) d un actif, pour affichage en graphe cote
     interface. Cherche parmi TOUS les slots (BTC_0, BTC_1...) portant ce
     ticker et retourne celui qui a le plus de donnees (le plus actif)."""
-    ticker = ticker.upper()
+    ticker = _norm_ticker(ticker)
     best_state = None
     best_len = -1
     for slot_key, state in bot.states.items():
@@ -1917,7 +1983,25 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             # deux sens etait en realite bloque.
             blocker_accumulation_long = accum_snap.get("blocker_long", blocker_accumulation)
             blocker_accumulation_short = accum_snap.get("blocker_short", blocker_accumulation)
+        # v4.264 — raison EXACTE d un blocage anticipe (collecte, forex
+        # ferme, chauffe, prix indisponible, horaires...) au lieu de "pas
+        # encore de donnees" — cas permanent des actifs forex jusqu ici.
+        blocked_reason = snap.get("blocked_reason")
+        if blocked_reason and not has_position:
+            blocker_long = blocker_short = blocked_reason
+        is_forex_row = ticker in cfg.get("FOREX_MODE_SYMBOLS", []) and ticker.startswith("xyz:")
+        if is_forex_row:
+            # Les marches forex HIP-3 sont reserves au mode Forex : les autres
+            # modes ne les evaluent jamais (isolation v4.163).
+            blocker_spot_accum = "non concerne (actif forex, mode Forex uniquement)"
+            blocker_accumulation = blocker_accumulation_long = blocker_accumulation_short = blocker_spot_accum
+        elif blocked_reason:
+            if blocker_spot_accum == "pas encore de donnees":
+                blocker_spot_accum = blocked_reason
+            if blocker_accumulation == "pas encore de donnees":
+                blocker_accumulation = blocker_accumulation_long = blocker_accumulation_short = blocked_reason
         results.append({
+            "blocked_reason": blocked_reason,
             "ticker": ticker,
             "has_position": has_position,
             "snapshot_age_sec": round(time.time() - snap["ts"], 1) if snap.get("ts") else None,
@@ -1957,7 +2041,7 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
 def get_entry_diagnostics_one(ticker: str, email: str = Depends(require_user)):
     """v4.40 — Detail COMPLET de l instantane des portes d entree pour UN
     actif precis (tous les champs bruts, pas juste le resume compact)."""
-    ticker = ticker.upper()
+    ticker = _norm_ticker(ticker)
     best_state = None
     best_ts = -1
     for slot_key, state in bot.states.items():
@@ -2123,19 +2207,28 @@ def paper_close(body: PaperCloseBody, email: str = Depends(require_user)):
     # position comme fermee — position reelle abandonnee sans plus AUCUN
     # suivi (SL/TTP/retournement), un vrai risque de securite confirme.
     real_strategy = pos_snapshot.get("strategy", "forex")
-    effective_mode_close = bot._effective_mode(real_strategy)
+    # v4.264 — mode REEL de la position (fige a son ouverture), et ordre
+    # reel envoye AVANT de fermer le suivi interne : si Hyperliquid ne
+    # confirme pas la fermeture, la position reste suivie par le bot au lieu
+    # d etre abandonnee sans surveillance.
+    effective_mode_close = bot._position_mode(pos_snapshot)
     close_order_ok = None
+    if effective_mode_close == "live" and bot.exchange:
+        close_order_ok = be.close_order(bot.exchange, body.trade_id, pos_snapshot, cfg)
+        if not close_order_ok:
+            _push_log("error", f"⚠️ [{ticker}] Fermeture manuelle : Hyperliquid n'a PAS confirme la fermeture — position conservee et toujours suivie par le bot. Reessayez ou verifiez sur Hyperliquid.")
+            raise HTTPException(502, "Fermeture reelle non confirmee par Hyperliquid — position conservee et toujours suivie. Reessayez.")
     with _state_lock:
+        if not state.position:
+            raise HTTPException(409, "La position vient d'etre fermee par le bot entre-temps")
         pnl, win, trade = state.close_position(price, body.reason)
         trade["symbol"] = body.trade_id
-        if effective_mode_close == "live" and bot.exchange:
-            close_order_ok = be.close_order(bot.exchange, body.trade_id, pos_snapshot, cfg)
         action = "LONG" if trade["type"] == "long" else "SHORT"
-        trade_id = db.get_open_trade_id_by_coin_action(ticker, action, real_strategy)
+        trade_id = db.get_open_trade_id_by_uid(pos_snapshot.get("trade_uid")) or \
+            db.get_open_trade_id_by_coin_action(ticker, action, real_strategy)
         if trade_id:
             db.close_trade(trade_id, trade["exit"], trade["pnl"], trade["reason"])
-    if effective_mode_close == "live" and not close_order_ok:
-        _push_log("warn", f"⚠️ [{ticker}] Fermeture manuelle : le suivi interne est ferme, mais l'ordre REEL de fermeture sur Hyperliquid a ECHOUE ou n'a pas ete confirme — verifiez manuellement votre position sur Hyperliquid, elle pourrait etre restee ouverte sans plus aucun suivi du bot.")
+        bot._save_open_positions()
     _push_log("warn", f"[{ticker}] Fermeture manuelle @ ${price:.2f} | PnL: {pnl:+.2f}$")
     return {"ok": True, "pnl": pnl, "real_close_confirmed": close_order_ok}
 
