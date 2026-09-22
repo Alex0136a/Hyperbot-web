@@ -33,10 +33,17 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "3.1"
-BOT_BUILD   = "2026-07-04-d"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.264"
+BOT_BUILD   = "2026-09-22-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.264 (build 2026-09-22-a) — Fermeture reelle verifiee partout (ordre
+#        d abord, suivi ferme seulement si Hyperliquid confirme) ; SDK
+#        multi-DEX (forex xyz) ; indexation des trades a l ouverture
+#        (trade_uid = cloid, mode source + heure) et reprise unifiee au
+#        redemarrage ; diagnostic d entree toujours renseigne ; reglages
+#        avances entiers valides ; cle JWT obligatoire. NB : BOT_VERSION
+#        etait reste fige a "3.1" alors que le code etait en v4.263.
 # 3.1 (build 2026-07-04-d) — FIX CRITIQUE : NameError sur 'rsi_mode' utilise
 #        avant d etre defini dans le message du filtre ATR — plantait
 #        silencieusement le traitement d un actif des que le marche etait
@@ -1581,7 +1588,16 @@ def connect_hyperliquid(private_key, wallet_address):
         # v3.1 : skip_ws=False active la connexion WebSocket du SDK, necessaire
         # pour s abonner au flux temps reel (allMids) utilise par la
         # surveillance Max Loss / Trailing TP en direct (voir _on_ws_allmids).
-        info = Info(constants.MAINNET_API_URL, skip_ws=False)
+        # v4.264 — FIX BUG CRITIQUE : sans perp_dexs, le SDK ne connait PAS
+        # les actifs HIP-3 ("xyz:EUR"...) — tout ordre, fermeture ou levier
+        # forex levait une KeyError avalee silencieusement. Repli sans le
+        # DEX xyz si l initialisation multi-DEX echoue (le reste du bot
+        # continue de fonctionner, le forex live sera alors indisponible).
+        try:
+            info = Info(constants.MAINNET_API_URL, skip_ws=False, perp_dexs=HL_PERP_DEXS)
+        except Exception as e_dex:
+            print(f"[connect_hyperliquid] Init multi-DEX {HL_PERP_DEXS} impossible ({e_dex}) — repli DEX natif seul (forex live indisponible).")
+            info = Info(constants.MAINNET_API_URL, skip_ws=False)
         # v4.99 — FIX BUG CRITIQUE : wallet_address est un compte NORMAL,
         # pas un vault Hyperliquid (fonctionnalite distincte, pools de fonds
         # partages) — le passer en tant que vault_address causait un rejet
@@ -1590,7 +1606,11 @@ def connect_hyperliquid(private_key, wallet_address):
         # parametre pour "trader au nom de cette adresse", que la cle privee
         # signataire soit celle du compte principal ou celle d un "agent"
         # (wallet API separe autorise a trader pour ce compte).
-        exchange = Exchange(account, constants.MAINNET_API_URL, account_address=wallet_address)
+        try:
+            exchange = Exchange(account, constants.MAINNET_API_URL, account_address=wallet_address, perp_dexs=HL_PERP_DEXS)
+        except Exception as e_dex:
+            print(f"[connect_hyperliquid] Exchange multi-DEX impossible ({e_dex}) — repli DEX natif seul.")
+            exchange = Exchange(account, constants.MAINNET_API_URL, account_address=wallet_address)
         return info, exchange, None
     except Exception as e:
         import traceback
@@ -1623,19 +1643,140 @@ def sync_capital_from_hyperliquid(info, wallet_address):
         print(f"[CAPITAL] Impossible de lire le solde Hyperliquid : {e}")
         return None
 
+# ─────────────────────────────────────────────────────────────────────────
+#  v4.264 — OUTILS MULTI-DEX, FERMETURE VERIFIEE, IDENTIFIANT DE TRADE
+# ─────────────────────────────────────────────────────────────────────────
+# DEX interroges : "" = DEX natif Hyperliquid, "xyz" = DEX HIP-3 du forex.
+HL_PERP_DEXS = ["", "xyz"]
+
+
+def _dex_of(ticker):
+    """"xyz:EUR" -> "xyz" ; "BTC" -> "" (DEX natif)."""
+    return ticker.split(":", 1)[0] if ticker and ":" in ticker else ""
+
+
+def exchange_wallet_address(exchange):
+    """Adresse du compte reellement trade par cet Exchange SDK."""
+    return (getattr(exchange, "vault_address", None)
+            or getattr(exchange, "account_address", None)
+            or exchange.wallet.address)
+
+
+def fetch_exchange_positions(info, wallet_address, tickers=None):
+    """Positions perp REELLES sur TOUS les DEX utiles (natif + xyz).
+    Retourne {coin: {"szi", "entry", "leverage"}} — ou None si AU MOINS UNE
+    requete a echoue : l appelant ne doit alors JAMAIS conclure qu une
+    position est fermee (absence de donnee != absence de position)."""
+    dexes = {""}
+    for t in (tickers or []):
+        dexes.add(_dex_of(t))
+    result = {}
+    for dex in sorted(dexes):
+        try:
+            state = info.user_state(wallet_address, dex) if dex else info.user_state(wallet_address)
+        except Exception as e:
+            print(f"[EXCH-POS] Lecture positions DEX '{dex or 'natif'}' impossible : {e}")
+            return None
+        for item in (state or {}).get("assetPositions", []):
+            p = item.get("position", {}) or {}
+            coin = p.get("coin", "")
+            try:
+                szi = float(p.get("szi", 0) or 0)
+                entry = float(p.get("entryPx", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if coin and szi != 0:
+                lev = (p.get("leverage") or {}).get("value")
+                result[coin] = {"szi": szi, "entry": entry, "leverage": lev}
+    return result
+
+
+def get_exchange_position_szi(info, wallet_address, ticker):
+    """szi reel d un seul actif : 0.0 si aucune position, None si inconnu."""
+    positions = fetch_exchange_positions(info, wallet_address, [ticker])
+    if positions is None:
+        return None
+    return positions.get(ticker, {}).get("szi", 0.0)
+
+
+def _order_first_status(result):
+    """Premier statut d une reponse d ordre Hyperliquid (dict) ou None."""
+    try:
+        statuses = result.get("response", {}).get("data", {}).get("statuses", [])
+        return statuses[0] if statuses and isinstance(statuses[0], dict) else None
+    except AttributeError:
+        return None
+
+
+# Codes de strategie encodes dans l identifiant client (cloid) des ordres
+# d entree — permet de retrouver le MODE SOURCE d une position directement
+# depuis l historique Hyperliquid, meme si la base locale etait perdue.
+TRADE_UID_MAGIC = "4842"  # "HB"
+STRATEGY_CODES = {"forex": "01", "accumulation": "02", "spot_accumulation": "03", "funding_contrarian": "04"}
+STRATEGY_FROM_CODE = {v: k for k, v in STRATEGY_CODES.items()}
+
+
+def make_trade_uid(strategy):
+    """Identifiant unique d un trade, cree AVANT l envoi de l ordre, au
+    format cloid Hyperliquid (0x + 32 hex) : magic(4) + strategie(2) +
+    horodatage ms(12) + aleatoire(14)."""
+    import secrets as _secrets
+    code = STRATEGY_CODES.get(strategy, "00")
+    ts_ms = int(time.time() * 1000) & ((1 << 48) - 1)
+    return "0x" + TRADE_UID_MAGIC + code + f"{ts_ms:012x}" + _secrets.token_hex(7)
+
+
+def decode_trade_uid(uid):
+    """Retourne {"strategy", "opened_ts"} si uid est un identifiant HyperBot, sinon None."""
+    try:
+        raw = str(uid).lower()
+        if not raw.startswith("0x") or len(raw) != 34 or raw[2:6] != TRADE_UID_MAGIC:
+            return None
+        strategy = STRATEGY_FROM_CODE.get(raw[6:8])
+        opened_ts = int(raw[8:20], 16) / 1000.0
+        return {"strategy": strategy, "opened_ts": opened_ts}
+    except (ValueError, TypeError):
+        return None
+
+
+def find_trade_uid_in_history(info, wallet_address, coin, is_long):
+    """Dernier recours au redemarrage (base locale muette) : cherche dans l
+    historique d ordres Hyperliquid le plus recent ordre d ENTREE HyperBot
+    (cloid reconnaissable) sur ce coin et dans ce sens. None si introuvable."""
+    try:
+        history = info.historical_orders(wallet_address) or []
+    except Exception as e:
+        print(f"[RECOVER] historique d ordres indisponible : {e}")
+        return None
+    best = None
+    for h in history:
+        order = h.get("order", h) if isinstance(h, dict) else {}
+        if order.get("coin") != coin or order.get("reduceOnly"):
+            continue
+        side_long = order.get("side") == "B"
+        if side_long != bool(is_long):
+            continue
+        cloid = order.get("cloid")
+        if not cloid or decode_trade_uid(cloid) is None:
+            continue
+        ts = order.get("timestamp", 0) or 0
+        if best is None or ts > best[0]:
+            best = (ts, cloid)
+    return best[1] if best else None
+
+
 def recover_open_positions(info, wallet_address, symbols, cfg):
     """Recupere les positions ouvertes sur Hyperliquid apres un crash.
     Retourne un dict {symbol: position_dict} compatible avec SymbolState.
     """
     recovered = {}
     try:
-        state = info.user_state(wallet_address)
-        positions = state.get("assetPositions", [])
-        for item in positions:
-            pos = item.get("position", {})
-            coin = pos.get("coin", "")
-            szi  = float(pos.get("szi", 0))      # positif = long, negatif = short
-            entry = float(pos.get("entryPx", 0) or 0)
+        # v4.264 — interroge TOUS les DEX (natif + xyz) : les positions forex
+        # HIP-3 n etaient jamais recuperees (user_state sans parametre dex).
+        exch_positions = fetch_exchange_positions(info, wallet_address, symbols) or {}
+        for coin, ep in exch_positions.items():
+            szi  = ep["szi"]      # positif = long, negatif = short
+            entry = ep["entry"]
             if coin not in symbols or szi == 0 or entry == 0:
                 print(f"[RECOVER-DIAG] {coin} IGNORE — coin_in_symbols={coin in symbols} | szi={szi} | entry={entry}")
                 continue
@@ -1694,18 +1835,19 @@ def reconcile_closed_positions(info, wallet_address, saved_positions, cfg):
     if not saved_positions:
         return ghost_trades, real_entry_prices
     try:
-        state      = info.user_state(wallet_address)
-        open_coins = set()
-        for item in state.get("assetPositions", []):
-            pos  = item.get("position", {})
-            coin = pos.get("coin", "")
-            szi  = float(pos.get("szi", 0))
-            if coin and szi != 0:
-                open_coins.add(coin)
-                try:
-                    real_entry_prices[coin] = float(pos.get("entryPx", 0) or 0)
-                except (TypeError, ValueError):
-                    pass
+        # v4.264 — FIX BUG CRITIQUE : ne lisait que le DEX natif — toute
+        # position forex (xyz:) LIVE sauvegardee etait donc declaree "fermee
+        # pendant la deconnexion" (faux trade fantome, PnL invente) alors
+        # qu elle etait toujours ouverte. Si la lecture echoue, on ne
+        # conclut RIEN (aucune position declaree fermee).
+        saved_tickers = [ticker_from_slot_key(k.replace("ACCUM__", "", 1)) for k in saved_positions]
+        exch_positions = fetch_exchange_positions(info, wallet_address, saved_tickers)
+        if exch_positions is None:
+            print("[RECONCILE] Positions Hyperliquid illisibles — aucune fermeture deduite par prudence.")
+            return ghost_trades, real_entry_prices
+        open_coins = set(exch_positions)
+        for coin, ep in exch_positions.items():
+            real_entry_prices[coin] = ep["entry"]
 
         # Recuperer l historique recent des fills pour connaitre le prix de cloture reel
         try:
@@ -1770,6 +1912,9 @@ def reconcile_closed_positions(info, wallet_address, saved_positions, cfg):
             win     = pnl_usd > 0
 
             ghost_trades.append({
+                "trade_uid": pos.get("trade_uid"),  # v4.264 — fermeture en base par identifiant exact
+                "strategy":  pos.get("strategy", "forex"),
+                "trade_mode": "live",
                 "symbol":  coin,
                 "slot_key": slot_key,  # v4.126 — pour un routage fiable cote appelant
                 "is_accum": is_accum,  # v4.126 — sait si ca va dans accum_states
@@ -1793,12 +1938,10 @@ def emergency_close_all(exchange, info, wallet_address, cfg):
     Utilisé si la reprise est impossible.
     """
     try:
-        state = info.user_state(wallet_address)
-        positions = state.get("assetPositions", [])
-        for item in positions:
-            pos = item.get("position", {})
-            coin = pos.get("coin", "")
-            szi  = float(pos.get("szi", 0))
+        # v4.264 — tous les DEX (forex xyz compris)
+        exch_positions = fetch_exchange_positions(info, wallet_address, cfg.get("SYMBOLS", [])) or {}
+        for coin, ep in exch_positions.items():
+            szi = ep["szi"]
             if szi == 0:
                 continue
             try:
@@ -1906,7 +2049,7 @@ def is_spot(symbol, cfg):
     # symbol peut etre une slot_key "BTC_0" — extraire le vrai ticker
     return ticker_from_slot_key(symbol) in cfg.get("SPOT_SYMBOLS", [])
 
-def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, tp_price=None, leverage=1):
+def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, tp_price=None, leverage=1, trade_uid=None):
     """Passe un ordre market d entree avec SL et TP sur Hyperliquid.
     symbol peut etre une slot_key "BTC_0" — le vrai ticker est extrait automatiquement.
 
@@ -1996,7 +2139,6 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
             return False, err_msg, None
         sz = format_size_hl(max(notional_usd / price, 0), sz_decimals)
         print(f"[SIZE-DIAG] {ticker} : size_usd(E)={size_usd} | leverage={leverage} | notional_usd={notional_usd} | price={price} | sz_decimals={sz_decimals} | sz calcule={sz}")
-        close_side = not is_buy
         # v4.5 — pos_mock["size"] doit etre le NOTIONNEL reel (deja leverage)
         # pour que _build_sl_order/_build_tp_order calculent la meme
         # quantite sz que l ordre d entree ci-dessus — sinon les ordres
@@ -2024,6 +2166,15 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
             "order_type":  {"limit": {"tif": "Ioc"}},
             "reduce_only": False,
         }
+        # v4.264 — identifiant de trade HyperBot transmis comme cloid : relie
+        # sans ambiguite la position reelle a son mode source et a son heure
+        # d ouverture (voir make_trade_uid / reprise au redemarrage).
+        if trade_uid:
+            try:
+                from hyperliquid.utils.types import Cloid
+                entry_order["cloid"] = Cloid.from_str(trade_uid)
+            except Exception as e_cloid:
+                print(f"[ORDER] cloid {trade_uid} non applique ({e_cloid}) — ordre envoye sans identifiant client.")
         orders = [entry_order]
 
         if sl_price is not None:
@@ -2073,10 +2224,26 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
         return False, str(e), None
 
 def close_order(exchange, symbol, position, cfg):
-    """Ferme une position — perp ou spot selon le symbole."""
+    """Ferme une position REELLE — perp ou spot selon le symbole — et ne
+    retourne True que si la fermeture est CONFIRMEE.
+
+    v4.264 — FIX BUG CRITIQUE : l ancienne version renvoyait True des que
+    Hyperliquid ACCEPTAIT la requete (status "ok"), meme si l ordre IOC n
+    avait rien rempli (statut "error" dans la reponse) — le bot se croyait
+    ferme alors que la position restait ouverte. A l inverse, le SDK renvoie
+    None quand la position n existe DEJA plus (SL natif declenche entre
+    temps), ce qui etait compte comme un echec. Desormais :
+      - perp : lit la position reelle (bon DEX, forex compris) AVANT et
+        APRES l ordre ; True si elle n existe plus, False sinon ;
+      - reliquat partiel : une seconde tentative, puis verification ;
+      - position deja absente : True (rien a fermer, deja fait).
+    """
     ticker = ticker_from_slot_key(symbol)
     try:
         if is_spot(symbol, cfg):
+            if not position:
+                print(f"[CLOSE] {ticker} spot : position inconnue — fermeture impossible")
+                return False
             try:
                 _, spot_map = _get_sz_decimals_map(exchange.info)
                 sz_decimals = spot_map.get(ticker, 6)
@@ -2086,10 +2253,35 @@ def close_order(exchange, symbol, position, cfg):
             api_ticker = cfg.get("SPOT_TICKER_MAP", {}).get(ticker, ticker)
             is_buy = position["type"] == "short"
             result = exchange.market_open(api_ticker, is_buy, sz)
-        else:
+            status = _order_first_status(result) if result else None
+            ok = bool(result and result.get("status") == "ok" and status and "filled" in status)
+            if not ok:
+                print(f"[CLOSE] {ticker} spot : fermeture non confirmee — reponse {str(result)[:300]}")
+            return ok
+
+        wallet = exchange_wallet_address(exchange)
+        szi_before = get_exchange_position_szi(exchange.info, wallet, ticker)
+        if szi_before == 0.0:
+            print(f"[CLOSE] {ticker} : aucune position reelle sur Hyperliquid — deja fermee (SL natif ?), fermeture confirmee.")
+            return True
+
+        for attempt in (1, 2):
             result = exchange.market_close(ticker)
-        return result and result.get("status") == "ok"
-    except Exception:
+            if result is not None:
+                status = _order_first_status(result)
+                if result.get("status") != "ok" or (status and "error" in status):
+                    print(f"[CLOSE] {ticker} : tentative {attempt} rejetee — {str(result)[:300]}")
+            time.sleep(0.5)  # laisse l etat de compte se mettre a jour
+            szi_after = get_exchange_position_szi(exchange.info, wallet, ticker)
+            if szi_after == 0.0:
+                return True
+            if szi_after is None:
+                print(f"[CLOSE] {ticker} : etat reel illisible apres fermeture — considere NON confirme.")
+                return False
+            print(f"[CLOSE] {ticker} : position encore ouverte apres tentative {attempt} (szi={szi_after}).")
+        return False
+    except Exception as e:
+        print(f"[CLOSE] Erreur fermeture {ticker} : {type(e).__name__}: {e}")
         return False
 
 def _spot_sl_asset(symbol, cfg):
@@ -2188,7 +2380,8 @@ def _get_open_orders_by_type(info, wallet_address, symbol):
     """
     sl_oids, tp_oids = [], []
     try:
-        open_orders = info.open_orders(wallet_address)
+        dex = _dex_of(ticker_from_slot_key(symbol))
+        open_orders = info.open_orders(wallet_address, dex) if dex else info.open_orders(wallet_address)
         for o in open_orders:
             if o.get("coin") != symbol or not o.get("reduceOnly", False):
                 continue
@@ -2737,6 +2930,7 @@ class SymbolState:
             "pnl": pnl_usd, "reason": reason, "win": win,
             "ts": datetime.now().timestamp(),
             "strategy": p.get("strategy", "forex"),  # v4.8
+            "trade_uid": p.get("trade_uid"),  # v4.264 — identifiant exact du trade
             "trade_mode": trade_mode,  # v4.89 — paper ou live REEL de ce trade precis
             "peak_pnl_usd": peak_pnl_usd_at_close,  # v4.15
             "peak_pnl_pct": peak_pnl_pct_at_close,  # v4.17
@@ -3125,10 +3319,20 @@ class BotEngine:
                 snapshot["_tier0_armed"] = st.tier0_armed
                 snapshot["_tier0_peak_pnl_usd"] = st.tier0_peak_pnl_usd
                 snapshot["_absolute_peak_pnl_usd"] = st.absolute_peak_pnl_usd
+                snapshot["_spot_accum_armed"] = st.spot_accum_armed  # v4.264 — manquaient pour Accumulation
+                snapshot["_spot_accum_peak_pnl_pct"] = st.spot_accum_peak_pnl_pct
                 positions[f"ACCUM__{sym}"] = snapshot
         try:
-            with open(self.POSITIONS_FILE, "w") as f:
+            # v4.264 — ecriture ATOMIQUE (fichier temporaire + remplacement) :
+            # un arret Railway (SIGTERM) pendant l ecriture ne peut plus
+            # laisser un fichier tronque, donc illisible, donc TOUTES les
+            # positions perdues au redemarrage.
+            tmp_path = self.POSITIONS_FILE + ".tmp"
+            with open(tmp_path, "w") as f:
                 json.dump(positions, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.POSITIONS_FILE)
             print(f"[POSITIONS] Sauvegarde OK : {len(positions)} position(s) -> {os.path.abspath(self.POSITIONS_FILE)} (coins: {[ticker_from_slot_key(k) for k in positions]})")
         except Exception as e:
             print(f"[POSITIONS] ERREUR sauvegarde : {e}")
@@ -3144,13 +3348,264 @@ class BotEngine:
             with open(self.POSITIONS_FILE, "r") as f:
                 data = json.load(f)
             print(f"[POSITIONS] Chargement OK depuis {abspath} : {len(data)} position(s) trouvee(s) (coins: {[ticker_from_slot_key(k) for k in data]})")
-            # Vider le fichier apres lecture pour eviter double reconciliation
-            with open(self.POSITIONS_FILE, "w") as f:
-                json.dump({}, f)
-            return data
+            # v4.264 — le fichier n est PLUS vide apres lecture : si le
+            # process s arretait entre cette lecture et la sauvegarde
+            # suivante, toutes les positions etaient perdues. La reprise
+            # etant desormais idempotente, le fichier est simplement reecrit
+            # avec l etat reel a la fin de _restore_positions_at_startup.
+            return data if isinstance(data, dict) else {}
         except Exception as e:
             print(f"[POSITIONS] ERREUR lecture : {e}")
             return {}
+
+    # ─────────────────────────────────────────────────────────────────────
+    #  v4.264 — REPRISE DES POSITIONS AU DEMARRAGE
+    # ─────────────────────────────────────────────────────────────────────
+    _TRACKING_EXTRA_KEYS = ("_peak_pnl_usd", "_tp_stage", "_trailing_tp_active", "_tier0_armed",
+                            "_tier0_peak_pnl_usd", "_absolute_peak_pnl_usd", "_spot_accum_armed",
+                            "_spot_accum_peak_pnl_pct")
+
+    @staticmethod
+    def _reset_tracking(target):
+        target.peak_pnl_usd = None
+        target.tp_stage = 0
+        target.trailing_tp_active = False
+        target.tier0_armed = False
+        target.tier0_peak_pnl_usd = None
+        target.absolute_peak_pnl_usd = None
+        target.spot_accum_armed = False
+        target.spot_accum_peak_pnl_pct = None
+
+    @staticmethod
+    def _opened_at_from_iso(iso_str):
+        """Horodatage ISO UTC (base) -> format d affichage local du bot."""
+        try:
+            dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+            return dt.astimezone().strftime("%d/%m/%Y %H:%M:%S")
+        except (ValueError, TypeError):
+            return None
+
+    def _resolve_slot(self, pool, preferred_slot, ticker):
+        """Emplacement a utiliser pour une position restauree : celui d
+        origine s il existe encore et est libre, sinon un emplacement libre
+        du meme actif."""
+        if preferred_slot in pool and not pool[preferred_slot].position:
+            return preferred_slot
+        return next((k for k, st in pool.items() if ticker_from_slot_key(k) == ticker and not st.position), None)
+
+    def _restore_positions_at_startup(self, any_strategy_live):
+        """Reprise UNIQUE et idempotente des positions apres un redemarrage :
+
+        1. Positions SAUVEGARDEES (source principale : elles contiennent le
+           mode source, l heure d ouverture, les niveaux, l etat du
+           trailing) -> restaurees a l identique dans leur emplacement.
+           Une position LIVE est confrontee a Hyperliquid : si elle n y est
+           plus, elle a ete fermee pendant la coupure et est cloturee
+           proprement (prix de sortie reel si disponible).
+        2. Positions REELLES Hyperliquid non couvertes par la sauvegarde
+           (fichier perdu, crash) -> identifiees par leur trade_uid : base
+           locale, puis cloid de l ordre d entree dans l historique
+           Hyperliquid. Le repli "forex" n est utilise qu en dernier recours,
+           avec une alerte explicite.
+        3. Traces "pending" dont l ordre n a finalement ouvert aucune
+           position -> supprimees.
+        Si Hyperliquid est illisible, rien n est deduit ni supprime : les
+        positions sauvegardees sont restaurees telles quelles."""
+        cfg = self.cfg
+        wallet = cfg.get("WALLET_ADDRESS")
+        saved = self._load_saved_positions() or {}
+        real_tickers = sorted({ticker_from_slot_key(k) for k in cfg["SYMBOLS"]})
+        saved_tickers = [ticker_from_slot_key(k.replace("ACCUM__", "", 1)) for k in saved]
+        has_saved_live = any(isinstance(p, dict) and p.get("effective_mode") == "live" for p in saved.values())
+
+        exch = None
+        if self.info is not None and wallet and (any_strategy_live or has_saved_live):
+            exch = fetch_exchange_positions(self.info, wallet, real_tickers + saved_tickers)
+            if exch is None:
+                self.emit("log", {"msg": "⚠️ Positions Hyperliquid illisibles au demarrage — positions sauvegardees restaurees telles quelles, aucune fermeture deduite, aucune trace supprimee.", "level": "warn"})
+
+        claimed = {}
+        restored, closed_offline, adopted = 0, 0, 0
+
+        # ── Phase 1 : positions sauvegardees ──
+        for key, spos in saved.items():
+            if not isinstance(spos, dict) or "type" not in spos or "entry" not in spos:
+                continue
+            is_accum = key.startswith("ACCUM__")
+            saved_slot = key[len("ACCUM__"):] if is_accum else key
+            ticker = ticker_from_slot_key(saved_slot)
+            pool = self.accum_states if is_accum else self.states
+            slot = self._resolve_slot(pool, saved_slot, ticker)
+            pos = dict(spos)
+            extras = {k: pos.pop(k) for k in list(pos) if k.startswith("_")}
+            if slot is None:
+                self.emit("log", {"msg": f"[{ticker}] ⚠️ Position sauvegardee ({pos.get('strategy', '?')}) mais aucun emplacement disponible pour cet actif dans la configuration actuelle — non restauree, verifiez-la manuellement.", "level": "error"})
+                continue
+            target = pool[slot]
+            mode_pos = pos.get("effective_mode") or self._position_mode(pos)
+            pos["effective_mode"] = mode_pos
+            pos["slot_key"] = slot
+            action = "LONG" if pos["type"] == "long" else "SHORT"
+            if not pos.get("trade_uid"):
+                rows = [r for r in db.find_open_trades_for_recovery(ticker, action)
+                        if (r.get("strategy") or "forex") == pos.get("strategy", "forex") and r.get("trade_uid")]
+                if rows:
+                    pos["trade_uid"] = rows[0]["trade_uid"]
+
+            if mode_pos == "live" and exch is not None:
+                ep = exch.get(ticker)
+                still_open = ep is not None and ((ep["szi"] > 0) == (pos["type"] == "long"))
+                if not still_open:
+                    target.position = pos
+                    self._reset_tracking(target)
+                    self._close_offline_position(target, slot, ticker, pos)
+                    closed_offline += 1
+                    continue
+                claimed.setdefault(ticker, set()).add(pos["type"])
+                if ep["entry"] > 0 and pos.get("entry") and abs(ep["entry"] - pos["entry"]) / pos["entry"] > 0.0005:
+                    self.emit("log", {"msg": f"[{ticker}] Prix d entree corrige avec la valeur reelle Hyperliquid : ${pos['entry']:.6g} -> ${ep['entry']:.6g}", "level": "dim"})
+                    pos["entry"] = ep["entry"]
+
+            target.position = pos
+            self._reset_tracking(target)
+            for k in self._TRACKING_EXTRA_KEYS:
+                if k in extras and extras[k] is not None:
+                    setattr(target, k[1:], extras[k])
+            restored += 1
+            self.emit("log", {"msg": f"[{ticker}] Position {pos.get('strategy', 'forex')} {pos['type'].upper()} @ ${pos['entry']:.6g} restauree ({mode_pos}, ouverte le {pos.get('opened_at', '?')})", "level": "warn"})
+            if mode_pos == "live" and self.exchange and exch is not None:
+                try:
+                    ensure_sl_on_hyperliquid(self.exchange, self.info, wallet, ticker, pos, cfg)
+                except Exception as e:
+                    print(f"[RECOVER] Verification SL {ticker} impossible : {e}")
+
+        # ── Phase 2 : positions reelles non couvertes par la sauvegarde ──
+        if exch is not None:
+            for coin, ep in exch.items():
+                direction = "long" if ep["szi"] > 0 else "short"
+                if direction in claimed.get(coin, set()):
+                    continue
+                if coin not in real_tickers:
+                    self.emit("log", {"msg": f"[{coin}] Position reelle hors configuration du bot (ouverte manuellement ?) — ignoree.", "level": "dim"})
+                    continue
+                if self._adopt_exchange_position(coin, ep, direction):
+                    adopted += 1
+
+            # ── Phase 3 : traces prealables sans position reelle ──
+            tracked = {st.position.get("trade_uid") for pool in (self.states, self.accum_states)
+                       for st in pool.values() if st.position}
+            try:
+                for row in db.list_pending_trades():
+                    if row["trade_uid"] in tracked:
+                        continue
+                    ep = exch.get(row["coin"])
+                    held = ep is not None and ((ep["szi"] > 0) == (row["action"] == "LONG"))
+                    if not held:
+                        db.discard_pending_trade(row["trade_uid"])
+                        print(f"[RECOVER] Trace pending {row['trade_uid']} ({row['coin']}) sans position reelle — supprimee.")
+            except Exception as e:
+                print(f"[RECOVER] Nettoyage des traces pending impossible : {e}")
+
+        summary = f"Reprise : {restored} position(s) restauree(s), {adopted} retrouvee(s) sur Hyperliquid, {closed_offline} fermee(s) pendant la coupure."
+        self.emit("log", {"msg": summary, "level": "ok" if not (adopted or closed_offline) else "warn"})
+        print(f"[RECOVER] {summary}")
+        self._save_open_positions()
+
+    def _close_offline_position(self, target, slot, ticker, pos):
+        """Position LIVE sauvegardee absente d Hyperliquid : fermee pendant
+        la coupure (SL natif, liquidation, fermeture manuelle). Cloture
+        comptable avec le prix de sortie reel si un fill est retrouve."""
+        exit_px, reason = None, "FERMEE PENDANT COUPURE (prix estime)"
+        try:
+            fills = self.info.user_fills(self.cfg.get("WALLET_ADDRESS")) or []
+            for f in fills:  # plus recents d abord
+                if f.get("coin") == ticker and str(f.get("dir", "")).startswith("Close"):
+                    exit_px = float(f["px"])
+                    reason = "SL/TP HYPERLIQUID (pendant coupure)"
+                    break
+        except Exception as e:
+            print(f"[RECOVER] Fills indisponibles pour {ticker} : {e}")
+        if exit_px is None:
+            exit_px = target.current_price or pos.get("sl") or pos["entry"]
+        pnl, _, trade = target.close_position(exit_px, reason)
+        trade["symbol"] = slot
+        self.emit("trade", trade)
+        self.emit("log", {"msg": f"[{ticker}] {reason} @ ${exit_px:.6g} | PnL: ${pnl:.2f} (mode {pos.get('strategy', 'forex')})", "level": "win" if pnl > 0 else "loss"})
+
+    def _adopt_exchange_position(self, coin, ep, direction):
+        """Rattache une position REELLE non suivie a son trade d origine
+        (mode source, heure, emplacement) via son trade_uid."""
+        cfg = self.cfg
+        wallet = cfg.get("WALLET_ADDRESS")
+        action = "LONG" if direction == "long" else "SHORT"
+        row, uid, source = None, None, None
+        rows = db.find_open_trades_for_recovery(coin, action)
+        if rows:
+            row, uid, source = rows[0], rows[0].get("trade_uid"), "base locale"
+        if not uid:
+            uid_hist = find_trade_uid_in_history(self.info, wallet, coin, direction == "long")
+            if uid_hist:
+                uid = uid_hist
+                row = db.get_trade_by_uid(uid) or row
+                source = "identifiant d ordre Hyperliquid (cloid)"
+        decoded = decode_trade_uid(uid) if uid else None
+        strategy = (row or {}).get("strategy") or (decoded or {}).get("strategy")
+        identified = strategy is not None
+        if not identified:
+            strategy = "forex"
+
+        opened_at = self._opened_at_from_iso((row or {}).get("created_at")) if row else None
+        if opened_at is None and decoded:
+            opened_at = datetime.fromtimestamp(decoded["opened_ts"]).strftime("%d/%m/%Y %H:%M:%S")
+        if opened_at is None:
+            opened_at = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+        is_accum = bool((row or {}).get("is_accum_slot")) or strategy == "accumulation"
+        pool = self.accum_states if is_accum else self.states
+        slot = self._resolve_slot(pool, (row or {}).get("slot_key"), coin)
+        if slot is None:
+            self.emit("log", {"msg": f"[{coin}] ⚠️ Position reelle {action} trouvee mais aucun emplacement libre pour la suivre — verifiez-la manuellement sur Hyperliquid.", "level": "error"})
+            return False
+
+        leverage = ep.get("leverage") or (row or {}).get("leverage") or 1
+        notional = abs(ep["szi"]) * ep["entry"]
+        sl_pct = cfg.get("RECOVERY_RESCUE_SL_PCT", 15.0)
+        tp_pct = cfg.get("SYMBOL_TP_PCT", {}).get(coin, cfg["TAKE_PROFIT_PCT"])
+        entry = ep["entry"]
+        pos = {
+            "type": direction, "entry": entry,
+            "sl": entry * (1 - sl_pct / 100) if direction == "long" else entry * (1 + sl_pct / 100),
+            "tp": entry * (1 + tp_pct / 100) if direction == "long" else entry * (1 - tp_pct / 100),
+            "size": notional / max(leverage, 1), "peak": entry, "opened_at": opened_at,
+            "confidence": (row or {}).get("confidence"), "leverage": leverage,
+            "strategy": strategy, "effective_mode": "live", "slot_key": slot,
+            "trade_uid": uid or make_trade_uid(strategy), "recovered": True,
+        }
+        if (row or {}).get("sl_pct_used") is not None:
+            pos["sl_pct_of_e"] = row["sl_pct_used"]
+        if (row or {}).get("ttp_arm1_pct_used") is not None:
+            pos["ttp_arm1_pct"] = row["ttp_arm1_pct_used"]
+        target = pool[slot]
+        target.position = pos
+        self._reset_tracking(target)
+        try:
+            db.upsert_open_trade({"trade_uid": pos["trade_uid"], "coin": coin, "action": action,
+                                  "entry": entry, "strategy": strategy, "trade_mode": "live",
+                                  "slot_key": slot, "is_accum_slot": is_accum,
+                                  "confidence": pos["confidence"], "leverage": leverage,
+                                  "size_usd": pos["size"]})
+        except Exception as e:
+            print(f"[RECOVER] Ecriture base {coin} impossible : {e}")
+        if identified:
+            self.emit("log", {"msg": f"[{coin}] Position {strategy} {action} @ ${entry:.6g} retrouvee via {source} — mode et heure d ouverture d origine rétablis ({opened_at}).", "level": "warn"})
+        else:
+            self.emit("log", {"msg": f"[{coin}] ⚠️ Position reelle {action} @ ${entry:.6g} NON IDENTIFIEE (aucune trace locale ni identifiant HyperBot — ouverte hors du bot ?) — suivie par defaut en mode forex. Verifiez-la.", "level": "error"})
+        if self.exchange:
+            try:
+                ensure_sl_on_hyperliquid(self.exchange, self.info, wallet, coin, pos, cfg)
+            except Exception as e:
+                print(f"[RECOVER] Verification SL {coin} impossible : {e}")
+        return True
 
     def _save_confidence_thresholds(self):
         """Sauvegarde les seuils de confiance dynamiques par actif (survit aux
@@ -3567,8 +4022,10 @@ class BotEngine:
                 price = state.current_price or pos.get("entry")
                 if price is None:
                     continue
-                pnl, _, trade = state.close_position(price, "MANUEL (bascule live)")
-                trade["symbol"] = slot_key
+                _result = self._safe_close_position(state, price, "MANUEL (bascule live)", ticker_from_slot_key(slot_key), pos, slot_key, None)
+                if _result is None:
+                    continue  # fermeture reelle non confirmee : position conservee
+                pnl, _, trade = _result
                 self.emit("trade", trade)
                 closed_count += 1
         # v4.121 — SUR DEMANDE EXPLICITE : Accumulation a desormais son
@@ -3580,13 +4037,43 @@ class BotEngine:
                     price = accum_state.current_price or pos.get("entry")
                     if price is None:
                         continue
-                    pnl, _, trade = accum_state.close_position(price, "MANUEL (bascule live)")
-                    trade["symbol"] = slot_key
+                    _result = self._safe_close_position(accum_state, price, "MANUEL (bascule live)", ticker_from_slot_key(slot_key), pos, slot_key, None)
+                    if _result is None:
+                        continue
+                    pnl, _, trade = _result
                     self.emit("trade", trade)
                     closed_count += 1
         if closed_count:
             self._save_open_positions()
         return closed_count
+
+    def _set_gate_blocked(self, state, price, reason):
+        """v4.264 — diagnostic d entree : les sorties anticipees de _process
+        (collecte, forex ferme, chauffe, horaires, ATR, CPI, prix absent)
+        laissaient le diagnostic VIDE ("pas encore de donnees") sans jamais
+        dire pourquoi — cas permanent des actifs forex. Enregistre desormais
+        la raison exacte du blocage, horodatee."""
+        state.last_gate_snapshot = {"ts": time.time(), "price": price, "blocked_reason": reason}
+
+    def _discard_pending_trade(self, trade_uid, ticker):
+        """v4.264 — retire la trace prealable d un trade dont l ordre n a
+        finalement pas abouti."""
+        try:
+            db.discard_pending_trade(trade_uid)
+        except Exception as e:
+            print(f"[TRADE-INDEX] Suppression trace {trade_uid} ({ticker}) impossible : {e}")
+
+    def _position_mode(self, pos):
+        """v4.264 — mode REEL (paper/live) d une position : celui memorise a
+        son ouverture. Repli sur le reglage courant de sa strategie pour les
+        positions anciennes sans cette information."""
+        recorded = (pos or {}).get("effective_mode")
+        if recorded in ("paper", "live"):
+            return recorded
+        strategy = (pos or {}).get("strategy", "forex")
+        if strategy == "funding_contrarian" and not self.cfg.get("FUNDING_MODE_LIVE_ALLOWED", False):
+            return "paper"
+        return self._effective_mode(strategy)
 
     def _effective_mode(self, strategy):
         """v4.87 — SUR DEMANDE EXPLICITE : chaque mode (normal, accumulation,
@@ -5110,6 +5597,8 @@ class BotEngine:
                 "msg": f"⚠ [{ticker}] Traitement du cycle bloque depuis {timeout_sec}s — ignore pour ce cycle, nouvelle tentative au prochain",
                 "level": "error"
             })
+            if sym in self.states:
+                self._set_gate_blocked(self.states[sym], price, f"traitement bloque (> {timeout_sec}s)")
             return
         if "error" in error_holder:
             print(error_holder["trace"])  # traceback complet dans la console/stdout
@@ -5117,6 +5606,8 @@ class BotEngine:
                 "msg": f"🔴 ERREUR [{ticker}] {type(error_holder['error']).__name__}: {error_holder['error']}",
                 "level": "error"
             })
+            if sym in self.states:
+                self._set_gate_blocked(self.states[sym], price, f"erreur de traitement : {type(error_holder['error']).__name__}: {error_holder['error']}")
 
     def _run(self):
         cfg = self.cfg
@@ -5260,237 +5751,9 @@ class BotEngine:
             else:
                 self.emit("log", {"msg": "Sync capital LIVE echouee — capital local utilise pour le pot live.", "level": "warn"})
 
-            # ── Reconciliation : trades fermes par Hyperliquid pendant la deconnexion ──
-            saved_positions = self._load_saved_positions()
-            if saved_positions:
-                ghost_trades, real_entry_prices = reconcile_closed_positions(self.info, cfg["WALLET_ADDRESS"], saved_positions, cfg)
-                for gt in ghost_trades:
-                    sym = gt["symbol"]
-                    # v4.126 — FIX BUG CRITIQUE : utilise desormais slot_key
-                    # et is_accum, fournis directement par
-                    # reconcile_closed_positions — l ancienne comparaison
-                    # (ticker_from_slot_key(s) == sym, ou sym etait DEJA une
-                    # cle de sauvegarde complete, jamais un ticker brut) ne
-                    # pouvait jamais trouver de correspondance.
-                    slot_key = gt.get("slot_key")
-                    target = (self.accum_states.get(slot_key) if gt.get("is_accum") else self.states.get(slot_key)) if slot_key else None
-                    if target:
-                        target.trades += 1
-                        target.pnl    += gt["pnl"]
-                        if gt["win"]:
-                            target.wins += 1
-                        target.closed_trades.append(gt)
-                        self.cfg["CAPITAL_USD"] += gt["pnl"]
-                        level = "win" if gt["win"] else "loss"
-                        self.emit("trade", gt)
-                        self.emit("log", {"msg": f"[{sym}] {gt['reason']} pendant deconnexion @ ${gt['exit']:.2f} | PnL: ${gt['pnl']:.2f}", "level": level})
-
-            # ── Reprise des positions encore ouvertes apres crash ──
-            real_tickers = list({ticker_from_slot_key(s) for s in cfg["SYMBOLS"]})
-            recovered = recover_open_positions(self.info, cfg["WALLET_ADDRESS"], real_tickers, cfg)
-            if recovered:
-                self.emit("log", {"msg": f"{len(recovered)} position(s) recuperee(s) apres reprise.", "level": "warn"})
-                for ticker_sym, pos in recovered.items():
-                    # Trouver la slot_key correspondant a ce ticker
-                    slot_key = next((s for s in self.states if ticker_from_slot_key(s) == ticker_sym), None)
-                    if slot_key:
-                        # v4.260 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE
-                        # D ARCHITECTURE : cette recuperation s executait
-                        # JUSQU ICI de facon INCONDITIONNELLE a CHAQUE
-                        # redemarrage — meme quand RIEN n avait crashe et
-                        # que la position etait DEJA correctement suivie
-                        # localement (avec sa vraie heure d ouverture, son
-                        # armement TTP, son suivi de pic...). Elle
-                        # RECONSTRUISAIT et ECRASAIT systematiquement cet
-                        # etat correct depuis Hyperliquid, causant
-                        # precisement le probleme signale : heure d
-                        # ouverture reinitialisee a CHAQUE redeploiement,
-                        # pas seulement apres un vrai crash. Verifie
-                        # desormais D ABORD si un etat local DEJA
-                        # COHERENT existe (meme type, prix d entree
-                        # proche) pour ce ticker — si oui, ignore
-                        # COMPLETEMENT la reconstruction et preserve l
-                        # etat existant tel quel. Ne reconstruit que les
-                        # positions GENUINEMENT orphelines (aucun etat
-                        # local coherent trouve) — coherent avec le
-                        # comportement d origine, avant l accumulation de
-                        # ces mecanismes de recuperation.
-                        already_tracked = False
-                        for candidate_state in (self.states.get(slot_key), self.accum_states.get(slot_key)):
-                            if candidate_state and candidate_state.position:
-                                existing_pos = candidate_state.position
-                                same_type = existing_pos.get("type") == pos.get("type")
-                                entry_close = (
-                                    existing_pos.get("entry") and pos.get("entry")
-                                    and abs(existing_pos["entry"] - pos["entry"]) / pos["entry"] < 0.005
-                                )
-                                if same_type and entry_close:
-                                    already_tracked = True
-                                    break
-                        if already_tracked:
-                            continue
-
-                        # v4.125 — FIX BUG CRITIQUE : recover_open_positions
-                        # ne connait PAS la strategie d origine (Hyperliquid
-                        # ne stocke pas ce concept, propre au bot) — une
-                        # position Accumulation recuperee etait toujours
-                        # ecrite dans self.states (partage par Normal/
-                        # Funding/Spot-Accum), jamais dans self.accum_states,
-                        # la rendant invisible ou incorrectement classee.
-                        # v4.233 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE :
-                        # priorite desormais a la base de donnees DURABLE
-                        # (get_open_trade_strategy) plutot qu au fichier
-                        # positions.json EPHEMERE (saved_positions) — celui-
-                        # ci est vide des qu une position a deja ete
-                        # (a tort) fermee cote bot, rendant la classification
-                        # impossible et provoquant un repli errone vers
-                        # "forex" (confirme par un cas reel : des positions
-                        # Spot-Accum orphelines geree ensuite avec la
-                        # MAUVAISE logique de sortie). La base garde la trace
-                        # tant que le trade n a jamais ete marque ferme, quel
-                        # que soit l etat du fichier local.
-                        # v4.257 — SUR DEMANDE EXPLICITE, FIX : recupere AUSSI
-                        # la VRAIE heure d ouverture d origine depuis cette
-                        # meme requete — auparavant, une position orpheline
-                        # recuperee voyait son "opened_at" reinitialise a
-                        # l heure de la RECUPERATION (pas la vraie heure
-                        # d origine), faussant la duree affichee a CHAQUE
-                        # redeploiement necessitant une reconciliation — un
-                        # vrai handicap pour le suivi, confirme explicitement.
-                        db_trade_info = db.get_open_trade_info(ticker_sym, pos.get("type", "").upper())
-                        real_strategy = db_trade_info["strategy"] if db_trade_info else None
-                        if db_trade_info and db_trade_info.get("created_at"):
-                            try:
-                                real_opened_dt = datetime.fromisoformat(db_trade_info["created_at"].replace("Z", "+00:00"))
-                                pos["opened_at"] = real_opened_dt.astimezone().strftime("%d/%m/%Y %H:%M:%S")
-                            except (ValueError, TypeError):
-                                pass
-                        saved_accum = saved_positions.get(f"ACCUM__{slot_key}") if saved_positions else None
-                        if real_strategy == "accumulation" or (saved_accum and saved_accum.get("type") == pos.get("type")):
-                            pos["strategy"] = "accumulation"
-                            target_state = self.accum_states[slot_key]
-                            self.emit("log", {"msg": f"[{ticker_sym}] Position identifiee comme Accumulation (via {'base de donnees' if real_strategy == 'accumulation' else 'sauvegarde locale'}) — routee vers son emplacement dedie.", "level": "warn"})
-                        elif real_strategy in ("spot_accumulation", "forex", "funding_contrarian"):
-                            pos["strategy"] = real_strategy
-                            target_state = self.states[slot_key]
-                            self.emit("log", {"msg": f"[{ticker_sym}] Position identifiee comme {real_strategy} (via base de donnees) — strategie d origine preservee.", "level": "warn"})
-                        else:
-                            pos.setdefault("strategy", "forex")
-                            target_state = self.states[slot_key]
-                        target_state.position = pos
-                        # v3.2 — FIX : recover_open_positions reconstruit la
-                        # position depuis l EXCHANGE reel (entry/sl/tp exacts),
-                        # mais ne connait pas la memoire du Trailing TP (pic de
-                        # profit, etage) — on la retrouve ici en croisant avec
-                        # notre propre sauvegarde (saved_positions, chargee plus
-                        # haut), pour ne pas "oublier" une progression deja faite.
-                        # v4.125 — utilise la bonne cle de sauvegarde et le bon
-                        # emplacement (target_state) selon la strategie identifiee.
-                        saved = saved_accum if (saved_accum and pos.get("strategy") == "accumulation") else (saved_positions.get(slot_key) if saved_positions else None)
-                        if saved:
-                            target_state.peak_pnl_usd = saved.get("_peak_pnl_usd")
-                            target_state.tp_stage = saved.get("_tp_stage", 0)
-                            target_state.trailing_tp_active = saved.get("_trailing_tp_active", False)
-                            target_state.tier0_armed = saved.get("_tier0_armed", False)  # v4.11
-                            target_state.tier0_peak_pnl_usd = saved.get("_tier0_peak_pnl_usd")  # v4.11
-                            target_state.absolute_peak_pnl_usd = saved.get("_absolute_peak_pnl_usd")  # v4.18
-                            target_state.spot_accum_armed = saved.get("_spot_accum_armed", False)  # v4.63
-                            target_state.spot_accum_peak_pnl_pct = saved.get("_spot_accum_peak_pnl_pct")  # v4.63
-                        else:
-                            # v4.245 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE :
-                            # sans sauvegarde locale correspondante (position
-                            # ORPHELINE, cas frequent cette session), ces
-                            # champs de suivi n etaient JAMAIS reinitialises —
-                            # target_state etant un objet REUTILISE par slot/
-                            # ticker, il pouvait conserver des valeurs
-                            # OBSOLETES d un trade PRECEDENT (armement deja
-                            # actif, pic d un ancien trade) — confirme par un
-                            # cas reel (SUI recupere, comportement TTP
-                            # incoherent). Repart desormais TOUJOURS d un etat
-                            # propre dans ce cas, coherent avec un NOUVEAU
-                            # trade qui n a encore rien accumule.
-                            target_state.peak_pnl_usd = None
-                            target_state.tp_stage = 0
-                            target_state.trailing_tp_active = False
-                            target_state.tier0_armed = False
-                            target_state.tier0_peak_pnl_usd = None
-                            target_state.absolute_peak_pnl_usd = None
-                            target_state.spot_accum_armed = False
-                            target_state.spot_accum_peak_pnl_pct = None
-                            self.emit("log", {"msg": f"[{ticker_sym}] Aucune sauvegarde locale correspondante — suivi du pic/trailing reinitialise a zero pour cette position recuperee.", "level": "warn"})
-                        self.emit("log", {"msg": f"[{ticker_sym}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} reintegree | SL ${pos['sl']:.2f} | TP ${pos['tp']:.2f}", "level": "warn"})
-                        ensure_sl_on_hyperliquid(self.exchange, self.info, cfg["WALLET_ADDRESS"], ticker_sym, pos, cfg)
-                        self.emit("log", {"msg": f"[{ticker_sym}] Verification SL Hyperliquid effectuee", "level": "ok"})
-            else:
-                self.emit("log", {"msg": "Aucune position ouverte a recuperer.", "level": "info"})
-            self._save_open_positions()
-        else:
-            # ── v3.2 : le mode PAPER beneficie desormais aussi de la ──────────
-            # persistance des positions (auparavant reservee au mode live).
-            # Sans ca, un redeploiement Railway pendant qu une position paper
-            # est ouverte la faisait disparaitre de la memoire du bot SANS
-            # jamais la clore proprement en base — elle restait alors
-            # eternellement "ouverte" dans le Bilan/l historique, meme si
-            # plus aucune gestion active ne s en occupait.
-            # Pas de reconciliation avec un exchange reel ici (ca n a pas de
-            # sens en simulation) : on restaure simplement telles quelles les
-            # positions sauvegardees lors du dernier arret/redemarrage.
-            saved_positions = self._load_saved_positions()
-            restored = 0
-            for slot_key, state in self.states.items():
-                pos = saved_positions.get(slot_key) if saved_positions else None
-                if pos and not state.position:
-                    ticker = ticker_from_slot_key(slot_key)
-                    # v3.2 — FIX : extrait l etat du Trailing TP (pic de profit,
-                    # etage) sauvegarde avec la position, pour ne pas "oublier"
-                    # qu elle avait deja depasse un pic avant le redemarrage.
-                    peak_pnl_usd = pos.pop("_peak_pnl_usd", None)
-                    tp_stage = pos.pop("_tp_stage", 0)
-                    trailing_tp_active = pos.pop("_trailing_tp_active", False)
-                    tier0_armed = pos.pop("_tier0_armed", False)  # v4.11
-                    tier0_peak_pnl_usd = pos.pop("_tier0_peak_pnl_usd", None)  # v4.11
-                    absolute_peak_pnl_usd = pos.pop("_absolute_peak_pnl_usd", None)  # v4.18
-                    spot_accum_armed = pos.pop("_spot_accum_armed", False)  # v4.63
-                    spot_accum_peak_pnl_pct = pos.pop("_spot_accum_peak_pnl_pct", None)  # v4.63
-                    state.position = pos
-                    state.peak_pnl_usd = peak_pnl_usd
-                    state.tp_stage = tp_stage
-                    state.trailing_tp_active = trailing_tp_active
-                    state.tier0_armed = tier0_armed
-                    state.tier0_peak_pnl_usd = tier0_peak_pnl_usd
-                    state.absolute_peak_pnl_usd = absolute_peak_pnl_usd
-                    state.spot_accum_armed = spot_accum_armed
-                    state.spot_accum_peak_pnl_pct = spot_accum_peak_pnl_pct
-                    restored += 1
-                    stage_info = f" | Trailing etage {tp_stage}, pic +${peak_pnl_usd:.2f}" if peak_pnl_usd is not None else ""
-                    self.emit("log", {"msg": f"[{ticker}] Position {pos['type'].upper()} @ ${pos['entry']:.2f} restauree (paper, apres redemarrage){stage_info}", "level": "warn"})
-            if restored:
-                self.emit("log", {"msg": f"{restored} position(s) paper restauree(s) apres redemarrage.", "level": "warn"})
-
-            # v4.121 — SUR DEMANDE EXPLICITE : restaure aussi les positions
-            # Accumulation (emplacement separe, cles prefixees "ACCUM__").
-            restored_accum = 0
-            for slot_key, accum_state in self.accum_states.items():
-                pos = saved_positions.get(f"ACCUM__{slot_key}") if saved_positions else None
-                if pos and not accum_state.position:
-                    ticker = ticker_from_slot_key(slot_key)
-                    peak_pnl_usd = pos.pop("_peak_pnl_usd", None)
-                    tp_stage = pos.pop("_tp_stage", 0)
-                    trailing_tp_active = pos.pop("_trailing_tp_active", False)
-                    tier0_armed = pos.pop("_tier0_armed", False)
-                    tier0_peak_pnl_usd = pos.pop("_tier0_peak_pnl_usd", None)
-                    absolute_peak_pnl_usd = pos.pop("_absolute_peak_pnl_usd", None)
-                    accum_state.position = pos
-                    accum_state.peak_pnl_usd = peak_pnl_usd
-                    accum_state.tp_stage = tp_stage
-                    accum_state.trailing_tp_active = trailing_tp_active
-                    accum_state.tier0_armed = tier0_armed
-                    accum_state.tier0_peak_pnl_usd = tier0_peak_pnl_usd
-                    accum_state.absolute_peak_pnl_usd = absolute_peak_pnl_usd
-                    restored_accum += 1
-                    self.emit("log", {"msg": f"[{ticker}] Position Accumulation {pos['type'].upper()} @ ${pos['entry']:.2f} restauree (paper, apres redemarrage)", "level": "warn"})
-            if restored_accum:
-                self.emit("log", {"msg": f"{restored_accum} position(s) Accumulation restauree(s) apres redemarrage.", "level": "warn"})
+        # v4.264 — REPRISE UNIFIEE DES POSITIONS (live ET paper, tous modes,
+        # tous DEX) : voir _restore_positions_at_startup.
+        self._restore_positions_at_startup(any_strategy_live)
 
         self._load_confidence_thresholds()
         # v3.2 — REACTIVE : la collecte des indicateurs (notamment l EMA
@@ -5606,15 +5869,23 @@ class BotEngine:
                 for sym in cfg["SYMBOLS"]:
                     if sym in prices:
                         self._process_with_timeout(sym, prices[sym])
-                    elif ticker_from_slot_key(sym) in forex_syms_fallback and isinstance(self.all_mids, dict):
+                        continue
+                    processed = False
+                    if ticker_from_slot_key(sym) in forex_syms_fallback and isinstance(self.all_mids, dict):
                         fallback_price = self.all_mids.get(ticker_from_slot_key(sym))
                         if fallback_price is not None:
                             try:
                                 fallback_price = float(fallback_price)
                                 if fallback_price > 0:
                                     self._process_with_timeout(sym, fallback_price)
+                                    processed = True
                             except (TypeError, ValueError):
                                 pass
+                    if not processed and sym in self.states:
+                        # v4.264 — rend visible dans le diagnostic un actif
+                        # jamais traite faute de prix (cas typique : DEX xyz).
+                        dex_note = f" (DEX {_dex_of(ticker_from_slot_key(sym))})" if _dex_of(ticker_from_slot_key(sym)) else ""
+                        self._set_gate_blocked(self.states[sym], None, f"prix indisponible{dex_note} — actif non analyse ce cycle")
                 self._finalize_pending_candidates()
                 self._finalize_pending_accumulation_candidates()
                 self._finalize_pending_funding_candidates()
@@ -5669,6 +5940,11 @@ class BotEngine:
         desaccord silencieux avec la realite. Retourne (pnl, _, trade) en
         cas de succes, ou None en cas d echec (l appelant doit alors
         return immediatement, sans toucher au reste de son etat)."""
+        # v4.264 — le mode REEL est celui dans lequel la position a ete
+        # OUVERTE (memorise sur la position), pas le reglage courant de la
+        # strategie : une position ouverte en live puis la strategie
+        # rebasculee en paper etait fermee en interne SANS ordre reel.
+        mode = self._position_mode(pos) if pos else mode
         if mode == "live" and self.exchange:
             close_ok = close_order(self.exchange, ticker, pos, self.cfg)
             if not close_ok:
@@ -5715,7 +5991,7 @@ class BotEngine:
         # la resolution par-strategie — aucun changement de comportement
         # pour un mode qui n a pas ete personnalise (retombe sur le mode
         # global, exactement comme avant).
-        mode = self._effective_mode(pos.get("strategy", "forex"))
+        mode = self._position_mode(pos)  # v4.264 — mode fige a l ouverture
         # v4.33 — SECURITE EXPLICITE : un trade "funding_contrarian" reste
         # simule (paper) meme si le bot tourne globalement en mode live, tant
         # que FUNDING_MODE_LIVE_ALLOWED n est pas active manuellement — ce
@@ -5824,8 +6100,11 @@ class BotEngine:
                 if not self._candle_color_confirms_reversal(state, pos.get("type", "long")):
                     self._save_open_positions()
                     return
-                pnl, _, trade = state.close_position(price, "RETOURNEMENT CONFIRME")
-                trade["symbol"] = symbol
+                # v4.264 — ordre reel D ABORD, fermeture cote bot seulement si confirmee
+                _result = self._safe_close_position(state, price, "RETOURNEMENT CONFIRME", ticker, pos, symbol, mode)
+                if _result is None:
+                    return
+                pnl, _, trade = _result
                 self.emit("trade", trade)
                 if pnl > 0:
                     self._register_win(ticker)
@@ -5834,14 +6113,6 @@ class BotEngine:
                 self.emit("log", {"msg": f"[{ticker}] 🎯 Accumulation RETOURNEMENT CONFIRME (tendance opposee depuis {confirm_needed} cycles, donnees matures et saines) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "warn"})
                 state.accumulation_reversal_count = 0
                 self._save_open_positions()
-                if mode == "live" and self.exchange:
-                    _close_ok = close_order(self.exchange, symbol, pos, cfg)
-
-                    if not _close_ok:
-
-                        self.emit("log", {"msg": f"[{symbol}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
-
-                        print(f"[CLOSE-ORDER-FAIL] {symbol} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
                 return
 
         # v4.212 — SUR DEMANDE EXPLICITE : Accumulation utilise desormais
@@ -5949,20 +6220,15 @@ class BotEngine:
             if cfg.get("SPOT_ACCUM_HARD_SL_ENABLED", True):
                 hard_sl_pct = cfg.get("SPOT_ACCUM_HARD_SL_PCT", 5.0)
                 if pnl_pct <= -hard_sl_pct:
-                    pnl, _, trade = state.close_position(price, "STOP LOSS")
-                    trade["symbol"] = symbol
+                    # v4.264 — ordre reel D ABORD, fermeture cote bot seulement si confirmee
+                    _result = self._safe_close_position(state, price, "STOP LOSS", ticker, pos, symbol, mode)
+                    if _result is None:
+                        return
+                    pnl, _, trade = _result
                     self.emit("trade", trade)
                     self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} PLAFOND DUR atteint ({hard_sl_pct:.1f}% du PnL, sans condition de retournement) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "loss"})
                     self._register_max_loss(ticker, pos.get("confidence"))
                     self._save_open_positions()
-                    if mode == "live" and self.exchange:
-                        _close_ok = close_order(self.exchange, symbol, pos, cfg)
-
-                        if not _close_ok:
-
-                            self.emit("log", {"msg": f"[{symbol}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
-
-                            print(f"[CLOSE-ORDER-FAIL] {symbol} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
                     return
 
             # v4.211 — SUR DEMANDE EXPLICITE : ancien SL simple (%PnL) retire
@@ -6017,8 +6283,11 @@ class BotEngine:
                     if not self._candle_color_confirms_reversal(state, pos["type"]):
                         self._save_open_positions()
                         return
-                    pnl, _, trade = state.close_position(price, "RETOURNEMENT CONFIRME")
-                    trade["symbol"] = symbol
+                    # v4.264 — ordre reel D ABORD, fermeture cote bot seulement si confirmee
+                    _result = self._safe_close_position(state, price, "RETOURNEMENT CONFIRME", ticker, pos, symbol, mode)
+                    if _result is None:
+                        return
+                    pnl, _, trade = _result
                     self.emit("trade", trade)
                     if pnl > 0:
                         self._register_win(ticker)
@@ -6027,14 +6296,6 @@ class BotEngine:
                     self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} RETOURNEMENT CONFIRME (prix sous l'EMA200 depuis {confirm_needed} cycles, donnees matures et saines) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "warn"})
                     state.spot_accum_reversal_count = 0
                     self._save_open_positions()
-                    if mode == "live" and self.exchange:
-                        _close_ok = close_order(self.exchange, symbol, pos, cfg)
-
-                        if not _close_ok:
-
-                            self.emit("log", {"msg": f"[{symbol}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
-
-                            print(f"[CLOSE-ORDER-FAIL] {symbol} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
                     return
 
             # v4.73 — SUR DEMANDE EXPLICITE : TP conditionnel sur retournement
@@ -6056,20 +6317,15 @@ class BotEngine:
                 # TAKE PROFIT" — permet de voir dans l historique lequel des
                 # 2 mecanismes a reellement ferme le trade (objectif atteint
                 # vs repli depuis le pic).
-                pnl, _, trade = state.close_position(price, "OBJECTIF ATTEINT")
-                trade["symbol"] = symbol
+                # v4.264 — ordre reel D ABORD, fermeture cote bot seulement si confirmee
+                _result = self._safe_close_position(state, price, "OBJECTIF ATTEINT", ticker, pos, symbol, mode)
+                if _result is None:
+                    return
+                pnl, _, trade = _result
                 self.emit("trade", trade)
                 self._register_win(ticker)
                 self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} OBJECTIF ATTEINT (80% distance S/R) @ ${price:.2f} | PnL: +${pnl:.2f}", "level": "win"})
                 self._save_open_positions()
-                if mode == "live" and self.exchange:
-                    _close_ok = close_order(self.exchange, symbol, pos, cfg)
-
-                    if not _close_ok:
-
-                        self.emit("log", {"msg": f"[{symbol}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
-
-                        print(f"[CLOSE-ORDER-FAIL] {symbol} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
                 return
 
             # 3) Trailing : arme une fois le PnL >= SPOT_ACCUM_TTP_ARM_PCT
@@ -6299,20 +6555,15 @@ class BotEngine:
                         if not self._ttp_confirmed_to_close(state, pos["type"]):
                             self._save_open_positions()
                             return
-                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
-                    trade["symbol"] = symbol
+                    # v4.264 — ordre reel D ABORD, fermeture cote bot seulement si confirmee
+                    _result = self._safe_close_position(state, price, "TRAILING TAKE PROFIT", ticker, pos, symbol, mode)
+                    if _result is None:
+                        return
+                    pnl, _, trade = _result
                     self.emit("trade", trade)
                     self._register_win(ticker)
                     self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} TTP @ ${price:.2f} | pic +{state.spot_accum_peak_pnl_pct:.2f}% | PnL: +${pnl:.2f}", "level": "win"})
                     self._save_open_positions()
-                    if mode == "live" and self.exchange:
-                        _close_ok = close_order(self.exchange, symbol, pos, cfg)
-
-                        if not _close_ok:
-
-                            self.emit("log", {"msg": f"[{symbol}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
-
-                            print(f"[CLOSE-ORDER-FAIL] {symbol} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
                     return
             self._save_open_positions()
             return
@@ -6428,16 +6679,11 @@ class BotEngine:
                 return
             if self._structural_sl_broken(state, pos, price):
                 level_label = "support" if pos["type"] == "long" else "resistance"
-                pnl, _, trade = state.close_position(price, f"STOP LOSS ({level_label} rompu)")
-                trade["symbol"] = symbol
-                if mode == "live" and self.exchange:
-                    _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
-
-                    if not _close_ok:
-
-                        self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
-
-                        print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                # v4.264 — ordre reel D ABORD, fermeture cote bot seulement si confirmee
+                _result = self._safe_close_position(state, price, f"STOP LOSS ({level_label} rompu)", ticker, pos, symbol, mode)
+                if _result is None:
+                    return
+                pnl, _, trade = _result
                 self.emit("trade", trade)
                 self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS : {level_label} ${structural_level:.4f} rompu et confirme @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "loss"})
                 if pos["type"] == "long":
@@ -7041,6 +7287,7 @@ class BotEngine:
         if any(v is None for v in [rsi, ema_s, ema_l, macd, sig, bb_up]):
             state.collecting = True
             self.emit("log", {"msg": f"[{ticker}] Collecte... ({len(prices)}/{needed})", "level": "dim"})
+            self._set_gate_blocked(state, price, f"collecte des indicateurs en cours ({len(prices)}/{needed} points)")
             return
         state.collecting = False
 
@@ -7100,6 +7347,7 @@ class BotEngine:
         # ── Plage horaire — bloque les NOUVELLES entrées en paper ET en live ──
         if not is_trading_hours(cfg):
             self.emit("log", {"msg": f"[{ticker}] Hors plage horaire — aucune nouvelle entree", "level": "dim"})
+            self._set_gate_blocked(state, price, "hors plage horaire de trading")
             return
 
         # Filtre volume
@@ -7135,6 +7383,7 @@ class BotEngine:
                     "msg": f"[{ticker}] ATR {atr_pct:.3f}% < {atr_min_pct}% — marche en range, entree bloquee | RSI:{rsi:.1f}",
                     "level": "dim"
                 })
+                self._set_gate_blocked(state, price, f"ATR {atr_pct:.3f}% < seuil {atr_min_pct}% (marche en range)")
                 return
 
         # Pour les symboles or (PAXG) — respecter les horaires Forex + periode de chauffe
@@ -7154,6 +7403,7 @@ class BotEngine:
 
             if not forex_now:
                 self.emit("log", {"msg": f"[{ticker}] Marche Forex ferme — {symbol} ignore", "level": "dim"})
+                self._set_gate_blocked(state, price, "marche forex ferme (22h-00h01 Paris chaque nuit, et week-end)")
                 return
 
             # Verifier si la periode de chauffe est ecoulee
@@ -7166,6 +7416,7 @@ class BotEngine:
                         "msg": f"[{ticker}] Chauffe Forex : encore {remaining:.0f} min avant entrees — observation en cours",
                         "level": "dim"
                     })
+                    self._set_gate_blocked(state, price, f"chauffe apres reouverture du forex (encore {remaining:.0f} min)")
                     return
                 else:
                     # Chauffe terminee — on ne reinitialise pas forex_reopen_time
@@ -7184,6 +7435,7 @@ class BotEngine:
                     "msg": f"[{ticker}] Heures creuses crypto ({cfg.get('CRYPTO_OFFPEAK_HOUR_START_UTC',2)}h-{cfg.get('CRYPTO_OFFPEAK_HOUR_END_UTC',6)}h UTC) — nouvelles entrees suspendues",
                     "level": "dim"
                 })
+                self._set_gate_blocked(state, price, "heures creuses crypto")
                 return
 
             if cfg.get("CPI_BLACKOUT_ENABLED", True):
@@ -7194,6 +7446,7 @@ class BotEngine:
                         "msg": f"[{ticker}] Blackout CPI ({cpi_event.strftime('%d/%m %H:%M UTC')}) — nouvelles entrees suspendues",
                         "level": "warn"
                     })
+                    self._set_gate_blocked(state, price, f"blackout CPI ({cpi_event.strftime('%d/%m %H:%M UTC')})")
                     return
 
         ema_bull = ema_s > ema_l
@@ -8649,16 +8902,13 @@ class BotEngine:
                     return
                 self.emit("log", {"msg": f"[{ticker}] ⚠️ Conflit detecte : fermeture du long Spot-Accum existant (confiance {existing_confidence:.0f}%) avant d ouvrir le short Accumulation, plus solide (confiance {confidence:.0f}%).", "level": "warn"})
                 close_price = state.current_price or price
-                pnl, _, trade = opposing_state.close_position(close_price, "CONFLIT SENS OPPOSE (Accumulation)")
-                trade["symbol"] = symbol
-                if self._effective_mode("spot_accumulation") == "live" and self.exchange:
-                    _close_ok = close_order(self.exchange, ticker, opposing_state.position, self.cfg)
-
-                    if not _close_ok:
-
-                        self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
-
-                        print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                # v4.264 — ordre reel D ABORD : si la fermeture reelle echoue,
+                # l ancienne position reste suivie et la nouvelle n est PAS
+                # ouverte (plus de position abandonnee sans suivi).
+                _result = self._safe_close_position(opposing_state, close_price, "CONFLIT SENS OPPOSE (Accumulation)", ticker, opposing_state.position, symbol, None)
+                if _result is None:
+                    return
+                pnl, _, trade = _result
                 self.emit("trade", trade)
                 self._save_open_positions()
         elif strategy == "spot_accumulation" and signal == "long":
@@ -8670,16 +8920,10 @@ class BotEngine:
                     return
                 self.emit("log", {"msg": f"[{ticker}] ⚠️ Conflit detecte : fermeture du short Accumulation existant (confiance {existing_confidence:.0f}%) avant d ouvrir le long Spot-Accum, plus solide (confiance {confidence:.0f}%).", "level": "warn"})
                 close_price = opposing_accum_state.current_price or price
-                pnl, _, trade = opposing_accum_state.close_position(close_price, "CONFLIT SENS OPPOSE (Spot-Accum)")
-                trade["symbol"] = symbol
-                if self._effective_mode("accumulation") == "live" and self.exchange:
-                    _close_ok = close_order(self.exchange, ticker, opposing_accum_state.position, self.cfg)
-
-                    if not _close_ok:
-
-                        self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
-
-                        print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                _result = self._safe_close_position(opposing_accum_state, close_price, "CONFLIT SENS OPPOSE (Spot-Accum)", ticker, opposing_accum_state.position, symbol, None)
+                if _result is None:
+                    return
+                pnl, _, trade = _result
                 self.emit("trade", trade)
                 self._save_open_positions()
 
@@ -9061,6 +9305,16 @@ class BotEngine:
         funding_live_blocked = strategy == "funding_contrarian" and not cfg.get("FUNDING_MODE_LIVE_ALLOWED", False)
         if funding_live_blocked and effective_mode_open == "live":
             self.emit("log", {"msg": f"[{ticker}] 💰 Trade Funding Contrarian simule (paper) malgre le mode live — deverrouillez FUNDING_MODE_LIVE_ALLOWED pour l autoriser en reel.", "level": "warn"})
+        # v4.264 — mode REEL de ce trade (un Funding bloque reste paper, il
+        # ne doit pas etre enregistre "live" : sa fermeture tenterait sinon
+        # un ordre reel sur une position qui n existe pas).
+        recorded_mode = "paper" if funding_live_blocked else effective_mode_open
+        # v4.264 — INDEXATION A L OUVERTURE : identifiant unique cree AVANT
+        # tout ordre, portant le mode source et l heure d ouverture, envoye
+        # a Hyperliquid comme cloid et ecrit en base de facon synchrone.
+        trade_uid = make_trade_uid(strategy)
+        action_label = "LONG" if signal == "long" else "SHORT"
+        is_accum_slot = state is self.accum_states.get(symbol)
 
         if effective_mode_open == "live" and self.exchange and not funding_live_blocked:
             # v3.2 — applique le levier PRUDENT specifique a ce trade sur
@@ -9104,8 +9358,17 @@ class BotEngine:
                 state._last_insufficient_notional_attempt = now_ts
                 self.emit("log", {"msg": f"[{ticker}] Notionnel projete ${projected_notional:.2f} sous le minimum Hyperliquid de $10 — capital probablement engage ailleurs, nouvelle tentative dans {cooldown_sec//60} min.", "level": "warn"})
                 return
-            ok, order_err, real_fill_price = place_order(self.exchange, ticker, signal == "long", size, price, cfg, sl_price=sl_p, tp_price=None, leverage=leverage)
+            # Trace durable ecrite AVANT l ordre : si le process est coupe
+            # juste apres l execution, le trade reste identifiable au
+            # redemarrage (mode source + heure), jamais orphelin.
+            try:
+                db.register_pending_trade(trade_uid, ticker, action_label, strategy, symbol,
+                                          recorded_mode, price, is_accum_slot)
+            except Exception as e_reg:
+                print(f"[TRADE-INDEX] Enregistrement prealable {trade_uid} impossible : {e_reg}")
+            ok, order_err, real_fill_price = place_order(self.exchange, ticker, signal == "long", size, price, cfg, sl_price=sl_p, tp_price=None, leverage=leverage, trade_uid=trade_uid)
             if not ok:
+                self._discard_pending_trade(trade_uid, ticker)
                 self.emit("log", {"msg": f"[{ticker}] Ordre non execute — {order_err or 'raison inconnue'}", "level": "warn"})
                 return
             # v4.226 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : utilise le
@@ -9128,19 +9391,25 @@ class BotEngine:
             # Hyperliquid, PnL du bot sous-evalue de moitie. Verifie
             # desormais apres coup et corrige si un ecart est detecte.
             try:
-                real_state = self.info.user_state(cfg["WALLET_ADDRESS"])
+                # v4.264 — FIX BUG CRITIQUE : lisait uniquement le DEX natif ;
+                # une position forex (xyz:) reellement ouverte n etait jamais
+                # "confirmee" -> suivi annule -> position ORPHELINE. Lit
+                # desormais le bon DEX, avec quelques relectures (l etat du
+                # compte peut avoir un leger retard juste apres l execution).
                 position_confirmed_on_exchange = False
-                for item in real_state.get("assetPositions", []):
-                    p_check = item.get("position", {})
-                    if p_check.get("coin") == ticker:
-                        real_szi = float(p_check.get("szi", 0) or 0)
-                        if real_szi != 0:
-                            position_confirmed_on_exchange = True
-                        real_leverage = p_check.get("leverage", {}).get("value")
-                        if real_leverage and real_leverage != leverage:
-                            self.emit("log", {"msg": f"[{ticker}] ⚠️ Levier reellement applique par Hyperliquid (x{real_leverage}) different de celui demande (x{leverage}) — correction du suivi interne.", "level": "warn"})
-                            leverage = real_leverage
+                exch_pos = None
+                for _attempt in range(3):
+                    exch_all = fetch_exchange_positions(self.info, cfg["WALLET_ADDRESS"], [ticker])
+                    exch_pos = (exch_all or {}).get(ticker)
+                    if exch_pos and exch_pos["szi"] != 0:
+                        position_confirmed_on_exchange = True
                         break
+                    time.sleep(0.7)
+                if exch_pos:
+                    real_leverage = exch_pos.get("leverage")
+                    if real_leverage and real_leverage != leverage:
+                        self.emit("log", {"msg": f"[{ticker}] ⚠️ Levier reellement applique par Hyperliquid (x{real_leverage}) different de celui demande (x{leverage}) — correction du suivi interne.", "level": "warn"})
+                        leverage = real_leverage
                 # v4.239 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : place_order
                 # peut retourner ok=True (statuses non vide) alors que la
                 # position n existe PAS reellement sur Hyperliquid (ex:
@@ -9153,6 +9422,7 @@ class BotEngine:
                 # une position reelle (SL/TTP, PnL) qui n existe nulle part
                 # ailleurs que dans sa propre memoire.
                 if not position_confirmed_on_exchange:
+                    self._discard_pending_trade(trade_uid, ticker)
                     self.emit("log", {"msg": f"[{ticker}] ⚠️ ANNULE : ordre signale reussi mais AUCUNE position reelle trouvee sur Hyperliquid — suivi interne non enregistre pour eviter une position fantome.", "level": "error"})
                     return
             except Exception as e:
@@ -9171,7 +9441,9 @@ class BotEngine:
         # relit pour alimenter le bon pot (paper_pnl vs live_pnl), jamais
         # melanges. effective_mode_open deja calcule plus haut (utilise pour
         # decider si un ordre reel est passe).
-        state.position["effective_mode"] = effective_mode_open
+        state.position["effective_mode"] = recorded_mode
+        state.position["trade_uid"] = trade_uid      # v4.264 — identifiant exact
+        state.position["slot_key"] = symbol          # v4.264
         # v4.24 — memorise les seuils REELLEMENT appliques a CE trade (fixes
         # ou adaptatifs a l ATR) — _manage_position_impl les relit ici en
         # priorite, avec repli sur les valeurs fixes globales si absents
@@ -9271,7 +9543,10 @@ class BotEngine:
         arm2_price_pct = cfg.get("TTP_ARM2_PRICE_PCT", 1.3)
         tp1_price = price * (1 + arm1_price_pct/100) if signal == "long" else price * (1 - arm1_price_pct/100)
         tp2_price = price * (1 + arm2_price_pct/100) if signal == "long" else price * (1 - arm2_price_pct/100)
-        self.emit("trade_opened", {
+        opened_event = {
+            "trade_uid": trade_uid,     # v4.264
+            "slot_key": symbol,         # v4.264
+            "is_accum_slot": is_accum_slot,
             "coin": ticker,
             "action": label,
             "confidence": round(confidence, 1),
@@ -9283,7 +9558,7 @@ class BotEngine:
             "ttp_arm1_pct_used": ttp_arm1_pct,
             "adaptive_sl_ttp": adaptive_used,
             "strategy": strategy,  # v4.8 — "forex" ou "accumulation"
-            "trade_mode": effective_mode_open,  # v4.90 — mode reel (paper/live) de CE trade
+            "trade_mode": recorded_mode,  # v4.90/v4.264 — mode reel (paper/live) de CE trade
             # v4.10 — ratio informatif "mouvement de prix TP / % de E du SL" :
             # a levier x1 c est le vrai ratio gain/risque $. Au-dela, le gain
             # $ est amplifie par le levier (TP en % de prix) alors que la
@@ -9299,7 +9574,15 @@ class BotEngine:
             "rsi": round(rsi, 1) if rsi is not None else None,
             "entry_reasons": " | ".join(reasons),
             "confidence_breakdown": json.dumps(conf_breakdown),
-        })
+        }
+        # v4.264 — ecriture SYNCHRONE en base (plus de dependance a la file d
+        # evenements, qui pouvait etre perdue si le process etait coupe).
+        try:
+            db.upsert_open_trade(opened_event)
+            opened_event["persisted"] = True
+        except Exception as e_up:
+            print(f"[TRADE-INDEX] Ecriture synchrone {trade_uid} impossible ({e_up}) — repli sur la file d evenements.")
+        self.emit("trade_opened", opened_event)
 
     def _finalize_pending_candidates(self):
         """v3.2 — Appelee une fois par cycle, APRES avoir evalue tous les
