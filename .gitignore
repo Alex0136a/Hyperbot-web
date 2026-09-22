@@ -8,3 +8,4 @@ hyperbot_positions.json
 hyperbot_log_*.txt
 .env
 venv/
+*.tmp
