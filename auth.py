@@ -7,9 +7,8 @@ auth.py — Authentification par email/mot de passe + token de session.
 - Token de session : JWT (bibliotheque PyJWT, pure Python, tres standard).
 
 Variable d environnement requise :
-  HYPERBOT_SECRET_KEY — cle secrete pour signer les tokens. A definir sur
-  Railway (une longue chaine aleatoire). Sans elle, une cle par defaut
-  (non securisee) est utilisee — uniquement pour les tests locaux.
+  HYPERBOT_SECRET_KEY — cle secrete pour signer les tokens (32 caracteres
+  minimum). OBLIGATOIRE : le serveur refuse de demarrer sans elle.
 """
 import hashlib
 import hmac
@@ -19,7 +18,17 @@ from datetime import datetime, timedelta, timezone
 
 import jwt  # PyJWT
 
-SECRET_KEY = os.environ.get("HYPERBOT_SECRET_KEY", "insecure-dev-key-change-me")
+# v4.264 — FIX SECURITE : plus de cle par defaut. L ancienne valeur
+# ("insecure-dev-key-change-me") etait publique (visible sur GitHub) : sans
+# variable definie, n importe qui pouvait forger un token valide et piloter
+# le bot. Le serveur refuse desormais de demarrer sans cle suffisamment longue.
+SECRET_KEY = os.environ.get("HYPERBOT_SECRET_KEY", "").strip()
+if len(SECRET_KEY) < 32:
+    raise RuntimeError(
+        "HYPERBOT_SECRET_KEY absente ou trop courte (32 caracteres minimum). "
+        "Generez-en une avec : python -c \"import secrets; print(secrets.token_urlsafe(48))\" "
+        "puis definissez-la dans les variables d environnement (Railway > Variables)."
+    )
 TOKEN_TTL_HOURS = int(os.environ.get("HYPERBOT_TOKEN_TTL_HOURS", "168"))  # 7 jours par defaut
 
 PBKDF2_ITERATIONS = 200_000
