@@ -327,6 +327,16 @@ CONFIG = {
     # a peine repasse sous le seuil d entree).
     "FUNDING_EXIT_ON_RATE_NORMALIZED": True,
     "FUNDING_EXIT_NORMALIZE_RATIO": 0.4,
+    # v4.256 — SUR DEMANDE EXPLICITE : retire le TTP classique (mouvement
+    # de prix) pour Funding — seule la normalisation du taux (ci-dessus)
+    # doit declencher une sortie en profit, coherent avec sa these
+    # d entree. Le SL classique/structurel reste actif normalement.
+    "FUNDING_SKIP_CLASSIC_TTP": True,
+    # Confirmation d entree par flux — rejette si le flux contredit
+    # clairement la these (le retournement attendu ne montre aucun signe
+    # naissant), reduisant le hasard d une entree basee sur le taux seul.
+    "FUNDING_ENTRY_FLOW_CONFIRM_ENABLED": True,
+    "FUNDING_ENTRY_FLOW_CONTRADICTION_THRESHOLD": 0.3,
     "FUNDING_MODE_MAX_TRADES": 3,          # plafond de trades simultanes, independant des autres modes
     "FUNDING_REFRESH_SEC": 300,            # frequence de rafraichissement du funding (5 min, evite de spammer l API)
 
@@ -6317,6 +6327,19 @@ class BotEngine:
         tier0_arm_pct   = pos.get("tier0_arm_pct", cfg.get("TTP_TIER0_ARM_PRICE_PCT", 0.5))
         tier0_gap_pct   = pos.get("tier0_gap_pct", cfg.get("TTP_TIER0_GAP_PRICE_PCT", 0.42))
 
+        # v4.256 — SUR DEMANDE EXPLICITE : retire le TTP classique (par
+        # mouvement de PRIX) pour Funding — sa these de sortie n est pas
+        # "le prix a suffisamment bouge", mais "le taux de financement
+        # s est normalise" (voir le mecanisme dedie plus haut,
+        # FUNDING_EXIT_ON_RATE_NORMALIZED). Prendre un profit sur un
+        # simple mouvement de prix, AVANT que le taux n ait eu le temps de
+        # se normaliser, sortirait prematurement d une position dont la
+        # these n est pas encore resolue. Le SL structurel/classique
+        # (calcule plus haut dans cette fonction) reste actif normalement
+        # — protection necessaire independamment de cette decision.
+        if pos.get("strategy") == "funding_contrarian" and cfg.get("FUNDING_SKIP_CLASSIC_TTP", True):
+            return
+
         if state.tp_stage == 0:
             # ── Promotion directe vers le tier 1 (arm1 atteint) — desactive
             # le tier 0 au passage, le trailing principal prend le relai.
@@ -8046,6 +8069,23 @@ class BotEngine:
             is_ranging_funding = self._is_market_ranging(state, cfg.get("FUNDING_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("FUNDING_ANTI_RANGE_LOOKBACK", 200))
             if is_ranging_funding:
                 return
+
+        # v4.256 — SUR DEMANDE EXPLICITE : renforce l entree avec le VRAI
+        # flux de transactions — Funding parie qu un positionnement extreme
+        # (taux) va se retourner, mais le taux SEUL ne dit rien sur si ce
+        # retournement a deja commence. Si le flux montre encore une
+        # pression NETTEMENT dans le sens OPPOSE a la these (ex: encore
+        # fortement achete alors qu on parie sur un retournement baissier),
+        # rejette l entree — le marche ne montre aucun signe naissant que
+        # la these est en train de se realiser, reduisant le hasard d une
+        # entree basee sur le taux seul.
+        if cfg.get("FUNDING_ENTRY_FLOW_CONFIRM_ENABLED", True):
+            flow_pressure_funding = self._compute_trade_flow_pressure(ticker, price_now=price)
+            if flow_pressure_funding is not None:
+                contradiction_threshold = cfg.get("FUNDING_ENTRY_FLOW_CONTRADICTION_THRESHOLD", 0.3)
+                contradicts = (flow_pressure_funding >= contradiction_threshold) if direction == "short" else (flow_pressure_funding <= -contradiction_threshold)
+                if contradicts:
+                    return
 
         reasons = [
             f"💰 Funding Contrarian : {annual_pct:+.1f}% annualise (seuil ±{threshold:.0f}%)",
