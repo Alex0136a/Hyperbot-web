@@ -1936,7 +1936,17 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             # correct) plutot que de rester une simple affirmation
             # theorique. None = pas encore de lecture disponible pour cet
             # actif a cet instant (historique insuffisant ou echec API).
-            "trade_flow_pressure": snap.get("entry_flow_pressure") if snap.get("entry_flow_pressure") is not None else (spot_snap.get("entry_flow_pressure") if spot_snap else None) or (accum_snap.get("entry_flow_pressure") if accum_snap else None),
+            # v4.261 — SUR DEMANDE EXPLICITE, FIX BUG D AFFICHAGE : lisait
+            # auparavant "entry_flow_pressure" (snap), calcule UNIQUEMENT
+            # quand la logique d entree ATTEINT cette verification precise
+            # — si un actif est bloque PLUS TOT (tendance, proximite...),
+            # ce calcul n est jamais execute, affichant a tort "pas encore
+            # de donnees" meme quand le mecanisme fonctionne normalement.
+            # Lit desormais depuis state.trade_flow_history, alimente en
+            # CONTINU par _maybe_refresh_trade_flow (tourne a chaque cycle,
+            # independamment des conditions d entree) — la VRAIE source
+            # utilisee par la pression soutenue et la sortie acceleree.
+            "trade_flow_pressure": round(list(state.trade_flow_history)[-1], 3) if getattr(state, "trade_flow_history", None) else None,
             "trend_persistence_confirmed": snap.get("trend_persistence_confirmed") or (accum_snap.get("trend_persistence_confirmed") if accum_snap else None) or (spot_snap.get("trend_persistence_confirmed") if spot_snap else None),
         })
     results.sort(key=lambda r: r["ticker"])
