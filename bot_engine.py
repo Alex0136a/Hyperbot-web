@@ -3768,8 +3768,20 @@ class BotEngine:
         auparavant generer un ratio extreme sans representer un vrai
         mouvement de marche. Exige desormais un volume NOTIONNEL total
         minimal (en $) sur l echantillon, sinon retourne None (donnee
-        jugee non fiable) plutot qu un signal trompeur."""
-        trades = self._fetch_recent_trades(ticker, count=self.cfg.get("TRADE_FLOW_SAMPLE_SIZE", 100))
+        jugee non fiable) plutot qu un signal trompeur.
+        v4.263 — SUR DEMANDE EXPLICITE : lit desormais depuis le buffer
+        WebSocket temps reel (_ws_trades_buffer, alimente en continu par
+        _on_ws_trades) au lieu du sondage REST periodique — plus de
+        latence, plus de risque d echec de requete repete. Repli sur le
+        sondage REST UNIQUEMENT si le buffer WebSocket n a jamais recu de
+        donnees pour ce ticker (abonnement pas encore etabli, ou echoue) —
+        garantit une continuite de fonctionnement, pas un point de
+        defaillance unique."""
+        ws_buffer = getattr(self, "_ws_trades_buffer", {}).get(ticker)
+        if ws_buffer and len(ws_buffer) >= 20:
+            trades = list(ws_buffer)
+        else:
+            trades = self._fetch_recent_trades(ticker, count=self.cfg.get("TRADE_FLOW_SAMPLE_SIZE", 100))
         if len(trades) < 20:
             return None
         buy_volume = 0.0
@@ -4693,6 +4705,32 @@ class BotEngine:
                 return True, ev
         return False, None
 
+    def _on_ws_trades(self, msg):
+        """v4.263 — SUR DEMANDE EXPLICITE : callback WebSocket Hyperliquid
+        — flux 'trades' temps reel (un abonnement par actif). Alimente un
+        buffer en memoire (deque plafonnee) par ticker, lu ensuite par
+        _compute_trade_flow_pressure — remplace le sondage REST periodique
+        (toutes les 60s) par une alimentation continue, sans latence ni
+        risque d echec de requete repete. Format attendu : {"channel":
+        "trades", "data": [{"coin": ..., "side": "B"|"A", "sz": ..., ...}]}."""
+        try:
+            data = msg.get("data") if isinstance(msg, dict) else None
+            if not data or not isinstance(data, list):
+                return
+            if not hasattr(self, "_ws_trades_buffer"):
+                self._ws_trades_buffer = {}
+            for t in data:
+                coin = t.get("coin")
+                if not coin:
+                    continue
+                buf = self._ws_trades_buffer.get(coin)
+                if buf is None:
+                    buf = deque(maxlen=200)
+                    self._ws_trades_buffer[coin] = buf
+                buf.append({"sz": t.get("sz"), "side": t.get("side")})
+        except Exception as e:
+            print(f"[WS-TRADES] Erreur traitement flux trades : {e}")
+
     def _on_ws_allmids(self, msg):
         """Callback WebSocket Hyperliquid — flux 'allMids' (prix mid de tous
         les actifs, mis a jour en temps reel par l exchange).
@@ -5134,6 +5172,23 @@ class BotEngine:
             self.emit("log", {"msg": "WebSocket temps reel actif — surveillance Max Loss/TP en direct (independante du cycle)", "level": "ok"})
         except Exception as e:
             self._ws_subscribed = False
+        # v4.263 — SUR DEMANDE EXPLICITE : migration du flux de transactions
+        # (pression directionnelle) du sondage REST periodique (toutes les
+        # 60s, sujet a des echecs/latence) vers un VRAI abonnement
+        # WebSocket temps reel — canal "trades" natif et gratuit d
+        # Hyperliquid (meme connexion, deja utilisee pour allMids), un
+        # abonnement distinct par actif (contrairement a allMids, ce canal
+        # ne fournit pas tous les actifs en une seule souscription).
+        trade_flow_tickers = list({ticker_from_slot_key(s) for s in cfg["SYMBOLS"]})
+        ws_trades_subscribed = 0
+        for tf_ticker in trade_flow_tickers:
+            try:
+                self.info.subscribe({"type": "trades", "coin": tf_ticker}, self._on_ws_trades)
+                ws_trades_subscribed += 1
+            except Exception as e:
+                print(f"[WS-TRADES] Echec abonnement flux transactions pour {tf_ticker} : {e}")
+        if ws_trades_subscribed > 0:
+            self.emit("log", {"msg": f"Flux de transactions temps reel actif ({ws_trades_subscribed}/{len(trade_flow_tickers)} actifs) — pression directionnelle desormais alimentee en continu par WebSocket.", "level": "ok"})
         # v4.166 — SUR DEMANDE EXPLICITE : souscription SEPAREE pour le DEX
         # HIP-3 "xyz" (forex, mode Normal) — l API Hyperliquid isole les
         # DEX builder-deployes du DEX natif par defaut, un simple
