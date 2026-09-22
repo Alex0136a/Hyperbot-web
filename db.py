@@ -20,8 +20,20 @@ DB_PATH = os.environ.get("HYPERBOT_DB_PATH", "hyperbot.db")
 _lock = threading.Lock()  # sqlite3 + threads : on sérialise les écritures
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """v4.264 — `with sqlite3.connect(...) as conn` valide la transaction
+    mais NE FERME PAS la connexion : chaque appel en laissait une ouverte
+    jusqu au ramasse-miettes. Cette sous-classe valide (ou annule) puis
+    ferme reellement la connexion en sortie de bloc."""
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 def _connect():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=15, factory=_ClosingConnection)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -81,6 +93,21 @@ def init_db():
                 trade_mode TEXT
             )
         """)
+        # v4.264 — FIX : ces tables etaient creees APRES les migrations qui
+        # les lisent — une base NEUVE (premier deploiement, nouveau Volume)
+        # faisait planter init_db ("no such table: config_overrides").
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS config_overrides (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
         # Migration : ajoute la colonne rsi si la table trades existait deja
         # (CREATE TABLE IF NOT EXISTS n ajoute pas les colonnes manquantes a
         # une table deja creee par une version anterieure du code).
@@ -130,6 +157,19 @@ def init_db():
             # des statistiques (win rate, performance) separees par mode
             # reel, jamais melangees entre capital virtuel et capital reel.
             conn.execute("ALTER TABLE trades ADD COLUMN trade_mode TEXT")
+        # v4.264 — INDEXATION DES TRADES A L OUVERTURE : identifiant unique
+        # (aussi envoye a Hyperliquid comme cloid), emplacement du bot et
+        # statut du cycle de vie (pending -> open -> ferme via closed_at).
+        existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()]
+        if "trade_uid" not in existing_cols:
+            conn.execute("ALTER TABLE trades ADD COLUMN trade_uid TEXT")
+        if "slot_key" not in existing_cols:
+            conn.execute("ALTER TABLE trades ADD COLUMN slot_key TEXT")
+        if "is_accum_slot" not in existing_cols:
+            conn.execute("ALTER TABLE trades ADD COLUMN is_accum_slot INTEGER")
+        if "status" not in existing_cols:
+            conn.execute("ALTER TABLE trades ADD COLUMN status TEXT")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_uid ON trades(trade_uid) WHERE trade_uid IS NOT NULL")
         if "fees_paid" not in existing_cols:
             # v4.186 — SUR DEMANDE EXPLICITE : frais REELS estimes payes a
             # Hyperliquid pour ce trade (ouverture + fermeture), uniquement
@@ -217,18 +257,6 @@ def init_db():
                         conn.execute("UPDATE config_overrides SET value=? WHERE key='ACTIVE_COINS'", (json.dumps(parsed_ac),))
             except (json.JSONDecodeError, TypeError):
                 pass
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS config_overrides (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-        """)
         # v4.6 — Journal persistant des evenements WebSocket (connexion,
         # deconnexion, echec de reconnexion, retablissement). Independant du
         # log en memoire (limite a 3000 lignes, perdu au redemarrage) : ici
@@ -346,6 +374,101 @@ def insert_open_trade(coin, action, confidence, leverage, position_size_pct,
         return cur.lastrowid
 
 
+# ── v4.264 — Indexation des trades par identifiant unique ───────────────
+_OPEN_TRADE_FIELDS = (
+    "confidence", "leverage", "position_size_pct", "risk_reward", "timeframe",
+    "stop_loss", "take_profit1", "take_profit2", "rsi", "entry_reasons",
+    "confidence_breakdown", "size_usd", "sl_pct_used", "ttp_arm1_pct_used",
+)
+
+
+def register_pending_trade(trade_uid, coin, action, strategy, slot_key, trade_mode,
+                           entry_price, is_accum_slot=False):
+    """Trace ecrite AVANT l envoi d un ordre reel : le trade est identifiable
+    (mode source, heure) meme si le process est coupe juste apres."""
+    with _lock, _connect() as conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO trades (trade_uid, coin, action, strategy, slot_key,
+                                          is_accum_slot, trade_mode, entry_price, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+        """, (trade_uid, coin, action, strategy, slot_key, int(bool(is_accum_slot)),
+              trade_mode, entry_price, now_iso()))
+        conn.commit()
+
+
+def discard_pending_trade(trade_uid):
+    """Supprime la trace d un ordre qui n a finalement pas ouvert de position."""
+    with _lock, _connect() as conn:
+        conn.execute("DELETE FROM trades WHERE trade_uid=? AND status='pending' AND closed_at IS NULL", (trade_uid,))
+        conn.commit()
+
+
+def upsert_open_trade(ev):
+    """Complete la trace prealable (meme trade_uid) avec toutes les donnees d
+    ouverture, ou cree la ligne si elle n existe pas (paper, anciens appels).
+    Conserve l heure d ouverture d origine de la trace prealable."""
+    uid = ev.get("trade_uid")
+    abs_ = ev.get("adaptive_sl_ttp")
+    adaptive = int(bool(abs_)) if abs_ is not None else None
+    values = {k: ev.get(k) for k in _OPEN_TRADE_FIELDS}
+    with _lock, _connect() as conn:
+        row = conn.execute("SELECT id FROM trades WHERE trade_uid=?", (uid,)).fetchone() if uid else None
+        if row:
+            sets = ", ".join(f"{k}=?" for k in values) + ", entry_price=?, strategy=?, trade_mode=?, slot_key=?, is_accum_slot=?, adaptive_sl_ttp=?, status='open'"
+            conn.execute(f"UPDATE trades SET {sets} WHERE id=?",
+                         (*values.values(), ev.get("entry"), ev.get("strategy", "forex"), ev.get("trade_mode", "paper"),
+                          ev.get("slot_key"), int(bool(ev.get("is_accum_slot"))), adaptive, row["id"]))
+            conn.commit()
+            return row["id"]
+        cols = list(values) + ["coin", "action", "entry_price", "strategy", "trade_mode", "trade_uid",
+                               "slot_key", "is_accum_slot", "adaptive_sl_ttp", "status", "created_at"]
+        vals = list(values.values()) + [ev["coin"], ev["action"], ev.get("entry"), ev.get("strategy", "forex"),
+                                         ev.get("trade_mode", "paper"), uid, ev.get("slot_key"),
+                                         int(bool(ev.get("is_accum_slot"))), adaptive, "open", now_iso()]
+        cur = conn.execute(f"INSERT INTO trades ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", vals)
+        conn.commit()
+        return cur.lastrowid
+
+
+def get_open_trade_id_by_uid(trade_uid):
+    if not trade_uid:
+        return None
+    with _lock, _connect() as conn:
+        row = conn.execute("SELECT id FROM trades WHERE trade_uid=? AND closed_at IS NULL", (trade_uid,)).fetchone()
+        return row["id"] if row else None
+
+
+def get_trade_by_uid(trade_uid):
+    if not trade_uid:
+        return None
+    with _lock, _connect() as conn:
+        row = conn.execute("SELECT * FROM trades WHERE trade_uid=?", (trade_uid,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_pending_trades():
+    """Traces prealables jamais confirmees (ordre envoye, process coupe ?)."""
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT trade_uid, coin, action FROM trades WHERE status='pending' AND closed_at IS NULL"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def find_open_trades_for_recovery(coin, action):
+    """Lignes encore ouvertes (plus recentes d abord) pour une position
+    reelle retrouvee sur Hyperliquid — sert a lui rendre son mode source,
+    son heure d ouverture et son emplacement au redemarrage."""
+    with _lock, _connect() as conn:
+        rows = conn.execute("""
+            SELECT id, trade_uid, strategy, created_at, slot_key, is_accum_slot, trade_mode,
+                   confidence, leverage, size_usd, sl_pct_used, ttp_arm1_pct_used
+            FROM trades WHERE coin=? AND action=? AND closed_at IS NULL
+            ORDER BY (trade_uid IS NULL), id DESC
+        """, (coin, action)).fetchall()
+        return [dict(r) for r in rows]
+
+
 def insert_orphaned_closed_trade(coin, action, entry_price, exit_price, pnl, reason,
                                   strategy=None, trade_mode=None, peak_pnl=None,
                                   peak_pnl_pct=None, fees_paid=None):
@@ -398,9 +521,9 @@ def get_open_trade_info(coin, action):
     correspondance."""
     with _lock, _connect() as conn:
         row = conn.execute("""
-            SELECT strategy, created_at FROM trades
+            SELECT strategy, created_at, trade_uid FROM trades
             WHERE coin=? AND action=? AND closed_at IS NULL
-            ORDER BY created_at DESC LIMIT 1
+            ORDER BY (trade_uid IS NULL), created_at DESC LIMIT 1
         """, (coin, action)).fetchone()
         return dict(row) if row else None
 
@@ -514,12 +637,20 @@ def cleanup_signals(stale_hours=24, protected_ids=None):
     with _lock, _connect() as conn:
         # 1. Doublons "ouverts" par coin (la ligne protegee, si presente,
         #    est toujours gardee ; sinon on garde le plus recent)
+        # v4.264 — FIX BUG CRITIQUE : regroupait par COIN seul, alors que
+        # deux modes (ex: Accumulation + Spot-Accum/Funding) peuvent tenir le
+        # meme coin en meme temps — la ligne du second etait supprimee, puis
+        # au redeploiement suivant sa position etait reclassee "forex" faute
+        # de trace. Ne considere desormais comme doublons que les lignes
+        # SANS identifiant (anciennes) du meme coin + sens + strategie ; une
+        # ligne indexee (trade_uid) n est jamais un doublon.
         open_rows = conn.execute(
-            "SELECT id, coin, created_at FROM trades WHERE closed_at IS NULL ORDER BY coin, id DESC"
+            "SELECT id, coin, action, strategy, created_at FROM trades "
+            "WHERE closed_at IS NULL AND trade_uid IS NULL ORDER BY id DESC"
         ).fetchall()
         by_coin = {}
         for r in open_rows:
-            by_coin.setdefault(r["coin"], []).append(r["id"])
+            by_coin.setdefault((r["coin"], r["action"], r["strategy"] or "forex"), []).append(r["id"])
         dup_ids = []
         for coin, ids in by_coin.items():
             keep = next((i for i in ids if i in protected), ids[0])
@@ -530,8 +661,13 @@ def cleanup_signals(stale_hours=24, protected_ids=None):
         # 2. Trades restes "ouverts" trop longtemps (orphelins probables),
         #    hors ligne protegee
         cutoff = datetime.now(timezone.utc).timestamp() - stale_hours * 3600
+        # v4.264 — au demarrage (stale_hours=0), une ligne INDEXEE non
+        # protegee n est jamais supprimee : son absence en memoire peut
+        # venir d une lecture Hyperliquid impossible a cet instant, pas
+        # forcement d un orphelin. Elle reste visible pour verification.
+        uid_filter = " AND trade_uid IS NULL" if stale_hours <= 0 else ""
         still_open = conn.execute(
-            "SELECT id, coin, created_at FROM trades WHERE closed_at IS NULL"
+            "SELECT id, coin, created_at FROM trades WHERE closed_at IS NULL" + uid_filter
         ).fetchall()
         stale_ids = []
         for r in still_open:
