@@ -1,14 +1,10 @@
-[README.md](https://github.com/user-attachments/files/29726702/README.md)
+[README.md](https://github.com/user-attachments/files/32539888/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-⚠️ **Important — je n'ai pas pu tester ce backend en conditions réelles.**
-Mon environnement de travail n'a pas d'accès réseau pour installer
-`fastapi`/`uvicorn`/`pyjwt` et lancer le serveur. J'ai vérifié la syntaxe de
-chaque fichier (`python -m py_compile`) et relu la logique attentivement,
-mais **teste impérativement en local avant de déployer** (section ci-dessous).
+Version courante : **4.264** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -66,7 +62,7 @@ et les logs — ils ne doivent jamais être versionnés (données personnelles +
 
 | Variable | Rôle |
 |---|---|
-| `HYPERBOT_SECRET_KEY` | **Obligatoire.** Chaîne aléatoire longue pour signer les tokens de connexion. |
+| `HYPERBOT_SECRET_KEY` | **Obligatoire (32 caractères minimum).** Le serveur refuse de démarrer sans elle. Générer : `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `HYPERBOT_DATA_DIR` | `/data` (voir volume ci-dessous) |
 | `HYPERBOT_PRIVATE_KEY` | Clé privée Hyperliquid (mode live) |
 | `HYPERBOT_WALLET_ADDRESS` | Adresse du wallet Hyperliquid |
@@ -131,7 +127,7 @@ nécessiterait un Volume pour survivre à un redéploiement) :
 
 | Variable | Exemple | Rôle |
 |---|---|---|
-| `HYPERBOT_ACTIVE_COINS` | `BTC,ETH,SOL` | Liste des actifs actifs, séparés par des virgules (parmi BTC, PAXG, ETH, SOL, BNB, HYPE). Absente = tous actifs. |
+| `HYPERBOT_ACTIVE_COINS` | `BTC,ETH,xyz:EUR` | Liste des actifs actifs, séparés par des virgules, parmi ceux de `SYMBOLS` (cryptos + forex `xyz:EUR`, `xyz:JPY`, `xyz:KRW`, `xyz:DXY`). La casse est normalisée (`XYZ:eur` → `xyz:EUR`). Absente = liste par défaut. |
 
 Un changement fait depuis l'interface web reste prioritaire tant que le
 process ne redémarre pas, mais **sans Volume, il est perdu au prochain
@@ -148,6 +144,40 @@ et **nécessite donc lui aussi un Volume pour survivre aux redéploiements** —
 sans Volume, il repart de zéro à chaque redéploiement comme le reste des
 données dynamiques (trades, etc.), contrairement aux clés API qui peuvent
 être fixées par variable d'environnement.
+
+## 4septies. Indexation des trades et reprise après redémarrage
+
+Chaque trade reçoit à l'ouverture un **identifiant unique** (`trade_uid`) qui
+encode son **mode source** (Forex, Accumulation, Spot-Accum, Funding) et son
+**heure d'ouverture**. Il est :
+
+- écrit en base **avant** l'envoi de l'ordre (statut `pending`), puis complété
+  dès l'ouverture confirmée (statut `open`) ;
+- envoyé à Hyperliquid comme identifiant client de l'ordre d'entrée (`cloid`).
+
+Au redémarrage, la reprise se fait dans cet ordre :
+
+1. **Positions sauvegardées** (`hyperbot_positions.json`) restaurées à
+   l'identique (mode, heure, niveaux, état du trailing). Une position live
+   absente d'Hyperliquid est clôturée comme « fermée pendant la coupure ».
+2. **Positions réelles non couvertes** : rattachées à leur trade via la base,
+   puis via le `cloid` dans l'historique d'ordres Hyperliquid (fonctionne même
+   si la base locale a été perdue).
+3. En dernier recours seulement, une position inconnue est suivie en mode
+   forex avec une **alerte explicite** dans les logs.
+
+Si Hyperliquid est illisible au démarrage, rien n'est supprimé ni déduit.
+Le fichier de positions est écrit de façon atomique et n'est plus vidé à la
+lecture. Les DEX natif **et** `xyz` (forex) sont interrogés partout.
+
+## 4octies. Fermetures réelles vérifiées
+
+En live, toute fermeture (SL, TTP, retournement, objectif, conflit, fermeture
+manuelle) envoie **d'abord** l'ordre à Hyperliquid et vérifie ensuite que la
+position a réellement disparu. Le suivi interne n'est fermé qu'à cette
+condition ; sinon la position reste suivie et la fermeture est retentée au
+cycle suivant. Le mode paper/live est celui **de l'ouverture** de la position,
+même si la stratégie a été rebasculée depuis.
 
 ## 5. Premier lancement
 
@@ -175,13 +205,13 @@ Voici comment chaque champ est réellement branché :
 | Champ interface | Branché sur | Note |
 |---|---|---|
 | `position_pct` | `POSITION_SIZE_PCT` | ✅ direct |
-| `max_loss_usd` | `MAX_LOSS_USD` | ✅ direct |
-| `quick_profit_usd` | `QUICK_PROFIT_ARM_USD` + `QUICK_PROFIT_LOCK_USD` | ✅ direct |
+| `max_loss_usd` | `SL_PCT_OF_E` | ⚠️ converti en % de la taille de position (E) au moment de l'enregistrement |
+| `quick_profit_usd` | `TTP_ARM1_PRICE_PCT` | ⚠️ converti en % de mouvement de prix au moment de l'enregistrement |
 | `max_open_trades` | `MAX_OPEN_TRADES` (nouveau garde-fou ajouté) | ✅ |
 | `filter_hours` | `CRYPTO_OFFPEAK_ENABLED` (heures creuses 2h-6h UTC) | ✅ correspond à une vraie fonctionnalité |
 | `filter_weekend` | `FOREX_SYMBOLS` (fermeture Forex sur PAXG) | ✅ correspond à une vraie fonctionnalité |
 | `filter_macro` | `CPI_BLACKOUT_ENABLED` (blackout CPI Finnhub) | ✅ correspond à une vraie fonctionnalité |
-| `active_coins` | `ACTIVE_COINS` (nouveau filtre ajouté) | ⚠️ limité aux 6 actifs réellement supportés (BTC, PAXG, ETH, SOL, BNB, HYPE) ; les 30 proposés par l'interface au-delà de ces 6 sont silencieusement ignorés |
+| `active_coins` | `ACTIVE_COINS` | ✅ tous les actifs de `SYMBOLS` (cryptos et forex HIP-3) |
 | Signal `take_profit1` / `take_profit2` | Prix équivalents calculés depuis les seuils $ (Quick Profit / Trailing) | ⚠️ nôtre bot ne raisonne pas en % fixe — conversion informative au moment de l'entrée, pas un vrai ordre TP1/TP2 |
 | `leverage` par signal | `CONFIG["LEVERAGE"]` | ⚠️ toujours le même (pas de levier variable par trade) |
 | `risk_reward` | `QUICK_PROFIT_ARM_USD / MAX_LOSS_USD` | ⚠️ ratio informatif, pas un vrai calcul de risk/reward par trade |
@@ -190,8 +220,9 @@ Voici comment chaque champ est réellement branché :
 
 ## 8. Sécurité
 
-- Change `HYPERBOT_SECRET_KEY` avant tout déploiement public (sinon les
-  tokens de connexion sont prévisibles).
+- `HYPERBOT_SECRET_KEY` est obligatoire : sans elle (ou si elle fait moins de
+  32 caractères) le serveur ne démarre pas. Un token n'est accepté que si le
+  compte existe toujours en base.
 - Préfère renseigner `HYPERBOT_PRIVATE_KEY` en variable d'environnement
   Railway plutôt que via le formulaire de l'interface (`/api/config/hyperliquid`)
   — ce formulaire écrit la clé dans le fichier SQLite du volume, ce qui est
