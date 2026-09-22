@@ -332,6 +332,10 @@ CONFIG = {
     # doit declencher une sortie en profit, coherent avec sa these
     # d entree. Le SL classique/structurel reste actif normalement.
     "FUNDING_SKIP_CLASSIC_TTP": True,
+    # v4.258 — SUR DEMANDE EXPLICITE : TTP dedie, simple et fixe pour
+    # Funding — arme a ce % de pic, tolere ce % de repli avant de fermer.
+    "FUNDING_TTP_ARM_PCT": 1.5,
+    "FUNDING_TTP_TOLERANCE_PCT": 0.5,
     # Confirmation d entree par flux — rejette si le flux contredit
     # clairement la these (le retournement attendu ne montre aucun signe
     # naissant), reduisant le hasard d une entree basee sur le taux seul.
@@ -6352,7 +6356,33 @@ class BotEngine:
         # these n est pas encore resolue. Le SL structurel/classique
         # (calcule plus haut dans cette fonction) reste actif normalement
         # — protection necessaire independamment de cette decision.
+        # v4.258 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : le retrait pur
+        # et simple du TTP (v4.256) laissait un trou — confirme par un cas
+        # reel : des positions montant jusqu a +3% de pic, puis rendant
+        # TOUT le gain jusqu a 0%, sans qu AUCUN mecanisme ne protege le
+        # pic si le taux ne se normalise pas assez vite. Remplace desormais
+        # par un TTP DEDIE, simple et fixe (pas le systeme tier0/tier1
+        # complexe de Forex) : arme a +1.5% de pic, puis tolere un repli
+        # de 0.5% avant de fermer — un filet minimal, laissant toujours la
+        # normalisation du taux etre le signal PRIORITAIRE (verifie plus
+        # haut dans cette fonction, avant ce point), mais sans jamais
+        # risquer de rendre un gain significatif dans l attente.
         if pos.get("strategy") == "funding_contrarian" and cfg.get("FUNDING_SKIP_CLASSIC_TTP", True):
+            arm_pct_funding = cfg.get("FUNDING_TTP_ARM_PCT", 1.5)
+            tolerance_pct_funding = cfg.get("FUNDING_TTP_TOLERANCE_PCT", 0.5)
+            if state.spot_accum_peak_pnl_pct is None or pnl_pct > state.spot_accum_peak_pnl_pct:
+                state.spot_accum_peak_pnl_pct = pnl_pct
+            if state.spot_accum_peak_pnl_pct >= arm_pct_funding and pnl_pct <= state.spot_accum_peak_pnl_pct - tolerance_pct_funding:
+                pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT (Funding)")
+                trade["symbol"] = symbol
+                if mode == "live" and self.exchange:
+                    close_order(self.exchange, ticker, pos, self.cfg)
+                self.emit("trade", trade)
+                if pnl > 0:
+                    self._register_win(ticker)
+                self.emit("log", {"msg": f"[{ticker}] 💰 Funding TTP dedie @ ${price:.4f} | pic +{state.spot_accum_peak_pnl_pct:.2f}% | tolerance {tolerance_pct_funding}% | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+                self._save_open_positions()
+                self._persist_capital_snapshot()
             return
 
         if state.tp_stage == 0:
