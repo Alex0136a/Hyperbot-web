@@ -379,26 +379,37 @@ def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=N
         conn.commit()
 
 
-def get_open_trade_strategy(coin, action):
-    """v4.233 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : retrouve la
-    VRAIE strategie d origine d une position via la base de donnees
-    DURABLE (table trades, ligne encore ouverte : closed_at IS NULL), au
-    lieu du fichier positions.json EPHEMERE — celui-ci est vide des qu une
-    position a deja ete (a tort) fermee cote bot, rendant toute
-    reconciliation basee dessus impossible. Confirme par un cas reel :
-    des positions Spot-Accum orphelines, reclassees "forex" par defaut
-    faute de reference locale, geree ensuite avec la MAUVAISE logique de
-    sortie (tier0/tier1 au lieu du mecanisme dedie). La base SQLite,
-    elle, garde la trace du trade ORIGINAL tant qu il n a jamais ete
-    marque ferme — une source bien plus fiable pour ce cas precis.
-    Retourne la strategie (str) ou None si aucune correspondance."""
+def get_open_trade_info(coin, action):
+    """v4.233/257 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : retrouve la
+    VRAIE strategie ET la VRAIE heure d ouverture d origine d une position
+    via la base de donnees DURABLE (table trades, ligne encore ouverte :
+    closed_at IS NULL), au lieu du fichier positions.json EPHEMERE —
+    celui-ci est vide des qu une position a deja ete (a tort) fermee cote
+    bot, rendant toute reconciliation basee dessus impossible. Confirme
+    par 2 cas reels : (1) des positions Spot-Accum orphelines, reclassees
+    "forex" par defaut faute de reference locale, gerees ensuite avec la
+    MAUVAISE logique de sortie ; (2) l heure d ouverture reinitialisee a
+    l heure de RECUPERATION (pas la vraie heure d origine) a chaque
+    redeploiement necessitant une reconciliation, faussant la duree
+    affichee — un vrai handicap pour le suivi. La base SQLite garde la
+    trace du trade ORIGINAL (strategie ET horodatage) tant qu il n a
+    jamais ete marque ferme — une source bien plus fiable pour ce cas
+    precis. Retourne un dict {strategy, created_at} ou None si aucune
+    correspondance."""
     with _lock, _connect() as conn:
         row = conn.execute("""
-            SELECT strategy FROM trades
+            SELECT strategy, created_at FROM trades
             WHERE coin=? AND action=? AND closed_at IS NULL
             ORDER BY created_at DESC LIMIT 1
         """, (coin, action)).fetchone()
-        return row["strategy"] if row and row["strategy"] else None
+        return dict(row) if row else None
+
+
+def get_open_trade_strategy(coin, action):
+    """Repli de compatibilite — voir get_open_trade_info (etendu avec
+    la vraie heure d ouverture)."""
+    info = get_open_trade_info(coin, action)
+    return info["strategy"] if info else None
 
 
 def get_open_trade_id_by_coin_action(coin, action, strategy=None):
