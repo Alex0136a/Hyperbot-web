@@ -5549,6 +5549,33 @@ class BotEngine:
         with self.lock:
             self._manage_position_impl(symbol, price, state)
 
+    def _safe_close_position(self, state, price, reason, ticker, pos, symbol, mode):
+        """v4.259 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE SYSTEMIQUE :
+        remplace le pattern repete 23 fois dans ce fichier ou l ordre de
+        fermeture REEL (close_order) etait envoye APRES que le bot ait
+        deja marque la position comme fermee en interne (state.
+        close_position), et SURTOUT sans jamais verifier son succes —
+        confirme par un cas reel GRAVE : des positions LIVE fermees cote
+        bot mais RESTEES OUVERTES sur Hyperliquid, totalement hors de
+        toute surveillance. Cette fonction INVERSE l ordre : en mode live,
+        tente D ABORD l ordre reel, et n enregistre la fermeture cote bot
+        QUE s il a reussi (ou si on est en paper, ou aucun ordre reel n
+        est necessaire). En cas d echec reel, ne touche PAS a l etat
+        interne — la position reste \"ouverte\" cote bot, geree normalement
+        au prochain cycle (nouvelle tentative naturelle), au lieu d un
+        desaccord silencieux avec la realite. Retourne (pnl, _, trade) en
+        cas de succes, ou None en cas d echec (l appelant doit alors
+        return immediatement, sans toucher au reste de son etat)."""
+        if mode == "live" and self.exchange:
+            close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+            if not close_ok:
+                self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position laissee OUVERTE cote bot egalement (nouvelle tentative au prochain cycle), pour rester coherent avec la realite. Verification manuelle recommandee si ceci persiste.", "level": "error"})
+                print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue — fermeture cote bot ANNULEE, reste synchronise avec Hyperliquid.")
+                return None
+        pnl, _, trade = state.close_position(price, reason)
+        trade["symbol"] = symbol
+        return pnl, _, trade
+
     def _manage_position_impl(self, symbol, price, state):
         """v4.10 — Moteur de risque ASYMETRIQUE, sur demande explicite :
         - Le SL reste en % de E (perte $ PLAFONNEE, independante du levier) :
@@ -5637,16 +5664,13 @@ class BotEngine:
                 hours_open = 0
             max_hold_hours = cfg.get("MAX_HOLD_DURATION_HOURS", 12)
             if hours_open >= max_hold_hours and pnl_usd >= 0:
-                pnl, _, trade = state.close_position(price, "DUREE MAX ATTEINTE")
-                trade["symbol"] = symbol
-                if mode == "live" and self.exchange:
-                    _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+                _result = self._safe_close_position(state, price, "DUREE MAX ATTEINTE", ticker, pos, symbol, mode)
 
-                    if not _close_ok:
+                if _result is None:
 
-                        self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
+                    return
 
-                        print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                pnl, _, trade = _result
                 self.emit("trade", trade)
                 self.emit("log", {"msg": f"[{ticker}] {strat_tag}⏱️ DUREE MAX ATTEINTE ({hours_open:.1f}h >= {max_hold_hours}h, PnL neutre/positif) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "dim"})
                 self._save_open_positions()
@@ -5759,16 +5783,13 @@ class BotEngine:
             # independamment du SL/TTP normal — un signal technique fort
             # justifie une sortie proactive, pas seulement reactive.
             if pos["type"] == "long" and cfg.get("SHOOTING_STAR_DETECTION_ENABLED", True) and self._shooting_star_confirmed(state):
-                pnl, _, trade = state.close_position(price, "ETOILE FILANTE CONFIRMEE")
-                trade["symbol"] = symbol
-                if mode == "live" and self.exchange:
-                    _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+                _result = self._safe_close_position(state, price, "ETOILE FILANTE CONFIRMEE", ticker, pos, symbol, mode)
 
-                    if not _close_ok:
+                if _result is None:
 
-                        self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
+                    return
 
-                        print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                pnl, _, trade = _result
                 self.emit("trade", trade)
                 if pnl > 0:
                     self._register_win(ticker)
@@ -5792,16 +5813,13 @@ class BotEngine:
             # emplacement dans le reste du code.
             immediate_cap_pct = cfg.get("STRUCTURAL_SL_HARD_CAP_PCT", 0.5)
             if pnl_pct <= -immediate_cap_pct:
-                pnl, _, trade = state.close_position(price, "STOP LOSS (plafond immediat)")
-                trade["symbol"] = symbol
-                if mode == "live" and self.exchange:
-                    _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+                _result = self._safe_close_position(state, price, "STOP LOSS (plafond immediat)", ticker, pos, symbol, mode)
 
-                    if not _close_ok:
+                if _result is None:
 
-                        self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
+                    return
 
-                        print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                pnl, _, trade = _result
                 self.emit("trade", trade)
                 self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} STOP LOSS plafond immediat : perte {pnl_pct:.2f}% >= {immediate_cap_pct:.2f}% @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "loss"})
                 if pos["type"] == "long":
@@ -6022,16 +6040,13 @@ class BotEngine:
                         # N agit que si un pic significatif existe deja (pas
                         # sur un trade a peine ouvert, sans profit a proteger).
                         if flow_reversed and state.spot_accum_peak_pnl_pct >= cfg.get("TTP_FLOW_REVERSAL_MIN_PEAK_PCT", 0.3):
-                            pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT (retournement flux)")
-                            trade["symbol"] = symbol
-                            if mode == "live" and self.exchange:
-                                _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+                            _result = self._safe_close_position(state, price, "TRAILING TAKE PROFIT (retournement flux)", ticker, pos, symbol, mode)
 
-                                if not _close_ok:
+                            if _result is None:
 
-                                    self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
+                                return
 
-                                    print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                            pnl, _, trade = _result
                             self.emit("trade", trade)
                             if pnl > 0:
                                 self._register_win(ticker)
@@ -6078,16 +6093,13 @@ class BotEngine:
                 if checkpoint is None or now_ts - checkpoint[0] >= velocity_window_sec:
                     state.spot_accum_velocity_checkpoint = (now_ts, pnl_pct)
                 elif checkpoint[1] - pnl_pct >= velocity_giveback_pct:
-                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT (repli rapide)")
-                    trade["symbol"] = symbol
-                    if mode == "live" and self.exchange:
-                        _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+                    _result = self._safe_close_position(state, price, "TRAILING TAKE PROFIT (repli rapide)", ticker, pos, symbol, mode)
 
-                        if not _close_ok:
+                    if _result is None:
 
-                            self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
+                        return
 
-                            print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                    pnl, _, trade = _result
                     self.emit("trade", trade)
                     if pnl > 0:
                         self._register_win(ticker)
@@ -6105,16 +6117,13 @@ class BotEngine:
                 unconditional_giveback_pct = cfg.get("TTP_UNCONDITIONAL_GIVEBACK_PCT", 1.0)
                 min_peak_for_unconditional = cfg.get("TTP_UNCONDITIONAL_GIVEBACK_MIN_PEAK_PCT", 2.0)
                 if state.spot_accum_peak_pnl_pct >= min_peak_for_unconditional and state.spot_accum_peak_pnl_pct - pnl_pct >= unconditional_giveback_pct:
-                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT (repli maximal)")
-                    trade["symbol"] = symbol
-                    if mode == "live" and self.exchange:
-                        _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+                    _result = self._safe_close_position(state, price, "TRAILING TAKE PROFIT (repli maximal)", ticker, pos, symbol, mode)
 
-                        if not _close_ok:
+                    if _result is None:
 
-                            self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
+                        return
 
-                            print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                    pnl, _, trade = _result
                     self.emit("trade", trade)
                     if pnl > 0:
                         self._register_win(ticker)
@@ -6237,16 +6246,13 @@ class BotEngine:
                 normalize_threshold = cfg.get("FUNDING_ANNUAL_THRESHOLD_PCT", 25.0) * cfg.get("FUNDING_EXIT_NORMALIZE_RATIO", 0.4)
                 rate_normalized = abs(annual_pct_now) < normalize_threshold
                 if rate_normalized:
-                    pnl, _, trade = state.close_position(price, "TAUX DE FINANCEMENT NORMALISE")
-                    trade["symbol"] = symbol
-                    if mode == "live" and self.exchange:
-                        _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+                    _result = self._safe_close_position(state, price, "TAUX DE FINANCEMENT NORMALISE", ticker, pos, symbol, mode)
 
-                        if not _close_ok:
+                    if _result is None:
 
-                            self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
+                        return
 
-                            print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                    pnl, _, trade = _result
                     self.emit("trade", trade)
                     if pnl > 0:
                         self._register_win(ticker)
@@ -6266,16 +6272,13 @@ class BotEngine:
         # mecanismes bases sur la structure de prix.
         if (pos["type"] == "long" and pos.get("strategy") != "funding_contrarian"
                 and cfg.get("SHOOTING_STAR_DETECTION_ENABLED", True) and self._shooting_star_confirmed(state)):
-            pnl, _, trade = state.close_position(price, "ETOILE FILANTE CONFIRMEE")
-            trade["symbol"] = symbol
-            if mode == "live" and self.exchange:
-                _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+            _result = self._safe_close_position(state, price, "ETOILE FILANTE CONFIRMEE", ticker, pos, symbol, mode)
 
-                if not _close_ok:
+            if _result is None:
 
-                    self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
+                return
 
-                    print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+            pnl, _, trade = _result
             self.emit("trade", trade)
             if pnl > 0:
                 self._register_win(ticker)
@@ -6301,16 +6304,13 @@ class BotEngine:
             # division supplementaire (qui aurait double-compte le levier).
             hard_cap_pct = cfg.get("STRUCTURAL_SL_HARD_CAP_PCT", 0.5)
             if pnl_pct <= -hard_cap_pct:
-                pnl, _, trade = state.close_position(price, "STOP LOSS (plafond immediat)")
-                trade["symbol"] = symbol
-                if mode == "live" and self.exchange:
-                    _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+                _result = self._safe_close_position(state, price, "STOP LOSS (plafond immediat)", ticker, pos, symbol, mode)
 
-                    if not _close_ok:
+                if _result is None:
 
-                        self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
+                    return
 
-                        print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                pnl, _, trade = _result
                 self.emit("trade", trade)
                 self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS plafond immediat : perte {pnl_pct:.2f}% (x{leverage_now}) >= {hard_cap_pct:.2f}% @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "loss"})
                 if pos["type"] == "long":
@@ -6363,16 +6363,13 @@ class BotEngine:
             else:
                 state.sl_breach_streak = 0
             if pnl_usd <= sl_usd and state.sl_breach_streak >= sl_patience_cycles:
-                pnl, _, trade = state.close_position(price, "STOP LOSS")
-                trade["symbol"] = symbol
-                if mode == "live" and self.exchange:
-                    _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+                _result = self._safe_close_position(state, price, "STOP LOSS", ticker, pos, symbol, mode)
 
-                    if not _close_ok:
+                if _result is None:
 
-                        self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
+                    return
 
-                        print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                pnl, _, trade = _result
                 self.emit("trade", trade)
                 peak_str = f" | pic atteint avant la chute : +${trade['peak_pnl_usd']:.2f}" if trade.get("peak_pnl_usd") else ""
                 self.emit("log", {"msg": f"[{ticker}] {strat_tag}STOP LOSS @ ${price:.2f} | PnL: ${pnl:.2f} (plafond -${-sl_usd:.2f} = {sl_pct_of_e:.2f}% de E, mouvement de prix requis a x{pos.get('leverage',1)} : {sl_pct_of_e/max(pos.get('leverage',1),1):.2f}%){peak_str}", "level": "loss"})
@@ -6399,16 +6396,13 @@ class BotEngine:
         sl_hit = (pos["type"] == "long" and price <= pos["sl"]) or \
                  (pos["type"] == "short" and price >= pos["sl"])
         if sl_hit:
-            pnl, _, trade = state.close_position(price, "SL SECURITE HYPERLIQUID")
-            trade["symbol"] = symbol
-            if mode == "live" and self.exchange:
-                _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+            _result = self._safe_close_position(state, price, "SL SECURITE HYPERLIQUID", ticker, pos, symbol, mode)
 
-                if not _close_ok:
+            if _result is None:
 
-                    self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
+                return
 
-                    print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+            pnl, _, trade = _result
             self.emit("trade", trade)
             peak_str = f" | pic atteint avant la chute : +${trade['peak_pnl_usd']:.2f}" if trade.get("peak_pnl_usd") else ""
             self.emit("log", {"msg": f"[{ticker}] {strat_tag}SL SECURITE @ ${price:.2f} | PnL: ${pnl:.2f}{peak_str}", "level": "loss"})
@@ -6475,16 +6469,13 @@ class BotEngine:
             if state.spot_accum_peak_pnl_pct is None or pnl_pct > state.spot_accum_peak_pnl_pct:
                 state.spot_accum_peak_pnl_pct = pnl_pct
             if state.spot_accum_peak_pnl_pct >= arm_pct_funding and pnl_pct <= state.spot_accum_peak_pnl_pct - tolerance_pct_funding:
-                pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT (Funding)")
-                trade["symbol"] = symbol
-                if mode == "live" and self.exchange:
-                    _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+                _result = self._safe_close_position(state, price, "TRAILING TAKE PROFIT (Funding)", ticker, pos, symbol, mode)
 
-                    if not _close_ok:
+                if _result is None:
 
-                        self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
+                    return
 
-                        print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                pnl, _, trade = _result
                 self.emit("trade", trade)
                 if pnl > 0:
                     self._register_win(ticker)
@@ -6568,16 +6559,13 @@ class BotEngine:
                         if not self._ttp_confirmed_to_close(state, pos["type"]):
                             self._save_open_positions()
                             return
-                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
-                    trade["symbol"] = symbol
-                    if mode == "live" and self.exchange:
-                        _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+                    _result = self._safe_close_position(state, price, "TRAILING TAKE PROFIT", ticker, pos, symbol, mode)
 
-                        if not _close_ok:
+                    if _result is None:
 
-                            self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
+                        return
 
-                            print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                    pnl, _, trade = _result
                     self.emit("trade", trade)
                     self._register_win(ticker)
                     # v4.25 — apres un gain, exige une confirmation renforcee
@@ -6735,16 +6723,13 @@ class BotEngine:
                     if not self._ttp_confirmed_to_close(state, pos["type"]):
                         self._save_open_positions()
                         return
-                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
-                    trade["symbol"] = symbol
-                    if mode == "live" and self.exchange:
-                        _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+                    _result = self._safe_close_position(state, price, "TRAILING TAKE PROFIT", ticker, pos, symbol, mode)
 
-                        if not _close_ok:
+                    if _result is None:
 
-                            self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
+                        return
 
-                            print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                    pnl, _, trade = _result
                     self.emit("trade", trade)
                     self._register_win(ticker)
                     if pos["type"] == "long":
@@ -6761,16 +6746,13 @@ class BotEngine:
                     if not self._ttp_confirmed_to_close(state, pos["type"]):
                         self._save_open_positions()
                         return
-                    pnl, _, trade = state.close_position(price, "TRAILING TAKE PROFIT")
-                    trade["symbol"] = symbol
-                    if mode == "live" and self.exchange:
-                        _close_ok = close_order(self.exchange, ticker, pos, self.cfg)
+                    _result = self._safe_close_position(state, price, "TRAILING TAKE PROFIT", ticker, pos, symbol, mode)
 
-                        if not _close_ok:
+                    if _result is None:
 
-                            self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position REELLEMENT ENCORE OUVERTE malgre la fermeture cote bot. Verification manuelle urgente requise.", "level": "error"})
+                        return
 
-                            print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue, position potentiellement encore ouverte sur Hyperliquid")
+                    pnl, _, trade = _result
                     self.emit("trade", trade)
                     self._register_win(ticker)
                     # v4.25 — apres un gain, exige une confirmation renforcee
