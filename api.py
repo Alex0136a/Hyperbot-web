@@ -903,6 +903,13 @@ ADVANCED_SETTINGS = {
     "ENTRY_FLOW_CONFIRM_MIN_PRESSURE": {"label": "Flux - confirmation exigee a l entree (0 = desactivee, ex: 0.1)", "default": 0.0},
     "ENTRY_FLOW_CONTRADICTION_THRESHOLD": {"label": "Flux - veto si pression contraire au-dela de", "default": 0.3},
     "TRADE_FLOW_WINDOW_SEC":   {"label": "Flux - fenetre d analyse (secondes)", "default": 180},
+    # v4.268 — TTP Funding
+    "FUNDING_TTP_ARM_PCT":       {"label": "Funding - TTP armement (% de prix)", "default": 1.0},
+    "FUNDING_TTP_TOLERANCE_PCT": {"label": "Funding - TTP repli normal (%)", "default": 0.5},
+    "FUNDING_TTP_FLOW_MAX_TOLERANCE_PCT": {"label": "Funding - TTP repli si flux favorable (patience, %)", "default": 0.9},
+    "FUNDING_TTP_FLOW_FAST_TOLERANCE_PCT": {"label": "Funding - TTP repli si flux contraire (%)", "default": 0.25},
+    "FUNDING_TTP_FLOW_THRESHOLD": {"label": "Funding - TTP seuil de flux favorable/contraire", "default": 0.2},
+    "FUNDING_TTP_MIN_LOCK_PCT":  {"label": "Funding - TTP plancher de gain une fois arme (%)", "default": 0.3},
     "RSI_OVERSOLD":            {"label": "RSI - Seuil survente",              "default": 32},
     "RSI_OVERBOUGHT":          {"label": "RSI - Seuil surachat",              "default": 68},
     "RSI_EXTREME_LOW":         {"label": "RSI - Zone survente extreme (no SHORT sous)",  "default": 15},
@@ -1040,7 +1047,7 @@ def _coerce_advanced_value(key: str, value):
         return (True, None) if default is None else (False, "valeur vide refusee pour ce reglage")
     if value != value or value in (float("inf"), float("-inf")):
         return False, "valeur invalide"
-    if key.startswith("ENTRY_FLOW_") and not 0 <= value <= 1:
+    if (key.startswith("ENTRY_FLOW_") or key.endswith("_FLOW_THRESHOLD")) and not 0 <= value <= 1:
         return False, "doit etre entre 0 et 1 (pression de -1 a +1)"
     if _is_int_setting(key):
         value = int(round(value))
