@@ -502,6 +502,41 @@ const fmtAgo = s => s<60?`${s}s`:s<3600?`${Math.floor(s/60)} min`:`${Math.floor(
 const fmtTime = ts => ts ? new Date(ts*1000).toLocaleString([], {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) : "—";
 const dirBadge = d => <span style={{color:d==="long"?"#22c55e":"#ef4444",fontWeight:800}}>{d==="long"?"▲ LONG":"▼ SHORT"}</span>;
 
+// v4.276 — Resultats par tranche horaire (UTC + heure locale)
+function HoursStatsCard({ token }) {
+  const [d, setD] = useState(null);
+  const [rg, setRg] = useState(null);
+  const [days, setDays] = useState(14);
+  useEffect(() => { (async () => {
+    try { setD(await apiCall(`/api/stats/hours?days=${days}`,"GET",null,token)); } catch(e) { setD({error:e.message}); }
+    try { setRg(await apiCall("/api/market-regime","GET",null,token)); } catch(_) {}
+  })(); }, [token, days]);
+  const off = -new Date().getTimezoneOffset()/60;
+  const loc = b => { const [a,z]=b.split("-").map(Number); const f=x=>((x+off)%24+24)%24; return `${f(a)}h-${f(z)===0?24:f(z)}h`; };
+  const cell = {padding:"6px 8px",fontSize:11,borderBottom:"1px solid #131d33",textAlign:"center",whiteSpace:"nowrap"};
+  return (
+    <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:8}}>
+        <b style={{color:"#e2e8f0",fontSize:12}}>🕐 Résultats par tranche horaire</b>
+        <select value={days} onChange={e=>setDays(Number(e.target.value))} style={{background:"#0a0e1a",color:"#e2e8f0",border:"1px solid #1e2d4a",borderRadius:6,padding:"4px 6px",fontFamily:"inherit"}}>
+          {[3,7,14,30,90].map(x=><option key={x} value={x}>{x} derniers jours</option>)}
+        </select>
+      </div>
+      {rg && <div style={{fontSize:11,color:"#94a3b8",marginBottom:8}}>🧭 Régime de marché : <b style={{color:rg.regime==="haussier"?"#22c55e":rg.regime==="baissier"?"#ef4444":"#fbbf24"}}>{(rg.regime||"?").toUpperCase()}</b> — {rg.detail} {rg.filter_enabled?`(${rg.blocks})`:"(filtre désactivé)"}</div>}
+      {!d ? <div style={{fontSize:11,color:"#64748b"}}>Chargement...</div> : d.error ? <div style={{fontSize:11,color:"#fca5a5"}}>{d.error}</div> : (
+        <div style={{overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%"}}>
+          <thead><tr><th style={{...cell,textAlign:"left",color:"#64748b"}}>Mode</th>{d.blocks_utc.map(b=><th key={b} style={{...cell,color:"#64748b"}}>{b} UTC<br/><span style={{fontWeight:400}}>{loc(b)} chez vous</span></th>)}</tr></thead>
+          <tbody>{Object.entries(d.modes).map(([mode,blocks])=><tr key={mode}>
+            <td style={{...cell,textAlign:"left",color:"#e2e8f0",fontWeight:700}}>{mode}</td>
+            {d.blocks_utc.map(b=>{const x=blocks[b]; if(!x) return <td key={b} style={{...cell,color:"#334155"}}>—</td>;
+              return <td key={b} style={{...cell,color:x.net>=0?"#22c55e":"#ef4444"}}>{x.net>=0?"+":""}{x.net.toFixed(2)} $<br/><span style={{color:"#94a3b8"}}>{x.win_rate}% · {x.n} tr.</span></td>;})}
+          </tr>)}</tbody>
+        </table></div>)}
+      <div style={{fontSize:10,color:"#64748b",marginTop:6}}>Net après frais (réels en live, estimés en paper). Moins de ~30 trades par case : résultat encore peu fiable. Les plages horaires se règlent par mode dans les réglages avancés (heures UTC).</div>
+    </div>
+  );
+}
+
 function ManualTradingTab({ token }) {
   const [st, setSt] = useState(null);
   const [err, setErr] = useState("");
@@ -1472,6 +1507,7 @@ Confirmer ?`
 
       {tab==="historique" && (
         <div style={{padding:16}}>
+          <HoursStatsCard token={token}/>
           {/* v4.265 — export CSV du suivi Spot-Accum / Accumulation */}
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
             <div style={{fontSize:11,color:"#94a3b8",maxWidth:560}}>
@@ -1783,7 +1819,7 @@ Confirmer ?`
             ) : (
               <>
                 <div style={{fontSize:10,color:"#94a3b8",marginBottom:8}}>Instantané au moment du clic — "aucun obstacle" veut dire que le signal de base n'est simplement pas encore réuni (RSI/EMA/tendance), pas qu'un trade est imminent.</div>
-                <textarea readOnly value={entryDiag.results.map(r=>
+                <textarea readOnly value={(entryDiag.market_regime?`🧭 RÉGIME DE MARCHÉ : ${(entryDiag.market_regime.regime||"?").toUpperCase()} — ${entryDiag.market_regime.detail||""}${entryDiag.market_regime.filter_enabled?(entryDiag.market_regime.regime==="haussier"?" → Accumulation bloqué":entryDiag.market_regime.regime==="baissier"?" → Spot-Accum bloqué":" → aucun blocage"):" (filtre désactivé)"}\n\n`:"")+entryDiag.results.map(r=>
                   `${r.ticker}${r.has_position?" [position ouverte]":""} (il y a ${r.snapshot_age_sec!=null?r.snapshot_age_sec.toFixed(0)+"s":"?"})\n  💱 FOREX LONG  : ${r.blocker_long||"aucun obstacle particulier"}\n  💱 FOREX SHORT : ${r.blocker_short||"aucun obstacle particulier"}\n  🎯 ACCUMULATION : ${r.blocker_accumulation||"aucun obstacle particulier"}\n  🌱 SPOT-ACCUM : ${r.blocker_spot_accum||"aucun obstacle particulier"}\n  📊 Flux transactions : ${r.trade_flow_pressure!=null?r.trade_flow_pressure.toFixed(2):"pas encore de donnees"}${r.trend_persistence_confirmed?" · pression soutenue CONFIRMEE":""}`
                 ).join("\n\n")}
                   style={{width:"100%",height:320,background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:10,color:"#e2e8f0",fontFamily:"monospace",fontSize:11,resize:"vertical"}}
