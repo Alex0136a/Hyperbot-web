@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32575223/README.md)
+[README.md](https://github.com/user-attachments/files/32576973/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.273** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.276** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -316,6 +316,26 @@ l'actif, et le bot n'ouvre pas en live sur un actif tenu manuellement. En perp
 live, le SL est aussi posé en ordre natif sur Hyperliquid (mis à jour si vous
 le modifiez). En spot, la protection repose sur le bot seul. Les ordres
 programmés et positions manuelles survivent aux redémarrages.
+
+## 4sedecies. Régime de marché et plages horaires (v4.276)
+
+**Régime de marché** (recalculé toutes les 5 min) : il est **haussier
+confirmé** quand BTC en 1 h est au-dessus de son EMA200 (d'au moins 0,2 %)
+avec l'EMA50 au-dessus de l'EMA200, **et** qu'au moins 60 % des actifs suivis
+sont au-dessus de leur propre EMA200 ; **baissier confirmé** dans le cas
+inverse ; **neutre** sinon.
+
+- Marché baissier confirmé → **Spot-Accum** (achats) n'ouvre plus rien.
+- Marché haussier confirmé → **Accumulation** (shorts) n'ouvre plus rien.
+- Neutre → les deux modes fonctionnent normalement.
+
+Le régime s'affiche en tête du diagnostic d'entrée et dans l'onglet
+Historique ; chaque changement de régime est journalisé.
+
+**Plages horaires par mode** (réglages avancés, heures UTC, 0-24 = toujours) :
+Spot-Accum, Accumulation et Funding. Le tableau « Résultats par tranche
+horaire » de l'onglet Historique (tranches de 4 h, en UTC et à votre heure
+locale) aide à les choisir.
 
 ## 5. Premier lancement
 
