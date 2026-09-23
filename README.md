@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32542530/README.md)
+[README.md](https://github.com/user-attachments/files/32542984/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.266** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.268** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -218,6 +218,22 @@ Réglages (onglet Réglages avancés) :
 | `ENTRY_FLOW_CONTRADICTION_THRESHOLD` | 0.3 | Veto : refuse l'entrée si le flux est nettement contraire |
 | `ENTRY_FLOW_CONFIRM_MIN_PRESSURE` | 0 (désactivé) | Exige un flux favorable à l'entrée (ex. 0.1 : achat net ≥ +0,1 pour Spot-Accum, vente nette ≤ −0,1 pour Accumulation) |
 | `TRADE_FLOW_WINDOW_SEC` | 180 | Fenêtre d'analyse du flux |
+
+## 4undecies. Trailing take profit du mode Funding
+
+Le TTP Funding s'arme dès **+1 %** de mouvement de prix favorable
+(`FUNDING_TTP_ARM_PCT`). Une fois armé, quand le prix se replie, le **flux de
+transactions** décide de la patience :
+
+| Flux au moment du repli | Repli toléré depuis le pic | Motif affiché |
+|---|---|---|
+| Favorable au trade (vendeurs dominants pour un short) | 0,9 % (patience) | `(Funding, après patience)` |
+| Neutre ou indisponible | 0,5 % | `(Funding)` |
+| Contraire au trade | 0,25 % (sortie anticipée) | `(Funding, flux contraire)` |
+
+Quelle que soit la décision, un trade armé ne redescend jamais sous **+0,3 %**
+de gain (`FUNDING_TTP_MIN_LOCK_PCT`, motif `(Funding, plancher)`). Tous ces
+seuils sont modifiables dans les réglages avancés.
 
 ## 5. Premier lancement
 
