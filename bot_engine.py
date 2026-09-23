@@ -33,10 +33,14 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.276"
-BOT_BUILD   = "2026-09-24-e"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.277"
+BOT_BUILD   = "2026-09-24-f"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.277 — FIX : les voies d entree par contournement (cassure, volume, fausse
+#        cassure, tendance persistante, etoile filante) ne permettent plus
+#        d entrer CONTRE la tendance EMA200 et passent par le veto du flux
+#        (Spot-Accum et Accumulation).
 # 4.276 — Regime de marche global (BTC 1h EMA50/EMA200 + largeur de marche) :
 #        Spot-Accum bloque en baissier confirme, Accumulation en haussier
 #        confirme ; plages horaires d entree par mode ; stats par heure.
@@ -1193,6 +1197,12 @@ PROFILE_SWING = {
     # choisie, avec EMA50 du meme cote, ET une majorite des actifs suivis
     # (MARKET_REGIME_BREADTH_PCT) est du meme cote de sa propre EMA200.
     "MARKET_REGIME_FILTER_ENABLED": 1,
+    # v4.277 — les entrees par cassure/rebond/tendance persistante doivent
+    # respecter le SENS de la tendance (EMA200) et le veto du flux (1 = oui)
+    "SPOT_ACCUM_BYPASS_REQUIRE_TREND": 1,
+    "SPOT_ACCUM_BYPASS_FLOW_VETO": 1,
+    "ACCUMULATION_BYPASS_REQUIRE_TREND": 1,
+    "ACCUMULATION_BYPASS_FLOW_VETO": 1,
     "MARKET_REGIME_REF_TICKER": "BTC",
     "MARKET_REGIME_TIMEFRAME": "1h",
     "MARKET_REGIME_BREADTH_PCT": 60,
@@ -8999,9 +9009,19 @@ class BotEngine:
             trend_persistence_ac = self._trend_persistence_confirmed(state, "short")
         snap["trend_persistence_confirmed"] = trend_persistence_ac
 
-        if not trend_down and not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac and not shooting_star_ac and not trend_persistence_ac:
-            snap["blocker"] = "pas de tendance baissiere (EMA200)"
+        # v4.277 — meme correctif que Spot-Accum : les voies de contournement
+        # ne permettent plus de shorter CONTRE une tendance haussiere, et
+        # passent elles aussi par le veto du flux.
+        bypass_ac = fresh_breakout_ac or volume_breakout_ac or failed_breakout_ac or shooting_star_ac or trend_persistence_ac
+        if not trend_down and (cfg.get("ACCUMULATION_BYPASS_REQUIRE_TREND", 1) or not bypass_ac):
+            snap["blocker"] = "pas de tendance baissiere (EMA200)" + (" — signal de cassure/rejet ignore contre la tendance" if bypass_ac else "")
             return
+        if bypass_ac and cfg.get("ACCUMULATION_BYPASS_FLOW_VETO", 1) and cfg.get("ENTRY_FLOW_CONFIRM_ENABLED", True):
+            fp_bypass_ac = self._compute_trade_flow_pressure(ticker, price_now=price)
+            snap["entry_flow_pressure"] = fp_bypass_ac
+            if fp_bypass_ac is not None and fp_bypass_ac >= cfg.get("ENTRY_FLOW_CONTRADICTION_THRESHOLD", 0.3):
+                snap["blocker"] = f"flux acheteur contredit l entree par cassure/rejet (pression {fp_bypass_ac:+.2f})"
+                return
 
         min_stability_cycles = cfg.get("ACCUMULATION_TREND_STABILITY_CYCLES", 24)
         snap["trend_down_streak"] = state.trend_down_streak
@@ -9299,9 +9319,23 @@ class BotEngine:
             trend_persistence_sa = self._trend_persistence_confirmed(state, "long")
         snap["trend_persistence_confirmed"] = trend_persistence_sa
 
-        if not trend_up and not fresh_breakout_sa and not volume_breakout_sa and not failed_breakout_sa and not trend_persistence_sa:
-            snap["blocker"] = "pas de tendance haussiere (EMA200)"
-            return  # exige la tendance generale haussiere (EMA200), sauf cassure fraiche
+        # v4.277 — FIX (entrees perdantes du 22-23/09) : les 4 voies de
+        # contournement (cassure fraiche, volume, fausse cassure, tendance
+        # persistante) laissaient Spot-Accum ACHETER CONTRE une tendance
+        # baissiere (EMA200), sans veto du flux ni couleur de bougie ni
+        # proximite du support — soit exactement les achats de rebonds
+        # rates observes (SL en quelques minutes, pic quasi nul). Elles ne
+        # dispensent plus que de la STABILITE et de l ADX, jamais du SENS.
+        bypass_sa = fresh_breakout_sa or volume_breakout_sa or failed_breakout_sa or trend_persistence_sa
+        if not trend_up and (cfg.get("SPOT_ACCUM_BYPASS_REQUIRE_TREND", 1) or not bypass_sa):
+            snap["blocker"] = "pas de tendance haussiere (EMA200)" + (" — signal de cassure/rebond ignore contre la tendance" if bypass_sa else "")
+            return  # exige la tendance generale haussiere (EMA200)
+        if bypass_sa and cfg.get("SPOT_ACCUM_BYPASS_FLOW_VETO", 1) and cfg.get("ENTRY_FLOW_CONFIRM_ENABLED", True):
+            fp_bypass_sa = self._compute_trade_flow_pressure(ticker, price_now=price)
+            snap["entry_flow_pressure"] = fp_bypass_sa
+            if fp_bypass_sa is not None and fp_bypass_sa <= -cfg.get("ENTRY_FLOW_CONTRADICTION_THRESHOLD", 0.3):
+                snap["blocker"] = f"flux vendeur contredit l entree par cassure/rebond (pression {fp_bypass_sa:+.2f})"
+                return
         # v4.75 — SUR DEMANDE EXPLICITE : la tendance doit aussi etre STABLE
         # depuis un moment (pas juste vraie a l instant du signal) — evite
         # d entrer juste avant/pendant un retournement deja amorce.
