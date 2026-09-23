@@ -1,3 +1,4 @@
+
 """
 db.py — Persistance SQLite pour HyperBot Web.
 
@@ -170,6 +171,16 @@ def init_db():
         if "status" not in existing_cols:
             conn.execute("ALTER TABLE trades ADD COLUMN status TEXT")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_uid ON trades(trade_uid) WHERE trade_uid IS NOT NULL")
+        # v4.265 — SUIVI DETAILLE DES TRADES (export CSV) : source du prix de
+        # sortie, frais et PnL reels Hyperliquid, et comportement du prix
+        # 30/60 min APRES la sortie (le SL etait-il trop serre ? le TTP trop
+        # precoce ?).
+        for col, typ in (("exit_price_source", "TEXT"), ("fees_real", "REAL"), ("pnl_real_hl", "REAL"),
+                         ("price_after_30m", "REAL"), ("price_after_60m", "REAL"),
+                         ("high_60m", "REAL"), ("low_60m", "REAL"),
+                         ("followup_status", "TEXT"), ("followup_at", "TEXT")):
+            if col not in existing_cols:
+                conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
         if "fees_paid" not in existing_cols:
             # v4.186 — SUR DEMANDE EXPLICITE : frais REELS estimes payes a
             # Hyperliquid pour ce trade (ouverture + fermeture), uniquement
@@ -493,13 +504,56 @@ def insert_orphaned_closed_trade(coin, action, entry_price, exit_price, pnl, rea
         return cur.lastrowid
 
 
-def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=None, fees_paid=None):
+def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=None, fees_paid=None,
+                exit_price_source=None):
     with _lock, _connect() as conn:
         conn.execute(
-            "UPDATE trades SET exit_price=?, pnl=?, reason=?, closed_at=?, peak_pnl=?, peak_pnl_pct=?, fees_paid=? WHERE id=?",
-            (exit_price, pnl, reason, now_iso(), peak_pnl, peak_pnl_pct, fees_paid, trade_id)
+            "UPDATE trades SET exit_price=?, pnl=?, reason=?, closed_at=?, peak_pnl=?, peak_pnl_pct=?, fees_paid=?, "
+            "exit_price_source=?, status='closed' WHERE id=?",
+            (exit_price, pnl, reason, now_iso(), peak_pnl, peak_pnl_pct, fees_paid, exit_price_source, trade_id)
         )
         conn.commit()
+
+
+# ── v4.265 — Suivi apres sortie + export ─────────────────────────────────
+FOLLOWUP_STRATEGIES = ("spot_accumulation", "accumulation")
+
+
+def list_trades_needing_followup(min_age_minutes=62, max_age_days=16, limit=5):
+    """Trades Spot-Accum / Accumulation fermes depuis plus d une heure dont le
+    suivi (prix +30/+60 min, frais reels) n a pas encore ete fait."""
+    now = datetime.now(timezone.utc)
+    newest = (now - timedelta(minutes=min_age_minutes)).isoformat()
+    oldest = (now - timedelta(days=max_age_days)).isoformat()
+    with _lock, _connect() as conn:
+        rows = conn.execute(f"""
+            SELECT * FROM trades
+            WHERE closed_at IS NOT NULL AND followup_status IS NULL
+              AND strategy IN ({",".join("?" * len(FOLLOWUP_STRATEGIES))})
+              AND closed_at <= ? AND closed_at >= ?
+            ORDER BY closed_at DESC LIMIT ?
+        """, (*FOLLOWUP_STRATEGIES, newest, oldest, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def save_trade_followup(trade_id, fields):
+    allowed = ("price_after_30m", "price_after_60m", "high_60m", "low_60m", "fees_real", "pnl_real_hl", "followup_status")
+    data = {k: v for k, v in fields.items() if k in allowed}
+    data["followup_at"] = now_iso()
+    with _lock, _connect() as conn:
+        conn.execute(f"UPDATE trades SET {', '.join(f'{k}=?' for k in data)} WHERE id=?", (*data.values(), trade_id))
+        conn.commit()
+
+
+def get_trades_for_export(strategies=FOLLOWUP_STRATEGIES, days=None):
+    params = list(strategies)
+    where = f"strategy IN ({','.join('?' * len(strategies))})"
+    if days:
+        where += " AND created_at >= ?"
+        params.append((datetime.now(timezone.utc) - timedelta(days=days)).isoformat())
+    with _lock, _connect() as conn:
+        rows = conn.execute(f"SELECT * FROM trades WHERE {where} AND status IS NOT 'pending' ORDER BY created_at DESC", params).fetchall()
+        return [dict(r) for r in rows]
 
 
 def get_open_trade_info(coin, action):
