@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32542262/README.md)
+[README.md](https://github.com/user-attachments/files/32542530/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.265** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.266** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -201,6 +201,23 @@ trades perdants, si le prix est revenu au niveau d'entrée dans l'heure.
 - Depuis la 4.265, le PnL d'une sortie live est calculé sur le **prix
   réellement exécuté** par Hyperliquid (colonne « source prix sortie » =
   `hyperliquid`), et non plus sur le prix vu par le bot au moment de décider.
+
+## 4decies. Flux de transactions (pression acheteurs / vendeurs)
+
+Spot-Accum et Accumulation utilisent le flux WebSocket `trades` d'Hyperliquid
+pour mesurer la pression directionnelle (−1 = 100 % vendeurs agressifs, +1 =
+100 % acheteurs agressifs), calculée sur une **fenêtre de temps fixe**
+(`TRADE_FLOW_WINDOW_SEC`, 180 s par défaut). Le flux est réabonné à chaque
+reconnexion WebSocket ; s'il ne reçoit plus rien (`TRADE_FLOW_WS_DEAD_SEC`),
+le bot bascule automatiquement sur des requêtes REST.
+
+Réglages (onglet Réglages avancés) :
+
+| Réglage | Défaut | Rôle |
+|---|---|---|
+| `ENTRY_FLOW_CONTRADICTION_THRESHOLD` | 0.3 | Veto : refuse l'entrée si le flux est nettement contraire |
+| `ENTRY_FLOW_CONFIRM_MIN_PRESSURE` | 0 (désactivé) | Exige un flux favorable à l'entrée (ex. 0.1 : achat net ≥ +0,1 pour Spot-Accum, vente nette ≤ −0,1 pour Accumulation) |
+| `TRADE_FLOW_WINDOW_SEC` | 180 | Fenêtre d'analyse du flux |
 
 ## 5. Premier lancement
 
