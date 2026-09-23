@@ -15,6 +15,7 @@ Variables d environnement (voir README.md pour la liste complete) :
     HYPERBOT_PRIVATE_KEY / HYPERBOT_WALLET_ADDRESS / HYPERBOT_FINNHUB_API_KEY
 """
 import os
+import sys
 import json
 import queue
 import threading
@@ -38,6 +39,11 @@ from pydantic import BaseModel
 import db
 import auth
 import bot_engine as be
+# v4.274 — FIX : importe ICI, avec les autres modules, AVANT le os.chdir()
+# vers le dossier de donnees ci-dessous. Importe apres (v4.273), Python le
+# cherchait dans le Volume -> "ModuleNotFoundError: No module named
+# 'manual_trading'" et le serveur ne demarrait plus.
+import manual_trading
 
 # ── Dossier de donnees persistantes (a monter en Volume sur Railway) ─────
 # Fait APRES les imports ci-dessus : seuls les FICHIERS ecrits a l execution
@@ -46,6 +52,11 @@ import bot_engine as be
 _DATA_DIR = os.environ.get("HYPERBOT_DATA_DIR", ".")
 _DATA_DIR_CONFIGURED = "HYPERBOT_DATA_DIR" in os.environ
 os.makedirs(_DATA_DIR, exist_ok=True)
+# v4.274 — garde-fou : le dossier du code reste importable apres le chdir
+# (uvicorn ajoute "." RELATIF a sys.path, qui designerait sinon le Volume).
+_CODE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _CODE_DIR not in sys.path:
+    sys.path.insert(0, _CODE_DIR)
 os.chdir(_DATA_DIR)
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -131,7 +142,6 @@ event_queue = queue.Queue()
 bot = be.BotEngine(cfg, event_queue)
 # v4.273 — trading manuel (doit exister AVANT le demarrage du moteur : la
 # reprise des positions tient compte des positions manuelles)
-import manual_trading
 bot.manual = manual_trading.ManualTrading(bot)
 
 log_buffer = deque(maxlen=3000)
