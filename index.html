@@ -1179,6 +1179,29 @@ Confirmer ?`
 
       {tab==="historique" && (
         <div style={{padding:16}}>
+          {/* v4.265 — export CSV du suivi Spot-Accum / Accumulation */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+            <div style={{fontSize:11,color:"#94a3b8",maxWidth:560}}>
+              <b style={{color:"#e2e8f0"}}>📥 Suivi Spot-Accum / Accumulation</b><br/>
+              Tous les trades de ces deux modes : durée, prix réels, frais, PnL net, et évolution du prix 30/60 min après chaque sortie (rempli automatiquement ~1 h après la fermeture). Format Excel (séparateur ;).
+            </div>
+            <button onClick={async()=>{
+              try{
+                const r = await fetch(`${API}/api/export/accumulation-trades.csv`,{headers:{Authorization:`Bearer ${token}`}});
+                if(!r.ok){ let d={}; try{d=await r.json();}catch(_){} throw new Error(d.detail||`Erreur ${r.status}`); }
+                const blob = await r.blob();
+                const cd = r.headers.get("Content-Disposition")||"";
+                const m = cd.match(/filename="([^"]+)"/);
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url; a.download = m?m[1]:"suivi_trades.csv";
+                document.body.appendChild(a); a.click(); a.remove();
+                setTimeout(()=>URL.revokeObjectURL(url),2000);
+              }catch(e){ alert("Export impossible : "+e.message); }
+            }} style={{background:"#60a5fa",border:"none",borderRadius:7,padding:"10px 16px",color:"#04101f",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer"}}>
+              📥 Télécharger le suivi (CSV)
+            </button>
+          </div>
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:assetProba?12:0}}>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
