@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32576973/README.md)
+[README.md](https://github.com/user-attachments/files/32577147/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.276** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.277** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -336,6 +336,17 @@ Historique ; chaque changement de régime est journalisé.
 Spot-Accum, Accumulation et Funding. Le tableau « Résultats par tranche
 horaire » de l'onglet Historique (tranches de 4 h, en UTC et à votre heure
 locale) aide à les choisir.
+
+## 4septdecies. Entrées par cassure/rebond encadrées (v4.277)
+
+Spot-Accum et Accumulation ont des voies d'entrée « de contournement »
+(cassure fraîche, cassure sur volume, fausse cassure, tendance persistante,
+étoile filante pour Accumulation). Elles dispensaient de TOUS les filtres
+principaux, y compris le sens de la tendance EMA200 et le veto du flux.
+Depuis la 4.277, elles ne dispensent plus que de la stabilité de tendance et
+de l'ADX : elles doivent respecter le sens de la tendance et passer le veto
+du flux. Réglages avancés `*_BYPASS_REQUIRE_TREND` / `*_BYPASS_FLOW_VETO`
+(1 = oui, 0 = ancien comportement).
 
 ## 5. Premier lancement
 
