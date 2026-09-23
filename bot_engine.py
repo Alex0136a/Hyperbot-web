@@ -33,10 +33,15 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.269"
-BOT_BUILD   = "2026-09-23-e"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.271"
+BOT_BUILD   = "2026-09-23-g"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.271 (build 2026-09-23-g) — Patience du SL Spot-Accum : exige aussi une
+#        tendance de fond intacte (prix au-dessus de l EMA200 pour un long).
+# 4.270 (build 2026-09-23-f) — Spot-Accum : patience du SL pilotee par le
+#        flux (attente si acheteurs dominants, dans la limite de -1 % et
+#        15 min) ; motifs de sortie distincts pour mesurer son effet.
 # 4.269 (build 2026-09-23-e) — Simulation "SL plus large" (0,75/1/1,5 %)
 #        dans le suivi ; Funding ajoute au suivi/export ; plafond de SL,
 #        confirmation par le flux, delai apres perte et limite de rafales
@@ -1147,6 +1152,12 @@ PROFILE_SWING = {
     # STRUCTURAL_SL_HARD_CAP_PCT, 0,5 %). Voir la simulation "SL x %" de l
     # export CSV avant de l elargir.
     "SPOT_ACCUM_SL_CAP_PCT": None,
+    # v4.270 — patience du SL Spot-Accum pilotee par le flux (voir gestion)
+    "SPOT_ACCUM_SL_FLOW_PATIENCE_ENABLED": True,
+    "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND": 1,  # v4.271 (1 = oui, 0 = non) — exige aussi prix du bon cote de l EMA200
+    "SPOT_ACCUM_SL_FLOW_THRESHOLD": 0.2,      # pression acheteuse minimale pour attendre (long)
+    "SPOT_ACCUM_SL_FLOW_MAX_PCT": 1.0,        # perte maximale toleree pendant l attente (% de prix)
+    "SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC": 900,   # duree maximale de l attente
     "ACCUMULATION_SL_CAP_PCT": None,
     # v4.269 — delai de re-entree sur le MEME actif apres une PERTE (s ; 0 =
     # desactive). Donnees 18-23/09 : les shorts Accumulation re-ouverts dans
@@ -2944,6 +2955,7 @@ class SymbolState:
         self.spot_accum_armed = False
         self.spot_accum_peak_pnl_pct = None
         self.spot_accum_velocity_checkpoint = None
+        self.sl_flow_patience_since = None  # v4.270
 
     def trades_last_24h(self):
         cutoff = datetime.now().timestamp() - 86400
@@ -6283,6 +6295,8 @@ class BotEngine:
                     print(f"[EXIT-FILL] {ticker} : prix vise {price:.6g} -> execute {real_exit:.6g} (glissement {((real_exit - price) / price * 100):+.3f}%)")
                 price = real_exit
                 exit_source = "hyperliquid"
+        if pos and pos.get("sl_patience_used") and not reason.startswith("STOP LOSS ("):
+            reason = f"{reason} · apres patience SL"  # v4.270 — trade sauve (ou non) par la patience
         pnl, _, trade = state.close_position(price, reason)
         trade["symbol"] = symbol
         trade["exit_price_source"] = exit_source
@@ -6519,8 +6533,51 @@ class BotEngine:
             # PROTECTEUR en priorite absolue, quel que soit son
             # emplacement dans le reste du code.
             immediate_cap_pct = cfg.get("SPOT_ACCUM_SL_CAP_PCT") or cfg.get("STRUCTURAL_SL_HARD_CAP_PCT", 0.5)  # v4.269
-            if pnl_pct <= -immediate_cap_pct:
-                _result = self._safe_close_position(state, price, "STOP LOSS (plafond immediat)", ticker, pos, symbol, mode)
+            # v4.270 — SUR DEMANDE EXPLICITE : PATIENCE DU SL PILOTEE PAR LE FLUX.
+            # Quand le plafond est atteint, si le flux de transactions reste
+            # FAVORABLE a la position (acheteurs dominants pour un long), le
+            # bot attend au lieu de couper — dans la limite d une perte
+            # maximale et d une duree maximale. Donnees 18-23/09 : apres 71 %
+            # des SL Spot-Accum, le prix est revenu a l entree dans l heure.
+            sl_reason = "STOP LOSS (plafond immediat)"
+            if pnl_pct > -immediate_cap_pct:
+                state.sl_flow_patience_since = None  # repasse au-dessus du plafond : patience terminee
+            elif cfg.get("SPOT_ACCUM_SL_FLOW_PATIENCE_ENABLED", True) and (cfg.get("SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", 900) or 0) > 0:
+                max_loss_pct = cfg.get("SPOT_ACCUM_SL_FLOW_MAX_PCT", 1.0)
+                max_wait = cfg.get("SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", 900)
+                since = getattr(state, "sl_flow_patience_since", None)
+                flow_sl = self._compute_trade_flow_pressure(ticker, price_now=price)
+                thr_sl = cfg.get("SPOT_ACCUM_SL_FLOW_THRESHOLD", 0.2)
+                favorable_sl = flow_sl is not None and (flow_sl >= thr_sl if pos["type"] == "long" else flow_sl <= -thr_sl)
+                # v4.271 — SUR DEMANDE EXPLICITE : la patience exige AUSSI que
+                # la tendance de fond tienne (meme regle que le maintien de
+                # tendance du trailing : prix du bon cote de l EMA200). Un
+                # flux acheteur ponctuel pendant une vraie cassure de
+                # tendance ne justifie pas d attendre. EMA200 indisponible
+                # -> benefice du doute, comme pour le trailing (v4.214).
+                trend_ok_sl = True
+                ema200_sl = None
+                if cfg.get("SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND", 1):
+                    ema200_sl = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
+                    if ema200_sl is not None:
+                        trend_ok_sl = (price > ema200_sl) if pos["type"] == "long" else (price < ema200_sl)
+                if pnl_pct <= -max_loss_pct:
+                    sl_reason = "STOP LOSS (plafond patience)" if since else sl_reason
+                elif since and time.time() - since > max_wait:
+                    sl_reason = "STOP LOSS (patience expiree)"
+                elif since and not trend_ok_sl:
+                    sl_reason = "STOP LOSS (tendance cassee)"
+                elif favorable_sl and trend_ok_sl:
+                    if since is None:
+                        state.sl_flow_patience_since = time.time()
+                        pos["sl_patience_used"] = True
+                        trend_txt = f", tendance intacte (EMA200 ${ema200_sl:.4g})" if ema200_sl is not None else ""
+                        self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} SL atteint ({pnl_pct:.2f}%) mais flux favorable ({flow_sl:+.2f}){trend_txt} — patience (max -{max_loss_pct:.2f}% / {max_wait // 60} min)", "level": "warn"})
+                    return
+                elif since:
+                    sl_reason = "STOP LOSS (flux defavorable)"
+            if pnl_pct <= -immediate_cap_pct and sl_reason:
+                _result = self._safe_close_position(state, price, sl_reason, ticker, pos, symbol, mode)
 
                 if _result is None:
 
@@ -6528,7 +6585,7 @@ class BotEngine:
 
                 pnl, _, trade = _result
                 self.emit("trade", trade)
-                self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} STOP LOSS plafond immediat : perte {pnl_pct:.2f}% >= {immediate_cap_pct:.2f}% @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "loss"})
+                self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} {sl_reason} : perte {pnl_pct:.2f}% (plafond {immediate_cap_pct:.2f}%) @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "loss"})
                 if pos["type"] == "long":
                     state.post_win_confirm_long = True
                     state.confirm_count_long = 0
