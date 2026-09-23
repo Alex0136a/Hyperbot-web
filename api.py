@@ -958,6 +958,8 @@ ADVANCED_SETTINGS = {
     "SPOT_ACCUM_ANTI_RANGE_LOOKBACK": {"label": "Spot-Accum - echantillons pour le detecteur de range (200 = 6h40, aligne sur EMA200)", "default": 200},
     "SPOT_ACCUM_TREND_STABILITY_CYCLES":   {"label": "Spot-Accum - stabilité tendance requise avant entrée (cycles ~10s)", "default": 24},
     "FOREX_TREND_STABILITY_CYCLES":       {"label": "Forex - stabilité tendance requise avant entrée (cycles ~10s)", "default": 12},
+    "FOREX_ANTI_RANGE_MIN_PCT":  {"label": "Forex - mouvement minimal pour ne pas etre en range (%)", "default": 0.25},
+    "FOREX_LONG_TERM_MOMENTUM_MIN_CHANGE_PCT": {"label": "Forex - momentum long terme minimal (%)", "default": 0.4},
     "ACCUMULATION_TREND_STABILITY_CYCLES": {"label": "Accumulation - stabilité tendance requise avant entrée (cycles ~10s)", "default": 24},
     "SR_PERIOD":               {"label": "Support/Resistance - periode (cycles, repli seulement)", "default": 50},
     "SR_PERIOD_CANDLES":       {"label": "Support/Resistance - periode (bougies ~2min, ex: 100=~3h20)", "default": 100},
@@ -2025,11 +2027,21 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             # deux sens etait en realite bloque.
             blocker_accumulation_long = accum_snap.get("blocker_long", blocker_accumulation)
             blocker_accumulation_short = accum_snap.get("blocker_short", blocker_accumulation)
+        # v4.272 — les lignes LONG/SHORT sont celles du mode FOREX : il ne
+        # trade que FOREX_MODE_SYMBOLS (devises xyz + PAXG). Pour une crypto,
+        # "aucun obstacle" etait trompeur — et pour une devise, le filtre
+        # anti-range (blocage le plus frequent) n apparaissait pas.
+        if ticker not in cfg.get("FOREX_MODE_SYMBOLS", []):
+            blocker_long = blocker_short = "non concerne (crypto : le mode Forex ne trade que les devises et PAXG)"
+        elif not has_position and snap.get("forex_ranging"):
+            range_txt = f"marche en range (mouvement < {snap.get('forex_anti_range_min_pct')}% sur {snap.get('forex_anti_range_lookback')} bougies 5 min)"
+            blocker_long = blocker_long or range_txt
+            blocker_short = blocker_short or range_txt
         # v4.264 — raison EXACTE d un blocage anticipe (collecte, forex
         # ferme, chauffe, prix indisponible, horaires...) au lieu de "pas
         # encore de donnees" — cas permanent des actifs forex jusqu ici.
         blocked_reason = snap.get("blocked_reason")
-        if blocked_reason and not has_position:
+        if blocked_reason and not has_position and ticker in cfg.get("FOREX_MODE_SYMBOLS", []):
             blocker_long = blocker_short = blocked_reason
         is_forex_row = ticker in cfg.get("FOREX_MODE_SYMBOLS", []) and ticker.startswith("xyz:")
         if is_forex_row:
