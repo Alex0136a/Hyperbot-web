@@ -33,10 +33,13 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.275"
-BOT_BUILD   = "2026-09-24-d"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.276"
+BOT_BUILD   = "2026-09-24-e"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.276 — Regime de marche global (BTC 1h EMA50/EMA200 + largeur de marche) :
+#        Spot-Accum bloque en baissier confirme, Accumulation en haussier
+#        confirme ; plages horaires d entree par mode ; stats par heure.
 # 4.275 — FIX : plafond SL propre a chaque mode dans la gestion commune
 #        Spot-Accum/Accumulation/Forex ; patience SL par le flux reservee a
 #        Spot-Accum (elle s appliquait aussi a Accumulation et Forex).
@@ -1183,6 +1186,26 @@ PROFILE_SWING = {
     "ACCUMULATION_MAX_ENTRIES_PER_WINDOW": 3,
     "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW": 0,
     "ENTRY_BURST_WINDOW_SEC": 600,
+    # v4.276 — REGIME DE MARCHE (filtre global, sur demande explicite) :
+    # Spot-Accum (achats) bloque en marche BAISSIER confirme, Accumulation
+    # (shorts) bloque en marche HAUSSIER confirme. "Confirme" = l actif de
+    # reference (BTC) est du meme cote de son EMA200 sur l unite de temps
+    # choisie, avec EMA50 du meme cote, ET une majorite des actifs suivis
+    # (MARKET_REGIME_BREADTH_PCT) est du meme cote de sa propre EMA200.
+    "MARKET_REGIME_FILTER_ENABLED": 1,
+    "MARKET_REGIME_REF_TICKER": "BTC",
+    "MARKET_REGIME_TIMEFRAME": "1h",
+    "MARKET_REGIME_BREADTH_PCT": 60,
+    "MARKET_REGIME_REFRESH_SEC": 300,
+    "MARKET_REGIME_MIN_DIST_PCT": 0.2,
+    # v4.276 — PLAGE HORAIRE d entree PAR MODE (heures UTC, debut inclus,
+    # fin exclue, passage de minuit gere ; 0-24 = toujours).
+    "SPOT_ACCUM_TRADE_HOUR_START_UTC": 0,
+    "SPOT_ACCUM_TRADE_HOUR_END_UTC": 24,
+    "ACCUMULATION_TRADE_HOUR_START_UTC": 0,
+    "ACCUMULATION_TRADE_HOUR_END_UTC": 24,
+    "FUNDING_TRADE_HOUR_START_UTC": 0,
+    "FUNDING_TRADE_HOUR_END_UTC": 24,
     # v4.273 — TRADING MANUEL
     "MANUAL_OPPORTUNITY_TTL_SEC": 120,     # une opportunite reste valable tant qu elle est revue dans ce delai
     "MANUAL_DEFAULT_NOTIONAL_USD": 15.0,   # taille proposee (notionnel) — minimum Hyperliquid 10 $
@@ -4347,6 +4370,90 @@ class BotEngine:
                         break
                 fields[col] = outcome
             db.save_trade_followup(row["id"], fields)
+
+    # ─────────────────────────────────────────────────────────────────────
+    #  v4.276 — REGIME DE MARCHE ET PLAGES HORAIRES PAR MODE
+    # ─────────────────────────────────────────────────────────────────────
+    def market_regime(self):
+        """Regime global : {"regime": "haussier"|"baissier"|"neutre"|"inconnu",
+        "detail": texte, ...}. Recalcule au plus toutes les
+        MARKET_REGIME_REFRESH_SEC secondes (une requete de bougies)."""
+        cfg = self.cfg
+        now = time.time()
+        cache = getattr(self, "_regime_cache", None)
+        if cache and now - cache["ts"] < cfg.get("MARKET_REGIME_REFRESH_SEC", 300):
+            return cache
+        ref = cfg.get("MARKET_REGIME_REF_TICKER", "BTC")
+        tf = cfg.get("MARKET_REGIME_TIMEFRAME", "1h")
+        tf_sec = {"15m": 900, "30m": 1800, "1h": 3600, "4h": 14400}.get(tf, 3600)
+        result = {"ts": now, "regime": "inconnu", "detail": "donnees insuffisantes", "ref": ref, "timeframe": tf}
+        candles = None
+        if self.info is not None:
+            end_ms = int(now * 1000)
+            candles = self._candles(ref, tf, end_ms - 260 * tf_sec * 1000, end_ms)
+        closes = [float(c["c"]) for c in sorted(candles or [], key=lambda c: int(c["t"]))]
+        # Largeur de marche : part des actifs crypto suivis au-dessus de leur EMA200
+        forex = set(cfg.get("FOREX_MODE_SYMBOLS", []))
+        up = down = total = 0
+        for slot, st in self.states.items():
+            t = ticker_from_slot_key(slot)
+            if t in forex or ":" in t or len(st.mtf_prices) < 50:
+                continue
+            ema = calc_ema(list(st.mtf_prices), 200)
+            px = st.current_price or st.mtf_prices[-1]
+            if ema:
+                total += 1
+                up += px > ema * 1.001     # marge de 0,1 % : un actif colle a son EMA ne compte ni pour l un ni pour l autre
+                down += px < ema * 0.999
+        breadth_up = (up / total * 100) if total else None
+        breadth_down = (down / total * 100) if total else None
+        result.update({"breadth_up_pct": round(breadth_up, 1) if breadth_up is not None else None,
+                       "breadth_down_pct": round(breadth_down, 1) if breadth_down is not None else None, "breadth_count": total})
+        if len(closes) >= 200:
+            ema_fast, ema_slow, last = calc_ema(closes, 50), calc_ema(closes, 200), closes[-1]
+            margin = cfg.get("MARKET_REGIME_MIN_DIST_PCT", 0.2) / 100  # ecart minimal a l EMA200 pour parler de tendance
+            ref_bull = last > ema_slow * (1 + margin) and ema_fast > ema_slow
+            ref_bear = last < ema_slow * (1 - margin) and ema_fast < ema_slow
+            min_b = cfg.get("MARKET_REGIME_BREADTH_PCT", 60)
+            result.update({"ref_price": last, "ref_ema50": ema_fast, "ref_ema200": ema_slow})
+            breadth_txt = f", actifs : {breadth_up:.0f} % au-dessus / {breadth_down:.0f} % sous leur EMA200" if breadth_up is not None else ""
+            if ref_bull and (breadth_up is None or breadth_up >= min_b):
+                result["regime"] = "haussier"
+            elif ref_bear and (breadth_down is None or breadth_down >= min_b):
+                result["regime"] = "baissier"
+            else:
+                result["regime"] = "neutre"
+            pos_txt = "au-dessus de" if last > ema_slow else "sous"
+            result["detail"] = f"{ref} {tf} {pos_txt} son EMA200 ({(last / ema_slow - 1) * 100:+.2f} %) (EMA50 {'>' if ema_fast > ema_slow else '<'} EMA200){breadth_txt}"
+        prev = getattr(self, "_regime_cache", None)
+        if prev and prev.get("regime") != result["regime"] and result["regime"] != "inconnu":
+            self.emit("log", {"msg": f"🧭 Regime de marche : {prev.get('regime')} -> {result['regime'].upper()} ({result['detail']})", "level": "warn"})
+        self._regime_cache = result
+        return result
+
+    def _regime_blocks(self, strategy):
+        """Texte de blocage si le regime interdit ce mode, sinon None."""
+        if not self.cfg.get("MARKET_REGIME_FILTER_ENABLED", 1):
+            return None
+        r = self.market_regime()
+        if strategy == "spot_accumulation" and r["regime"] == "baissier":
+            return f"marche baissier confirme ({r['detail']})"
+        if strategy == "accumulation" and r["regime"] == "haussier":
+            return f"marche haussier confirme ({r['detail']})"
+        return None
+
+    def _hours_block(self, strategy):
+        """Texte de blocage si l heure UTC est hors de la plage du mode."""
+        prefix = {"spot_accumulation": "SPOT_ACCUM", "accumulation": "ACCUMULATION", "funding_contrarian": "FUNDING"}.get(strategy)
+        if not prefix:
+            return None
+        start = int(self.cfg.get(f"{prefix}_TRADE_HOUR_START_UTC", 0))
+        end = int(self.cfg.get(f"{prefix}_TRADE_HOUR_END_UTC", 24))
+        if (start, end) in ((0, 24), (0, 0)) or start == end:
+            return None
+        h = datetime.utcnow().hour
+        inside = start <= h < end if start < end else (h >= start or h < end)
+        return None if inside else f"hors plage horaire du mode ({start}h-{end}h UTC)"
 
     def _publish_opportunities(self, strategy, candidates):
         """v4.273 — transmet les candidats d entree du cycle au trading manuel."""
@@ -8839,6 +8946,10 @@ class BotEngine:
         if not self._gate_active_or_auto_activate(ticker, 100, "accumulation"):
             snap["blocker"] = "actif non selectionne pour ce mode"
             return
+        _gate_v4276 = self._regime_blocks("accumulation") or self._hours_block("accumulation")  # v4.276
+        if _gate_v4276:
+            snap["blocker"] = _gate_v4276
+            return
 
         snap["trend_down"] = trend_down
         breakout_lookback_ac = cfg.get("ACCUMULATION_BREAKOUT_LOOKBACK_CANDLES", 30)
@@ -9057,6 +9168,8 @@ class BotEngine:
             return
         if not self._gate_active_or_auto_activate(ticker, 100, "funding_contrarian"):
             return  # actif desactive (Marches) ou exclu manuellement
+        if self._hours_block("funding_contrarian"):
+            return  # v4.276 — hors plage horaire du mode
 
         hourly_rate = self.funding_rates.get(ticker)
         if hourly_rate is None:
@@ -9144,6 +9257,10 @@ class BotEngine:
             return
         if not self._gate_active_or_auto_activate(ticker, 100, "spot_accumulation"):
             snap["blocker"] = "actif non selectionne pour ce mode"
+            return
+        _gate_v4276 = self._regime_blocks("spot_accumulation") or self._hours_block("spot_accumulation")  # v4.276
+        if _gate_v4276:
+            snap["blocker"] = _gate_v4276
             return
 
         snap["trend_up"] = trend_up
