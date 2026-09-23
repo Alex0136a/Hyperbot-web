@@ -62,6 +62,11 @@ const ALL_COINS = ["BTC","ETH","SOL","ARB","AVAX","LINK","OP","INJ","TIA","BNB",
 // = "herite du mode normal" (pas de changement de comportement tant que
 // rien n est explicitement defini) — voir le rendu special dans l onglet Paramètres.
 const ACCUM_OVERRIDE_KEYS = new Set([
+  // v4.269 — reglages par mode (vide = herite du reglage general)
+  "SPOT_ACCUM_SL_CAP_PCT",
+  "ACCUMULATION_SL_CAP_PCT",
+  "SPOT_ACCUM_ENTRY_FLOW_CONFIRM_MIN",
+  "ACCUMULATION_ENTRY_FLOW_CONFIRM_MIN",
   "ACCUMULATION_SL_PCT_OF_E",
   "ACCUMULATION_TTP_ARM1_PRICE_PCT",
   "ACCUMULATION_TTP_LOCK1_PRICE_PCT",
@@ -1182,12 +1187,13 @@ Confirmer ?`
           {/* v4.265 — export CSV du suivi Spot-Accum / Accumulation */}
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
             <div style={{fontSize:11,color:"#94a3b8",maxWidth:560}}>
-              <b style={{color:"#e2e8f0"}}>📥 Suivi Spot-Accum / Accumulation</b><br/>
-              Tous les trades de ces deux modes : durée, prix réels, frais, PnL net, et évolution du prix 30/60 min après chaque sortie (rempli automatiquement ~1 h après la fermeture). Format Excel (séparateur ;).
+              <b style={{color:"#e2e8f0"}}>📥 Suivi Spot-Accum / Accumulation / Funding</b><br/>
+              Tous les trades de ces trois modes : durée, prix réels, frais, PnL net, évolution du prix 30/60 min après chaque sortie et simulation d'un SL plus large (remplis automatiquement ~1 h après la fermeture). Heures dans votre fuseau. Format Excel (séparateur ;).
             </div>
             <button onClick={async()=>{
               try{
-                const r = await fetch(`${API}/api/export/accumulation-trades.csv`,{headers:{Authorization:`Bearer ${token}`}});
+                let tzName=""; try{ tzName=Intl.DateTimeFormat().resolvedOptions().timeZone||""; }catch(_){}
+                const r = await fetch(`${API}/api/export/accumulation-trades.csv?tz=${encodeURIComponent(tzName)}`,{headers:{Authorization:`Bearer ${token}`}});
                 if(!r.ok){ let d={}; try{d=await r.json();}catch(_){} throw new Error(d.detail||`Erreur ${r.status}`); }
                 const blob = await r.blob();
                 const cd = r.headers.get("Content-Disposition")||"";
