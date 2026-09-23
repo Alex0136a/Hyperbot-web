@@ -33,10 +33,13 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.279"
-BOT_BUILD   = "2026-09-24-h"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.280"
+BOT_BUILD   = "2026-09-24-i"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.280 — Regime de marche : largeur calculee sur l EMA200 1h de chaque actif
+#        (meme unite de temps que BTC) ; plus de regime "confirme" sur BTC
+#        seul quand la largeur n est pas mesurable.
 # 4.279 — Cassure fraiche : peut de nouveau capter un retournement contre
 #        l EMA200 (flux franc + regime non oppose) ; FIX contradictions :
 #        l anti-range annulait les voies "cassure fraiche" et "volume en
@@ -1225,6 +1228,7 @@ PROFILE_SWING = {
     "MARKET_REGIME_BREADTH_PCT": 60,
     "MARKET_REGIME_REFRESH_SEC": 300,
     "MARKET_REGIME_MIN_DIST_PCT": 0.2,
+    "MARKET_REGIME_MIN_ASSETS": 8,           # v4.280 — nombre minimal d actifs mesures pour la largeur de marche
     # v4.276 — PLAGE HORAIRE d entree PAR MODE (heures UTC, debut inclus,
     # fin exclue, passage de minuit gere ; 0-24 = toujours).
     "SPOT_ACCUM_TRADE_HOUR_START_UTC": 0,
@@ -4422,14 +4426,20 @@ class BotEngine:
         closes = [float(c["c"]) for c in sorted(candles or [], key=lambda c: int(c["t"]))]
         # Largeur de marche : part des actifs crypto suivis au-dessus de leur EMA200
         forex = set(cfg.get("FOREX_MODE_SYMBOLS", []))
+        # v4.280 — FIX INCOHERENCE : la largeur de marche utilisait l EMA200
+        # COURT TERME de chaque actif (200 points de 2 min ~ 6 h 40), alors
+        # que BTC est juge sur l EMA200 1h (~8 jours) ; et elle n etait pas
+        # disponible pendant ~1 h 40 apres un redemarrage — le regime etait
+        # alors "confirme" sur BTC seul. Elle utilise desormais l EMA200 1h de
+        # chaque actif (meme unite de temps que BTC).
         up = down = total = 0
         for slot, st in self.states.items():
             t = ticker_from_slot_key(slot)
-            if t in forex or ":" in t or len(st.mtf_prices) < 50:
+            if t in forex or ":" in t:
                 continue
-            ema = calc_ema(list(st.mtf_prices), 200)
-            px = st.current_price or st.mtf_prices[-1]
-            if ema:
+            ema = getattr(st, "ema200_1h", None)
+            px = st.current_price or getattr(st, "last_close_1h", None)
+            if ema and px:
                 total += 1
                 up += px > ema * 1.001     # marge de 0,1 % : un actif colle a son EMA ne compte ni pour l un ni pour l autre
                 down += px < ema * 0.999
@@ -4444,10 +4454,15 @@ class BotEngine:
             ref_bear = last < ema_slow * (1 - margin) and ema_fast < ema_slow
             min_b = cfg.get("MARKET_REGIME_BREADTH_PCT", 60)
             result.update({"ref_price": last, "ref_ema50": ema_fast, "ref_ema200": ema_slow})
-            breadth_txt = f", actifs : {breadth_up:.0f} % au-dessus / {breadth_down:.0f} % sous leur EMA200" if breadth_up is not None else ""
-            if ref_bull and (breadth_up is None or breadth_up >= min_b):
+            breadth_txt = (f", actifs ({total}) : {breadth_up:.0f} % au-dessus / {breadth_down:.0f} % sous leur EMA200 1h"
+                           if breadth_up is not None else ", largeur de marche pas encore mesurable")
+            min_count = cfg.get("MARKET_REGIME_MIN_ASSETS", 8)
+            breadth_ok = breadth_up is not None and total >= min_count
+            # v4.280 — "confirme" exige VRAIMENT les deux conditions : sans
+            # largeur de marche mesurable, le regime reste neutre.
+            if ref_bull and breadth_ok and breadth_up >= min_b:
                 result["regime"] = "haussier"
-            elif ref_bear and (breadth_down is None or breadth_down >= min_b):
+            elif ref_bear and breadth_ok and breadth_down >= min_b:
                 result["regime"] = "baissier"
             else:
                 result["regime"] = "neutre"
@@ -4975,9 +4990,16 @@ class BotEngine:
         last_refresh = getattr(state, "dynamic_trend_last_refresh", 0)
         if now - last_refresh < 3600 and state.candle_history_1h:
             return
-        candles = self._fetch_1h_candles(ticker, count=60)
+        # v4.280 — 210 bougies 1h recuperees (au lieu de 60) pour calculer
+        # l EMA200 1h de CHAQUE actif (largeur du regime de marche, meme
+        # unite de temps que BTC). La tendance dynamique continue de n utiliser
+        # que les 60 dernieres (comportement inchange).
+        candles = self._fetch_1h_candles(ticker, count=210)
         if candles:
-            state.candle_history_1h = deque(candles, maxlen=200)
+            closes_1h = [c[2] for c in candles]
+            state.ema200_1h = calc_ema(closes_1h, 200) if len(closes_1h) >= 200 else None
+            state.last_close_1h = closes_1h[-1]
+            state.candle_history_1h = deque(candles[-60:], maxlen=200)
             self._update_dynamic_trend(state)
             state.dynamic_trend_last_refresh = now
 
