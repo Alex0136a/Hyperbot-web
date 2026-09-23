@@ -88,9 +88,16 @@ _env_active_coins = os.environ.get("HYPERBOT_ACTIVE_COINS", "").strip()
 if _env_active_coins:
     cfg["ACTIVE_COINS"] = [_norm_ticker(c) for c in _env_active_coins.split(",") if c.strip()]
 
-for k, v in db.get_all_config_overrides().items():
+# v4.269 — FIX BUG CRITIQUE : le profil (SWING/SCALP) etait applique APRES
+# les reglages enregistres par l utilisateur, et ecrasait donc a CHAQUE
+# redemarrage tous les reglages avances qu il contient (RSI, TTP, flux, SL…) :
+# un reglage modifie dans l interface revenait silencieusement a sa valeur
+# par defaut au deploiement suivant. Ordre corrige : profil d abord, puis les
+# reglages de l utilisateur par-dessus.
+_saved_overrides = db.get_all_config_overrides()
+be.apply_profile(cfg, _saved_overrides.get("PROFILE", cfg.get("PROFILE", "swing")))
+for k, v in _saved_overrides.items():
     cfg[k] = v
-be.apply_profile(cfg, cfg.get("PROFILE", "swing"))
 
 if db.get_meta("initial_balance") is None:
     db.set_meta("initial_balance", str(cfg["CAPITAL_USD"]))
@@ -905,6 +912,17 @@ ADVANCED_SETTINGS = {
     "TRADE_FLOW_WINDOW_SEC":   {"label": "Flux - fenetre d analyse (secondes)", "default": 180},
     # v4.268 — TTP Funding
     "FUNDING_TTP_ARM_PCT":       {"label": "Funding - TTP armement (% de prix)", "default": 1.0},
+    # v4.269 — reglages par mode (vide = herite du reglage general)
+    "SPOT_ACCUM_SL_CAP_PCT":     {"label": "Spot-Accum - SL plafond (% de prix, vide = 0,5)", "default": None},
+    "ACCUMULATION_SL_CAP_PCT":   {"label": "Accumulation - SL plafond (% de prix, vide = 0,5)", "default": None},
+    "SPOT_ACCUM_ENTRY_FLOW_CONFIRM_MIN": {"label": "Spot-Accum - confirmation flux a l entree (vide = reglage general)", "default": None},
+    "ACCUMULATION_ENTRY_FLOW_CONFIRM_MIN": {"label": "Accumulation - confirmation flux a l entree (vide = reglage general)", "default": None},
+    "ACCUMULATION_LOSS_COOLDOWN_SEC": {"label": "Accumulation - delai apres perte sur un actif (s, 0 = aucun)", "default": 3600},
+    "SPOT_ACCUM_LOSS_COOLDOWN_SEC":   {"label": "Spot-Accum - delai apres perte sur un actif (s, 0 = aucun)", "default": 0},
+    "FUNDING_LOSS_COOLDOWN_SEC":      {"label": "Funding - delai apres perte sur un actif (s, 0 = aucun)", "default": 0},
+    "ACCUMULATION_MAX_ENTRIES_PER_WINDOW": {"label": "Accumulation - entrees max par fenetre (0 = illimite)", "default": 3},
+    "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW":   {"label": "Spot-Accum - entrees max par fenetre (0 = illimite)", "default": 0},
+    "ENTRY_BURST_WINDOW_SEC":    {"label": "Fenetre de comptage des entrees (s)", "default": 600},
     "FUNDING_TTP_TOLERANCE_PCT": {"label": "Funding - TTP repli normal (%)", "default": 0.5},
     "FUNDING_TTP_FLOW_MAX_TOLERANCE_PCT": {"label": "Funding - TTP repli si flux favorable (patience, %)", "default": 0.9},
     "FUNDING_TTP_FLOW_FAST_TOLERANCE_PCT": {"label": "Funding - TTP repli si flux contraire (%)", "default": 0.25},
@@ -1032,7 +1050,9 @@ def get_advanced_config(email: str = Depends(require_user)):
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
 _ZERO_ALLOWED_INT_KEYS = {"CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
-                          "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN"}
+                          "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
+                          "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
+                          "ACCUMULATION_MAX_ENTRIES_PER_WINDOW", "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW"}
 
 
 def _is_int_setting(key: str) -> bool:
@@ -1047,8 +1067,10 @@ def _coerce_advanced_value(key: str, value):
         return (True, None) if default is None else (False, "valeur vide refusee pour ce reglage")
     if value != value or value in (float("inf"), float("-inf")):
         return False, "valeur invalide"
-    if (key.startswith("ENTRY_FLOW_") or key.endswith("_FLOW_THRESHOLD")) and not 0 <= value <= 1:
+    if (key.startswith("ENTRY_FLOW_") or key.endswith("_FLOW_THRESHOLD") or key.endswith("_ENTRY_FLOW_CONFIRM_MIN")) and not 0 <= value <= 1:
         return False, "doit etre entre 0 et 1 (pression de -1 a +1)"
+    if key.endswith("_SL_CAP_PCT") and not 0.2 <= value <= 5:
+        return False, "doit etre entre 0,2 et 5 %"
     if _is_int_setting(key):
         value = int(round(value))
         if key.endswith("_UTC") and not 0 <= value <= 23:
@@ -2058,23 +2080,32 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
 # ─────────────────────────────────────────────────────────────────────────
 #  v4.265 — EXPORT CSV DU SUIVI DES TRADES SPOT-ACCUM / ACCUMULATION
 # ─────────────────────────────────────────────────────────────────────────
-_EXPORT_STRATEGY_LABEL = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation"}
+_EXPORT_STRATEGY_LABEL = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation", "funding_contrarian": "Funding"}
 _ROUND_TRIP_FEE_RATE = 0.0009  # 2 x 0,045 % (taker) — estimation quand les frais reels manquent
 
 
-def _paris_time(iso_str):
+def _resolve_tz(tz_name):
+    """v4.269 — fuseau horaire de l utilisateur (transmis par le navigateur),
+    UTC si inconnu ou invalide."""
+    if tz_name:
+        try:
+            from zoneinfo import ZoneInfo
+            return ZoneInfo(tz_name), tz_name
+        except Exception:
+            pass
+    return timezone.utc, "UTC"
+
+
+def _local_time(iso_str, tz):
     if not iso_str:
         return ""
     try:
-        dt = datetime.fromisoformat(iso_str)
-        try:
-            from zoneinfo import ZoneInfo
-            dt = dt.astimezone(ZoneInfo("Europe/Paris"))
-        except Exception:
-            dt = dt.astimezone(timezone.utc)
-        return dt.strftime("%d/%m/%Y %H:%M:%S")
+        return datetime.fromisoformat(iso_str).astimezone(tz).strftime("%d/%m/%Y %H:%M:%S")
     except (TypeError, ValueError):
         return ""
+
+
+_SIM_LABEL = {"entree": "revenu a l entree", "sl": "SL touche", "aucun": "ni l un ni l autre (1 h)"}
 
 
 def _fr(v, nd=4):
@@ -2087,7 +2118,7 @@ def _fr(v, nd=4):
         return ""
 
 
-def _export_row(t):
+def _export_row(t, tz=timezone.utc):
     sign = 1 if t.get("action") == "LONG" else -1
     entry, exit_p = t.get("entry_price"), t.get("exit_price")
     lev = t.get("leverage") or 1
@@ -2121,7 +2152,7 @@ def _export_row(t):
     return [
         t.get("id"), _EXPORT_STRATEGY_LABEL.get(t.get("strategy"), t.get("strategy") or ""),
         t.get("coin", ""), t.get("action", ""), t.get("trade_mode") or "",
-        _paris_time(t.get("created_at")), _paris_time(t.get("closed_at")), _fr(duration, 1),
+        _local_time(t.get("created_at"), tz), _local_time(t.get("closed_at"), tz), _fr(duration, 1),
         t.get("reason") or ("ouvert" if not t.get("closed_at") else ""),
         _fr(t.get("confidence"), 1), _fr(lev, 0), _fr(E, 2), _fr(notional, 2),
         _fr(entry, 6), _fr(exit_p, 6), t.get("exit_price_source") or "",
@@ -2130,7 +2161,10 @@ def _export_row(t):
         _fr(t.get("pnl_real_hl"), 4), _fr(pnl_net, 4), net_src,
         _fr(t.get("price_after_30m"), 6), _fr(after(t.get("price_after_30m")), 3),
         _fr(t.get("price_after_60m"), 6), _fr(after(t.get("price_after_60m")), 3),
-        _fr(best_60, 3), back_to_entry, t.get("followup_status") or ("en attente" if t.get("closed_at") else ""),
+        _fr(best_60, 3), back_to_entry,
+        _SIM_LABEL.get(t.get("sim_sl_075"), ""), _SIM_LABEL.get(t.get("sim_sl_100"), ""), _SIM_LABEL.get(t.get("sim_sl_150"), ""),
+        t.get("followup_status") or ("en attente" if t.get("closed_at") else ""),
+        (t.get("entry_reasons") or "").replace(";", ","),
         t.get("trade_uid") or "",
     ]
 
@@ -2143,12 +2177,14 @@ _EXPORT_HEADER = [
     "prix +30 min", "evolution +30 min % (dans le sens du trade)",
     "prix +60 min", "evolution +60 min % (dans le sens du trade)",
     "meilleur mouvement dans l heure suivant la sortie %", "trade perdant : prix revenu a l entree dans l heure",
-    "statut du suivi", "identifiant trade",
+    "si SL a 0,75 % : issue", "si SL a 1 % : issue", "si SL a 1,5 % : issue",
+    "statut du suivi", "raisons d entree", "identifiant trade",
 ]
 
 
 @app.get("/api/export/accumulation-trades.csv")
 def export_accumulation_trades(days: Optional[int] = Query(None, ge=1, le=3650),
+                               tz: Optional[str] = Query(None, max_length=64),
                                email: str = Depends(require_user)):
     """v4.265 — Suivi complet des trades Spot-Accum et Accumulation, au format
     CSV lisible directement par Excel (separateur ;, virgule decimale).
@@ -2159,12 +2195,14 @@ def export_accumulation_trades(days: Optional[int] = Query(None, ge=1, le=3650),
     import io
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
-    w.writerow(_EXPORT_HEADER)
+    tzinfo, tz_label = _resolve_tz(tz)
+    header = [h.replace("(Paris)", f"({tz_label})") for h in _EXPORT_HEADER]
+    w.writerow(header)
     for t in db.get_trades_for_export(days=days):
-        w.writerow(_export_row(t))
-    stamp = datetime.now().strftime("%Y-%m-%d_%Hh%M")
+        w.writerow(_export_row(t, tzinfo))
+    stamp = datetime.now(tzinfo).strftime("%Y-%m-%d_%Hh%M")
     return Response(content="\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
-                    headers={"Content-Disposition": f'attachment; filename="suivi_spot-accum_accumulation_{stamp}.csv"'})
+                    headers={"Content-Disposition": f'attachment; filename="suivi_trades_{stamp}.csv"'})
 
 
 @app.get("/api/entry-diagnostics/{ticker}")
