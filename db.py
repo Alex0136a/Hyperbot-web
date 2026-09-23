@@ -1,4 +1,3 @@
-
 """
 db.py — Persistance SQLite pour HyperBot Web.
 
@@ -178,7 +177,10 @@ def init_db():
         for col, typ in (("exit_price_source", "TEXT"), ("fees_real", "REAL"), ("pnl_real_hl", "REAL"),
                          ("price_after_30m", "REAL"), ("price_after_60m", "REAL"),
                          ("high_60m", "REAL"), ("low_60m", "REAL"),
-                         ("followup_status", "TEXT"), ("followup_at", "TEXT")):
+                         ("followup_status", "TEXT"), ("followup_at", "TEXT"),
+                         # v4.269 — simulation minute par minute d un SL plus large
+                         ("sim_sl_075", "TEXT"), ("sim_sl_100", "TEXT"), ("sim_sl_150", "TEXT"),
+                         ("sim_status", "TEXT")):
             if col not in existing_cols:
                 conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
         if "fees_paid" not in existing_cols:
@@ -516,7 +518,7 @@ def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=N
 
 
 # ── v4.265 — Suivi apres sortie + export ─────────────────────────────────
-FOLLOWUP_STRATEGIES = ("spot_accumulation", "accumulation")
+FOLLOWUP_STRATEGIES = ("spot_accumulation", "accumulation", "funding_contrarian")  # v4.269 : + Funding
 
 
 def list_trades_needing_followup(min_age_minutes=62, max_age_days=16, limit=5):
@@ -536,8 +538,27 @@ def list_trades_needing_followup(min_age_minutes=62, max_age_days=16, limit=5):
         return [dict(r) for r in rows]
 
 
+def list_trades_needing_sim(min_age_minutes=62, max_age_days=16, limit=5):
+    """v4.269 — trades sortis par STOP LOSS dont la simulation "SL plus
+    large" n a pas encore ete faite (y compris les trades deja suivis)."""
+    now = datetime.now(timezone.utc)
+    newest = (now - timedelta(minutes=min_age_minutes)).isoformat()
+    oldest = (now - timedelta(days=max_age_days)).isoformat()
+    with _lock, _connect() as conn:
+        rows = conn.execute(f"""
+            SELECT * FROM trades
+            WHERE closed_at IS NOT NULL AND sim_status IS NULL
+              AND (reason LIKE 'STOP LOSS%' OR reason LIKE 'SL %')
+              AND strategy IN ({",".join("?" * len(FOLLOWUP_STRATEGIES))})
+              AND closed_at <= ? AND closed_at >= ?
+            ORDER BY closed_at DESC LIMIT ?
+        """, (*FOLLOWUP_STRATEGIES, newest, oldest, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
 def save_trade_followup(trade_id, fields):
-    allowed = ("price_after_30m", "price_after_60m", "high_60m", "low_60m", "fees_real", "pnl_real_hl", "followup_status")
+    allowed = ("price_after_30m", "price_after_60m", "high_60m", "low_60m", "fees_real", "pnl_real_hl", "followup_status",
+               "sim_sl_075", "sim_sl_100", "sim_sl_150", "sim_status")
     data = {k: v for k, v in fields.items() if k in allowed}
     data["followup_at"] = now_iso()
     with _lock, _connect() as conn:
