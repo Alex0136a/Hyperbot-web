@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32542984/README.md)
+[README.md](https://github.com/user-attachments/files/32565583/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.268** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.269** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -179,7 +179,7 @@ condition ; sinon la position reste suivie et la fermeture est retentée au
 cycle suivant. Le mode paper/live est celui **de l'ouverture** de la position,
 même si la stratégie a été rebasculée depuis.
 
-## 4nonies. Suivi et export des trades Spot-Accum / Accumulation
+## 4nonies. Suivi et export des trades Spot-Accum / Accumulation / Funding
 
 Onglet **Historique** → bouton **📥 Télécharger le suivi (CSV)** (fichier
 lisible directement par Excel : séparateur `;`, virgule décimale).
@@ -234,6 +234,30 @@ transactions** décide de la patience :
 Quelle que soit la décision, un trade armé ne redescend jamais sous **+0,3 %**
 de gain (`FUNDING_TTP_MIN_LOCK_PCT`, motif `(Funding, plancher)`). Tous ces
 seuils sont modifiables dans les réglages avancés.
+
+## 4duodecies. Réglages par mode et simulation du SL (v4.269)
+
+**Simulation « SL plus large ».** Pour chaque trade sorti par stop loss, le
+suivi rejoue la minute par minute l'heure qui suit la sortie et indique, pour
+un SL hypothétique à 0,75 %, 1 % et 1,5 %, si le prix serait d'abord **revenu
+au niveau d'entrée** ou aurait **touché ce SL** (bougie ambiguë = SL touché,
+par prudence). Colonnes « si SL à … : issue » de l'export CSV. L'export
+indique aussi les **raisons d'entrée** de chaque trade, et les heures sont
+dans le fuseau de votre navigateur.
+
+**Réglages par mode** (onglet Réglages avancés, vide = réglage général) :
+
+| Réglage | Défaut |
+|---|---|
+| Spot-Accum / Accumulation — SL plafond (% de prix) | 0,5 (hérité) |
+| Spot-Accum / Accumulation — confirmation flux à l'entrée | réglage général (0) |
+| Accumulation — délai après perte sur un actif | **3600 s** |
+| Accumulation — entrées max par fenêtre de 10 min | **3** |
+| Spot-Accum / Funding — délai après perte, Spot-Accum — entrées max | 0 (désactivé) |
+
+**Correctif important :** jusqu'à la 4.268, le profil (SWING/SCALP) était
+appliqué **après** les réglages enregistrés, et écrasait à chaque redémarrage
+37 réglages avancés. Depuis la 4.269, vos réglages sont conservés.
 
 ## 5. Premier lancement
 
