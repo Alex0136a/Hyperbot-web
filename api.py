@@ -129,6 +129,10 @@ if BOOT_COUNT == 1:
 
 event_queue = queue.Queue()
 bot = be.BotEngine(cfg, event_queue)
+# v4.273 — trading manuel (doit exister AVANT le demarrage du moteur : la
+# reprise des positions tient compte des positions manuelles)
+import manual_trading
+bot.manual = manual_trading.ManualTrading(bot)
 
 log_buffer = deque(maxlen=3000)
 _state_lock = threading.Lock()
@@ -183,6 +187,12 @@ def _compute_protected_trade_ids():
                 ticker = be.ticker_from_slot_key(slot_key)
                 action = "LONG" if s.position["type"] == "long" else "SHORT"
                 tid = db.get_open_trade_id_by_coin_action(ticker, action, s.position.get("strategy"))
+            if tid:
+                protected_ids.append(tid)
+    # v4.273 — positions manuelles ouvertes
+    for item in list(bot.manual.items.values()):
+        if item.get("status") in ("open", "opening", "closing"):
+            tid = db.get_open_trade_id_by_uid(item.get("trade_uid"))
             if tid:
                 protected_ids.append(tid)
     return protected_ids
@@ -2097,9 +2107,98 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
 
 
 # ─────────────────────────────────────────────────────────────────────────
+#  v4.273 — TRADING MANUEL
+# ─────────────────────────────────────────────────────────────────────────
+class ManualOrderBody(BaseModel):
+    strategy: str
+    ticker: str
+    direction: str
+    market: str = "perp"
+    mode: str = "paper"
+    execution: str = "now"
+    notional_usd: float
+    leverage: int = 1
+    sl_pct: float
+    tp_pct: Optional[float] = None
+    ttp_arm_pct: Optional[float] = None
+    ttp_trail_pct: Optional[float] = None
+    trigger_price: Optional[float] = None
+    trigger_time: Optional[float] = None
+    expiry_hours: Optional[float] = None
+    require_valid: bool = True
+    confirm_live: bool = False
+
+
+class ManualModifyBody(BaseModel):
+    sl_price: Optional[float] = None
+    tp_price: Optional[float] = None
+    clear_tp: bool = False
+    ttp_arm_pct: Optional[float] = None
+    ttp_trail_pct: Optional[float] = None
+    clear_ttp: bool = False
+
+
+def _manual_call(fn, *args):
+    try:
+        return fn(*args)
+    except manual_trading.ManualError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/manual/state")
+def manual_state(email: str = Depends(require_user)):
+    return bot.manual.snapshot()
+
+
+@app.get("/api/manual/proposal")
+def manual_proposal(strategy: str, ticker: str, direction: str, market: str = "perp",
+                    email: str = Depends(require_user)):
+    return _manual_call(bot.manual.propose, strategy, _norm_ticker(ticker), direction, market)
+
+
+@app.post("/api/manual/orders")
+def manual_submit(body: ManualOrderBody, email: str = Depends(require_user)):
+    params = body.model_dump()
+    params["ticker"] = _norm_ticker(params["ticker"])
+    item = _manual_call(bot.manual.submit, params)
+    if item.get("status") == "failed":
+        raise HTTPException(400, f"Ouverture impossible : {item.get('error')}")
+    return item
+
+
+@app.delete("/api/manual/orders/{item_id}")
+def manual_cancel(item_id: int, email: str = Depends(require_user)):
+    return _manual_call(bot.manual.cancel, item_id)
+
+
+@app.put("/api/manual/positions/{item_id}")
+def manual_modify(item_id: int, body: ManualModifyBody, email: str = Depends(require_user)):
+    changes = {}
+    if body.sl_price:
+        changes["sl_price"] = body.sl_price
+    if body.clear_tp:
+        changes["tp_price"] = None
+    elif body.tp_price:
+        changes["tp_price"] = body.tp_price
+    if body.clear_ttp:
+        changes["ttp_arm_pct"] = changes["ttp_trail_pct"] = None
+    else:
+        if body.ttp_arm_pct:
+            changes["ttp_arm_pct"] = body.ttp_arm_pct
+        if body.ttp_trail_pct:
+            changes["ttp_trail_pct"] = body.ttp_trail_pct
+    return _manual_call(bot.manual.modify, item_id, changes)
+
+
+@app.post("/api/manual/positions/{item_id}/close")
+def manual_close(item_id: int, email: str = Depends(require_user)):
+    return _manual_call(bot.manual.close, item_id)
+
+
+# ─────────────────────────────────────────────────────────────────────────
 #  v4.265 — EXPORT CSV DU SUIVI DES TRADES SPOT-ACCUM / ACCUMULATION
 # ─────────────────────────────────────────────────────────────────────────
-_EXPORT_STRATEGY_LABEL = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation", "funding_contrarian": "Funding"}
+_EXPORT_STRATEGY_LABEL = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation", "funding_contrarian": "Funding", "manual": "Manuel"}
 _ROUND_TRIP_FEE_RATE = 0.0009  # 2 x 0,045 % (taker) — estimation quand les frais reels manquent
 
 
