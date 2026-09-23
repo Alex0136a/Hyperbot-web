@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32565583/README.md)
+[README.md](https://github.com/user-attachments/files/32565691/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.269** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.271** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -258,6 +258,24 @@ dans le fuseau de votre navigateur.
 **Correctif important :** jusqu'à la 4.268, le profil (SWING/SCALP) était
 appliqué **après** les réglages enregistrés, et écrasait à chaque redémarrage
 37 réglages avancés. Depuis la 4.269, vos réglages sont conservés.
+
+## 4terdecies. Patience du SL Spot-Accum pilotée par le flux (v4.270)
+
+Quand un trade Spot-Accum atteint son SL plafond (0,5 % par défaut), le bot
+lit le flux de transactions :
+
+- **acheteurs dominants** (pression ≥ +0,2) **et tendance de fond intacte**
+  (prix au-dessus de l'EMA200, v4.271) → il **attend** au lieu de couper,
+  dans la limite d'une perte de **1 %** et de **15 minutes** ;
+- flux neutre ou vendeur → sortie immédiate, comme avant.
+
+Pendant l'attente, la sortie se fait dès que le flux devient défavorable, que
+la perte atteint 1 % ou que les 15 minutes sont écoulées. Motifs distincts :
+`STOP LOSS (flux defavorable)`, `(tendance cassee)`, `(plafond patience)`,
+`(patience expiree)` ;
+un trade sauvé qui finit autrement porte la mention `· apres patience SL`.
+Réglages avancés : seuil de pression, perte maximale, durée maximale
+(0 = patience désactivée).
 
 ## 5. Premier lancement
 
