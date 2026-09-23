@@ -25,7 +25,7 @@ from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Header, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
 
 # v3.2 — FIX CRITIQUE : les imports locaux (db, auth, bot_engine) DOIVENT se
@@ -209,7 +209,7 @@ def _consume_events():
                 if not trade_id:
                     trade_id = db.get_open_trade_id_by_coin_action(ticker, action, data.get("strategy"))
                 if trade_id:
-                    db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"), peak_pnl=data.get("peak_pnl_usd"), peak_pnl_pct=data.get("peak_pnl_pct"), fees_paid=data.get("fees_paid"))
+                    db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"), peak_pnl=data.get("peak_pnl_usd"), peak_pnl_pct=data.get("peak_pnl_pct"), fees_paid=data.get("fees_paid"), exit_price_source=data.get("exit_price_source"))
                 else:
                     # v3.2 — diagnostic : auparavant, si aucune ligne ouverte
                     # ne correspondait (coin/action), la fermeture etait
@@ -2037,6 +2037,118 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
     return {"results": results}
 
 
+# ─────────────────────────────────────────────────────────────────────────
+#  v4.265 — EXPORT CSV DU SUIVI DES TRADES SPOT-ACCUM / ACCUMULATION
+# ─────────────────────────────────────────────────────────────────────────
+_EXPORT_STRATEGY_LABEL = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation"}
+_ROUND_TRIP_FEE_RATE = 0.0009  # 2 x 0,045 % (taker) — estimation quand les frais reels manquent
+
+
+def _paris_time(iso_str):
+    if not iso_str:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        try:
+            from zoneinfo import ZoneInfo
+            dt = dt.astimezone(ZoneInfo("Europe/Paris"))
+        except Exception:
+            dt = dt.astimezone(timezone.utc)
+        return dt.strftime("%d/%m/%Y %H:%M:%S")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _fr(v, nd=4):
+    """Nombre au format Excel francais (virgule decimale), vide si inconnu."""
+    if v is None:
+        return ""
+    try:
+        return f"{float(v):.{nd}f}".replace(".", ",")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _export_row(t):
+    sign = 1 if t.get("action") == "LONG" else -1
+    entry, exit_p = t.get("entry_price"), t.get("exit_price")
+    lev = t.get("leverage") or 1
+    E = t.get("size_usd")
+    notional = E * lev if E else None
+    try:
+        opened = datetime.fromisoformat(t["created_at"])
+        closed = datetime.fromisoformat(t["closed_at"]) if t.get("closed_at") else None
+        duration = round((closed - opened).total_seconds() / 60, 1) if closed else None
+    except (TypeError, ValueError, KeyError):
+        duration = None
+    move_pct = sign * (exit_p - entry) / entry * 100 if entry and exit_p else None
+    fees_est = notional * _ROUND_TRIP_FEE_RATE if notional else None
+    is_live = t.get("trade_mode") == "live"
+    fees_used = t.get("fees_real") if t.get("fees_real") is not None else fees_est
+    if is_live and t.get("pnl_real_hl") is not None and t.get("fees_real") is not None:
+        pnl_net, net_src = t["pnl_real_hl"] - t["fees_real"], "reel Hyperliquid"
+    elif t.get("pnl") is not None and fees_est is not None:
+        pnl_net, net_src = t["pnl"] - fees_est, ("estime" if is_live else "estime (si live)")
+    else:
+        pnl_net, net_src = None, ""
+
+    def after(p):
+        return sign * (p - exit_p) / exit_p * 100 if p and exit_p else None
+    best_60 = None
+    back_to_entry = ""
+    if exit_p and t.get("high_60m") is not None and t.get("low_60m") is not None:
+        best_60 = (t["high_60m"] - exit_p) / exit_p * 100 if sign > 0 else (exit_p - t["low_60m"]) / exit_p * 100
+        if entry and move_pct is not None and move_pct < 0:  # utile pour les pertes (SL trop serre ?)
+            back_to_entry = "oui" if (t["high_60m"] >= entry if sign > 0 else t["low_60m"] <= entry) else "non"
+    return [
+        t.get("id"), _EXPORT_STRATEGY_LABEL.get(t.get("strategy"), t.get("strategy") or ""),
+        t.get("coin", ""), t.get("action", ""), t.get("trade_mode") or "",
+        _paris_time(t.get("created_at")), _paris_time(t.get("closed_at")), _fr(duration, 1),
+        t.get("reason") or ("ouvert" if not t.get("closed_at") else ""),
+        _fr(t.get("confidence"), 1), _fr(lev, 0), _fr(E, 2), _fr(notional, 2),
+        _fr(entry, 6), _fr(exit_p, 6), t.get("exit_price_source") or "",
+        _fr(move_pct, 3), _fr(t.get("peak_pnl_pct"), 3), _fr(t.get("pnl"), 4),
+        _fr(fees_used, 4), "reels" if t.get("fees_real") is not None else (("estimes" if is_live else "estimes (si live)") if fees_used is not None else ""),
+        _fr(t.get("pnl_real_hl"), 4), _fr(pnl_net, 4), net_src,
+        _fr(t.get("price_after_30m"), 6), _fr(after(t.get("price_after_30m")), 3),
+        _fr(t.get("price_after_60m"), 6), _fr(after(t.get("price_after_60m")), 3),
+        _fr(best_60, 3), back_to_entry, t.get("followup_status") or ("en attente" if t.get("closed_at") else ""),
+        t.get("trade_uid") or "",
+    ]
+
+
+_EXPORT_HEADER = [
+    "id", "mode", "actif", "sens", "paper/live", "ouverture (Paris)", "fermeture (Paris)", "duree (min)",
+    "motif de sortie", "confiance %", "levier", "marge E ($)", "notionnel ($)",
+    "prix entree", "prix sortie", "source prix sortie", "mouvement de prix %", "pic %", "PnL brut ($)",
+    "frais ($)", "type frais", "PnL Hyperliquid hors frais ($)", "PnL net ($)", "source PnL net",
+    "prix +30 min", "evolution +30 min % (dans le sens du trade)",
+    "prix +60 min", "evolution +60 min % (dans le sens du trade)",
+    "meilleur mouvement dans l heure suivant la sortie %", "trade perdant : prix revenu a l entree dans l heure",
+    "statut du suivi", "identifiant trade",
+]
+
+
+@app.get("/api/export/accumulation-trades.csv")
+def export_accumulation_trades(days: Optional[int] = Query(None, ge=1, le=3650),
+                               email: str = Depends(require_user)):
+    """v4.265 — Suivi complet des trades Spot-Accum et Accumulation, au format
+    CSV lisible directement par Excel (separateur ;, virgule decimale).
+    Les colonnes +30/+60 min se remplissent automatiquement environ une
+    heure apres chaque fermeture (bougies Hyperliquid) ; pour le live, frais
+    et PnL reels proviennent des remplissages Hyperliquid."""
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
+    w.writerow(_EXPORT_HEADER)
+    for t in db.get_trades_for_export(days=days):
+        w.writerow(_export_row(t))
+    stamp = datetime.now().strftime("%Y-%m-%d_%Hh%M")
+    return Response(content="\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="suivi_spot-accum_accumulation_{stamp}.csv"'})
+
+
 @app.get("/api/entry-diagnostics/{ticker}")
 def get_entry_diagnostics_one(ticker: str, email: str = Depends(require_user)):
     """v4.40 — Detail COMPLET de l instantane des portes d entree pour UN
@@ -2221,13 +2333,20 @@ def paper_close(body: PaperCloseBody, email: str = Depends(require_user)):
     with _state_lock:
         if not state.position:
             raise HTTPException(409, "La position vient d'etre fermee par le bot entre-temps")
+        exit_source = "simulation"
+        if close_order_ok:
+            real_exit = be.pop_last_close_fill(ticker)
+            exit_source = "bot"
+            if real_exit:
+                price, exit_source = real_exit, "hyperliquid"
         pnl, win, trade = state.close_position(price, body.reason)
         trade["symbol"] = body.trade_id
         action = "LONG" if trade["type"] == "long" else "SHORT"
         trade_id = db.get_open_trade_id_by_uid(pos_snapshot.get("trade_uid")) or \
             db.get_open_trade_id_by_coin_action(ticker, action, real_strategy)
         if trade_id:
-            db.close_trade(trade_id, trade["exit"], trade["pnl"], trade["reason"])
+            db.close_trade(trade_id, trade["exit"], trade["pnl"], trade["reason"],
+                           fees_paid=trade.get("fees_paid"), exit_price_source=exit_source)
         bot._save_open_positions()
     _push_log("warn", f"[{ticker}] Fermeture manuelle @ ${price:.2f} | PnL: {pnl:+.2f}$")
     return {"ok": True, "pnl": pnl, "real_close_confirmed": close_order_ok}
