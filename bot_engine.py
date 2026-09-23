@@ -33,10 +33,18 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.277"
-BOT_BUILD   = "2026-09-24-f"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.279"
+BOT_BUILD   = "2026-09-24-h"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.279 — Cassure fraiche : peut de nouveau capter un retournement contre
+#        l EMA200 (flux franc + regime non oppose) ; FIX contradictions :
+#        l anti-range annulait les voies "cassure fraiche" et "volume en
+#        consolidation" (Accumulation : voie volume totalement morte), double
+#        critere de proximite sur la voie volume.
+# 4.278 — Spot-Accum : achat sur repli (support ascendant = dernier creux plus
+#        haut en 1h) ; voie d entree indiquee dans les raisons (Spot-Accum et
+#        Accumulation) pour l analyse de l export CSV.
 # 4.277 — FIX : les voies d entree par contournement (cassure, volume, fausse
 #        cassure, tendance persistante, etoile filante) ne permettent plus
 #        d entrer CONTRE la tendance EMA200 et passent par le veto du flux
@@ -1200,6 +1208,15 @@ PROFILE_SWING = {
     # v4.277 — les entrees par cassure/rebond/tendance persistante doivent
     # respecter le SENS de la tendance (EMA200) et le veto du flux (1 = oui)
     "SPOT_ACCUM_BYPASS_REQUIRE_TREND": 1,
+    # v4.279 — la cassure fraiche peut entrer contre l EMA200 si le flux
+    # confirme franchement et que le regime n est pas oppose
+    "SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND": 1,
+    "ACCUMULATION_FRESH_BREAKOUT_COUNTER_TREND": 1,
+    "FRESH_BREAKOUT_COUNTER_TREND_MIN_FLOW": 0.2,
+    # v4.278 — achat sur repli : support ascendant (dernier creux plus haut, 1h)
+    "SPOT_ACCUM_RISING_SUPPORT_ENABLED": 1,
+    "SPOT_ACCUM_PIVOT_CANDLES": 2,              # bougies 1h de chaque cote pour valider un creux
+    "SPOT_ACCUM_PIVOT_LOOKBACK_CANDLES": 72,    # historique 1h examine (3 jours)
     "SPOT_ACCUM_BYPASS_FLOW_VETO": 1,
     "ACCUMULATION_BYPASS_REQUIRE_TREND": 1,
     "ACCUMULATION_BYPASS_FLOW_VETO": 1,
@@ -2891,6 +2908,7 @@ class SymbolState:
         # bougies 1h CONSECUTIVES en sens oppose (retournement confirme a 3).
         self.dynamic_trend_direction = None  # "up", "down", ou None (pas encore etabli)
         self.dynamic_trend_support = None    # plus bas atteint depuis le debut de la tendance en cours
+        self.rising_support = None           # v4.278 — dernier creux ascendant (achat sur repli)
         self.dynamic_trend_resistance = None  # plus haut atteint depuis le debut de la tendance en cours
         self.dynamic_trend_reversal_streak = 0  # bougies 1h consecutives en sens oppose
         # v4.39 — FIX BUG CRITIQUE : l echantillonnage MTF (bougies + EMA200)
@@ -4919,6 +4937,35 @@ class BotEngine:
         state.dynamic_trend_support = support
         state.dynamic_trend_resistance = resistance
         state.dynamic_trend_reversal_streak = reversal_streak
+        state.rising_support = self._compute_rising_support(candles_1h) if direction == "up" else None  # v4.278
+
+    def _compute_rising_support(self, candles_1h):
+        """v4.278 — SUPPORT ASCENDANT : dernier creux de repli ("plus bas
+        plus haut") d une tendance haussiere, sur les bougies 1h. Un creux
+        est une bougie dont le plus bas est inferieur a celui des K bougies
+        voisines de chaque cote (K = SPOT_ACCUM_PIVOT_CANDLES). Le support
+        n est retenu que si ce creux est PLUS HAUT que le precedent (structure
+        haussiere intacte) et n a pas ete casse depuis (cloture en dessous).
+        Contrairement au support dynamique (plus bas depuis le DEBUT de la
+        tendance, fige pendant toute une hausse reguliere), il remonte avec
+        la tendance : Spot-Accum peut ainsi acheter les REPLIS."""
+        k = int(self.cfg.get("SPOT_ACCUM_PIVOT_CANDLES", 2))
+        window = candles_1h[-int(self.cfg.get("SPOT_ACCUM_PIVOT_LOOKBACK_CANDLES", 72)):]
+        if len(window) < 2 * k + 3:
+            return None
+        pivots = []
+        for i in range(k, len(window) - k):
+            low_i = window[i][1]
+            if all(low_i < window[j][1] for j in range(i - k, i + k + 1) if j != i):
+                pivots.append((i, low_i))
+        if len(pivots) < 2:
+            return None
+        (_, low_prev), (i_last, low_last) = pivots[-2], pivots[-1]
+        if low_last <= low_prev:
+            return None  # plus de "plus bas plus haut" : structure haussiere rompue
+        if any(c[2] < low_last for c in window[i_last + 1:]):
+            return None  # creux casse depuis (cloture en dessous)
+        return low_last
 
     def _maybe_refresh_dynamic_trend(self, ticker, state):
         """v4.203 — SUR DEMANDE EXPLICITE : rafraichit les VRAIES bougies 1h
@@ -9013,7 +9060,25 @@ class BotEngine:
         # ne permettent plus de shorter CONTRE une tendance haussiere, et
         # passent elles aussi par le veto du flux.
         bypass_ac = fresh_breakout_ac or volume_breakout_ac or failed_breakout_ac or shooting_star_ac or trend_persistence_ac
-        if not trend_down and (cfg.get("ACCUMULATION_BYPASS_REQUIRE_TREND", 1) or not bypass_ac):
+        # v4.279 — meme exception que Spot-Accum pour la cassure fraiche
+        # (vers le bas) contre une EMA200 encore haussiere.
+        fresh_counter_ac = False
+        if (not trend_down and fresh_breakout_ac and cfg.get("ACCUMULATION_FRESH_BREAKOUT_COUNTER_TREND", 1)
+                and cfg.get("ACCUMULATION_BYPASS_REQUIRE_TREND", 1)):
+            regime_ac = self.market_regime().get("regime") if cfg.get("MARKET_REGIME_FILTER_ENABLED", 1) else "neutre"
+            fp_fresh_ac = self._compute_trade_flow_pressure(ticker, price_now=price)
+            min_fp = cfg.get("FRESH_BREAKOUT_COUNTER_TREND_MIN_FLOW", 0.2)
+            snap["entry_flow_pressure"] = fp_fresh_ac
+            if regime_ac in ("neutre", "baissier") and fp_fresh_ac is not None and fp_fresh_ac <= -min_fp:
+                fresh_counter_ac = True
+            else:
+                why = (f"regime {regime_ac}" if regime_ac not in ("neutre", "baissier")
+                       else f"flux vendeur insuffisant ({fp_fresh_ac:+.2f} > -{min_fp})" if fp_fresh_ac is not None
+                       else "flux indisponible")
+                snap["blocker"] = f"cassure fraiche contre la tendance EMA200 refusee ({why})"
+                return
+        snap["fresh_breakout_counter_trend"] = fresh_counter_ac
+        if not trend_down and not fresh_counter_ac and (cfg.get("ACCUMULATION_BYPASS_REQUIRE_TREND", 1) or not bypass_ac):
             snap["blocker"] = "pas de tendance baissiere (EMA200)" + (" — signal de cassure/rejet ignore contre la tendance" if bypass_ac else "")
             return
         if bypass_ac and cfg.get("ACCUMULATION_BYPASS_FLOW_VETO", 1) and cfg.get("ENTRY_FLOW_CONFIRM_ENABLED", True):
@@ -9044,7 +9109,11 @@ class BotEngine:
 
         is_ranging_ac = self._is_market_ranging(state, cfg.get("ACCUMULATION_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("ACCUMULATION_ANTI_RANGE_LOOKBACK", 30))
         snap["is_ranging"] = is_ranging_ac
-        if is_ranging_ac:
+        # v4.279 — FIX CONTRADICTION : la voie "volume en consolidation" EXIGE
+        # ce meme range (meme calcul, memes reglages) — elle ne pouvait donc
+        # JAMAIS aboutir. Idem pour la cassure fraiche, qui sort d une
+        # consolidation. Le filtre anti-range ne s applique plus a ces voies.
+        if is_ranging_ac and not fresh_breakout_ac and not volume_breakout_ac:
             snap["blocker"] = f"marche en range (mouvement < {cfg.get('ACCUMULATION_ANTI_RANGE_MIN_PCT', 2.0)}% sur {cfg.get('ACCUMULATION_ANTI_RANGE_LOOKBACK', 30)} echantillons)"
             return
 
@@ -9062,6 +9131,8 @@ class BotEngine:
             # encore etablie (historique 1h insuffisant).
             resistance_for_proximity = state.dynamic_trend_resistance if state.dynamic_trend_resistance is not None else resistance
             near_resistance = self._is_near_level_atr(state, price, resistance_for_proximity, cfg.get("ENTRY_ATR_PROXIMITY_MULTIPLIER", 1.0))
+            if volume_breakout_ac:
+                near_resistance = True  # v4.279 — deja verifie par la voie "volume" (pas de double critere contradictoire)
             snap["near_resistance"] = near_resistance
             if not near_resistance:
                 snap["blocker"] = f"pas assez proche de la resistance (${resistance:.4f})"
@@ -9153,9 +9224,21 @@ class BotEngine:
 
         snap["blocker"] = None
 
-        entry_reason_ac = "🎯 Accumulation (short, volume pendant consolidation)" if volume_breakout_ac else "🎯 Accumulation (short)"
+        if fresh_breakout_ac:
+            path_ac = "cassure fraiche" + (" (contre-tendance, flux vendeur)" if snap.get("fresh_breakout_counter_trend") else "")
+        elif failed_breakout_ac:
+            path_ac = "fausse cassure"
+        elif shooting_star_ac:
+            path_ac = "etoile filante"
+        elif trend_persistence_ac:
+            path_ac = "tendance persistante"
+        elif volume_breakout_ac:
+            path_ac = "volume en consolidation"
+        else:
+            path_ac = "proche de la resistance"
         reasons = [
-            f"{entry_reason_ac} : {dist_below_resistance_pct:.2f}% sous la resistance, tendance baissiere confirmee",
+            f"🎯 Accumulation (short) — voie : {path_ac}",
+            f"{dist_below_resistance_pct:.2f}% sous la resistance, tendance baissiere confirmee",
             f"RSI {rsi:.1f}" if rsi is not None else "RSI ?",
         ]
 
@@ -9327,7 +9410,28 @@ class BotEngine:
         # rates observes (SL en quelques minutes, pic quasi nul). Elles ne
         # dispensent plus que de la STABILITE et de l ADX, jamais du SENS.
         bypass_sa = fresh_breakout_sa or volume_breakout_sa or failed_breakout_sa or trend_persistence_sa
-        if not trend_up and (cfg.get("SPOT_ACCUM_BYPASS_REQUIRE_TREND", 1) or not bypass_sa):
+        # v4.279 — EXCEPTION CASSURE FRAICHE : sa raison d etre est de capter
+        # le DEBUT d un retournement, avant que l EMA200 (lente) ne suive. Elle
+        # peut donc entrer CONTRE l EMA200, mais a des conditions plus
+        # strictes que les autres voies : flux acheteur FRANC exige (et non
+        # simplement "pas contraire") et regime de marche neutre ou haussier.
+        fresh_counter_sa = False
+        if (not trend_up and fresh_breakout_sa and cfg.get("SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND", 1)
+                and cfg.get("SPOT_ACCUM_BYPASS_REQUIRE_TREND", 1)):  # a 0, l ancien comportement (sans condition) s applique deja
+            regime_sa = self.market_regime().get("regime") if cfg.get("MARKET_REGIME_FILTER_ENABLED", 1) else "neutre"
+            fp_fresh_sa = self._compute_trade_flow_pressure(ticker, price_now=price)
+            min_fp = cfg.get("FRESH_BREAKOUT_COUNTER_TREND_MIN_FLOW", 0.2)
+            snap["entry_flow_pressure"] = fp_fresh_sa
+            if regime_sa in ("neutre", "haussier") and fp_fresh_sa is not None and fp_fresh_sa >= min_fp:
+                fresh_counter_sa = True
+            else:
+                why = (f"regime {regime_sa}" if regime_sa not in ("neutre", "haussier")
+                       else f"flux acheteur insuffisant ({fp_fresh_sa:+.2f} < +{min_fp})" if fp_fresh_sa is not None
+                       else "flux indisponible")
+                snap["blocker"] = f"cassure fraiche contre la tendance EMA200 refusee ({why})"
+                return
+        snap["fresh_breakout_counter_trend"] = fresh_counter_sa
+        if not trend_up and not fresh_counter_sa and (cfg.get("SPOT_ACCUM_BYPASS_REQUIRE_TREND", 1) or not bypass_sa):
             snap["blocker"] = "pas de tendance haussiere (EMA200)" + (" — signal de cassure/rebond ignore contre la tendance" if bypass_sa else "")
             return  # exige la tendance generale haussiere (EMA200)
         if bypass_sa and cfg.get("SPOT_ACCUM_BYPASS_FLOW_VETO", 1) and cfg.get("ENTRY_FLOW_CONFIRM_ENABLED", True):
@@ -9384,7 +9488,11 @@ class BotEngine:
         # de la fenetre de proximite (conservee, verifiee plus bas).
         is_ranging_sa = self._is_market_ranging(state, cfg.get("SPOT_ACCUM_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("SPOT_ACCUM_ANTI_RANGE_LOOKBACK", 30))
         snap["is_ranging"] = is_ranging_sa
-        if is_ranging_sa:
+        # v4.279 — FIX CONTRADICTION : la cassure fraiche (sortie d une
+        # consolidation) et l entree "volume en consolidation" EXIGENT un
+        # marche qui vient d etre en range — le filtre anti-range les
+        # annulait donc presque toujours. Il ne s applique plus a ces voies.
+        if is_ranging_sa and not fresh_breakout_sa and not volume_breakout_sa:
             snap["blocker"] = f"marche en range (mouvement < {cfg.get('SPOT_ACCUM_ANTI_RANGE_MIN_PCT', 2.0)}% sur {cfg.get('SPOT_ACCUM_ANTI_RANGE_LOOKBACK', 30)} echantillons)"
             return
 
@@ -9411,10 +9519,23 @@ class BotEngine:
             # qu une fenetre glissante fixe.
             support_for_proximity = state.dynamic_trend_support if state.dynamic_trend_support is not None else support
             near_support = self._is_near_level_atr(state, price, support_for_proximity, cfg.get("ENTRY_ATR_PROXIMITY_MULTIPLIER", 1.0))
+            # v4.278 — ACHAT SUR REPLI : en tendance haussiere reguliere, le
+            # prix s eloigne du support d origine ; le repli sur le dernier
+            # creux ascendant devient une entree valide (memes protections :
+            # bougie haussiere, veto du flux, tendance, regime).
+            rising = getattr(state, "rising_support", None)
+            snap["rising_support"] = rising
+            near_rising = False
+            if not near_support and cfg.get("SPOT_ACCUM_RISING_SUPPORT_ENABLED", 1) and rising and price > rising:
+                near_rising = self._is_near_level_atr(state, price, rising, cfg.get("ENTRY_ATR_PROXIMITY_MULTIPLIER", 1.0))
             snap["near_support"] = near_support
-            if not near_support:
-                snap["blocker"] = f"pas assez proche du support (${support:.4f})"
+            snap["near_rising_support"] = near_rising
+            if volume_breakout_sa:
+                near_support = True  # v4.279 — deja verifie par la voie "volume" (support de la consolidation) : pas de double critere contradictoire
+            if not near_support and not near_rising:
+                snap["blocker"] = f"pas assez proche du support (${support:.4f})" + (f" ni du support ascendant (${rising:.4f})" if rising and cfg.get("SPOT_ACCUM_RISING_SUPPORT_ENABLED", 1) else "")
                 return
+            snap["entered_via_rising_support"] = near_rising and not near_support
             if cfg.get("REQUIRE_ENTRY_CANDLE_COLOR", True):
                 bullish_now = self._is_candle_bullish_now(state)
                 if bullish_now is False:
@@ -9488,8 +9609,23 @@ class BotEngine:
 
         snap["blocker"] = None  # rien ne bloque, candidat genere ce cycle
 
+        # v4.278 — la VOIE d entree figure dans les raisons (colonne "raisons
+        # d entree" de l export) pour mesurer laquelle gagne ou perd.
+        if fresh_breakout_sa:
+            path_sa = "cassure fraiche" + (" (contre-tendance, flux acheteur)" if snap.get("fresh_breakout_counter_trend") else "")
+        elif failed_breakout_sa:
+            path_sa = "fausse cassure"
+        elif trend_persistence_sa:
+            path_sa = "tendance persistante"
+        elif volume_breakout_sa:
+            path_sa = "volume en consolidation"
+        elif snap.get("entered_via_rising_support"):
+            path_sa = f"repli sur support ascendant ${snap.get('rising_support'):.6g}"
+        else:
+            path_sa = "proche du support"
         reasons = [
-            f"🌱 Spot-Accumulation : {dist_above_support_pct:.2f}% au-dessus du support, tendance haussiere confirmee",
+            f"🌱 Spot-Accumulation — voie : {path_sa}",
+            f"{dist_above_support_pct:.2f}% au-dessus du support, tendance haussiere confirmee",
             f"RSI {rsi:.1f}" if rsi is not None else "RSI ?",
         ]
 
