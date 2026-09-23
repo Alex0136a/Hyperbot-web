@@ -33,10 +33,15 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.268"
-BOT_BUILD   = "2026-09-23-d"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.269"
+BOT_BUILD   = "2026-09-23-e"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.269 (build 2026-09-23-e) — Simulation "SL plus large" (0,75/1/1,5 %)
+#        dans le suivi ; Funding ajoute au suivi/export ; plafond de SL,
+#        confirmation par le flux, delai apres perte et limite de rafales
+#        d entrees reglables PAR MODE (Accumulation : delai 1 h apres perte,
+#        3 entrees max / 10 min).
 # 4.268 (build 2026-09-23-d) — TTP Funding : armement a +1 % (au lieu de
 #        1,5 %), patience pilotee par le flux de transactions (tolerance
 #        elargie si flux favorable, reduite si contraire), plancher de gain.
@@ -1134,6 +1139,28 @@ PROFILE_SWING = {
     # > 0 = exige une pression AU MOINS egale dans le sens du trade (ex: 0.1 :
     # achat net >= +0.1 pour Spot-Accum, vente nette <= -0.1 pour Accumulation).
     "ENTRY_FLOW_CONFIRM_MIN_PRESSURE": 0.0,
+    # v4.269 — confirmation par le flux PROPRE a chaque mode (None = herite
+    # de ENTRY_FLOW_CONFIRM_MIN_PRESSURE ci-dessus).
+    "SPOT_ACCUM_ENTRY_FLOW_CONFIRM_MIN": None,
+    "ACCUMULATION_ENTRY_FLOW_CONFIRM_MIN": None,
+    # v4.269 — plafond de SL immediat PROPRE a chaque mode (None = herite de
+    # STRUCTURAL_SL_HARD_CAP_PCT, 0,5 %). Voir la simulation "SL x %" de l
+    # export CSV avant de l elargir.
+    "SPOT_ACCUM_SL_CAP_PCT": None,
+    "ACCUMULATION_SL_CAP_PCT": None,
+    # v4.269 — delai de re-entree sur le MEME actif apres une PERTE (s ; 0 =
+    # desactive). Donnees 18-23/09 : les shorts Accumulation re-ouverts dans
+    # l heure suivant une perte sur le meme actif gagnent 28 % du temps
+    # (contre 39 %).
+    "ACCUMULATION_LOSS_COOLDOWN_SEC": 3600,
+    "SPOT_ACCUM_LOSS_COOLDOWN_SEC": 0,
+    "FUNDING_LOSS_COOLDOWN_SEC": 0,
+    # v4.269 — nombre maximal de NOUVELLES entrees d un meme mode sur une
+    # fenetre glissante (0 = illimite). Donnees : la 4e entree Accumulation
+    # et au-dela dans une meme fenetre de 10 min gagne 27 % du temps.
+    "ACCUMULATION_MAX_ENTRIES_PER_WINDOW": 3,
+    "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW": 0,
+    "ENTRY_BURST_WINDOW_SEC": 600,
     "TREND_PERSISTENCE_MIN_PRICE_MOVE_PCT": 0.1,
     # v4.246 — SUR DEMANDE EXPLICITE : confirmation IMMEDIATE (pas soutenue
     # dans le temps, contrairement a TREND_PERSISTENCE ci-dessus) par le
@@ -3038,6 +3065,7 @@ class SymbolState:
         # dans le sens OPPOSE (retournement) n est pas concerne.
         self.last_closed_direction = p["type"]
         self.last_closed_at = time.time()
+        self.last_closed_was_loss = pnl_usd < 0  # v4.269 — delai de re-entree apres perte
         # v4.15 — Exige un croisement EMA frais et distinct avant d autoriser
         # une reouverture dans le MEME sens (voir _process, ou ce flag est
         # leve des que la condition retombe au moins une fois).
@@ -3250,6 +3278,7 @@ class BotEngine:
     def __init__(self, cfg, event_queue):
         self.cfg = cfg
         self.q = event_queue
+        self._recent_entries = {}  # v4.269 — horodatages des entrees recentes par mode
         # v4.14 — SUR DEMANDE EXPLICITE : separation entre le MOTEUR (collecte
         # de prix, indicateurs, WebSocket, gestion des positions ouvertes —
         # doit tourner en continu, sauf vraie panne) et le TRADING (ouverture
@@ -4218,6 +4247,56 @@ class BotEngine:
                 except Exception as e:
                     print(f"[FOLLOWUP] Remplissages {row['coin']} indisponibles : {e}")
             fields["followup_status"] = "ok" if candles else "bougies indisponibles"
+            db.save_trade_followup(row["id"], fields)
+
+        # v4.269 — SIMULATION "ET SI LE SL AVAIT ETE PLUS LARGE ?" pour les
+        # trades sortis par stop loss : minute par minute apres la sortie,
+        # le prix est-il revenu au niveau d ENTREE avant de toucher un SL a
+        # 0,75 / 1 / 1,5 % ? (bougie ambigue -> compte comme SL, par prudence)
+        try:
+            to_sim = db.list_trades_needing_sim(limit=5)
+        except Exception as e:
+            print(f"[FOLLOWUP-SIM] Lecture base impossible : {e}")
+            return
+        for row in to_sim:
+            try:
+                closed = datetime.fromisoformat(row["closed_at"]).timestamp()
+            except (TypeError, ValueError):
+                db.save_trade_followup(row["id"], {"sim_status": "dates invalides"})
+                continue
+            entry = row.get("entry_price")
+            if not entry:
+                db.save_trade_followup(row["id"], {"sim_status": "prix d entree inconnu"})
+                continue
+            age_days = (time.time() - closed) / 86400
+            interval, step_ms = ("1m", 60_000) if age_days < 3 else ("5m", 300_000)
+            # Debut a la bougie SUIVANT la minute de sortie : la bougie de sortie
+            # contient des prix anterieurs au SL (parfois meme l entree).
+            start_ms = int(closed * 1000) // step_ms * step_ms + step_ms
+            candles = self._candles(row["coin"], interval, start_ms, start_ms + 60 * 60_000)
+            if candles is None:
+                continue
+            if not candles:
+                db.save_trade_followup(row["id"], {"sim_status": "bougies indisponibles"})
+                continue
+            candles = sorted(candles, key=lambda c: int(c["t"]))
+            is_long = row.get("action") == "LONG"
+            suffix = "" if interval == "1m" else " (5m)"
+            fields = {"sim_status": "ok" + suffix}
+            for col, sl_pct in (("sim_sl_075", 0.75), ("sim_sl_100", 1.0), ("sim_sl_150", 1.5)):
+                sl_px = entry * (1 - sl_pct / 100) if is_long else entry * (1 + sl_pct / 100)
+                outcome = "aucun"
+                for c in candles:
+                    hi, lo = float(c["h"]), float(c["l"])
+                    hit_sl = lo <= sl_px if is_long else hi >= sl_px
+                    back = hi >= entry if is_long else lo <= entry
+                    if hit_sl:
+                        outcome = "sl"
+                        break
+                    if back:
+                        outcome = "entree"
+                        break
+                fields[col] = outcome
             db.save_trade_followup(row["id"], fields)
 
     def _discard_pending_trade(self, trade_uid, ticker):
@@ -6439,7 +6518,7 @@ class BotEngine:
             # proteger bien avant). Verifie desormais le seuil le PLUS
             # PROTECTEUR en priorite absolue, quel que soit son
             # emplacement dans le reste du code.
-            immediate_cap_pct = cfg.get("STRUCTURAL_SL_HARD_CAP_PCT", 0.5)
+            immediate_cap_pct = cfg.get("SPOT_ACCUM_SL_CAP_PCT") or cfg.get("STRUCTURAL_SL_HARD_CAP_PCT", 0.5)  # v4.269
             if pnl_pct <= -immediate_cap_pct:
                 _result = self._safe_close_position(state, price, "STOP LOSS (plafond immediat)", ticker, pos, symbol, mode)
 
@@ -6911,6 +6990,8 @@ class BotEngine:
             # source (voir plus haut) — hard_cap_pct reste tel quel, sans
             # division supplementaire (qui aurait double-compte le levier).
             hard_cap_pct = cfg.get("STRUCTURAL_SL_HARD_CAP_PCT", 0.5)
+            if pos.get("strategy") == "accumulation" and cfg.get("ACCUMULATION_SL_CAP_PCT"):
+                hard_cap_pct = cfg["ACCUMULATION_SL_CAP_PCT"]  # v4.269
             if pnl_pct <= -hard_cap_pct:
                 _result = self._safe_close_position(state, price, "STOP LOSS (plafond immediat)", ticker, pos, symbol, mode)
 
@@ -8749,8 +8830,10 @@ class BotEngine:
                 if flow_pressure is not None and flow_pressure >= cfg.get("ENTRY_FLOW_CONTRADICTION_THRESHOLD", 0.3):
                     snap["blocker"] = f"flux de transactions contredit la baisse (pression achat {flow_pressure:+.2f})"
                     return
-                # v4.266 — confirmation OPTIONNELLE (0 = desactivee)
-                confirm_min = cfg.get("ENTRY_FLOW_CONFIRM_MIN_PRESSURE", 0.0) or 0.0
+                # v4.266 — confirmation OPTIONNELLE (0 = desactivee) ; v4.269 — reglage propre au mode
+                confirm_min = cfg.get("ACCUMULATION_ENTRY_FLOW_CONFIRM_MIN")
+                if confirm_min is None:
+                    confirm_min = cfg.get("ENTRY_FLOW_CONFIRM_MIN_PRESSURE", 0.0) or 0.0
                 if confirm_min > 0:
                     if flow_pressure is None:
                         snap["blocker"] = "confirmation flux exigee mais flux insuffisant (activite recente trop faible)"
@@ -9069,7 +9152,9 @@ class BotEngine:
                     snap["blocker"] = f"flux de transactions contredit la hausse (pression vente {flow_pressure_sa:+.2f})"
                     return
                 # v4.266 — confirmation OPTIONNELLE (0 = desactivee)
-                confirm_min_sa = cfg.get("ENTRY_FLOW_CONFIRM_MIN_PRESSURE", 0.0) or 0.0
+                confirm_min_sa = cfg.get("SPOT_ACCUM_ENTRY_FLOW_CONFIRM_MIN")
+                if confirm_min_sa is None:
+                    confirm_min_sa = cfg.get("ENTRY_FLOW_CONFIRM_MIN_PRESSURE", 0.0) or 0.0
                 if confirm_min_sa > 0:
                     if flow_pressure_sa is None:
                         snap["blocker"] = "confirmation flux exigee mais flux insuffisant (activite recente trop faible)"
@@ -9251,6 +9336,29 @@ class BotEngine:
                     "msg": f"[{ticker}] {signal.upper()} ignore — cooldown de reentree dans le meme sens ({remaining}s restantes sur {cooldown_sec}s)",
                     "level": "dim"
                 })
+                return
+
+        # v4.269 — delai de re-entree APRES UNE PERTE sur le meme actif et le
+        # meme sens (reglable par mode ; plus long que le cooldown general).
+        loss_cooldown = {"accumulation": cfg.get("ACCUMULATION_LOSS_COOLDOWN_SEC", 3600),
+                         "spot_accumulation": cfg.get("SPOT_ACCUM_LOSS_COOLDOWN_SEC", 0),
+                         "funding_contrarian": cfg.get("FUNDING_LOSS_COOLDOWN_SEC", 0)}.get(strategy, 0) or 0
+        if (loss_cooldown and getattr(state, "last_closed_was_loss", False) and state.last_closed_at is not None
+                and state.last_closed_direction == signal and time.time() - state.last_closed_at < loss_cooldown):
+            remaining = int(loss_cooldown - (time.time() - state.last_closed_at))
+            self.emit("log", {"msg": f"[{ticker}] {signal.upper()} ignore — delai apres perte sur cet actif ({remaining // 60} min restantes)", "level": "dim"})
+            return
+        # v4.269 — limite de NOUVELLES entrees d un meme mode par fenetre
+        # glissante : evite les rafales d entrees correlees (un seul
+        # mouvement de marche = plusieurs positions perdantes a la fois).
+        burst_max = {"accumulation": cfg.get("ACCUMULATION_MAX_ENTRIES_PER_WINDOW", 3),
+                     "spot_accumulation": cfg.get("SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW", 0)}.get(strategy, 0) or 0
+        if burst_max:
+            window_s = cfg.get("ENTRY_BURST_WINDOW_SEC", 600)
+            recent = [t for t in self._recent_entries.get(strategy, []) if time.time() - t < window_s]
+            self._recent_entries[strategy] = recent
+            if len(recent) >= burst_max:
+                self.emit("log", {"msg": f"[{ticker}] {signal.upper()} ignore — deja {len(recent)} entrees {strategy} dans les {window_s // 60} dernieres minutes (max {burst_max})", "level": "dim"})
                 return
 
         # ── v4.1 — Dimensionnement par LOT (batch) ──────────────────────────
@@ -9577,6 +9685,12 @@ class BotEngine:
         else:
             safety_sl_usd = size * sl_pct_of_e / 100 * cfg.get("EXCHANGE_SAFETY_SL_MULT", 2.0)
             safety_sl_pct = (safety_sl_usd / notional * 100) if notional > 0 else 2.0
+            # v4.269 — le filet Hyperliquid doit rester PLUS LARGE que le
+            # plafond du bot, sinon elargir ACCUMULATION_SL_CAP_PCT ferait
+            # sortir la position par le SL de securite natif avant.
+            if strategy == "accumulation":
+                cap_ac = cfg.get("ACCUMULATION_SL_CAP_PCT") or cfg.get("STRUCTURAL_SL_HARD_CAP_PCT", 0.5)
+                safety_sl_pct = max(safety_sl_pct, cap_ac * cfg.get("EXCHANGE_SAFETY_SL_MULT", 2.0))
         sl_p = price * (1 - safety_sl_pct/100) if signal == "long" else price * (1 + safety_sl_pct/100)
         # tp_p conserve uniquement a titre informatif / pour le bouton manuel TP
         # du dashboard — plus jamais envoye a Hyperliquid ni utilise pour fermer
@@ -9752,6 +9866,7 @@ class BotEngine:
         # decider si un ordre reel est passe).
         state.position["effective_mode"] = recorded_mode
         state.position["trade_uid"] = trade_uid      # v4.264 — identifiant exact
+        self._recent_entries.setdefault(strategy, []).append(time.time())  # v4.269
         state.position["slot_key"] = symbol          # v4.264
         # v4.24 — memorise les seuils REELLEMENT appliques a CE trade (fixes
         # ou adaptatifs a l ATR) — _manage_position_impl les relit ici en
