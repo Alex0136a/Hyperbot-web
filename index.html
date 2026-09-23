@@ -481,6 +481,293 @@ function MiniChart({ title, labels, datasets, color, height }) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// v4.273 — ONGLET TRADING MANUEL
+// Opportunites publiees par le bot -> parametres proposes (modifiables) ->
+// execution immediate ou programmee, paper/live (confirmation), perps/spot.
+// ─────────────────────────────────────────────────────────────────────────
+const MT = {
+  card: {background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:14},
+  title: {fontSize:12,color:"#94a3b8",fontWeight:800,marginBottom:10,letterSpacing:0.5},
+  input: {background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,color:"#e2e8f0",padding:"7px 9px",fontFamily:"inherit",fontSize:13,width:"100%",boxSizing:"border-box"},
+  label: {fontSize:10,color:"#94a3b8",marginBottom:4,display:"block"},
+  btn: (bg,fg="#04101f")=>({background:bg,border:"none",borderRadius:7,padding:"8px 14px",color:fg,fontFamily:"inherit",fontSize:12,fontWeight:800,cursor:"pointer"}),
+  seg: (on,color="#60a5fa")=>({flex:1,padding:"8px 6px",border:`1px solid ${on?color:"#1e2d4a"}`,background:on?color+"22":"transparent",color:on?color:"#94a3b8",borderRadius:7,cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:700}),
+  th: {textAlign:"left",fontSize:10,color:"#64748b",fontWeight:700,padding:"6px 8px",borderBottom:"1px solid #1e2d4a",whiteSpace:"nowrap"},
+  td: {fontSize:12,color:"#e2e8f0",padding:"7px 8px",borderBottom:"1px solid #131d33",whiteSpace:"nowrap"},
+};
+const fmtP = v => v==null||isNaN(v) ? "—" : (Math.abs(v)>=1000 ? Number(v).toFixed(2) : Number(v).toPrecision(6));
+const fmtUsd = v => v==null||isNaN(v) ? "—" : `${v>=0?"+":""}${Number(v).toFixed(2)} $`;
+const fmtAgo = s => s<60?`${s}s`:s<3600?`${Math.floor(s/60)} min`:`${Math.floor(s/3600)} h ${Math.floor(s%3600/60)} min`;
+const fmtTime = ts => ts ? new Date(ts*1000).toLocaleString([], {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) : "—";
+const dirBadge = d => <span style={{color:d==="long"?"#22c55e":"#ef4444",fontWeight:800}}>{d==="long"?"▲ LONG":"▼ SHORT"}</span>;
+
+function ManualTradingTab({ token }) {
+  const [st, setSt] = useState(null);
+  const [err, setErr] = useState("");
+  const [sel, setSel] = useState(null);          // opportunite choisie
+  const [prop, setProp] = useState(null);        // proposition du bot
+  const [f, setF] = useState(null);              // formulaire (modifiable)
+  const [busy, setBusy] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [edit, setEdit] = useState({});
+
+  const load = useCallback(async () => {
+    try { setSt(await apiCall("/api/manual/state","GET",null,token)); setErr(""); }
+    catch(e) { setErr(e.message); }
+  }, [token]);
+  useEffect(() => { load(); const t = setInterval(load, 4000); return () => clearInterval(t); }, [load]);
+
+  const loadProposal = async (opp, market) => {
+    try {
+      const q = new URLSearchParams({strategy:opp.strategy, ticker:opp.ticker, direction:opp.direction, market});
+      const p = await apiCall(`/api/manual/proposal?${q}`,"GET",null,token);
+      setProp(p);
+      setF(prev => ({
+        market, mode: prev?.mode || "paper", execution: prev?.execution || "now",
+        trigger_price: prev?.trigger_price || "", trigger_time: prev?.trigger_time || "",
+        expiry_hours: prev?.expiry_hours || 24, require_valid: prev?.require_valid ?? true,
+        notional_usd: p.notional_usd, leverage: p.leverage,
+        sl_pct: p.sl_pct, tp_on: true, tp_pct: p.tp_pct,
+        ttp_on: true, ttp_arm_pct: p.ttp_arm_pct, ttp_trail_pct: p.ttp_trail_pct,
+      }));
+    } catch(e) { alert(e.message); setSel(null); setProp(null); setF(null); }
+  };
+  const choose = (opp) => { setSel(opp); setF(null); loadProposal(opp, "perp"); };
+
+  const oppStillValid = sel && st && st.opportunities.some(o => o.strategy===sel.strategy && o.ticker===sel.ticker && o.direction===sel.direction);
+  const refPrice = f && prop ? ((f.execution==="price_above"||f.execution==="price_below") && Number(f.trigger_price)>0 ? Number(f.trigger_price) : prop.price) : null;
+  const isLong = sel?.direction === "long";
+  const pxFromPct = (pct, side) => refPrice ? refPrice * (1 + (side==="sl" ? (isLong?-1:1) : (isLong?1:-1)) * pct/100) : null;
+  const pctFromPx = (px, side) => refPrice ? Math.abs(px - refPrice) / refPrice * 100 : null;
+  const set = (k, v) => setF(prev => ({...prev, [k]: v}));
+
+  const submit = async () => {
+    if (!f || !sel) return;
+    const body = {
+      strategy: sel.strategy, ticker: sel.ticker, direction: sel.direction, market: f.market, mode: f.mode,
+      execution: f.execution, notional_usd: Number(f.notional_usd), leverage: f.market==="spot" ? 1 : Number(f.leverage),
+      sl_pct: Number(f.sl_pct), tp_pct: f.tp_on ? Number(f.tp_pct) : null,
+      ttp_arm_pct: f.ttp_on ? Number(f.ttp_arm_pct) : null, ttp_trail_pct: f.ttp_on ? Number(f.ttp_trail_pct) : null,
+      trigger_price: (f.execution==="price_above"||f.execution==="price_below") ? Number(f.trigger_price) : null,
+      trigger_time: f.execution==="time" && f.trigger_time ? new Date(f.trigger_time).getTime()/1000 : null,
+      expiry_hours: Number(f.expiry_hours) || 24, require_valid: !!f.require_valid, confirm_live: false,
+    };
+    if (f.mode === "live") {
+      const riskUsd = body.notional_usd * body.sl_pct / 100;
+      const ok = window.confirm(
+        `⚠️ ORDRE LIVE — ARGENT RÉEL\n\n${sel.direction.toUpperCase()} ${sel.ticker} en ${f.market.toUpperCase()}\n` +
+        `Notionnel : ${body.notional_usd.toFixed(2)} $ (levier x${body.leverage})\n` +
+        `Stop loss : -${body.sl_pct}% (perte max ≈ ${riskUsd.toFixed(2)} $ + frais)\n` +
+        (body.tp_pct ? `Take profit : +${body.tp_pct}%\n` : "Sans take profit fixe\n") +
+        (body.ttp_arm_pct ? `Trailing : armé à +${body.ttp_arm_pct}%, repli ${body.ttp_trail_pct}%\n` : "") +
+        `Exécution : ${f.execution==="now" ? "IMMÉDIATE" : "programmée"}\n` +
+        (f.market==="spot" ? "\nSpot : pas de SL natif sur Hyperliquid — protection assurée par le bot uniquement.\n" : "") +
+        `\nConfirmez-vous l'envoi de cet ordre réel ?`);
+      if (!ok) return;
+      body.confirm_live = true;
+    }
+    setBusy(true);
+    try {
+      const r = await apiCall("/api/manual/orders","POST",body,token);
+      alert(r.status==="scheduled" ? `Ordre programmé (#${r.id}).` : `Position ouverte (#${r.id}) @ ${fmtP(r.entry_price)}.`);
+      setSel(null); setProp(null); setF(null); load();
+    } catch(e) { alert("Ordre refusé : " + e.message); }
+    setBusy(false);
+  };
+
+  const cancelOrder = async (id) => { if (!window.confirm("Annuler cet ordre programmé ?")) return;
+    try { await apiCall(`/api/manual/orders/${id}`,"DELETE",null,token); load(); } catch(e) { alert(e.message); } };
+  const closePos = async (p) => {
+    if (!window.confirm(`${p.mode==="live"?"⚠️ LIVE — ":""}Fermer maintenant ${p.direction.toUpperCase()} ${p.ticker} (PnL actuel ${fmtUsd(p.pnl)}) ?`)) return;
+    try { await apiCall(`/api/manual/positions/${p.id}/close`,"POST",null,token); load(); } catch(e) { alert("Fermeture : " + e.message); } };
+  const saveEdit = async (p) => {
+    const body = {};
+    if (edit.sl_price) body.sl_price = Number(edit.sl_price);
+    if (edit.tp_price === "") body.clear_tp = true; else if (edit.tp_price) body.tp_price = Number(edit.tp_price);
+    if (edit.ttp_off) body.clear_ttp = true;
+    else { if (edit.ttp_arm_pct) body.ttp_arm_pct = Number(edit.ttp_arm_pct); if (edit.ttp_trail_pct) body.ttp_trail_pct = Number(edit.ttp_trail_pct); }
+    try { await apiCall(`/api/manual/positions/${p.id}`,"PUT",body,token); setEditId(null); load(); } catch(e) { alert(e.message); } };
+
+  if (!st) return <div style={{padding:16,color:"#94a3b8"}}>{err || "Chargement..."}</div>;
+
+  const notional = f ? Number(f.notional_usd)||0 : 0;
+  const lev = f ? (f.market==="spot" ? 1 : Number(f.leverage)||1) : 1;
+  const feesEst = notional * 0.0009;
+
+  return (
+    <div style={{padding:16,maxWidth:1100}}>
+      {err && <div style={{...MT.card,borderColor:"#7f1d1d",color:"#fca5a5"}}>⚠️ {err}</div>}
+
+      {/* OPPORTUNITES */}
+      <div style={MT.card}>
+        <div style={MT.title}>🎯 OPPORTUNITÉS DU BOT <span style={{fontWeight:400,color:"#64748b"}}>— valables tant que le bot les confirme (revues il y a moins de {st.opportunity_ttl_sec}s), dans le sens qu'il prévoit</span></div>
+        {st.opportunities.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucune opportunité valable pour le moment. Elles apparaissent dès qu'un mode du bot détecte une entrée (y compris quand il ne peut pas la prendre, faute de place).</div> : (
+          <div style={{overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%"}}>
+            <thead><tr>{["Mode","Actif","Sens","Confiance","Prix","Depuis","Spot",""].map(h=><th key={h} style={MT.th}>{h}</th>)}</tr></thead>
+            <tbody>{st.opportunities.map(o => {
+              const active = sel && sel.strategy===o.strategy && sel.ticker===o.ticker && sel.direction===o.direction;
+              return <tr key={o.strategy+o.ticker+o.direction} style={{background:active?"#60a5fa14":"transparent"}}>
+                <td style={MT.td}>{o.strategy_label}</td><td style={{...MT.td,fontWeight:800}}>{o.ticker}</td>
+                <td style={MT.td}>{dirBadge(o.direction)}</td><td style={MT.td}>{o.confidence!=null?`${Math.round(o.confidence)} %`:"—"}</td>
+                <td style={MT.td}>{fmtP(o.current_price||o.price)}</td><td style={MT.td}>{fmtAgo(o.age_sec)}</td>
+                <td style={MT.td}>{o.spot_available?"✓":"—"}</td>
+                <td style={MT.td}><button style={MT.btn("#60a5fa")} onClick={()=>choose(o)}>Préparer</button></td>
+              </tr>; })}</tbody>
+          </table></div>)}
+      </div>
+
+      {/* FORMULAIRE */}
+      {sel && f && prop && (
+        <div style={{...MT.card,borderColor:f.mode==="live"?"#ef4444":"#1e2d4a"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>
+            <div style={{fontSize:15,fontWeight:800,color:"#e2e8f0"}}>{dirBadge(sel.direction)} {sel.ticker} <span style={{fontSize:11,color:"#94a3b8",fontWeight:400}}>— opportunité {prop && sel ? (st.opportunities.find(o=>o.ticker===sel.ticker&&o.strategy===sel.strategy)?.strategy_label||sel.strategy) : ""} · confiance {prop.confidence!=null?Math.round(prop.confidence)+" %":"—"} · prix {fmtP(prop.price)}</span></div>
+            <button style={MT.btn("#1e2d4a","#94a3b8")} onClick={()=>{setSel(null);setF(null);setProp(null);}}>Fermer</button>
+          </div>
+          {!oppStillValid && <div style={{background:"#7f1d1d33",border:"1px solid #7f1d1d",borderRadius:7,padding:8,color:"#fca5a5",fontSize:12,marginBottom:10}}>⛔ Le bot ne confirme plus cette opportunité : l'ordre sera refusé.</div>}
+          {prop.reasons?.length>0 && <div style={{fontSize:11,color:"#64748b",marginBottom:12}}>Raisons du bot : {prop.reasons.join(" · ")}</div>}
+
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(230px,1fr))",gap:14}}>
+            <div>
+              <span style={MT.label}>MARCHÉ</span>
+              <div style={{display:"flex",gap:6}}>
+                <button style={MT.seg(f.market==="perp")} onClick={()=>loadProposal(sel,"perp")}>Perps</button>
+                <button style={{...MT.seg(f.market==="spot"),opacity:prop.spot_available||f.market==="spot"?1:0.4}} disabled={!prop.spot_available&&f.market!=="spot"} onClick={()=>loadProposal(sel,"spot")}>Spot{!prop.spot_available&&f.market!=="spot"?" (indispo.)":""}</button>
+              </div>
+              <span style={{...MT.label,marginTop:10}}>MODE</span>
+              <div style={{display:"flex",gap:6}}>
+                <button style={MT.seg(f.mode==="paper","#22c55e")} onClick={()=>set("mode","paper")}>🎮 Paper</button>
+                <button style={{...MT.seg(f.mode==="live","#ef4444"),opacity:st.live_available?1:0.4}} disabled={!st.live_available} onClick={()=>set("mode","live")}>🔴 Live</button>
+              </div>
+              {f.market==="spot" && <div style={{fontSize:10,color:"#fbbf24",marginTop:6}}>Spot : achat uniquement, sans levier, USDC requis côté Spot, pas de SL natif (protection par le bot).</div>}
+            </div>
+
+            <div>
+              <span style={MT.label}>EXÉCUTION</span>
+              <select style={MT.input} value={f.execution} onChange={e=>set("execution",e.target.value)}>
+                <option value="now">Maintenant (au marché)</option>
+                <option value="price_above">Programmée : si le prix monte à…</option>
+                <option value="price_below">Programmée : si le prix descend à…</option>
+                <option value="time">Programmée : à une heure donnée</option>
+              </select>
+              {(f.execution==="price_above"||f.execution==="price_below") && <><span style={{...MT.label,marginTop:8}}>PRIX DE DÉCLENCHEMENT</span><input style={MT.input} type="number" step="any" value={f.trigger_price} onChange={e=>set("trigger_price",e.target.value)} placeholder={fmtP(prop.price)}/></>}
+              {f.execution==="time" && <><span style={{...MT.label,marginTop:8}}>DATE ET HEURE</span><input style={MT.input} type="datetime-local" value={f.trigger_time} onChange={e=>set("trigger_time",e.target.value)}/></>}
+              {f.execution!=="now" && <>
+                <span style={{...MT.label,marginTop:8}}>EXPIRATION (HEURES)</span><input style={MT.input} type="number" min="0.1" step="0.5" value={f.expiry_hours} onChange={e=>set("expiry_hours",e.target.value)}/>
+                <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:6,marginTop:8,alignItems:"center"}}><input type="checkbox" checked={f.require_valid} onChange={e=>set("require_valid",e.target.checked)}/>Annuler si le bot ne confirme plus l'opportunité au déclenchement</label>
+                <div style={{fontSize:10,color:"#64748b",marginTop:4}}>SL/TP/TTP s'appliqueront en % du prix d'exécution réel.</div>
+              </>}
+            </div>
+
+            <div>
+              <span style={MT.label}>TAILLE — NOTIONNEL ($)</span>
+              <input style={MT.input} type="number" min="1" step="1" value={f.notional_usd} onChange={e=>set("notional_usd",e.target.value)}/>
+              {f.market==="perp" && <><span style={{...MT.label,marginTop:8}}>LEVIER</span><input style={MT.input} type="number" min="1" max="20" step="1" value={f.leverage} onChange={e=>set("leverage",e.target.value)}/></>}
+              <div style={{fontSize:11,color:"#94a3b8",marginTop:6}}>Marge engagée : {(notional/lev).toFixed(2)} $ · frais estimés ≈ {feesEst.toFixed(3)} $</div>
+              {f.mode==="live" && notional<10 && <div style={{fontSize:11,color:"#fca5a5",marginTop:4}}>Minimum Hyperliquid : 10 $ de notionnel.</div>}
+            </div>
+
+            <div>
+              <span style={MT.label}>STOP LOSS — % / PRIX <span style={{color:"#64748b"}}>({prop.sl_basis})</span></span>
+              <div style={{display:"flex",gap:6}}>
+                <input style={MT.input} type="number" step="0.05" value={f.sl_pct} onChange={e=>set("sl_pct",e.target.value)}/>
+                <input style={MT.input} type="number" step="any" value={refPrice?Number(pxFromPct(Number(f.sl_pct),"sl")).toPrecision(6):""} onChange={e=>{const v=pctFromPx(Number(e.target.value),"sl"); if(v!=null) set("sl_pct",Number(v.toFixed(3)));}}/>
+              </div>
+              <div style={{fontSize:11,color:"#fca5a5",marginTop:4}}>Perte au SL ≈ {(notional*Number(f.sl_pct)/100).toFixed(2)} $</div>
+              <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:6,marginTop:10,alignItems:"center"}}><input type="checkbox" checked={f.tp_on} onChange={e=>set("tp_on",e.target.checked)}/>TAKE PROFIT — % / PRIX <span style={{color:"#64748b"}}>({prop.tp_basis})</span></label>
+              {f.tp_on && <div style={{display:"flex",gap:6,marginTop:4}}>
+                <input style={MT.input} type="number" step="0.05" value={f.tp_pct} onChange={e=>set("tp_pct",e.target.value)}/>
+                <input style={MT.input} type="number" step="any" value={refPrice?Number(pxFromPct(Number(f.tp_pct),"tp")).toPrecision(6):""} onChange={e=>{const v=pctFromPx(Number(e.target.value),"tp"); if(v!=null) set("tp_pct",Number(v.toFixed(3)));}}/>
+              </div>}
+              {f.tp_on && <div style={{fontSize:11,color:"#86efac",marginTop:4}}>Gain au TP ≈ {(notional*Number(f.tp_pct)/100).toFixed(2)} $</div>}
+            </div>
+
+            <div>
+              <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:6,alignItems:"center"}}><input type="checkbox" checked={f.ttp_on} onChange={e=>set("ttp_on",e.target.checked)}/>TRAILING TAKE PROFIT</label>
+              {f.ttp_on && <div style={{display:"flex",gap:6,marginTop:6}}>
+                <div style={{flex:1}}><span style={MT.label}>ARMEMENT (+%)</span><input style={MT.input} type="number" step="0.05" value={f.ttp_arm_pct} onChange={e=>set("ttp_arm_pct",e.target.value)}/></div>
+                <div style={{flex:1}}><span style={MT.label}>REPLI TOLÉRÉ (%)</span><input style={MT.input} type="number" step="0.05" value={f.ttp_trail_pct} onChange={e=>set("ttp_trail_pct",e.target.value)}/></div>
+              </div>}
+              <div style={{fontSize:10,color:"#64748b",marginTop:6}}>Une fois le gain atteint, sortie si le prix rend le repli indiqué depuis son meilleur niveau.</div>
+            </div>
+          </div>
+
+          <div style={{display:"flex",justifyContent:"flex-end",gap:10,marginTop:16}}>
+            <button disabled={busy||!oppStillValid} style={{...MT.btn(f.mode==="live"?"#ef4444":"#22c55e",f.mode==="live"?"#fff":"#04101f"),opacity:busy||!oppStillValid?0.5:1,padding:"11px 20px",fontSize:13}} onClick={submit}>
+              {busy?"Envoi...":`${f.execution==="now"?"Ouvrir maintenant":"Programmer l'ordre"} — ${f.mode==="live"?"🔴 LIVE":"🎮 PAPER"}`}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ORDRES PROGRAMMES */}
+      <div style={MT.card}>
+        <div style={MT.title}>⏰ ORDRES PROGRAMMÉS ({st.scheduled.length})</div>
+        {st.scheduled.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucun ordre en attente.</div> : (
+          <div style={{overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%"}}>
+            <thead><tr>{["#","Actif","Sens","Marché","Mode","Déclenchement","Prix actuel","Opportunité","Expire",""].map(h=><th key={h} style={MT.th}>{h}</th>)}</tr></thead>
+            <tbody>{st.scheduled.map(o=><tr key={o.id}>
+              <td style={MT.td}>{o.id}</td><td style={{...MT.td,fontWeight:800}}>{o.ticker}</td><td style={MT.td}>{dirBadge(o.direction)}</td>
+              <td style={MT.td}>{o.market.toUpperCase()}</td><td style={{...MT.td,color:o.mode==="live"?"#ef4444":"#22c55e"}}>{o.mode.toUpperCase()}</td>
+              <td style={MT.td}>{o.execution==="price_above"?`prix ≥ ${fmtP(o.trigger_price)}`:o.execution==="price_below"?`prix ≤ ${fmtP(o.trigger_price)}`:`à ${fmtTime(o.trigger_time)}`}</td>
+              <td style={MT.td}>{fmtP(o.current_price)}</td>
+              <td style={{...MT.td,color:o.opportunity_valid?"#22c55e":"#fbbf24"}}>{o.opportunity_valid?"valable":"non confirmée"}</td>
+              <td style={MT.td}>{fmtTime(o.expires_at)}</td>
+              <td style={MT.td}><button style={MT.btn("#1e2d4a","#fca5a5")} onClick={()=>cancelOrder(o.id)}>Annuler</button></td>
+            </tr>)}</tbody>
+          </table></div>)}
+      </div>
+
+      {/* POSITIONS MANUELLES */}
+      <div style={MT.card}>
+        <div style={MT.title}>📈 POSITIONS MANUELLES OUVERTES ({st.positions.length})</div>
+        {st.positions.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucune position manuelle.</div> : st.positions.map(p=>(
+          <div key={p.id} style={{borderBottom:"1px solid #131d33",padding:"10px 0"}}>
+            <div style={{display:"flex",flexWrap:"wrap",gap:14,alignItems:"center",fontSize:12,color:"#e2e8f0"}}>
+              <b>#{p.id} {p.ticker}</b>{dirBadge(p.direction)}
+              <span>{p.market.toUpperCase()} · <span style={{color:p.mode==="live"?"#ef4444":"#22c55e"}}>{p.mode.toUpperCase()}</span> · x{p.leverage}</span>
+              <span>Entrée {fmtP(p.entry_price)} → {fmtP(p.current_price)}</span>
+              <span style={{color:(p.pnl||0)>=0?"#22c55e":"#ef4444",fontWeight:800}}>{p.move_pct!=null?`${p.move_pct>=0?"+":""}${p.move_pct.toFixed(2)} %`:""} {fmtUsd(p.pnl)}</span>
+              <span style={{color:"#94a3b8"}}>SL {fmtP(p.sl_price)} · TP {p.tp_price?fmtP(p.tp_price):"—"} · TTP {p.ttp_arm_pct?`+${p.ttp_arm_pct}%/${p.ttp_trail_pct}%${p.armed?" (armé)":""}`:"—"} · pic +{(p.peak_pct||0).toFixed(2)} %</span>
+              {p.status!=="open" && <span style={{color:"#fbbf24"}}>{p.status==="opening"?"ouverture…":"fermeture…"}</span>}
+              {p.error && <span style={{color:"#fca5a5"}}>⚠️ {p.error}</span>}
+              <span style={{marginLeft:"auto",display:"flex",gap:6}}>
+                <button style={MT.btn("#1e2d4a","#93c5fd")} onClick={()=>{setEditId(editId===p.id?null:p.id);setEdit({sl_price:p.sl_price,tp_price:p.tp_price||"",ttp_arm_pct:p.ttp_arm_pct||"",ttp_trail_pct:p.ttp_trail_pct||"",ttp_off:false});}}>Modifier</button>
+                <button style={MT.btn("#ef4444","#fff")} onClick={()=>closePos(p)}>Fermer</button>
+              </span>
+            </div>
+            {editId===p.id && <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:8,alignItems:"flex-end"}}>
+              <div><span style={MT.label}>SL (prix)</span><input style={{...MT.input,width:120}} type="number" step="any" value={edit.sl_price} onChange={e=>setEdit({...edit,sl_price:e.target.value})}/></div>
+              <div><span style={MT.label}>TP (prix, vide = aucun)</span><input style={{...MT.input,width:140}} type="number" step="any" value={edit.tp_price} onChange={e=>setEdit({...edit,tp_price:e.target.value})}/></div>
+              <div><span style={MT.label}>TTP armement %</span><input style={{...MT.input,width:100}} type="number" step="0.05" value={edit.ttp_arm_pct} disabled={edit.ttp_off} onChange={e=>setEdit({...edit,ttp_arm_pct:e.target.value})}/></div>
+              <div><span style={MT.label}>TTP repli %</span><input style={{...MT.input,width:100}} type="number" step="0.05" value={edit.ttp_trail_pct} disabled={edit.ttp_off} onChange={e=>setEdit({...edit,ttp_trail_pct:e.target.value})}/></div>
+              <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={edit.ttp_off} onChange={e=>setEdit({...edit,ttp_off:e.target.checked})}/>sans TTP</label>
+              <button style={MT.btn("#60a5fa")} onClick={()=>saveEdit(p)}>Enregistrer</button>
+              {p.mode==="live"&&p.market==="perp" && <span style={{fontSize:10,color:"#64748b"}}>Le SL natif Hyperliquid est mis à jour aussi.</span>}
+            </div>}
+          </div>))}
+      </div>
+
+      {/* HISTORIQUE */}
+      <div style={MT.card}>
+        <div style={MT.title}>📜 HISTORIQUE MANUEL (50 derniers)</div>
+        {st.history.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucun historique.</div> : (
+          <div style={{overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%"}}>
+            <thead><tr>{["#","Actif","Sens","Marché","Mode","Source","Ouverture","Fermeture","Entrée","Sortie","PnL","Statut / motif"].map(h=><th key={h} style={MT.th}>{h}</th>)}</tr></thead>
+            <tbody>{st.history.map(h=><tr key={h.id}>
+              <td style={MT.td}>{h.id}</td><td style={{...MT.td,fontWeight:800}}>{h.ticker}</td><td style={MT.td}>{dirBadge(h.direction)}</td>
+              <td style={MT.td}>{(h.market||"").toUpperCase()}</td><td style={{...MT.td,color:h.mode==="live"?"#ef4444":"#22c55e"}}>{(h.mode||"").toUpperCase()}</td>
+              <td style={MT.td}>{h.strategy_label}</td><td style={MT.td}>{fmtTime(h.opened_at||h.created_at)}</td><td style={MT.td}>{fmtTime(h.closed_at)}</td>
+              <td style={MT.td}>{fmtP(h.entry_price)}</td><td style={MT.td}>{fmtP(h.exit_price)}</td>
+              <td style={{...MT.td,color:(h.pnl||0)>=0?"#22c55e":"#ef4444"}}>{h.pnl!=null?fmtUsd(h.pnl):"—"}</td>
+              <td style={{...MT.td,color:"#94a3b8"}}>{h.status==="closed"?h.reason:`${h.status==="cancelled"?"annulé":h.status==="expired"?"expiré":"échec"} — ${h.reason||h.error||""}`}</td>
+            </tr>)}</tbody>
+          </table></div>)}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [token, setToken] = useState(()=>localStorage.getItem("hb_token")||"");
   const [email, setEmail] = useState(()=>localStorage.getItem("hb_email")||"");
@@ -940,6 +1227,7 @@ Confirmer ?`
     {id:"parametres",label:"⚙️ Paramètres"},
     {id:"logs",label:"📋 Logs"},
     {id:"paper",label:config?.trading_mode==="live"?`🔴 Live Trading`:`🎮 Paper Trading`},
+    {id:"manuel",label:"✋ Trading Manuel"},
     {id:"rapport",label:"📄 Rapport"},
     {id:"stats",label:"📊 Performance"},
     {id:"bilan",label:"💰 Bilan"},
@@ -2195,6 +2483,9 @@ Confirmer ?`
           </div>
         </div>
       )}
+
+      {/* v4.273 — TRADING MANUEL */}
+      {tab==="manuel" && <ManualTradingTab token={token}/>}
 
       {/* PAPER TRADING */}
       {tab==="paper" && (
