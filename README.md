@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32565691/README.md)
+[README.md](https://github.com/user-attachments/files/32567457/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.271** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.272** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -276,6 +276,20 @@ la perte atteint 1 % ou que les 15 minutes sont écoulées. Motifs distincts :
 un trade sauvé qui finit autrement porte la mention `· apres patience SL`.
 Réglages avancés : seuil de pression, perte maximale, durée maximale
 (0 = patience désactivée).
+
+## 4quaterdecies. Mode Forex recalibré (v4.272)
+
+Le mode Forex (lignes « 💱 FOREX LONG / SHORT » du diagnostic) ne trade que
+les actifs de `FOREX_MODE_SYMBOLS` (devises `xyz:` et PAXG). Deux seuils
+calibrés pour les cryptos l'empêchaient d'entrer :
+
+| Réglage | Avant | Après |
+|---|---|---|
+| `FOREX_ANTI_RANGE_MIN_PCT` (mouvement minimal sur 30 bougies 5 min) | 2 % | 0,25 % |
+| `FOREX_LONG_TERM_MOMENTUM_MIN_CHANGE_PCT` (repli de la confirmation de tendance) | 2 % | 0,4 % |
+
+Le diagnostic affiche désormais le blocage « marché en range » pour les
+devises, et « non concerné » pour les cryptos.
 
 ## 5. Premier lancement
 
