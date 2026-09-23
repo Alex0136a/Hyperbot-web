@@ -170,6 +170,18 @@ def init_db():
         if "status" not in existing_cols:
             conn.execute("ALTER TABLE trades ADD COLUMN status TEXT")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_uid ON trades(trade_uid) WHERE trade_uid IS NOT NULL")
+        # v4.273 — TRADING MANUEL : ordres programmes et positions manuelles
+        # (donnees completes en JSON, statut indexe).
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS manual_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                status TEXT NOT NULL,
+                data TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_manual_status ON manual_trades(status)")
         # v4.265 — SUIVI DETAILLE DES TRADES (export CSV) : source du prix de
         # sortie, frais et PnL reels Hyperliquid, et comportement du prix
         # 30/60 min APRES la sortie (le SL etait-il trop serre ? le TTP trop
@@ -518,7 +530,7 @@ def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=N
 
 
 # ── v4.265 — Suivi apres sortie + export ─────────────────────────────────
-FOLLOWUP_STRATEGIES = ("spot_accumulation", "accumulation", "funding_contrarian")  # v4.269 : + Funding
+FOLLOWUP_STRATEGIES = ("spot_accumulation", "accumulation", "funding_contrarian", "manual")  # v4.269 : + Funding ; v4.273 : + Manuel
 
 
 def list_trades_needing_followup(min_age_minutes=62, max_age_days=16, limit=5):
@@ -878,3 +890,33 @@ def set_meta(key, value):
             (key, value)
         )
         conn.commit()
+
+
+# ── v4.273 — Trading manuel ──────────────────────────────────────────────
+def manual_insert(status, data):
+    with _lock, _connect() as conn:
+        cur = conn.execute("INSERT INTO manual_trades (status, data, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                           (status, json.dumps(data), now_iso(), now_iso()))
+        conn.commit()
+        return cur.lastrowid
+
+
+def manual_update(item_id, status, data):
+    with _lock, _connect() as conn:
+        conn.execute("UPDATE manual_trades SET status=?, data=?, updated_at=? WHERE id=?",
+                     (status, json.dumps(data), now_iso(), item_id))
+        conn.commit()
+
+
+def manual_list(statuses):
+    with _lock, _connect() as conn:
+        rows = conn.execute(f"SELECT id, status, data FROM manual_trades WHERE status IN ({','.join('?' * len(statuses))}) ORDER BY id",
+                            tuple(statuses)).fetchall()
+        return [{"id": r["id"], "status": r["status"], "data": json.loads(r["data"])} for r in rows]
+
+
+def manual_history(limit=50):
+    with _lock, _connect() as conn:
+        rows = conn.execute("SELECT id, status, data FROM manual_trades WHERE status IN ('closed','cancelled','expired','failed') "
+                            "ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+        return [{"id": r["id"], "status": r["status"], "data": json.loads(r["data"])} for r in rows]
