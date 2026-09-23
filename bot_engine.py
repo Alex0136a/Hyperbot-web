@@ -33,10 +33,13 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.271"
-BOT_BUILD   = "2026-09-23-g"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.272"
+BOT_BUILD   = "2026-09-24-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.272 (build 2026-09-24-a) — Mode Forex : seuils anti-range (2 % -> 0,25 %)
+#        et momentum long terme (2 % -> 0,4 %) recalibres pour les devises
+#        (le mode ne pouvait jamais entrer) ; diagnostic Forex explicite.
 # 4.271 (build 2026-09-23-g) — Patience du SL Spot-Accum : exige aussi une
 #        tendance de fond intacte (prix au-dessus de l EMA200 pour un long).
 # 4.270 (build 2026-09-23-f) — Spot-Accum : patience du SL pilotee par le
@@ -1248,7 +1251,15 @@ PROFILE_SWING = {
     # normal (aucun outil dedie pour bien trader un range, contrairement a
     # Accumulation) — 200 echantillons = 6h40 (aligne sur EMA200/ADX).
     "FOREX_REQUIRE_ANTI_RANGE": True,
-    "FOREX_ANTI_RANGE_MIN_PCT": 2.0,
+    # v4.272 — FIX BUG CRITIQUE : 2,0 % etait calibre pour les CRYPTOS. Une
+    # paire de devises (EUR/USD, USD/JPY...) bouge typiquement de 0,1 a 0,4 %
+    # en 2 h 30 (30 bougies 5 min) : avec 2 %, le marche etait juge "en
+    # range" en permanence et le mode Forex ne pouvait JAMAIS entrer — et ce
+    # blocage n apparaissait meme pas dans le diagnostic.
+    "FOREX_ANTI_RANGE_MIN_PCT": 0.25,
+    # v4.272 — meme probleme pour le repli "momentum long terme" de la
+    # confirmation de tendance (2 % sur 180 bougies, calibre crypto).
+    "FOREX_LONG_TERM_MOMENTUM_MIN_CHANGE_PCT": 0.4,
     "FOREX_ANTI_RANGE_LOOKBACK": 30,
     # v4.155 — SUR DEMANDE EXPLICITE : meme protection pour Funding.
     "FUNDING_REQUIRE_ANTI_RANGE": True,
@@ -5200,7 +5211,7 @@ class BotEngine:
         else:
             return change_pct <= -min_change_pct
 
-    def _unified_trend_confirmed(self, prices, trend_ok, state=None, streak_attr=None, min_stability_cycles=None, adx_threshold_override=None):
+    def _unified_trend_confirmed(self, prices, trend_ok, state=None, streak_attr=None, min_stability_cycles=None, adx_threshold_override=None, momentum_min_change_override=None):
         """v4.58 — SUR DEMANDE EXPLICITE : verification de tendance PARTAGEE
         par les 3 modes (normal, Accumulation, Spot-Accumulation) — EMA200
         (trend_ok, deja calcule par l appelant) ET ADX >= seuil (tendance
@@ -5226,7 +5237,7 @@ class BotEngine:
             if state is not None and streak_attr is not None:
                 direction = "long" if streak_attr == "trend_up_streak" else "short"
                 lookback = self.cfg.get("LONG_TERM_MOMENTUM_LOOKBACK_CANDLES", 180)
-                min_change = self.cfg.get("LONG_TERM_MOMENTUM_MIN_CHANGE_PCT", 2.0)
+                min_change = momentum_min_change_override if momentum_min_change_override is not None else self.cfg.get("LONG_TERM_MOMENTUM_MIN_CHANGE_PCT", 2.0)
                 if self._long_term_momentum_confirmed(state, direction, lookback, min_change):
                     return True
             return False
@@ -7571,6 +7582,7 @@ class BotEngine:
         # marge isolee des marches HIP-3), et qu Normal continue d
         # evaluer des cryptos alors qu il est desormais dedie au forex.
         is_forex_ticker = ticker in cfg.get("FOREX_MODE_SYMBOLS", [])
+        forex_momentum_override = cfg.get("FOREX_LONG_TERM_MOMENTUM_MIN_CHANGE_PCT", 0.4) if is_forex_ticker else None  # v4.272
         # v4.262 — SUR DEMANDE EXPLICITE, FIX BUG CRITIQUE : deplace ici
         # depuis un bloc qui ne s executait qu une fois toutes les ~2
         # minutes (echantillonnage MTF, usage totalement different) —
@@ -8317,12 +8329,12 @@ class BotEngine:
             # 19 entrees groupees observe le 04/09, sans cette protection).
             normal_stability_cycles = cfg.get("FOREX_TREND_STABILITY_CYCLES", 24)
             long_level_ok = (
-                self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", normal_stability_cycles)
+                self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", normal_stability_cycles, momentum_min_change_override=forex_momentum_override)
                 and self._unified_proximity_ok(price, support, resistance, "long")
                 and self._unified_sr_amplitude_ok(support, resistance)
             )
             short_level_ok = (
-                self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", normal_stability_cycles)
+                self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", normal_stability_cycles, momentum_min_change_override=forex_momentum_override)
                 and self._unified_proximity_ok(price, support, resistance, "short")
                 and self._unified_sr_amplitude_ok(support, resistance)
             )
@@ -8358,8 +8370,8 @@ class BotEngine:
             # aucune des 3 raisons ne matchait, d ou "raison inconnue"
             # (observe sur SEI, AAVE). Reutilise desormais EXACTEMENT les
             # memes parametres que la decision reelle.
-            trend_confirmed_long = self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", normal_stability_cycles)
-            trend_confirmed_short = self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", normal_stability_cycles)
+            trend_confirmed_long = self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", normal_stability_cycles, momentum_min_change_override=forex_momentum_override)
+            trend_confirmed_short = self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", normal_stability_cycles, momentum_min_change_override=forex_momentum_override)
             proximity_long_ok = self._unified_proximity_ok(price, support, resistance, "long")
             proximity_short_ok = self._unified_proximity_ok(price, support, resistance, "short")
             amplitude_ok = self._unified_sr_amplitude_ok(support, resistance)
@@ -8476,7 +8488,12 @@ class BotEngine:
         # reellement en range, meme si le mode simplifie signale un signal
         # LONG/SHORT valide. Meme principe de precaution que Spot-Accum.
         if cfg.get("FOREX_REQUIRE_ANTI_RANGE", True):
-            is_ranging_normal = self._is_market_ranging(state, cfg.get("FOREX_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("FOREX_ANTI_RANGE_LOOKBACK", 200))
+            is_ranging_normal = self._is_market_ranging(state, cfg.get("FOREX_ANTI_RANGE_MIN_PCT", 0.25), cfg.get("FOREX_ANTI_RANGE_LOOKBACK", 200))
+            # v4.272 — rend ce blocage VISIBLE dans le diagnostic
+            if isinstance(state.last_gate_snapshot, dict) and is_forex_ticker:
+                state.last_gate_snapshot["forex_ranging"] = bool(is_ranging_normal)
+                state.last_gate_snapshot["forex_anti_range_min_pct"] = cfg.get("FOREX_ANTI_RANGE_MIN_PCT", 0.25)
+                state.last_gate_snapshot["forex_anti_range_lookback"] = cfg.get("FOREX_ANTI_RANGE_LOOKBACK", 200)
             if is_ranging_normal:
                 long_entry_ok = False
                 short_entry_ok = False
