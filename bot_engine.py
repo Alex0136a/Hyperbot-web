@@ -33,10 +33,14 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.264"
-BOT_BUILD   = "2026-09-22-a"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.265"
+BOT_BUILD   = "2026-09-23-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.265 (build 2026-09-23-a) — PnL de sortie calcule sur le prix REEL
+#        d execution Hyperliquid ; suivi apres sortie (+30/+60 min, plus
+#        haut/bas de l heure) et frais/PnL reels pour Spot-Accum et
+#        Accumulation ; export CSV depuis l onglet Historique.
 # 4.264 (build 2026-09-22-a) — Fermeture reelle verifiee partout (ordre
 #        d abord, suivi ferme seulement si Hyperliquid confirme) ; SDK
 #        multi-DEX (forex xyz) ; indexation des trades a l ouverture
@@ -2223,6 +2227,32 @@ def place_order(exchange, symbol, is_buy, size_usd, price, cfg, sl_price=None, t
         print(f"[ORDER] Erreur place_order {ticker} : {e}")
         return False, str(e), None
 
+# v4.265 — prix REEL d execution de la derniere fermeture confirmee, par
+# ticker (moyenne ponderee des remplissages) — lu par _safe_close_position
+# pour calculer le PnL sur le vrai prix Hyperliquid, pas sur le prix vu par
+# le bot au moment de decider.
+_LAST_CLOSE_FILL = {}
+
+
+def _record_fill(fills, result):
+    status = _order_first_status(result) if result else None
+    if status and "filled" in status:
+        try:
+            fills.append((float(status["filled"]["totalSz"]), float(status["filled"]["avgPx"])))
+        except (KeyError, TypeError, ValueError):
+            pass
+
+
+def _weighted_fill_price(fills):
+    total = sum(sz for sz, _ in fills)
+    return sum(sz * px for sz, px in fills) / total if total > 0 else None
+
+
+def pop_last_close_fill(ticker):
+    """Prix reel de la derniere fermeture confirmee de ce ticker (ou None)."""
+    return _LAST_CLOSE_FILL.pop(ticker, None)
+
+
 def close_order(exchange, symbol, position, cfg):
     """Ferme une position REELLE — perp ou spot selon le symbole — et ne
     retourne True que si la fermeture est CONFIRMEE.
@@ -2252,11 +2282,16 @@ def close_order(exchange, symbol, position, cfg):
             sz = format_size_hl(max(position["size"] / position["entry"], 0), sz_decimals)
             api_ticker = cfg.get("SPOT_TICKER_MAP", {}).get(ticker, ticker)
             is_buy = position["type"] == "short"
+            _LAST_CLOSE_FILL.pop(ticker, None)
             result = exchange.market_open(api_ticker, is_buy, sz)
             status = _order_first_status(result) if result else None
             ok = bool(result and result.get("status") == "ok" and status and "filled" in status)
             if not ok:
                 print(f"[CLOSE] {ticker} spot : fermeture non confirmee — reponse {str(result)[:300]}")
+            else:
+                fills = []
+                _record_fill(fills, result)
+                _LAST_CLOSE_FILL[ticker] = _weighted_fill_price(fills)
             return ok
 
         wallet = exchange_wallet_address(exchange)
@@ -2265,15 +2300,19 @@ def close_order(exchange, symbol, position, cfg):
             print(f"[CLOSE] {ticker} : aucune position reelle sur Hyperliquid — deja fermee (SL natif ?), fermeture confirmee.")
             return True
 
+        _LAST_CLOSE_FILL.pop(ticker, None)
+        fills = []
         for attempt in (1, 2):
             result = exchange.market_close(ticker)
             if result is not None:
                 status = _order_first_status(result)
                 if result.get("status") != "ok" or (status and "error" in status):
                     print(f"[CLOSE] {ticker} : tentative {attempt} rejetee — {str(result)[:300]}")
+                _record_fill(fills, result)
             time.sleep(0.5)  # laisse l etat de compte se mettre a jour
             szi_after = get_exchange_position_szi(exchange.info, wallet, ticker)
             if szi_after == 0.0:
+                _LAST_CLOSE_FILL[ticker] = _weighted_fill_price(fills)
                 return True
             if szi_after is None:
                 print(f"[CLOSE] {ticker} : etat reel illisible apres fermeture — considere NON confirme.")
@@ -3529,6 +3568,7 @@ class BotEngine:
             exit_px = target.current_price or pos.get("sl") or pos["entry"]
         pnl, _, trade = target.close_position(exit_px, reason)
         trade["symbol"] = slot
+        trade["exit_price_source"] = "hyperliquid" if reason.startswith("SL/TP HYPERLIQUID") else "estime"
         self.emit("trade", trade)
         self.emit("log", {"msg": f"[{ticker}] {reason} @ ${exit_px:.6g} | PnL: ${pnl:.2f} (mode {pos.get('strategy', 'forex')})", "level": "win" if pnl > 0 else "loss"})
 
@@ -4054,6 +4094,86 @@ class BotEngine:
         dire pourquoi — cas permanent des actifs forex. Enregistre desormais
         la raison exacte du blocage, horodatee."""
         state.last_gate_snapshot = {"ts": time.time(), "price": price, "blocked_reason": reason}
+
+    # ─────────────────────────────────────────────────────────────────────
+    #  v4.265 — SUIVI APRES SORTIE (Spot-Accum / Accumulation)
+    # ─────────────────────────────────────────────────────────────────────
+    def _maybe_start_trade_followups(self):
+        """Lance, au plus une fois par minute et dans un fil separe (aucun
+        impact sur la reactivite du trading), le suivi des trades fermes
+        depuis plus d une heure."""
+        if self.info is None:
+            return
+        now = time.time()
+        if now - getattr(self, "_last_followup_run", 0) < 60:
+            return
+        running = getattr(self, "_followup_thread", None)
+        if running is not None and running.is_alive():
+            return
+        self._last_followup_run = now
+        self._followup_thread = threading.Thread(target=self._run_trade_followups, daemon=True)
+        self._followup_thread.start()
+
+    def _candles(self, coin, interval, start_ms, end_ms):
+        try:
+            data = self.info.post("/info", {"type": "candleSnapshot", "req": {
+                "coin": coin, "interval": interval, "startTime": int(start_ms), "endTime": int(end_ms)}})
+            return data if isinstance(data, list) else []
+        except Exception as e:
+            print(f"[FOLLOWUP] Bougies {coin} indisponibles : {e}")
+            return None
+
+    def _run_trade_followups(self):
+        """Pour chaque trade Spot-Accum / Accumulation ferme depuis plus d
+        une heure : prix a +30 et +60 min apres la sortie, plus haut/plus bas
+        sur cette heure (bougies Hyperliquid), et pour le live, frais et PnL
+        reels issus des remplissages Hyperliquid."""
+        try:
+            pending = db.list_trades_needing_followup(limit=5)
+        except Exception as e:
+            print(f"[FOLLOWUP] Lecture base impossible : {e}")
+            return
+        wallet = self.cfg.get("WALLET_ADDRESS")
+        for row in pending:
+            try:
+                closed = datetime.fromisoformat(row["closed_at"]).timestamp()
+                opened = datetime.fromisoformat(row["created_at"]).timestamp()
+            except (TypeError, ValueError):
+                db.save_trade_followup(row["id"], {"followup_status": "dates invalides"})
+                continue
+            age_days = (time.time() - closed) / 86400
+            interval, step_ms = ("1m", 60_000) if age_days < 3 else ("5m", 300_000)
+            start_ms = int(closed * 1000)
+            end_ms = start_ms + 61 * 60_000
+            candles = self._candles(row["coin"], interval, start_ms - step_ms, end_ms)
+            if candles is None:
+                continue  # erreur reseau : nouvel essai a la prochaine passe
+            fields = {}
+            if candles:
+                def close_at(target_ms):
+                    best = None
+                    for c in candles:
+                        if int(c["t"]) <= target_ms:
+                            best = c
+                    return float(best["c"]) if best else None
+                in_hour = [c for c in candles if start_ms - step_ms < int(c["t"]) <= start_ms + 60 * 60_000]
+                fields["price_after_30m"] = close_at(start_ms + 30 * 60_000)
+                fields["price_after_60m"] = close_at(start_ms + 60 * 60_000)
+                if in_hour:
+                    fields["high_60m"] = max(float(c["h"]) for c in in_hour)
+                    fields["low_60m"] = min(float(c["l"]) for c in in_hour)
+            if row.get("trade_mode") == "live" and wallet:
+                try:
+                    fills = self.info.user_fills_by_time(wallet, int(opened * 1000) - 60_000, int(closed * 1000) + 60_000) or []
+                    mine = [f for f in fills if f.get("coin") == row["coin"]]
+                    if mine:
+                        fees = [float(f["fee"]) for f in mine if f.get("fee") is not None]
+                        fields["fees_real"] = round(sum(fees), 6) if fees else None
+                        fields["pnl_real_hl"] = round(sum(float(f.get("closedPnl", 0) or 0) for f in mine), 6)
+                except Exception as e:
+                    print(f"[FOLLOWUP] Remplissages {row['coin']} indisponibles : {e}")
+            fields["followup_status"] = "ok" if candles else "bougies indisponibles"
+            db.save_trade_followup(row["id"], fields)
 
     def _discard_pending_trade(self, trade_uid, ticker):
         """v4.264 — retire la trace prealable d un trade dont l ordre n a
@@ -5890,6 +6010,7 @@ class BotEngine:
                 self._finalize_pending_accumulation_candidates()
                 self._finalize_pending_funding_candidates()
                 self._finalize_pending_spot_accum_candidates()
+                self._maybe_start_trade_followups()  # v4.265 — hors du fil de trading
 
                 self._save_open_positions()
                 self._save_confidence_thresholds()
@@ -5945,14 +6066,24 @@ class BotEngine:
         # strategie : une position ouverte en live puis la strategie
         # rebasculee en paper etait fermee en interne SANS ordre reel.
         mode = self._position_mode(pos) if pos else mode
+        exit_source = "simulation" if mode != "live" else "bot"
         if mode == "live" and self.exchange:
             close_ok = close_order(self.exchange, ticker, pos, self.cfg)
             if not close_ok:
                 self.emit("log", {"msg": f"[{ticker}] ⚠️⚠️ ALERTE CRITIQUE : ordre de fermeture REJETE par Hyperliquid — position laissee OUVERTE cote bot egalement (nouvelle tentative au prochain cycle), pour rester coherent avec la realite. Verification manuelle recommandee si ceci persiste.", "level": "error"})
                 print(f"[CLOSE-ORDER-FAIL] {ticker} : ordre de fermeture reel a echoue — fermeture cote bot ANNULEE, reste synchronise avec Hyperliquid.")
                 return None
+            # v4.265 — PnL calcule sur le VRAI prix d execution Hyperliquid
+            # quand il est connu (meme logique que l entree depuis v4.226).
+            real_exit = pop_last_close_fill(ticker)
+            if real_exit:
+                if abs(real_exit - price) / price > 0.0001:
+                    print(f"[EXIT-FILL] {ticker} : prix vise {price:.6g} -> execute {real_exit:.6g} (glissement {((real_exit - price) / price * 100):+.3f}%)")
+                price = real_exit
+                exit_source = "hyperliquid"
         pnl, _, trade = state.close_position(price, reason)
         trade["symbol"] = symbol
+        trade["exit_price_source"] = exit_source
         return pnl, _, trade
 
     def _manage_position_impl(self, symbol, price, state):
