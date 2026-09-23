@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32539888/README.md)
+[README.md](https://github.com/user-attachments/files/32542262/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.264** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.265** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -178,6 +178,29 @@ position a réellement disparu. Le suivi interne n'est fermé qu'à cette
 condition ; sinon la position reste suivie et la fermeture est retentée au
 cycle suivant. Le mode paper/live est celui **de l'ouverture** de la position,
 même si la stratégie a été rebasculée depuis.
+
+## 4nonies. Suivi et export des trades Spot-Accum / Accumulation
+
+Onglet **Historique** → bouton **📥 Télécharger le suivi (CSV)** (fichier
+lisible directement par Excel : séparateur `;`, virgule décimale).
+
+Pour chaque trade : mode, actif, sens, paper/live, heures d'ouverture et de
+fermeture (heure de Paris), durée, motif de sortie, levier, marge et
+notionnel, prix d'entrée et de sortie (avec leur source), mouvement de prix,
+pic, PnL brut, frais, PnL net, puis le **comportement du prix après la
+sortie** : prix à +30 et +60 min, meilleur mouvement dans l'heure et, pour les
+trades perdants, si le prix est revenu au niveau d'entrée dans l'heure.
+
+- Le suivi après sortie est calculé automatiquement ~1 h après chaque
+  fermeture à partir des bougies Hyperliquid, dans un fil séparé (aucun
+  impact sur le trading). Les trades déjà en base (jusqu'à ~16 jours) sont
+  complétés rétroactivement, par lots, après le déploiement.
+- En live, les frais et le PnL réels proviennent des remplissages
+  Hyperliquid ; à défaut, les frais sont estimés (0,09 % du notionnel par
+  aller-retour) et signalés comme tels.
+- Depuis la 4.265, le PnL d'une sortie live est calculé sur le **prix
+  réellement exécuté** par Hyperliquid (colonne « source prix sortie » =
+  `hyperliquid`), et non plus sur le prix vu par le bot au moment de décider.
 
 ## 5. Premier lancement
 
