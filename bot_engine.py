@@ -33,10 +33,12 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.273"
-BOT_BUILD   = "2026-09-24-b"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.274"
+BOT_BUILD   = "2026-09-24-c"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.274 (build 2026-09-24-c) — FIX : import de manual_trading avant le
+#        changement de dossier (le serveur ne demarrait plus avec un Volume).
 # 4.273 (build 2026-09-24-b) — Onglet TRADING MANUEL : opportunites du bot,
 #        parametres proposes et modifiables, execution immediate ou
 #        programmee, paper/live, perps/spot (voir manual_trading.py).
