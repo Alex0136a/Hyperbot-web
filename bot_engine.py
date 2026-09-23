@@ -33,10 +33,16 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.266"
-BOT_BUILD   = "2026-09-23-b"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.268"
+BOT_BUILD   = "2026-09-23-d"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.268 (build 2026-09-23-d) — TTP Funding : armement a +1 % (au lieu de
+#        1,5 %), patience pilotee par le flux de transactions (tolerance
+#        elargie si flux favorable, reduite si contraire), plancher de gain.
+# 4.267 (build 2026-09-23-c) — Funding Contrarian : le pic de trailing du
+#        trade precedent n est plus herite a l ouverture (fermetures
+#        immediates a ~0 %).
 # 4.266 (build 2026-09-23-b) — Flux de transactions fiabilise : reabonnement
 #        apres reconnexion WebSocket, fenetre de temps fixe horodatee, repli
 #        REST si le flux est mort, pression "soutenue" uniquement sur des
@@ -350,8 +356,20 @@ CONFIG = {
     "FUNDING_SKIP_CLASSIC_TTP": True,
     # v4.258 — SUR DEMANDE EXPLICITE : TTP dedie, simple et fixe pour
     # Funding — arme a ce % de pic, tolere ce % de repli avant de fermer.
-    "FUNDING_TTP_ARM_PCT": 1.5,
+    "FUNDING_TTP_ARM_PCT": 1.0,               # v4.268 SUR DEMANDE EXPLICITE : 1.5 -> 1.0 (des trades a +1,2/+1,3 % de pic finissaient au SL, sans protection)
     "FUNDING_TTP_TOLERANCE_PCT": 0.5,
+    # v4.268 — PATIENCE DU TTP FUNDING PILOTEE PAR LE FLUX DE TRANSACTIONS :
+    # au moment ou le repli atteint la tolerance, le flux decide.
+    #  - flux toujours FAVORABLE au trade (vendeurs dominants pour un short,
+    #    acheteurs pour un long) -> patience : tolerance elargie ;
+    #  - flux CONTRAIRE -> sortie anticipee (tolerance reduite) ;
+    #  - flux neutre ou indisponible -> tolerance normale.
+    # Un PLANCHER garantit qu un trade arme ne revient jamais sous ce gain.
+    "FUNDING_TTP_FLOW_ENABLED": True,
+    "FUNDING_TTP_FLOW_THRESHOLD": 0.2,        # |pression| minimale pour juger le flux favorable/contraire
+    "FUNDING_TTP_FLOW_MAX_TOLERANCE_PCT": 0.9, # tolerance maximale accordee par la patience
+    "FUNDING_TTP_FLOW_FAST_TOLERANCE_PCT": 0.25, # tolerance si le flux se retourne contre le trade
+    "FUNDING_TTP_MIN_LOCK_PCT": 0.3,          # plancher de gain (% de prix) une fois le TTP arme
     # Confirmation d entree par flux — rejette si le flux contredit
     # clairement la these (le retournement attendu ne montre aucun signe
     # naissant), reduisant le hasard d une entree basee sur le taux seul.
@@ -2890,6 +2908,15 @@ class SymbolState:
         self.absolute_peak_pnl_usd = None
         self.sl_breach_streak = 0  # v4.149 — SUR DEMANDE EXPLICITE : compteur de "patience" SL
         self.ttp_breach_streak = 0  # v4.154 — SUR DEMANDE EXPLICITE : compteur de "patience" TTP
+        # v4.267 — FIX BUG : ces variables de trailing (partagees par
+        # Spot-Accum ET Funding Contrarian) n etaient remises a zero qu a l
+        # ouverture d un trade Spot-Accum. Un trade Funding heritait donc du
+        # PIC du trade precedent sur le meme emplacement (ex: +2,32 %) : le
+        # trailing etait "arme" des l ouverture et fermait la position dans
+        # la minute (WIF, UNI, DOGE, INJ ouverts/fermes a ~0 %, frais perdus).
+        self.spot_accum_armed = False
+        self.spot_accum_peak_pnl_pct = None
+        self.spot_accum_velocity_checkpoint = None
 
     def trades_last_24h(self):
         cutoff = datetime.now().timestamp() - 86400
@@ -7040,24 +7067,61 @@ class BotEngine:
         # haut dans cette fonction, avant ce point), mais sans jamais
         # risquer de rendre un gain significatif dans l attente.
         if pos.get("strategy") == "funding_contrarian" and cfg.get("FUNDING_SKIP_CLASSIC_TTP", True):
-            arm_pct_funding = cfg.get("FUNDING_TTP_ARM_PCT", 1.5)
+            arm_pct_funding = cfg.get("FUNDING_TTP_ARM_PCT", 1.0)
             tolerance_pct_funding = cfg.get("FUNDING_TTP_TOLERANCE_PCT", 0.5)
             if state.spot_accum_peak_pnl_pct is None or pnl_pct > state.spot_accum_peak_pnl_pct:
                 state.spot_accum_peak_pnl_pct = pnl_pct
-            if state.spot_accum_peak_pnl_pct >= arm_pct_funding and pnl_pct <= state.spot_accum_peak_pnl_pct - tolerance_pct_funding:
-                _result = self._safe_close_position(state, price, "TRAILING TAKE PROFIT (Funding)", ticker, pos, symbol, mode)
-
-                if _result is None:
-
-                    return
-
-                pnl, _, trade = _result
-                self.emit("trade", trade)
-                if pnl > 0:
-                    self._register_win(ticker)
-                self.emit("log", {"msg": f"[{ticker}] 💰 Funding TTP dedie @ ${price:.4f} | pic +{state.spot_accum_peak_pnl_pct:.2f}% | tolerance {tolerance_pct_funding}% | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
-                self._save_open_positions()
-                self._persist_capital_snapshot()
+            peak_f = state.spot_accum_peak_pnl_pct
+            if peak_f >= arm_pct_funding:
+                if not state.spot_accum_armed:
+                    state.spot_accum_armed = True
+                    self.emit("log", {"msg": f"[{ticker}] 💰 Funding TTP arme a +{peak_f:.2f}% (seuil {arm_pct_funding}%)", "level": "signal"})
+                giveback_f = peak_f - pnl_pct
+                effective_tol = tolerance_pct_funding
+                flow_state = "neutre"
+                flow_f = None
+                # v4.268 — le flux n est consulte que lorsque le repli devient
+                # significatif (moitie de la tolerance) : inutile de le lire a
+                # chaque tick quand le trade progresse.
+                if cfg.get("FUNDING_TTP_FLOW_ENABLED", True) and ticker is not None and giveback_f >= tolerance_pct_funding * 0.5:
+                    flow_f = self._compute_trade_flow_pressure(ticker, price_now=price)
+                    if flow_f is not None:
+                        thr_f = cfg.get("FUNDING_TTP_FLOW_THRESHOLD", 0.2)
+                        favorable = flow_f <= -thr_f if pos["type"] == "short" else flow_f >= thr_f
+                        against = flow_f >= thr_f if pos["type"] == "short" else flow_f <= -thr_f
+                        if favorable:
+                            effective_tol = max(tolerance_pct_funding, cfg.get("FUNDING_TTP_FLOW_MAX_TOLERANCE_PCT", 0.9))
+                            flow_state = "favorable"
+                        elif against:
+                            effective_tol = min(tolerance_pct_funding, cfg.get("FUNDING_TTP_FLOW_FAST_TOLERANCE_PCT", 0.25))
+                            flow_state = "contraire"
+                min_lock_f = cfg.get("FUNDING_TTP_MIN_LOCK_PCT", 0.3)
+                floor_hit = pnl_pct <= min_lock_f
+                if giveback_f >= effective_tol or floor_hit:
+                    if floor_hit and giveback_f < effective_tol:
+                        reason_f = "TRAILING TAKE PROFIT (Funding, plancher)"
+                    elif flow_state == "contraire":
+                        reason_f = "TRAILING TAKE PROFIT (Funding, flux contraire)"
+                    elif flow_state == "favorable":
+                        reason_f = "TRAILING TAKE PROFIT (Funding, apres patience)"
+                    else:
+                        reason_f = "TRAILING TAKE PROFIT (Funding)"
+                    _result = self._safe_close_position(state, price, reason_f, ticker, pos, symbol, mode)
+                    if _result is None:
+                        return
+                    pnl, _, trade = _result
+                    self.emit("trade", trade)
+                    if pnl > 0:
+                        self._register_win(ticker)
+                    flow_txt = f" | flux {flow_f:+.2f} ({flow_state})" if flow_f is not None else ""
+                    self.emit("log", {"msg": f"[{ticker}] 💰 Funding TTP @ ${price:.4f} | pic +{peak_f:.2f}% | repli {giveback_f:.2f}% / tolerance {effective_tol:.2f}%{flow_txt} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+                    self._save_open_positions()
+                    self._persist_capital_snapshot()
+                elif flow_state == "favorable" and giveback_f >= tolerance_pct_funding:
+                    now_ts_f = time.time()
+                    if now_ts_f - getattr(state, "_funding_patience_log_ts", 0) > 60:
+                        state._funding_patience_log_ts = now_ts_f
+                        self.emit("log", {"msg": f"[{ticker}] 💰 Funding TTP : repli {giveback_f:.2f}% depuis +{peak_f:.2f}% mais flux toujours favorable ({flow_f:+.2f}) — patience (tolerance {effective_tol:.2f}%, plancher +{min_lock_f:.2f}%)", "level": "dim"})
             return
 
         if state.tp_stage == 0:
