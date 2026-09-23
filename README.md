@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32578693/README.md)
+[README.md](https://github.com/user-attachments/files/32579533/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.279** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.280** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -322,8 +322,15 @@ programmés et positions manuelles survivent aux redémarrages.
 **Régime de marché** (recalculé toutes les 5 min) : il est **haussier
 confirmé** quand BTC en 1 h est au-dessus de son EMA200 (d'au moins 0,2 %)
 avec l'EMA50 au-dessus de l'EMA200, **et** qu'au moins 60 % des actifs suivis
-sont au-dessus de leur propre EMA200 ; **baissier confirmé** dans le cas
-inverse ; **neutre** sinon.
+sont au-dessus de leur propre EMA200 **en 1 h** (même unité de temps que
+BTC — depuis la 4.280) ; **baissier confirmé** dans le cas
+inverse ; **neutre** sinon, y compris tant que la largeur de marché n'est pas
+mesurable (au moins 8 actifs).
+
+À ne pas confondre avec la tendance propre à chaque mode : Spot-Accum et
+Accumulation exigent en plus la tendance **court terme** de l'actif (EMA200 sur
+des points de 2 min, soit ~6 h 40). Un marché peut donc être haussier de fond
+(régime) tout en étant en repli à court terme sur de nombreux actifs.
 
 - Marché baissier confirmé → **Spot-Accum** (achats) n'ouvre plus rien.
 - Marché haussier confirmé → **Accumulation** (shorts) n'ouvre plus rien.
