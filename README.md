@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32567457/README.md)
+[README.md](https://github.com/user-attachments/files/32575223/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.272** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.273** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -290,6 +290,32 @@ calibrés pour les cryptos l'empêchaient d'entrer :
 
 Le diagnostic affiche désormais le blocage « marché en range » pour les
 devises, et « non concerné » pour les cryptos.
+
+## 4quindecies. Onglet « ✋ Trading Manuel » (v4.273)
+
+1. **Opportunités** : le bot publie en continu les entrées que ses modes
+   détectent (y compris celles qu'il ne prend pas, faute de place). Une
+   opportunité reste choisissable tant que le bot la reconfirme (moins de
+   `MANUAL_OPPORTUNITY_TTL_SEC` = 120 s), et **uniquement dans le sens prévu**.
+2. **Proposition** : prix, taille (15 $ de notionnel par défaut), levier, SL
+   (logique du mode source), TP (80 % de la fourchette support/résistance) et
+   trailing (réglages du mode source). **Tout est modifiable.**
+3. **Exécution** : maintenant, ou programmée (prix ≥, prix ≤, ou heure), avec
+   expiration (24 h par défaut) et annulation automatique si le bot ne
+   confirme plus l'opportunité au déclenchement (option).
+4. **Paper / Live** : le live exige une confirmation explicite. **Perps ou
+   Spot** : le spot n'autorise que l'achat, sans levier ; les USDC doivent
+   être disponibles côté Spot.
+5. **Suivi** : chaque position manuelle est gérée par le bot selon SES
+   paramètres (SL, TP, trailing), modifiables à tout moment, avec fermeture
+   manuelle. Historique dédié, strategie « Manuel » dans l'export CSV.
+
+**Sécurités** : Hyperliquid ne tient qu'une position perp par actif — un ordre
+manuel live est refusé si le bot (ou vous) détient déjà une position live sur
+l'actif, et le bot n'ouvre pas en live sur un actif tenu manuellement. En perp
+live, le SL est aussi posé en ordre natif sur Hyperliquid (mis à jour si vous
+le modifiez). En spot, la protection repose sur le bot seul. Les ordres
+programmés et positions manuelles survivent aux redémarrages.
 
 ## 5. Premier lancement
 
