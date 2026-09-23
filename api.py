@@ -935,6 +935,10 @@ ADVANCED_SETTINGS = {
     # v4.276 — regime de marche et plages horaires
     "MARKET_REGIME_FILTER_ENABLED": {"label": "Regime de marche - filtre actif (1 = oui, 0 = non)", "default": 1},
     "MARKET_REGIME_BREADTH_PCT": {"label": "Regime de marche - % minimal d actifs dans le meme sens", "default": 60},
+    "SPOT_ACCUM_BYPASS_REQUIRE_TREND": {"label": "Spot-Accum - cassures/rebonds exigent la tendance EMA200 (1/0)", "default": 1},
+    "SPOT_ACCUM_BYPASS_FLOW_VETO":     {"label": "Spot-Accum - cassures/rebonds soumis au veto du flux (1/0)", "default": 1},
+    "ACCUMULATION_BYPASS_REQUIRE_TREND": {"label": "Accumulation - cassures/rejets exigent la tendance EMA200 (1/0)", "default": 1},
+    "ACCUMULATION_BYPASS_FLOW_VETO":     {"label": "Accumulation - cassures/rejets soumis au veto du flux (1/0)", "default": 1},
     "SPOT_ACCUM_TRADE_HOUR_START_UTC":   {"label": "Spot-Accum - debut plage horaire (h UTC)", "default": 0},
     "SPOT_ACCUM_TRADE_HOUR_END_UTC":     {"label": "Spot-Accum - fin plage horaire (h UTC, 24 = toujours)", "default": 24},
     "ACCUMULATION_TRADE_HOUR_START_UTC": {"label": "Accumulation - debut plage horaire (h UTC)", "default": 0},
@@ -1089,7 +1093,9 @@ _ZERO_ALLOWED_INT_KEYS = {"CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
                           "ACCUMULATION_MAX_ENTRIES_PER_WINDOW", "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW",
                           "SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND",
-                          "MARKET_REGIME_FILTER_ENABLED", "SPOT_ACCUM_TRADE_HOUR_START_UTC", "ACCUMULATION_TRADE_HOUR_START_UTC",
+                          "MARKET_REGIME_FILTER_ENABLED", "SPOT_ACCUM_TRADE_HOUR_START_UTC",
+                          "SPOT_ACCUM_BYPASS_REQUIRE_TREND", "SPOT_ACCUM_BYPASS_FLOW_VETO",
+                          "ACCUMULATION_BYPASS_REQUIRE_TREND", "ACCUMULATION_BYPASS_FLOW_VETO", "ACCUMULATION_TRADE_HOUR_START_UTC",
                           "FUNDING_TRADE_HOUR_START_UTC", "SPOT_ACCUM_TRADE_HOUR_END_UTC", "ACCUMULATION_TRADE_HOUR_END_UTC",
                           "FUNDING_TRADE_HOUR_END_UTC"}
 
@@ -1108,7 +1114,7 @@ def _coerce_advanced_value(key: str, value):
         return False, "valeur invalide"
     if (key.startswith("ENTRY_FLOW_") or key.endswith("_FLOW_THRESHOLD") or key.endswith("_ENTRY_FLOW_CONFIRM_MIN")) and not 0 <= value <= 1:
         return False, "doit etre entre 0 et 1 (pression de -1 a +1)"
-    if key == "MARKET_REGIME_FILTER_ENABLED" and value not in (0, 1):
+    if (key == "MARKET_REGIME_FILTER_ENABLED" or "_BYPASS_" in key) and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
     if key.endswith("_TRADE_HOUR_START_UTC") and not 0 <= value <= 23:
         return False, "heure entre 0 et 23"
