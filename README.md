@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32577147/README.md)
+[README.md](https://github.com/user-attachments/files/32578693/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.277** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.279** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -347,6 +347,37 @@ Depuis la 4.277, elles ne dispensent plus que de la stabilité de tendance et
 de l'ADX : elles doivent respecter le sens de la tendance et passer le veto
 du flux. Réglages avancés `*_BYPASS_REQUIRE_TREND` / `*_BYPASS_FLOW_VETO`
 (1 = oui, 0 = ancien comportement).
+
+## 4octodecies. Spot-Accum : achat sur repli (v4.278)
+
+En hausse régulière, le prix s'éloigne du support d'origine de la tendance.
+Spot-Accum suit désormais aussi un **support ascendant** : le dernier creux de
+repli « plus haut que le précédent » sur les bougies 1 h (creux validé par 2
+bougies de chaque côté, sur les 3 derniers jours). Un repli sur ce niveau est
+une entrée valide, avec les mêmes protections (bougie haussière, veto du flux,
+tendance EMA200, régime de marché). Si le creux est cassé en clôture, le
+support ascendant disparaît.
+
+La **voie d'entrée** (proche du support, repli sur support ascendant, cassure
+fraîche, fausse cassure, tendance persistante, volume, étoile filante…) figure
+maintenant dans les raisons d'entrée — colonne « raisons d'entrée » de
+l'export CSV — pour Spot-Accum et Accumulation.
+
+## 4novodecies. Cassure fraîche et cohérence des voies d'entrée (v4.279)
+
+**Cassure fraîche contre la tendance** : elle peut de nouveau capter le début
+d'un retournement avant que l'EMA200 ne suive, mais seulement si le flux le
+confirme franchement (pression ≥ +0,2 pour Spot-Accum, ≤ −0,2 pour
+Accumulation) et si le régime de marché n'est pas opposé. Les autres voies de
+contournement restent soumises au sens de l'EMA200.
+
+**Contradictions corrigées** :
+- le filtre anti-range bloquait les voies « cassure fraîche » (qui sort d'une
+  consolidation) et « volume en consolidation » (qui l'exige) — pour
+  Accumulation, la voie volume ne pouvait même jamais aboutir (même calcul,
+  mêmes réglages) ; ces deux voies en sont désormais exemptées ;
+- la voie volume subissait deux critères de proximité différents (support de
+  la consolidation puis support dynamique) : un seul est conservé.
 
 ## 5. Premier lancement
 
