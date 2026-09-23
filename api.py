@@ -914,6 +914,10 @@ ADVANCED_SETTINGS = {
     "FUNDING_TTP_ARM_PCT":       {"label": "Funding - TTP armement (% de prix)", "default": 1.0},
     # v4.269 — reglages par mode (vide = herite du reglage general)
     "SPOT_ACCUM_SL_CAP_PCT":     {"label": "Spot-Accum - SL plafond (% de prix, vide = 0,5)", "default": None},
+    "SPOT_ACCUM_SL_FLOW_THRESHOLD": {"label": "Spot-Accum - patience SL : pression acheteuse minimale", "default": 0.2},
+    "SPOT_ACCUM_SL_FLOW_MAX_PCT":   {"label": "Spot-Accum - patience SL : perte maximale toleree (%)", "default": 1.0},
+    "SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC": {"label": "Spot-Accum - patience SL : duree maximale (s, 0 = desactivee)", "default": 900},
+    "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND": {"label": "Spot-Accum - patience SL : exiger la tendance EMA200 (1 = oui, 0 = non)", "default": 1},
     "ACCUMULATION_SL_CAP_PCT":   {"label": "Accumulation - SL plafond (% de prix, vide = 0,5)", "default": None},
     "SPOT_ACCUM_ENTRY_FLOW_CONFIRM_MIN": {"label": "Spot-Accum - confirmation flux a l entree (vide = reglage general)", "default": None},
     "ACCUMULATION_ENTRY_FLOW_CONFIRM_MIN": {"label": "Accumulation - confirmation flux a l entree (vide = reglage general)", "default": None},
@@ -1052,7 +1056,8 @@ _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "R
 _ZERO_ALLOWED_INT_KEYS = {"CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
-                          "ACCUMULATION_MAX_ENTRIES_PER_WINDOW", "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW"}
+                          "ACCUMULATION_MAX_ENTRIES_PER_WINDOW", "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW",
+                          "SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND"}
 
 
 def _is_int_setting(key: str) -> bool:
@@ -1069,6 +1074,8 @@ def _coerce_advanced_value(key: str, value):
         return False, "valeur invalide"
     if (key.startswith("ENTRY_FLOW_") or key.endswith("_FLOW_THRESHOLD") or key.endswith("_ENTRY_FLOW_CONFIRM_MIN")) and not 0 <= value <= 1:
         return False, "doit etre entre 0 et 1 (pression de -1 a +1)"
+    if key == "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND" and value not in (0, 1):
+        return False, "1 (oui) ou 0 (non)"
     if key.endswith("_SL_CAP_PCT") and not 0.2 <= value <= 5:
         return False, "doit etre entre 0,2 et 5 %"
     if _is_int_setting(key):
