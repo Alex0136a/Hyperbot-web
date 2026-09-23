@@ -33,10 +33,15 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.265"
-BOT_BUILD   = "2026-09-23-a"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.266"
+BOT_BUILD   = "2026-09-23-b"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.266 (build 2026-09-23-b) — Flux de transactions fiabilise : reabonnement
+#        apres reconnexion WebSocket, fenetre de temps fixe horodatee, repli
+#        REST si le flux est mort, pression "soutenue" uniquement sur des
+#        transactions nouvelles ; confirmation optionnelle du flux a l entree
+#        (ENTRY_FLOW_CONFIRM_MIN_PRESSURE, 0 = desactivee).
 # 4.265 (build 2026-09-23-a) — PnL de sortie calcule sur le prix REEL
 #        d execution Hyperliquid ; suivi apres sortie (+30/+60 min, plus
 #        haut/bas de l heure) et frais/PnL reels pour Spot-Accum et
@@ -1098,6 +1103,19 @@ PROFILE_SWING = {
     # marches creux) et correlation avec le mouvement de prix reel (evite
     # une "pression" sans reaction reelle du marche).
     "TRADE_FLOW_MIN_NOTIONAL_USD": 5000.0,
+    # v4.266 — fenetre de temps FIXE du flux de transactions (avant : les 200
+    # dernieres transactions, quelle que soit leur anciennete — quelques
+    # secondes sur BTC, parfois 30 min+ sur un altcoin peu actif).
+    "TRADE_FLOW_WINDOW_SEC": 180,
+    # v4.266 — flux WebSocket juge MORT si AUCUNE transaction (tous actifs
+    # confondus) n est recue depuis ce delai -> repli REST automatique.
+    "TRADE_FLOW_WS_DEAD_SEC": 120,
+    # v4.266 — CONFIRMATION par le flux a l entree (Spot-Accum / Accumulation,
+    # entree pres du support/de la resistance) : 0 = desactivee (seul le veto
+    # ENTRY_FLOW_CONTRADICTION_THRESHOLD s applique, comportement d origine).
+    # > 0 = exige une pression AU MOINS egale dans le sens du trade (ex: 0.1 :
+    # achat net >= +0.1 pour Spot-Accum, vente nette <= -0.1 pour Accumulation).
+    "ENTRY_FLOW_CONFIRM_MIN_PRESSURE": 0.0,
     "TREND_PERSISTENCE_MIN_PRICE_MOVE_PCT": 0.1,
     # v4.246 — SUR DEMANDE EXPLICITE : confirmation IMMEDIATE (pas soutenue
     # dans le temps, contrairement a TREND_PERSISTENCE ci-dessus) par le
@@ -4343,7 +4361,7 @@ class BotEngine:
             raw = self.info.post("/info", {"type": "recentTrades", "coin": ticker})
             if not raw or not isinstance(raw, list):
                 return []
-            return raw[:count]
+            return [{"sz": r.get("sz"), "side": r.get("side"), "t": r.get("time")} for r in raw[:count]]
         except Exception as e:
             # v4.262 — SUR DEMANDE EXPLICITE : rendu VISIBLE dans l
             # interface (pas seulement les logs bruts Railway, que l
@@ -4384,11 +4402,7 @@ class BotEngine:
         donnees pour ce ticker (abonnement pas encore etabli, ou echoue) —
         garantit une continuite de fonctionnement, pas un point de
         defaillance unique."""
-        ws_buffer = getattr(self, "_ws_trades_buffer", {}).get(ticker)
-        if ws_buffer and len(ws_buffer) >= 20:
-            trades = list(ws_buffer)
-        else:
-            trades = self._fetch_recent_trades(ticker, count=self.cfg.get("TRADE_FLOW_SAMPLE_SIZE", 100))
+        trades, _newest = self._trade_flow_window(ticker)
         if len(trades) < 20:
             return None
         buy_volume = 0.0
@@ -4408,13 +4422,55 @@ class BotEngine:
             return None
         # Garde-fou volume minimal — approxime le notionnel avec le prix
         # actuel (les prix individuels des transactions sont proches sur
-        # un echantillon aussi court).
+        # une fenetre aussi courte).
         if price_now and price_now > 0:
             notional_total = total * price_now
             min_notional = self.cfg.get("TRADE_FLOW_MIN_NOTIONAL_USD", 5000.0)
             if notional_total < min_notional:
                 return None
         return (buy_volume - sell_volume) / total
+
+    def _trade_flow_ws_alive(self):
+        """Le flux WebSocket 'trades' recoit-il encore des donnees ?"""
+        subscribed_at = getattr(self, "_ws_trades_subscribed_at", None)
+        if subscribed_at is None:
+            return False
+        dead_after = self.cfg.get("TRADE_FLOW_WS_DEAD_SEC", 120)
+        last_any = getattr(self, "_ws_trades_last_any", None)
+        if last_any is None:
+            # abonnement recent : on laisse le temps aux premieres donnees
+            return time.time() - subscribed_at < dead_after
+        return time.time() - last_any < dead_after
+
+    def _trade_flow_window(self, ticker):
+        """v4.266 — transactions des TRADE_FLOW_WINDOW_SEC dernieres secondes
+        (WebSocket si vivant, sinon REST avec un petit cache de 20s), et
+        horodatage de la plus recente. Une fenetre vide signifie "pas d
+        activite recente" : aucune pression n est alors calculee."""
+        window_ms = self.cfg.get("TRADE_FLOW_WINDOW_SEC", 180) * 1000
+        now_ms = int(time.time() * 1000)
+        if self._trade_flow_ws_alive():
+            source = list(getattr(self, "_ws_trades_buffer", {}).get(ticker) or [])
+        else:
+            cache = getattr(self, "_rest_trades_cache", None)
+            if cache is None:
+                cache = self._rest_trades_cache = {}
+            hit = cache.get(ticker)
+            if hit and time.time() - hit[0] < 20:
+                source = hit[1]
+            else:
+                source = self._fetch_recent_trades(ticker, count=2000)
+                cache[ticker] = (time.time(), source)
+        recent = []
+        for t in source:
+            try:
+                t_ms = int(t.get("t") or 0)
+            except (TypeError, ValueError):
+                continue
+            if t_ms >= now_ms - window_ms:
+                recent.append(t)
+        newest = max((int(t["t"]) for t in recent), default=None)
+        return recent, newest
 
     def _maybe_refresh_trade_flow(self, ticker, state):
         """v4.240 — SUR DEMANDE EXPLICITE : rafraichit la pression
@@ -4429,21 +4485,24 @@ class BotEngine:
         last_refresh = getattr(state, "trade_flow_last_refresh", 0)
         if now - last_refresh < 60:
             return
-        pressure = self._compute_trade_flow_pressure(ticker, price_now=state.current_price)
         state.trade_flow_last_refresh = now
-        price_history = getattr(state, "trade_flow_price_history", None)
-        if price_history is None:
-            price_history = deque(maxlen=10)
-            state.trade_flow_price_history = price_history
-        if state.current_price is not None:
-            price_history.append(state.current_price)
-        if pressure is None:
+        # v4.266 — une lecture n est enregistree que si la fenetre contient
+        # des transactions NOUVELLES depuis la lecture precedente : avant,
+        # sur un actif peu actif, les memes transactions pouvaient etre
+        # recomptees a chaque lecture et simuler une "pression soutenue".
+        _, newest = self._trade_flow_window(ticker)
+        if newest is None or newest <= getattr(state, "trade_flow_last_newest_ms", 0):
             return
-        history = getattr(state, "trade_flow_history", None)
-        if history is None:
-            history = deque(maxlen=10)
-            state.trade_flow_history = history
-        history.append(pressure)
+        pressure = self._compute_trade_flow_pressure(ticker, price_now=state.current_price)
+        if pressure is None or state.current_price is None:
+            return
+        state.trade_flow_last_newest_ms = newest
+        for attr in ("trade_flow_history", "trade_flow_price_history", "trade_flow_ts_history"):
+            if getattr(state, attr, None) is None:
+                setattr(state, attr, deque(maxlen=10))
+        state.trade_flow_history.append(pressure)
+        state.trade_flow_price_history.append(state.current_price)
+        state.trade_flow_ts_history.append(now)
 
     def _trend_persistence_confirmed(self, state, direction):
         """v4.240 — SUR DEMANDE EXPLICITE : confirme une PRESSION
@@ -4462,6 +4521,15 @@ class BotEngine:
         history = getattr(state, "trade_flow_history", None)
         min_samples = self.cfg.get("TREND_PERSISTENCE_MIN_SAMPLES", 6)
         if not history or len(history) < min_samples:
+            return False
+        # v4.266 — les lectures doivent etre CONSECUTIVES et recentes : une
+        # absence d activite (aucune lecture pendant plusieurs minutes)
+        # interrompt la "pression soutenue".
+        ts_hist = getattr(state, "trade_flow_ts_history", None)
+        if not ts_hist or len(ts_hist) < min_samples:
+            return False
+        recent_ts = list(ts_hist)[-min_samples:]
+        if time.time() - recent_ts[-1] > 120 or recent_ts[-1] - recent_ts[0] > (min_samples - 1) * 60 * 1.6:
             return False
         threshold = self.cfg.get("TREND_PERSISTENCE_PRESSURE_THRESHOLD", 0.15)
         recent = list(history)[-min_samples:]
@@ -5312,6 +5380,23 @@ class BotEngine:
                 return True, ev
         return False, None
 
+    def _subscribe_trade_flow(self):
+        """v4.266 — abonnement au flux 'trades' de chaque actif (demarrage ET
+        chaque reconnexion WebSocket)."""
+        trade_flow_tickers = sorted({ticker_from_slot_key(s) for s in self.cfg["SYMBOLS"]})
+        ws_trades_subscribed = 0
+        for tf_ticker in trade_flow_tickers:
+            try:
+                self.info.subscribe({"type": "trades", "coin": tf_ticker}, self._on_ws_trades)
+                ws_trades_subscribed += 1
+            except Exception as e:
+                print(f"[WS-TRADES] Echec abonnement flux transactions pour {tf_ticker} : {e}")
+        self._ws_trades_subscribed_at = time.time()
+        if ws_trades_subscribed > 0:
+            self.emit("log", {"msg": f"Flux de transactions temps reel actif ({ws_trades_subscribed}/{len(trade_flow_tickers)} actifs, fenetre {self.cfg.get('TRADE_FLOW_WINDOW_SEC', 180)}s).", "level": "ok"})
+        else:
+            self.emit("log", {"msg": "⚠️ Flux de transactions WebSocket indisponible — repli sur requetes REST.", "level": "warn"})
+
     def _on_ws_trades(self, msg):
         """v4.263 — SUR DEMANDE EXPLICITE : callback WebSocket Hyperliquid
         — flux 'trades' temps reel (un abonnement par actif). Alimente un
@@ -5326,15 +5411,29 @@ class BotEngine:
                 return
             if not hasattr(self, "_ws_trades_buffer"):
                 self._ws_trades_buffer = {}
+            # v4.266 — horodatage de chaque transaction (fenetre de temps
+            # fixe) + heure de derniere reception (detection d un flux mort).
+            now_ms = int(time.time() * 1000)
+            keep_ms = max(self.cfg.get("TRADE_FLOW_WINDOW_SEC", 180) * 2, 600) * 1000
+            if not hasattr(self, "_ws_trades_last_rx"):
+                self._ws_trades_last_rx = {}
             for t in data:
                 coin = t.get("coin")
                 if not coin:
                     continue
                 buf = self._ws_trades_buffer.get(coin)
                 if buf is None:
-                    buf = deque(maxlen=200)
+                    buf = deque(maxlen=20000)
                     self._ws_trades_buffer[coin] = buf
-                buf.append({"sz": t.get("sz"), "side": t.get("side")})
+                try:
+                    t_ms = int(t.get("time") or now_ms)
+                except (TypeError, ValueError):
+                    t_ms = now_ms
+                buf.append({"sz": t.get("sz"), "side": t.get("side"), "t": t_ms})
+                while buf and buf[0]["t"] < now_ms - keep_ms:
+                    buf.popleft()
+                self._ws_trades_last_rx[coin] = time.time()
+            self._ws_trades_last_any = time.time()
         except Exception as e:
             print(f"[WS-TRADES] Erreur traitement flux trades : {e}")
 
@@ -5605,6 +5704,12 @@ class BotEngine:
                         self.info.subscribe({"type": "allMids", "dex": "xyz"}, self._on_ws_allmids_forex)
                     except Exception:
                         pass  # v4.166 — repli silencieux, deja logge au demarrage initial
+                    # v4.266 — FIX BUG CRITIQUE : le flux de transactions n
+                    # etait PAS reabonne apres une reconnexion — le tampon
+                    # restait fige sur ses dernieres transactions et la
+                    # pression calculee ne changeait plus jusqu au prochain
+                    # redemarrage complet.
+                    self._subscribe_trade_flow()
                     self._ws_subscribed = True
                     self._last_ws_tick = time.time()  # evite un "faux mort" immediat le temps du 1er tick
                     msg = "🔄 Reconnexion WebSocket effectuee (nouvelle connexion etablie)."
@@ -5790,16 +5895,7 @@ class BotEngine:
         # Hyperliquid (meme connexion, deja utilisee pour allMids), un
         # abonnement distinct par actif (contrairement a allMids, ce canal
         # ne fournit pas tous les actifs en une seule souscription).
-        trade_flow_tickers = list({ticker_from_slot_key(s) for s in cfg["SYMBOLS"]})
-        ws_trades_subscribed = 0
-        for tf_ticker in trade_flow_tickers:
-            try:
-                self.info.subscribe({"type": "trades", "coin": tf_ticker}, self._on_ws_trades)
-                ws_trades_subscribed += 1
-            except Exception as e:
-                print(f"[WS-TRADES] Echec abonnement flux transactions pour {tf_ticker} : {e}")
-        if ws_trades_subscribed > 0:
-            self.emit("log", {"msg": f"Flux de transactions temps reel actif ({ws_trades_subscribed}/{len(trade_flow_tickers)} actifs) — pression directionnelle desormais alimentee en continu par WebSocket.", "level": "ok"})
+        self._subscribe_trade_flow()
         # v4.166 — SUR DEMANDE EXPLICITE : souscription SEPAREE pour le DEX
         # HIP-3 "xyz" (forex, mode Normal) — l API Hyperliquid isole les
         # DEX builder-deployes du DEX natif par defaut, un simple
@@ -8589,6 +8685,15 @@ class BotEngine:
                 if flow_pressure is not None and flow_pressure >= cfg.get("ENTRY_FLOW_CONTRADICTION_THRESHOLD", 0.3):
                     snap["blocker"] = f"flux de transactions contredit la baisse (pression achat {flow_pressure:+.2f})"
                     return
+                # v4.266 — confirmation OPTIONNELLE (0 = desactivee)
+                confirm_min = cfg.get("ENTRY_FLOW_CONFIRM_MIN_PRESSURE", 0.0) or 0.0
+                if confirm_min > 0:
+                    if flow_pressure is None:
+                        snap["blocker"] = "confirmation flux exigee mais flux insuffisant (activite recente trop faible)"
+                        return
+                    if flow_pressure > -confirm_min:
+                        snap["blocker"] = f"flux vendeur insuffisant (pression {flow_pressure:+.2f}, requis <= {-confirm_min:+.2f})"
+                        return
         snap["entered_via_flirt"] = not fresh_breakout_ac and not volume_breakout_ac and not failed_breakout_ac and not shooting_star_ac and not trend_persistence_ac
 
         # v4.203/225 — SUR DEMANDE EXPLICITE : confirmation par MACD 1h +
@@ -8899,6 +9004,15 @@ class BotEngine:
                 if flow_pressure_sa is not None and flow_pressure_sa <= -cfg.get("ENTRY_FLOW_CONTRADICTION_THRESHOLD", 0.3):
                     snap["blocker"] = f"flux de transactions contredit la hausse (pression vente {flow_pressure_sa:+.2f})"
                     return
+                # v4.266 — confirmation OPTIONNELLE (0 = desactivee)
+                confirm_min_sa = cfg.get("ENTRY_FLOW_CONFIRM_MIN_PRESSURE", 0.0) or 0.0
+                if confirm_min_sa > 0:
+                    if flow_pressure_sa is None:
+                        snap["blocker"] = "confirmation flux exigee mais flux insuffisant (activite recente trop faible)"
+                        return
+                    if flow_pressure_sa < confirm_min_sa:
+                        snap["blocker"] = f"flux acheteur insuffisant (pression {flow_pressure_sa:+.2f}, requis >= {confirm_min_sa:+.2f})"
+                        return
         # v4.178 — SUR DEMANDE EXPLICITE : marque si cette entree qualifie
         # via le flirt S/R (pas via une cassure fraiche) — determine si le
         # levier dynamique 2-5x s applique (uniquement dans ce cas).
