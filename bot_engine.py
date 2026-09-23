@@ -33,10 +33,13 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.272"
-BOT_BUILD   = "2026-09-24-a"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.273"
+BOT_BUILD   = "2026-09-24-b"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.273 (build 2026-09-24-b) — Onglet TRADING MANUEL : opportunites du bot,
+#        parametres proposes et modifiables, execution immediate ou
+#        programmee, paper/live, perps/spot (voir manual_trading.py).
 # 4.272 (build 2026-09-24-a) — Mode Forex : seuils anti-range (2 % -> 0,25 %)
 #        et momentum long terme (2 % -> 0,4 %) recalibres pour les devises
 #        (le mode ne pouvait jamais entrer) ; diagnostic Forex explicite.
@@ -1175,6 +1178,12 @@ PROFILE_SWING = {
     "ACCUMULATION_MAX_ENTRIES_PER_WINDOW": 3,
     "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW": 0,
     "ENTRY_BURST_WINDOW_SEC": 600,
+    # v4.273 — TRADING MANUEL
+    "MANUAL_OPPORTUNITY_TTL_SEC": 120,     # une opportunite reste valable tant qu elle est revue dans ce delai
+    "MANUAL_DEFAULT_NOTIONAL_USD": 15.0,   # taille proposee (notionnel) — minimum Hyperliquid 10 $
+    "MANUAL_DEFAULT_LEVERAGE": 1,
+    "MANUAL_MAX_LEVERAGE": 20,
+    "MANUAL_ORDER_EXPIRY_HOURS": 24,       # expiration par defaut d un ordre programme
     "TREND_PERSISTENCE_MIN_PRICE_MOVE_PCT": 0.1,
     # v4.246 — SUR DEMANDE EXPLICITE : confirmation IMMEDIATE (pas soutenue
     # dans le temps, contrairement a TREND_PERSISTENCE ci-dessus) par le
@@ -1801,7 +1810,7 @@ def _order_first_status(result):
 # d entree — permet de retrouver le MODE SOURCE d une position directement
 # depuis l historique Hyperliquid, meme si la base locale etait perdue.
 TRADE_UID_MAGIC = "4842"  # "HB"
-STRATEGY_CODES = {"forex": "01", "accumulation": "02", "spot_accumulation": "03", "funding_contrarian": "04"}
+STRATEGY_CODES = {"forex": "01", "accumulation": "02", "spot_accumulation": "03", "funding_contrarian": "04", "manual": "05"}
 STRATEGY_FROM_CODE = {v: k for k, v in STRATEGY_CODES.items()}
 
 
@@ -3555,7 +3564,8 @@ class BotEngine:
         has_saved_live = any(isinstance(p, dict) and p.get("effective_mode") == "live" for p in saved.values())
 
         exch = None
-        if self.info is not None and wallet and (any_strategy_live or has_saved_live):
+        has_manual_live = bool(getattr(self, "manual", None) is not None and self.manual.live_perp_coins())  # v4.273
+        if self.info is not None and wallet and (any_strategy_live or has_saved_live or has_manual_live):
             exch = fetch_exchange_positions(self.info, wallet, real_tickers + saved_tickers)
             if exch is None:
                 self.emit("log", {"msg": "⚠️ Positions Hyperliquid illisibles au demarrage — positions sauvegardees restaurees telles quelles, aucune fermeture deduite, aucune trace supprimee.", "level": "warn"})
@@ -3616,10 +3626,17 @@ class BotEngine:
                     print(f"[RECOVER] Verification SL {ticker} impossible : {e}")
 
         # ── Phase 2 : positions reelles non couvertes par la sauvegarde ──
+        manual = getattr(self, "manual", None)
+        manual_coins = manual.live_perp_coins() if manual is not None else set()
+        if exch is not None and manual is not None:
+            try:
+                manual.reconcile(exch)  # v4.273 — positions manuelles fermees pendant la coupure
+            except Exception as e:
+                print(f"[RECOVER] Reconciliation manuelle impossible : {e}")
         if exch is not None:
             for coin, ep in exch.items():
                 direction = "long" if ep["szi"] > 0 else "short"
-                if direction in claimed.get(coin, set()):
+                if direction in claimed.get(coin, set()) or coin in manual_coins:
                     continue
                 if coin not in real_tickers:
                     self.emit("log", {"msg": f"[{coin}] Position reelle hors configuration du bot (ouverte manuellement ?) — ignoree.", "level": "dim"})
@@ -3687,6 +3704,10 @@ class BotEngine:
                 source = "identifiant d ordre Hyperliquid (cloid)"
         decoded = decode_trade_uid(uid) if uid else None
         strategy = (row or {}).get("strategy") or (decoded or {}).get("strategy")
+        if strategy == "manual" and getattr(self, "manual", None) is not None:
+            # v4.273 — position ouverte manuellement : rendue au trading manuel
+            self.manual.adopt_orphan(coin, ep, uid, (decoded or {}).get("opened_ts"))
+            return True
         identified = strategy is not None
         if not identified:
             strategy = "forex"
@@ -4321,6 +4342,20 @@ class BotEngine:
                         break
                 fields[col] = outcome
             db.save_trade_followup(row["id"], fields)
+
+    def _publish_opportunities(self, strategy, candidates):
+        """v4.273 — transmet les candidats d entree du cycle au trading manuel."""
+        manual = getattr(self, "manual", None)
+        if manual is not None:
+            try:
+                manual.record_candidates(strategy, candidates)
+            except Exception as e:
+                print(f"[MANUEL] Publication des opportunites impossible : {e}")
+
+    def _manual_tick(self):
+        manual = getattr(self, "manual", None)
+        if manual is not None:
+            manual.on_tick()
 
     def _discard_pending_trade(self, trade_uid, ticker):
         """v4.264 — retire la trace prealable d un trade dont l ordre n a
@@ -5664,6 +5699,7 @@ class BotEngine:
                     continue
                 accum_state.current_price = price
                 self._manage_position(slot_key, price, accum_state)
+            self._manual_tick()  # v4.273 — positions et ordres programmes manuels
         except Exception as e:
             print(f"[WS] Erreur traitement flux allMids : {e}")
 
@@ -5723,6 +5759,7 @@ class BotEngine:
                     continue
                 state.current_price = price
                 self._manage_position(slot_key, price, state)
+            self._manual_tick()  # v4.273
         except Exception as e:
             print(f"[WS-FOREX] Erreur traitement flux allMids (dex xyz) : {e}")
 
@@ -6236,6 +6273,11 @@ class BotEngine:
                 self._finalize_pending_funding_candidates()
                 self._finalize_pending_spot_accum_candidates()
                 self._maybe_start_trade_followups()  # v4.265 — hors du fil de trading
+                if getattr(self, "manual", None) is not None:
+                    try:
+                        self.manual.on_cycle()  # v4.273 — expirations + secours si WebSocket muet
+                    except Exception as e_man:
+                        print(f"[MANUEL] Erreur cycle : {e_man}")
 
                 self._save_open_positions()
                 self._save_confidence_thresholds()
@@ -9806,6 +9848,11 @@ class BotEngine:
         # ne doit pas etre enregistre "live" : sa fermeture tenterait sinon
         # un ordre reel sur une position qui n existe pas).
         recorded_mode = "paper" if funding_live_blocked else effective_mode_open
+        # v4.273 — Hyperliquid ne tient qu UNE position perp par actif : pas
+        # d ouverture live sur un actif deja tenu en live manuellement.
+        if recorded_mode == "live" and getattr(self, "manual", None) is not None and self.manual.has_live_perp(ticker):
+            self.emit("log", {"msg": f"[{ticker}] Entree live ignoree — position MANUELLE live deja ouverte sur cet actif.", "level": "dim"})
+            return
         # v4.264 — INDEXATION A L OUVERTURE : identifiant unique cree AVANT
         # tout ordre, portant le mode source et l heure d ouverture, envoye
         # a Hyperliquid comme cloid et ecrit en base de facon synchrone.
@@ -10095,6 +10142,7 @@ class BotEngine:
         les deux pools de slots ne se disputent plus la meme limite."""
         if not self._pending_candidates:
             return
+        self._publish_opportunities("forex", self._pending_candidates)  # v4.273 — trading manuel
         cfg = self.cfg
         self._pending_candidates.sort(key=lambda c: c["confidence"], reverse=True)
         max_open = cfg.get("MAX_OPEN_TRADES")
@@ -10116,6 +10164,7 @@ class BotEngine:
         decroissante."""
         if not self._pending_accumulation_candidates:
             return
+        self._publish_opportunities("accumulation", self._pending_accumulation_candidates)  # v4.273 — trading manuel
         cfg = self.cfg
         self._pending_accumulation_candidates.sort(key=lambda c: c["confidence"], reverse=True)
         max_acc = cfg.get("ACCUMULATION_MAX_TRADES", 3)
@@ -10141,6 +10190,7 @@ class BotEngine:
         (FUNDING_MODE_MAX_TRADES)."""
         if not self._pending_funding_candidates:
             return
+        self._publish_opportunities("funding_contrarian", self._pending_funding_candidates)  # v4.273 — trading manuel
         cfg = self.cfg
         self._pending_funding_candidates.sort(key=lambda c: c["confidence"], reverse=True)
         max_funding = cfg.get("FUNDING_MODE_MAX_TRADES", 3)
@@ -10160,6 +10210,7 @@ class BotEngine:
         candidats Spot-Accumulation : plafond independant (SPOT_ACCUM_MAX_TRADES)."""
         if not self._pending_spot_accum_candidates:
             return
+        self._publish_opportunities("spot_accumulation", self._pending_spot_accum_candidates)  # v4.273 — trading manuel
         cfg = self.cfg
         self._pending_spot_accum_candidates.sort(key=lambda c: c["confidence"], reverse=True)
         max_spot = cfg.get("SPOT_ACCUM_MAX_TRADES", 3)
