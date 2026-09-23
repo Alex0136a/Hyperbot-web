@@ -33,10 +33,13 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.274"
-BOT_BUILD   = "2026-09-24-c"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.275"
+BOT_BUILD   = "2026-09-24-d"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.275 — FIX : plafond SL propre a chaque mode dans la gestion commune
+#        Spot-Accum/Accumulation/Forex ; patience SL par le flux reservee a
+#        Spot-Accum (elle s appliquait aussi a Accumulation et Forex).
 # 4.274 (build 2026-09-24-c) — FIX : import de manual_trading avant le
 #        changement de dossier (le serveur ne demarrait plus avec un Volume).
 # 4.273 (build 2026-09-24-b) — Onglet TRADING MANUEL : opportunites du bot,
@@ -6587,7 +6590,12 @@ class BotEngine:
             # proteger bien avant). Verifie desormais le seuil le PLUS
             # PROTECTEUR en priorite absolue, quel que soit son
             # emplacement dans le reste du code.
-            immediate_cap_pct = cfg.get("SPOT_ACCUM_SL_CAP_PCT") or cfg.get("STRUCTURAL_SL_HARD_CAP_PCT", 0.5)  # v4.269
+            # v4.275 — FIX : ce bloc gere Spot-Accum, Accumulation ET Forex. Le
+            # plafond "Spot-Accum" s appliquait donc aux trois, et celui
+            # d Accumulation (ACCUMULATION_SL_CAP_PCT) n etait jamais lu.
+            _strat_cap = pos.get("strategy")
+            _cap_key = {"spot_accumulation": "SPOT_ACCUM_SL_CAP_PCT", "accumulation": "ACCUMULATION_SL_CAP_PCT"}.get(_strat_cap)
+            immediate_cap_pct = (cfg.get(_cap_key) if _cap_key else None) or cfg.get("STRUCTURAL_SL_HARD_CAP_PCT", 0.5)
             # v4.270 — SUR DEMANDE EXPLICITE : PATIENCE DU SL PILOTEE PAR LE FLUX.
             # Quand le plafond est atteint, si le flux de transactions reste
             # FAVORABLE a la position (acheteurs dominants pour un long), le
@@ -6597,7 +6605,8 @@ class BotEngine:
             sl_reason = "STOP LOSS (plafond immediat)"
             if pnl_pct > -immediate_cap_pct:
                 state.sl_flow_patience_since = None  # repasse au-dessus du plafond : patience terminee
-            elif cfg.get("SPOT_ACCUM_SL_FLOW_PATIENCE_ENABLED", True) and (cfg.get("SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", 900) or 0) > 0:
+            elif (pos.get("strategy") == "spot_accumulation"  # v4.275 — patience reservee a Spot-Accum (demandee pour ce mode)
+                  and cfg.get("SPOT_ACCUM_SL_FLOW_PATIENCE_ENABLED", True) and (cfg.get("SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", 900) or 0) > 0):
                 max_loss_pct = cfg.get("SPOT_ACCUM_SL_FLOW_MAX_PCT", 1.0)
                 max_wait = cfg.get("SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", 900)
                 since = getattr(state, "sl_flow_patience_since", None)
