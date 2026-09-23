@@ -932,6 +932,15 @@ ADVANCED_SETTINGS = {
     "TRADE_FLOW_WINDOW_SEC":   {"label": "Flux - fenetre d analyse (secondes)", "default": 180},
     # v4.268 — TTP Funding
     "FUNDING_TTP_ARM_PCT":       {"label": "Funding - TTP armement (% de prix)", "default": 1.0},
+    # v4.276 — regime de marche et plages horaires
+    "MARKET_REGIME_FILTER_ENABLED": {"label": "Regime de marche - filtre actif (1 = oui, 0 = non)", "default": 1},
+    "MARKET_REGIME_BREADTH_PCT": {"label": "Regime de marche - % minimal d actifs dans le meme sens", "default": 60},
+    "SPOT_ACCUM_TRADE_HOUR_START_UTC":   {"label": "Spot-Accum - debut plage horaire (h UTC)", "default": 0},
+    "SPOT_ACCUM_TRADE_HOUR_END_UTC":     {"label": "Spot-Accum - fin plage horaire (h UTC, 24 = toujours)", "default": 24},
+    "ACCUMULATION_TRADE_HOUR_START_UTC": {"label": "Accumulation - debut plage horaire (h UTC)", "default": 0},
+    "ACCUMULATION_TRADE_HOUR_END_UTC":   {"label": "Accumulation - fin plage horaire (h UTC, 24 = toujours)", "default": 24},
+    "FUNDING_TRADE_HOUR_START_UTC":      {"label": "Funding - debut plage horaire (h UTC)", "default": 0},
+    "FUNDING_TRADE_HOUR_END_UTC":        {"label": "Funding - fin plage horaire (h UTC, 24 = toujours)", "default": 24},
     # v4.269 — reglages par mode (vide = herite du reglage general)
     "SPOT_ACCUM_SL_CAP_PCT":     {"label": "Spot-Accum - SL plafond (% de prix, vide = 0,5)", "default": None},
     "SPOT_ACCUM_SL_FLOW_THRESHOLD": {"label": "Spot-Accum - patience SL : pression acheteuse minimale", "default": 0.2},
@@ -1079,7 +1088,10 @@ _ZERO_ALLOWED_INT_KEYS = {"CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
                           "ACCUMULATION_MAX_ENTRIES_PER_WINDOW", "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW",
-                          "SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND"}
+                          "SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND",
+                          "MARKET_REGIME_FILTER_ENABLED", "SPOT_ACCUM_TRADE_HOUR_START_UTC", "ACCUMULATION_TRADE_HOUR_START_UTC",
+                          "FUNDING_TRADE_HOUR_START_UTC", "SPOT_ACCUM_TRADE_HOUR_END_UTC", "ACCUMULATION_TRADE_HOUR_END_UTC",
+                          "FUNDING_TRADE_HOUR_END_UTC"}
 
 
 def _is_int_setting(key: str) -> bool:
@@ -1096,13 +1108,21 @@ def _coerce_advanced_value(key: str, value):
         return False, "valeur invalide"
     if (key.startswith("ENTRY_FLOW_") or key.endswith("_FLOW_THRESHOLD") or key.endswith("_ENTRY_FLOW_CONFIRM_MIN")) and not 0 <= value <= 1:
         return False, "doit etre entre 0 et 1 (pression de -1 a +1)"
+    if key == "MARKET_REGIME_FILTER_ENABLED" and value not in (0, 1):
+        return False, "1 (oui) ou 0 (non)"
+    if key.endswith("_TRADE_HOUR_START_UTC") and not 0 <= value <= 23:
+        return False, "heure entre 0 et 23"
+    if key.endswith("_TRADE_HOUR_END_UTC") and not 0 <= value <= 24:
+        return False, "heure entre 0 et 24"
+    if key == "MARKET_REGIME_BREADTH_PCT" and not 50 <= value <= 100:
+        return False, "entre 50 et 100 %"
     if key == "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND" and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
     if key.endswith("_SL_CAP_PCT") and not 0.2 <= value <= 5:
         return False, "doit etre entre 0,2 et 5 %"
     if _is_int_setting(key):
         value = int(round(value))
-        if key.endswith("_UTC") and not 0 <= value <= 23:
+        if key.endswith("_UTC") and not key.endswith("_END_UTC") and not 0 <= value <= 23:
             return False, "heure hors plage 0-23"
         if value < (0 if key in _ZERO_ALLOWED_INT_KEYS else 1):
             return False, "doit etre >= 1" if key not in _ZERO_ALLOWED_INT_KEYS else "doit etre >= 0"
@@ -2113,7 +2133,49 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             "trend_persistence_confirmed": snap.get("trend_persistence_confirmed") or (accum_snap.get("trend_persistence_confirmed") if accum_snap else None) or (spot_snap.get("trend_persistence_confirmed") if spot_snap else None),
         })
     results.sort(key=lambda r: r["ticker"])
-    return {"results": results}
+    _rg = bot.market_regime()
+    return {"results": results, "market_regime": {"regime": _rg.get("regime"), "detail": _rg.get("detail"),
+                                                  "filter_enabled": bool(cfg.get("MARKET_REGIME_FILTER_ENABLED", 1))}}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  v4.276 — REGIME DE MARCHE + STATISTIQUES PAR TRANCHE HORAIRE
+# ─────────────────────────────────────────────────────────────────────────
+@app.get("/api/market-regime")
+def get_market_regime(email: str = Depends(require_user)):
+    r = dict(bot.market_regime())
+    r["filter_enabled"] = bool(cfg.get("MARKET_REGIME_FILTER_ENABLED", 1))
+    r["blocks"] = {"haussier": "Accumulation (shorts) bloque", "baissier": "Spot-Accum (achats) bloque"}.get(r["regime"], "aucun blocage")
+    return r
+
+
+@app.get("/api/stats/hours")
+def stats_by_hour(days: int = Query(14, ge=1, le=90), email: str = Depends(require_user)):
+    """Resultats par mode et par tranche de 4 h UTC (trades fermes)."""
+    labels = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation", "funding_contrarian": "Funding", "forex": "Forex", "manual": "Manuel"}
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    out = {}
+    for t in db.get_all_closed_trades():
+        if not t.get("closed_at") or (t.get("created_at") or "") < since or t.get("pnl") is None:
+            continue
+        try:
+            h = datetime.fromisoformat(t["created_at"]).astimezone(timezone.utc).hour
+        except (TypeError, ValueError):
+            continue
+        mode = labels.get(t.get("strategy") or "forex", t.get("strategy"))
+        block = f"{h // 4 * 4:02d}-{h // 4 * 4 + 4:02d}"
+        notional = (t.get("size_usd") or 0) * (t.get("leverage") or 1)
+        fees = t.get("fees_paid") if t.get("trade_mode") == "live" and t.get("fees_paid") else notional * 0.0009
+        b = out.setdefault(mode, {}).setdefault(block, {"n": 0, "wins": 0, "pnl": 0.0, "net": 0.0})
+        b["n"] += 1
+        b["wins"] += 1 if t["pnl"] > 0 else 0
+        b["pnl"] += t["pnl"]
+        b["net"] += t["pnl"] - fees
+    for mode in out.values():
+        for b in mode.values():
+            b["win_rate"] = round(b["wins"] / b["n"] * 100, 1)
+            b["pnl"], b["net"] = round(b["pnl"], 3), round(b["net"], 3)
+    return {"days": days, "blocks_utc": ["00-04", "04-08", "08-12", "12-16", "16-20", "20-24"], "modes": out}
 
 
 # ─────────────────────────────────────────────────────────────────────────
