@@ -899,6 +899,10 @@ class ConfigBody(BaseModel):
 # simple champ numerique generique.
 ADVANCED_SETTINGS = {
     "RSI_PERIOD":              {"label": "RSI - Periode",                     "default": 14},
+    # v4.266 — flux de transactions (Spot-Accum / Accumulation)
+    "ENTRY_FLOW_CONFIRM_MIN_PRESSURE": {"label": "Flux - confirmation exigee a l entree (0 = desactivee, ex: 0.1)", "default": 0.0},
+    "ENTRY_FLOW_CONTRADICTION_THRESHOLD": {"label": "Flux - veto si pression contraire au-dela de", "default": 0.3},
+    "TRADE_FLOW_WINDOW_SEC":   {"label": "Flux - fenetre d analyse (secondes)", "default": 180},
     "RSI_OVERSOLD":            {"label": "RSI - Seuil survente",              "default": 32},
     "RSI_OVERBOUGHT":          {"label": "RSI - Seuil surachat",              "default": 68},
     "RSI_EXTREME_LOW":         {"label": "RSI - Zone survente extreme (no SHORT sous)",  "default": 15},
@@ -1036,6 +1040,8 @@ def _coerce_advanced_value(key: str, value):
         return (True, None) if default is None else (False, "valeur vide refusee pour ce reglage")
     if value != value or value in (float("inf"), float("-inf")):
         return False, "valeur invalide"
+    if key.startswith("ENTRY_FLOW_") and not 0 <= value <= 1:
+        return False, "doit etre entre 0 et 1 (pression de -1 a +1)"
     if _is_int_setting(key):
         value = int(round(value))
         if key.endswith("_UTC") and not 0 <= value <= 23:
@@ -2030,7 +2036,12 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             # CONTINU par _maybe_refresh_trade_flow (tourne a chaque cycle,
             # independamment des conditions d entree) — la VRAIE source
             # utilisee par la pression soutenue et la sortie acceleree.
-            "trade_flow_pressure": round(list(state.trade_flow_history)[-1], 3) if getattr(state, "trade_flow_history", None) else None,
+            # v4.266 — derniere lecture seulement si elle date de moins de 5 min
+            "trade_flow_pressure": (round(list(state.trade_flow_history)[-1], 3)
+                                    if getattr(state, "trade_flow_history", None)
+                                    and getattr(state, "trade_flow_ts_history", None)
+                                    and time.time() - list(state.trade_flow_ts_history)[-1] < 300
+                                    else None),
             "trend_persistence_confirmed": snap.get("trend_persistence_confirmed") or (accum_snap.get("trend_persistence_confirmed") if accum_snap else None) or (spot_snap.get("trend_persistence_confirmed") if spot_snap else None),
         })
     results.sort(key=lambda r: r["ticker"])
