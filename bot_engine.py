@@ -33,10 +33,14 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.280"
-BOT_BUILD   = "2026-09-24-i"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.281"
+BOT_BUILD   = "2026-09-24-j"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.281 — Anti-range RELATIF a chaque actif (remplace le seuil absolu de 2 %) ;
+#        mesures de qualite du marche (volatilite, activite, flux) affichees
+#        au diagnostic et enregistrees a chaque entree ; filtres associes
+#        prets mais desactives en attendant le calibrage.
 # 4.280 — Regime de marche : largeur calculee sur l EMA200 1h de chaque actif
 #        (meme unite de temps que BTC) ; plus de regime "confirme" sur BTC
 #        seul quand la largeur n est pas mesurable.
@@ -1208,6 +1212,19 @@ PROFILE_SWING = {
     # choisie, avec EMA50 du meme cote, ET une majorite des actifs suivis
     # (MARKET_REGIME_BREADTH_PCT) est du meme cote de sa propre EMA200.
     "MARKET_REGIME_FILTER_ENABLED": 1,
+    # v4.281 — ANTI-RANGE RELATIF A L ACTIF : mouvement minimal exige =
+    # amplitude horaire mediane de l actif (7 j) x ANTI_RANGE_REL_MULT x
+    # racine(duree de la fenetre en heures). Les seuils absolus (*_ANTI_RANGE_MIN_PCT)
+    # ne servent plus que de repli tant que l habitude n est pas connue.
+    "ANTI_RANGE_RELATIVE_ENABLED": 1,
+    "ANTI_RANGE_REL_MULT": 0.6,
+    # v4.281 — QUALITE DU MARCHE (0 = desactive, en attente de calibrage)
+    "MARKET_QUALITY_MIN_VOL_RATIO": 0.0,        # ex. 0.5 : pas d entree si l amplitude < 50 % de l habitude
+    "MARKET_QUALITY_MIN_ACTIVITY_RATIO": 0.0,   # ex. 0.3 : pas d entree si le volume < 30 % de l habitude
+    "SPOT_ACCUM_MIN_FLOW_CONVICTION": 0.0,      # ex. 0.1 : pas d entree si |pression du flux| < 0.1
+    "ACCUMULATION_MIN_FLOW_CONVICTION": 0.0,
+    "FUNDING_MIN_FLOW_CONVICTION": 0.0,
+    "FOREX_MIN_FLOW_CONVICTION": 0.0,
     # v4.277 — les entrees par cassure/rebond/tendance persistante doivent
     # respecter le SENS de la tendance (EMA200) et le veto du flux (1 = oui)
     "SPOT_ACCUM_BYPASS_REQUIRE_TREND": 1,
@@ -4999,6 +5016,16 @@ class BotEngine:
             closes_1h = [c[2] for c in candles]
             state.ema200_1h = calc_ema(closes_1h, 200) if len(closes_1h) >= 200 else None
             state.last_close_1h = closes_1h[-1]
+            # v4.281 — HABITUDES DE L ACTIF (7 derniers jours de bougies 1h) :
+            # amplitude horaire mediane et volume horaire median (en $). Base
+            # de la "qualite du marche" et de l anti-range RELATIF.
+            recent_1h = candles[-168:]
+            ranges = sorted((c[0] - c[1]) / c[2] * 100 for c in recent_1h if c[2] > 0)
+            notionals = sorted(c[3] * c[2] for c in recent_1h if len(c) > 3)
+            if len(ranges) >= 24:
+                state.baseline_range_1h_pct = ranges[len(ranges) // 2]
+            if len(notionals) >= 24:
+                state.baseline_notional_1h = notionals[len(notionals) // 2]
             state.candle_history_1h = deque(candles[-60:], maxlen=200)
             self._update_dynamic_trend(state)
             state.dynamic_trend_last_refresh = now
@@ -5477,6 +5504,65 @@ class BotEngine:
         adx_threshold = adx_threshold_override if adx_threshold_override is not None else cfg.get("ADX_TREND_THRESHOLD", 25.0)
         return adx is not None and adx >= adx_threshold
 
+    def _anti_range_threshold(self, state, absolute_pct, lookback_5m):
+        """v4.281 — (seuil effectif en %, "relatif"|"absolu")."""
+        base = getattr(state, "baseline_range_1h_pct", None)
+        if self.cfg.get("ANTI_RANGE_RELATIVE_ENABLED", 1) and base:
+            hours = max(lookback_5m * 5 / 60, 1 / 12)
+            return base * self.cfg.get("ANTI_RANGE_REL_MULT", 0.6) * (hours ** 0.5), "relatif"
+        return absolute_pct, "absolu"
+
+    def _anti_range_text(self, state, absolute_pct, lookback_5m):
+        pct, kind = self._anti_range_threshold(state, absolute_pct, lookback_5m)
+        dur = lookback_5m * 5
+        dur_txt = f"{dur // 60} h {dur % 60:02d}" if dur >= 60 else f"{dur} min"
+        return f"marche en range (mouvement < {pct:.2f}% sur {dur_txt}, seuil {kind}{' a l actif' if kind == 'relatif' else ''})"
+
+    def market_quality(self, ticker, state):
+        """v4.281 — QUALITE DU MARCHE d un actif, relative a ses habitudes :
+          vol_ratio      : amplitude de la derniere heure / amplitude horaire mediane (7 j)
+          activity_ratio : volume $ de la derniere heure / volume horaire median (7 j)
+          flow           : pression du flux (fenetre courante)
+        None pour une mesure indisponible."""
+        vol_ratio = activity_ratio = None
+        c5 = list(getattr(state, "candle_history_5m", None) or [])[-12:]
+        if len(c5) >= 6:
+            last_close = c5[-1][2]
+            if last_close > 0 and getattr(state, "baseline_range_1h_pct", None):
+                rng = (max(c[0] for c in c5) - min(c[1] for c in c5)) / last_close * 100
+                vol_ratio = rng / state.baseline_range_1h_pct
+            if getattr(state, "baseline_notional_1h", None) and len(c5[0]) > 3:
+                notional = sum(c[3] * c[2] for c in c5) * (12 / len(c5))
+                activity_ratio = notional / state.baseline_notional_1h
+        flow = self._compute_trade_flow_pressure(ticker, price_now=state.current_price)
+        return {"vol_ratio": round(vol_ratio, 2) if vol_ratio is not None else None,
+                "activity_ratio": round(activity_ratio, 2) if activity_ratio is not None else None,
+                "flow": round(flow, 2) if flow is not None else None}
+
+    def _market_quality_block(self, ticker, state, strategy):
+        """v4.281 — filtres de qualite du marche (DESACTIVES par defaut, a
+        calibrer avec l export CSV) : marche endormi, deserte, flux sans
+        conviction (ce dernier reglable par mode)."""
+        cfg = self.cfg
+        min_vol = cfg.get("MARKET_QUALITY_MIN_VOL_RATIO", 0) or 0
+        min_act = cfg.get("MARKET_QUALITY_MIN_ACTIVITY_RATIO", 0) or 0
+        prefix = {"spot_accumulation": "SPOT_ACCUM", "accumulation": "ACCUMULATION",
+                  "funding_contrarian": "FUNDING", "forex": "FOREX"}.get(strategy, "FOREX")
+        min_conv = cfg.get(f"{prefix}_MIN_FLOW_CONVICTION", 0) or 0
+        if not (min_vol or min_act or min_conv):
+            return None
+        q = self.market_quality(ticker, state)
+        if min_vol and q["vol_ratio"] is not None and q["vol_ratio"] < min_vol:
+            return f"marche endormi (volatilite {q['vol_ratio']:.2f}x son habitude < {min_vol}x)"
+        if min_act and q["activity_ratio"] is not None and q["activity_ratio"] < min_act:
+            return f"marche deserte (activite {q['activity_ratio']:.2f}x son habitude < {min_act}x)"
+        if min_conv:
+            if q["flow"] is None:
+                return "flux sans donnees suffisantes (conviction exigee)"
+            if abs(q["flow"]) < min_conv:
+                return f"flux sans conviction (|{q['flow']:+.2f}| < {min_conv})"
+        return None
+
     def _is_market_ranging(self, state, min_range_pct, lookback):
         """v4.127 — SUR DEMANDE EXPLICITE : detecteur de range DIRECT, base
         sur le mouvement REEL du prix. Mesure simplement : le prix a-t-il
@@ -5490,6 +5576,14 @@ class BotEngine:
         graphique Hyperliquid pour une periode pourtant similaire.
         'lookback' s exprime desormais en bougies 5 min. Repli sur
         mtf_prices si les bougies 5 min ne sont pas encore disponibles."""
+        # v4.281 — SEUIL RELATIF A L ACTIF (sur demande explicite) : le seuil
+        # absolu (2 % pour toutes les cryptos) jugeait "calme" un marche
+        # normal pour BTC et "actif" un marche mou pour WIF. Le mouvement
+        # minimal exige est desormais proportionnel a l amplitude HABITUELLE
+        # de l actif (mediane horaire sur 7 jours), mise a l echelle de la
+        # fenetre (racine du temps). Seuil absolu = repli si l habitude n est
+        # pas encore connue.
+        min_range_pct = self._anti_range_threshold(state, min_range_pct, lookback)[0]
         candles_5m = getattr(state, "candle_history_5m", None)
         if candles_5m and len(candles_5m) >= 5:
             recent = list(candles_5m)[-lookback:]
@@ -8731,8 +8825,7 @@ class BotEngine:
             # v4.272 — rend ce blocage VISIBLE dans le diagnostic
             if isinstance(state.last_gate_snapshot, dict) and is_forex_ticker:
                 state.last_gate_snapshot["forex_ranging"] = bool(is_ranging_normal)
-                state.last_gate_snapshot["forex_anti_range_min_pct"] = cfg.get("FOREX_ANTI_RANGE_MIN_PCT", 0.25)
-                state.last_gate_snapshot["forex_anti_range_lookback"] = cfg.get("FOREX_ANTI_RANGE_LOOKBACK", 200)
+                state.last_gate_snapshot["forex_range_text"] = self._anti_range_text(state, cfg.get("FOREX_ANTI_RANGE_MIN_PCT", 0.25), cfg.get("FOREX_ANTI_RANGE_LOOKBACK", 200))
             if is_ranging_normal:
                 long_entry_ok = False
                 short_entry_ok = False
@@ -8986,6 +9079,12 @@ class BotEngine:
         if not vol_ok and cfg["VOLUME_MIN_RATIO"] > 1.0:
             self.emit("log", {"msg": f"[{ticker}] Signal ignore - volume faible", "level": "dim"})
             return
+        _q_block = self._market_quality_block(ticker, state, "forex")  # v4.281
+        if _q_block:
+            self.emit("log", {"msg": f"[{ticker}] Signal Forex ignore — {_q_block}", "level": "dim"})
+            if isinstance(state.last_gate_snapshot, dict):
+                state.last_gate_snapshot["quality_block"] = _q_block
+            return
 
         # v3.2 — Nouvelle approche "meilleur score de confiance" : au lieu
         # d executer immediatement (ce qui favorise arbitrairement le premier
@@ -9025,7 +9124,8 @@ class BotEngine:
         if not self._gate_active_or_auto_activate(ticker, 100, "accumulation"):
             snap["blocker"] = "actif non selectionne pour ce mode"
             return
-        _gate_v4276 = self._regime_blocks("accumulation") or self._hours_block("accumulation")  # v4.276
+        _gate_v4276 = (self._regime_blocks("accumulation") or self._hours_block("accumulation")
+                       or self._market_quality_block(ticker, state, "accumulation"))  # v4.276 / v4.281
         if _gate_v4276:
             snap["blocker"] = _gate_v4276
             return
@@ -9136,7 +9236,7 @@ class BotEngine:
         # JAMAIS aboutir. Idem pour la cassure fraiche, qui sort d une
         # consolidation. Le filtre anti-range ne s applique plus a ces voies.
         if is_ranging_ac and not fresh_breakout_ac and not volume_breakout_ac:
-            snap["blocker"] = f"marche en range (mouvement < {cfg.get('ACCUMULATION_ANTI_RANGE_MIN_PCT', 2.0)}% sur {cfg.get('ACCUMULATION_ANTI_RANGE_LOOKBACK', 30)} echantillons)"
+            snap["blocker"] = self._anti_range_text(state, cfg.get("ACCUMULATION_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("ACCUMULATION_ANTI_RANGE_LOOKBACK", 30))
             return
 
         dist_below_resistance_pct = (resistance - price) / (resistance - support) * 100 if resistance != support else 0
@@ -9293,8 +9393,8 @@ class BotEngine:
             return
         if not self._gate_active_or_auto_activate(ticker, 100, "funding_contrarian"):
             return  # actif desactive (Marches) ou exclu manuellement
-        if self._hours_block("funding_contrarian"):
-            return  # v4.276 — hors plage horaire du mode
+        if self._hours_block("funding_contrarian") or self._market_quality_block(ticker, state, "funding_contrarian"):
+            return  # v4.276 — hors plage horaire du mode ; v4.281 — qualite du marche
 
         hourly_rate = self.funding_rates.get(ticker)
         if hourly_rate is None:
@@ -9383,7 +9483,8 @@ class BotEngine:
         if not self._gate_active_or_auto_activate(ticker, 100, "spot_accumulation"):
             snap["blocker"] = "actif non selectionne pour ce mode"
             return
-        _gate_v4276 = self._regime_blocks("spot_accumulation") or self._hours_block("spot_accumulation")  # v4.276
+        _gate_v4276 = (self._regime_blocks("spot_accumulation") or self._hours_block("spot_accumulation")
+                       or self._market_quality_block(ticker, state, "spot_accumulation"))  # v4.276 / v4.281
         if _gate_v4276:
             snap["blocker"] = _gate_v4276
             return
@@ -9515,7 +9616,7 @@ class BotEngine:
         # marche qui vient d etre en range — le filtre anti-range les
         # annulait donc presque toujours. Il ne s applique plus a ces voies.
         if is_ranging_sa and not fresh_breakout_sa and not volume_breakout_sa:
-            snap["blocker"] = f"marche en range (mouvement < {cfg.get('SPOT_ACCUM_ANTI_RANGE_MIN_PCT', 2.0)}% sur {cfg.get('SPOT_ACCUM_ANTI_RANGE_LOOKBACK', 30)} echantillons)"
+            snap["blocker"] = self._anti_range_text(state, cfg.get("SPOT_ACCUM_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("SPOT_ACCUM_ANTI_RANGE_LOOKBACK", 30))
             return
 
         min_above_pct = cfg.get("SPOT_ACCUM_MIN_ABOVE_SUPPORT_PCT", 5.0)
@@ -10408,7 +10509,12 @@ class BotEngine:
         arm2_price_pct = cfg.get("TTP_ARM2_PRICE_PCT", 1.3)
         tp1_price = price * (1 + arm1_price_pct/100) if signal == "long" else price * (1 - arm1_price_pct/100)
         tp2_price = price * (1 + arm2_price_pct/100) if signal == "long" else price * (1 - arm2_price_pct/100)
+        try:  # v4.281 — qualite du marche AU MOMENT de l entree (calibrage des filtres)
+            quality = self.market_quality(ticker, self.states.get(symbol) or state)
+        except Exception:
+            quality = {"vol_ratio": None, "activity_ratio": None, "flow": None}
         opened_event = {
+            "vol_ratio": quality["vol_ratio"], "activity_ratio": quality["activity_ratio"], "flow_at_entry": quality["flow"],
             "trade_uid": trade_uid,     # v4.264
             "slot_key": symbol,         # v4.264
             "is_accum_slot": is_accum_slot,
