@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32579533/README.md)
+[README.md](https://github.com/user-attachments/files/32587935/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.280** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.281** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -385,6 +385,28 @@ contournement restent soumises au sens de l'EMA200.
   mêmes réglages) ; ces deux voies en sont désormais exemptées ;
 - la voie volume subissait deux critères de proximité différents (support de
   la consolidation puis support dynamique) : un seul est conservé.
+
+## 4vicies. Qualité du marché et anti-range relatif (v4.281)
+
+**Anti-range relatif à chaque actif.** Le seuil absolu (2 % de mouvement pour
+toutes les cryptos, 0,25 % pour le Forex) est remplacé par un seuil adapté à
+l'actif : amplitude horaire **habituelle** de l'actif (médiane sur 7 jours de
+bougies 1 h) × 0,6 × racine de la durée de la fenêtre en heures. Exemples :
+sur 1 h, ~0,36 % pour un actif calme comme BTC, ~1,2 % pour un actif nerveux
+comme WIF. Les seuils absolus ne servent plus que de repli tant que
+l'habitude de l'actif n'est pas connue. Réglages : `ANTI_RANGE_RELATIVE_ENABLED`,
+`ANTI_RANGE_REL_MULT`.
+
+**Qualité du marché** (tous les modes), mesurée par rapport aux habitudes de
+l'actif et affichée au diagnostic :
+- **volatilité** : amplitude de la dernière heure / amplitude horaire habituelle ;
+- **activité** : volume $ de la dernière heure / volume horaire habituel ;
+- **flux** : pression acheteurs/vendeurs.
+
+Ces trois mesures sont enregistrées à **chaque entrée** (colonnes de l'export
+CSV). Les filtres correspondants (« marché endormi », « marché déserté »,
+« flux sans conviction » par mode) sont prêts mais **désactivés (0)** en
+attendant d'être calibrés sur les résultats réels.
 
 ## 5. Premier lancement
 
