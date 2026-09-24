@@ -935,6 +935,14 @@ ADVANCED_SETTINGS = {
     # v4.276 — regime de marche et plages horaires
     "MARKET_REGIME_FILTER_ENABLED": {"label": "Regime de marche - filtre actif (1 = oui, 0 = non)", "default": 1},
     "MARKET_REGIME_BREADTH_PCT": {"label": "Regime de marche - % minimal d actifs dans le meme sens", "default": 60},
+    "ANTI_RANGE_RELATIVE_ENABLED": {"label": "Anti-range relatif a l actif (1) ou seuils absolus (0)", "default": 1},
+    "ANTI_RANGE_REL_MULT":         {"label": "Anti-range relatif - part de l amplitude habituelle exigee", "default": 0.6},
+    "MARKET_QUALITY_MIN_VOL_RATIO":      {"label": "Qualite - volatilite minimale (x habitude, 0 = off)", "default": 0.0},
+    "MARKET_QUALITY_MIN_ACTIVITY_RATIO": {"label": "Qualite - activite minimale (x habitude, 0 = off)", "default": 0.0},
+    "SPOT_ACCUM_MIN_FLOW_CONVICTION":    {"label": "Spot-Accum - conviction minimale du flux |pression| (0 = off)", "default": 0.0},
+    "ACCUMULATION_MIN_FLOW_CONVICTION":  {"label": "Accumulation - conviction minimale du flux |pression| (0 = off)", "default": 0.0},
+    "FUNDING_MIN_FLOW_CONVICTION":       {"label": "Funding - conviction minimale du flux |pression| (0 = off)", "default": 0.0},
+    "FOREX_MIN_FLOW_CONVICTION":         {"label": "Forex - conviction minimale du flux |pression| (0 = off)", "default": 0.0},
     "SPOT_ACCUM_BYPASS_REQUIRE_TREND": {"label": "Spot-Accum - cassures/rebonds exigent la tendance EMA200 (1/0)", "default": 1},
     "SPOT_ACCUM_RISING_SUPPORT_ENABLED": {"label": "Spot-Accum - achat sur repli (support ascendant) (1/0)", "default": 1},
     "SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND":   {"label": "Spot-Accum - cassure fraiche autorisee contre l EMA200 (1/0)", "default": 1},
@@ -1098,7 +1106,7 @@ _ZERO_ALLOWED_INT_KEYS = {"CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
                           "ACCUMULATION_MAX_ENTRIES_PER_WINDOW", "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW",
                           "SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND",
-                          "MARKET_REGIME_FILTER_ENABLED", "SPOT_ACCUM_TRADE_HOUR_START_UTC",
+                          "MARKET_REGIME_FILTER_ENABLED", "SPOT_ACCUM_TRADE_HOUR_START_UTC", "ANTI_RANGE_RELATIVE_ENABLED",
                           "SPOT_ACCUM_BYPASS_REQUIRE_TREND", "SPOT_ACCUM_BYPASS_FLOW_VETO", "SPOT_ACCUM_RISING_SUPPORT_ENABLED",
                           "SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND", "ACCUMULATION_FRESH_BREAKOUT_COUNTER_TREND",
                           "ACCUMULATION_BYPASS_REQUIRE_TREND", "ACCUMULATION_BYPASS_FLOW_VETO", "ACCUMULATION_TRADE_HOUR_START_UTC",
@@ -1120,7 +1128,13 @@ def _coerce_advanced_value(key: str, value):
         return False, "valeur invalide"
     if (key.startswith("ENTRY_FLOW_") or key.endswith("_FLOW_THRESHOLD") or key.endswith("_ENTRY_FLOW_CONFIRM_MIN") or key == "FRESH_BREAKOUT_COUNTER_TREND_MIN_FLOW") and not 0 <= value <= 1:
         return False, "doit etre entre 0 et 1 (pression de -1 a +1)"
-    if (key == "MARKET_REGIME_FILTER_ENABLED" or "_BYPASS_" in key or key == "SPOT_ACCUM_RISING_SUPPORT_ENABLED" or key.endswith("_FRESH_BREAKOUT_COUNTER_TREND")) and value not in (0, 1):
+    if key.endswith("_MIN_FLOW_CONVICTION") and not 0 <= value <= 1:
+        return False, "entre 0 et 1"
+    if key in ("MARKET_QUALITY_MIN_VOL_RATIO", "MARKET_QUALITY_MIN_ACTIVITY_RATIO") and not 0 <= value <= 5:
+        return False, "entre 0 et 5"
+    if key == "ANTI_RANGE_REL_MULT" and not 0.1 <= value <= 3:
+        return False, "entre 0,1 et 3"
+    if (key == "MARKET_REGIME_FILTER_ENABLED" or key == "ANTI_RANGE_RELATIVE_ENABLED" or "_BYPASS_" in key or key == "SPOT_ACCUM_RISING_SUPPORT_ENABLED" or key.endswith("_FRESH_BREAKOUT_COUNTER_TREND")) and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
     if key.endswith("_TRADE_HOUR_START_UTC") and not 0 <= value <= 23:
         return False, "heure entre 0 et 23"
@@ -2085,8 +2099,8 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
         # anti-range (blocage le plus frequent) n apparaissait pas.
         if ticker not in cfg.get("FOREX_MODE_SYMBOLS", []):
             blocker_long = blocker_short = "non concerne (crypto : le mode Forex ne trade que les devises et PAXG)"
-        elif not has_position and snap.get("forex_ranging"):
-            range_txt = f"marche en range (mouvement < {snap.get('forex_anti_range_min_pct')}% sur {snap.get('forex_anti_range_lookback')} bougies 5 min)"
+        elif not has_position and (snap.get("forex_ranging") or snap.get("quality_block")):
+            range_txt = snap.get("quality_block") or snap.get("forex_range_text") or "marche en range"
             blocker_long = blocker_long or range_txt
             blocker_short = blocker_short or range_txt
         # v4.264 — raison EXACTE d un blocage anticipe (collecte, forex
@@ -2106,7 +2120,12 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
                 blocker_spot_accum = blocked_reason
             if blocker_accumulation == "pas encore de donnees":
                 blocker_accumulation = blocker_accumulation_long = blocker_accumulation_short = blocked_reason
+        try:  # v4.281 — qualite du marche (relative aux habitudes de l actif)
+            quality = bot.market_quality(ticker, state)
+        except Exception:
+            quality = None
         results.append({
+            "quality": quality,
             "blocked_reason": blocked_reason,
             "ticker": ticker,
             "has_position": has_position,
@@ -2367,6 +2386,7 @@ def _export_row(t, tz=timezone.utc):
         _SIM_LABEL.get(t.get("sim_sl_075"), ""), _SIM_LABEL.get(t.get("sim_sl_100"), ""), _SIM_LABEL.get(t.get("sim_sl_150"), ""),
         t.get("followup_status") or ("en attente" if t.get("closed_at") else ""),
         (t.get("entry_reasons") or "").replace(";", ","),
+        _fr(t.get("vol_ratio"), 2), _fr(t.get("activity_ratio"), 2), _fr(t.get("flow_at_entry"), 2),
         t.get("trade_uid") or "",
     ]
 
@@ -2380,7 +2400,9 @@ _EXPORT_HEADER = [
     "prix +60 min", "evolution +60 min % (dans le sens du trade)",
     "meilleur mouvement dans l heure suivant la sortie %", "trade perdant : prix revenu a l entree dans l heure",
     "si SL a 0,75 % : issue", "si SL a 1 % : issue", "si SL a 1,5 % : issue",
-    "statut du suivi", "raisons d entree", "identifiant trade",
+    "statut du suivi", "raisons d entree",
+    "volatilite a l entree (x habitude)", "activite a l entree (x habitude)", "flux a l entree",
+    "identifiant trade",
 ]
 
 
