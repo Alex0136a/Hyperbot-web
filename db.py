@@ -192,7 +192,9 @@ def init_db():
                          ("followup_status", "TEXT"), ("followup_at", "TEXT"),
                          # v4.269 — simulation minute par minute d un SL plus large
                          ("sim_sl_075", "TEXT"), ("sim_sl_100", "TEXT"), ("sim_sl_150", "TEXT"),
-                         ("sim_status", "TEXT")):
+                         ("sim_status", "TEXT"),
+                         # v4.281 — qualite du marche a l entree
+                         ("vol_ratio", "REAL"), ("activity_ratio", "REAL"), ("flow_at_entry", "REAL")):
             if col not in existing_cols:
                 conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
         if "fees_paid" not in existing_cols:
@@ -404,6 +406,7 @@ _OPEN_TRADE_FIELDS = (
     "confidence", "leverage", "position_size_pct", "risk_reward", "timeframe",
     "stop_loss", "take_profit1", "take_profit2", "rsi", "entry_reasons",
     "confidence_breakdown", "size_usd", "sl_pct_used", "ttp_arm1_pct_used",
+    "vol_ratio", "activity_ratio", "flow_at_entry",  # v4.281
 )
 
 
