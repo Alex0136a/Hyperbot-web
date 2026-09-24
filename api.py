@@ -943,6 +943,7 @@ ADVANCED_SETTINGS = {
     "ACCUMULATION_MIN_FLOW_CONVICTION":  {"label": "Accumulation - conviction minimale du flux |pression| (0 = off)", "default": 0.0},
     "FUNDING_MIN_FLOW_CONVICTION":       {"label": "Funding - conviction minimale du flux |pression| (0 = off)", "default": 0.0},
     "FOREX_MIN_FLOW_CONVICTION":         {"label": "Forex - conviction minimale du flux |pression| (0 = off)", "default": 0.0},
+    "MARKET_QUALITY_MAX_SPREAD_PCT":     {"label": "Qualite - spread maximal a l entree (% du prix, 0 = off)", "default": 0.0},
     "SPOT_ACCUM_BYPASS_REQUIRE_TREND": {"label": "Spot-Accum - cassures/rebonds exigent la tendance EMA200 (1/0)", "default": 1},
     "SPOT_ACCUM_RISING_SUPPORT_ENABLED": {"label": "Spot-Accum - achat sur repli (support ascendant) (1/0)", "default": 1},
     "SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND":   {"label": "Spot-Accum - cassure fraiche autorisee contre l EMA200 (1/0)", "default": 1},
@@ -1130,6 +1131,8 @@ def _coerce_advanced_value(key: str, value):
         return False, "doit etre entre 0 et 1 (pression de -1 a +1)"
     if key.endswith("_MIN_FLOW_CONVICTION") and not 0 <= value <= 1:
         return False, "entre 0 et 1"
+    if key == "MARKET_QUALITY_MAX_SPREAD_PCT" and not 0 <= value <= 5:
+        return False, "entre 0 et 5 %"
     if key in ("MARKET_QUALITY_MIN_VOL_RATIO", "MARKET_QUALITY_MIN_ACTIVITY_RATIO") and not 0 <= value <= 5:
         return False, "entre 0 et 5"
     if key == "ANTI_RANGE_REL_MULT" and not 0.1 <= value <= 3:
@@ -2124,7 +2127,15 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             quality = bot.market_quality(ticker, state)
         except Exception:
             quality = None
+        _sr = getattr(state, "sr_display", None) or {}
+        levels = {  # v4.283 — valeurs exactes, verifiables sur le graphique Hyperliquid
+            "trend_ema": getattr(state, "trend_ema_value", None),
+            "trend_ema_source": getattr(state, "trend_ema_source", None),
+            "support": _sr.get("support"), "resistance": _sr.get("resistance"), "sr_source": _sr.get("source"),
+            "price": state.current_price,
+        }
         results.append({
+            "levels": levels,
             "quality": quality,
             "blocked_reason": blocked_reason,
             "ticker": ticker,
@@ -2386,7 +2397,7 @@ def _export_row(t, tz=timezone.utc):
         _SIM_LABEL.get(t.get("sim_sl_075"), ""), _SIM_LABEL.get(t.get("sim_sl_100"), ""), _SIM_LABEL.get(t.get("sim_sl_150"), ""),
         t.get("followup_status") or ("en attente" if t.get("closed_at") else ""),
         (t.get("entry_reasons") or "").replace(";", ","),
-        _fr(t.get("vol_ratio"), 2), _fr(t.get("activity_ratio"), 2), _fr(t.get("flow_at_entry"), 2),
+        _fr(t.get("vol_ratio"), 2), _fr(t.get("activity_ratio"), 2), _fr(t.get("flow_at_entry"), 2), _fr(t.get("spread_at_entry"), 4),
         t.get("trade_uid") or "",
     ]
 
@@ -2401,7 +2412,7 @@ _EXPORT_HEADER = [
     "meilleur mouvement dans l heure suivant la sortie %", "trade perdant : prix revenu a l entree dans l heure",
     "si SL a 0,75 % : issue", "si SL a 1 % : issue", "si SL a 1,5 % : issue",
     "statut du suivi", "raisons d entree",
-    "volatilite a l entree (x habitude)", "activite a l entree (x habitude)", "flux a l entree",
+    "volatilite a l entree (x habitude)", "activite a l entree (x habitude)", "flux a l entree", "spread a l entree %",
     "identifiant trade",
 ]
 
