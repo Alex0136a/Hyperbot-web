@@ -33,10 +33,15 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.281"
-BOT_BUILD   = "2026-09-24-j"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.283"
+BOT_BUILD   = "2026-09-24-l"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.283 — Tendance (EMA80 5 min) et support/resistance calcules sur les
+#        VRAIES bougies 5 min Hyperliquid (verifiables sur le graphique),
+#        bougies rafraichies a chaque cloture ; valeurs affichees au diagnostic.
+# 4.282 — Spread (carnet d ordres) ajoute a la qualite du marche : affiche,
+#        enregistre a chaque entree, filtre optionnel (desactive).
 # 4.281 — Anti-range RELATIF a chaque actif (remplace le seuil absolu de 2 %) ;
 #        mesures de qualite du marche (volatilite, activite, flux) affichees
 #        au diagnostic et enregistrees a chaque entree ; filtres associes
@@ -1216,6 +1221,9 @@ PROFILE_SWING = {
     # amplitude horaire mediane de l actif (7 j) x ANTI_RANGE_REL_MULT x
     # racine(duree de la fenetre en heures). Les seuils absolus (*_ANTI_RANGE_MIN_PCT)
     # ne servent plus que de repli tant que l habitude n est pas connue.
+    # v4.283 — EMA de tendance sur les vraies bougies 5 min (80 x 5 min =
+    # ~6 h 40, meme horizon que l ancienne EMA200 sur points de 2 min)
+    "TREND_EMA_PERIOD_5M": 80,
     "ANTI_RANGE_RELATIVE_ENABLED": 1,
     "ANTI_RANGE_REL_MULT": 0.6,
     # v4.281 — QUALITE DU MARCHE (0 = desactive, en attente de calibrage)
@@ -1225,6 +1233,9 @@ PROFILE_SWING = {
     "ACCUMULATION_MIN_FLOW_CONVICTION": 0.0,
     "FUNDING_MIN_FLOW_CONVICTION": 0.0,
     "FOREX_MIN_FLOW_CONVICTION": 0.0,
+    # v4.282 — spread maximal accepte a l entree (% du prix, 0 = desactive)
+    "MARKET_QUALITY_MAX_SPREAD_PCT": 0.0,
+    "MARKET_QUALITY_SPREAD_CACHE_SEC": 30,
     # v4.277 — les entrees par cassure/rebond/tendance persistante doivent
     # respecter le SENS de la tendance (EMA200) et le veto du flux (1 = oui)
     "SPOT_ACCUM_BYPASS_REQUIRE_TREND": 1,
@@ -5040,13 +5051,21 @@ class BotEngine:
         periode pourtant similaire). Rafraichit au maximum toutes les 5
         minutes par actif."""
         now = time.time()
-        last_refresh = getattr(state, "candles_5m_last_refresh", 0)
-        if now - last_refresh < 300 and getattr(state, "candle_history_5m", None):
+        # v4.283 — rafraichi a CHAQUE cloture de bougie 5 min (10 s de marge
+        # pour que Hyperliquid la finalise), et non plus toutes les 300 s a
+        # une heure arbitraire : l EMA de tendance et les supports/resistances
+        # suivent ainsi exactement les bougies visibles sur le graphique.
+        bucket = int((now - 10) // 300)
+        if bucket == getattr(state, "candles_5m_bucket", None) and getattr(state, "candle_history_5m", None):
             return
-        candles = self._fetch_candles(ticker, "5m", count=60)
+        # 500 bougies (~41 h) : historique suffisant pour que l EMA de tendance
+        # converge vers la valeur du graphique, et pour le support / la
+        # resistance d Accumulation (~24 h = 288 bougies).
+        candles = self._fetch_candles(ticker, "5m", count=500)
         if candles:
-            state.candle_history_5m = deque(candles, maxlen=200)
+            state.candle_history_5m = deque(candles, maxlen=600)
             state.candles_5m_last_refresh = now
+            state.candles_5m_bucket = bucket
 
     def _is_candle_bullish_now(self, state):
         """v4.175 — SUR DEMANDE EXPLICITE : la bougie EN COURS est-elle verte
@@ -5504,6 +5523,37 @@ class BotEngine:
         adx_threshold = adx_threshold_override if adx_threshold_override is not None else cfg.get("ADX_TREND_THRESHOLD", 25.0)
         return adx is not None and adx >= adx_threshold
 
+    # ─────────────────────────────────────────────────────────────────────
+    #  v4.283 — TENDANCE ET SUPPORT/RESISTANCE SUR LES VRAIES BOUGIES 5 MIN
+    # ─────────────────────────────────────────────────────────────────────
+    def _trend_ema(self, state):
+        """EMA de tendance de l actif, calculee sur les VRAIES bougies 5 min
+        d Hyperliquid (EMA TREND_EMA_PERIOD_5M, 80 par defaut = ~6 h 40, meme
+        horizon que l ancienne EMA200 sur points de 2 min) : verifiable sur le
+        graphique Hyperliquid (EMA 80, unite 5 min). Repli sur l ancien calcul
+        interne tant que l historique 5 min n est pas disponible."""
+        period = int(self.cfg.get("TREND_EMA_PERIOD_5M", 80))
+        c5 = getattr(state, "candle_history_5m", None)
+        if c5 and len(c5) >= period:
+            value, source = calc_ema([c[2] for c in c5], period), f"EMA{period} bougies 5 min"
+        else:
+            value = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
+            source = "EMA200 interne (repli : bougies 5 min pas encore chargees)"
+        state.trend_ema_value, state.trend_ema_source = value, source
+        return value
+
+    def _sr_levels(self, state, period_2min_candles):
+        """Support/resistance = plus bas / plus haut des N dernieres VRAIES
+        bougies 5 min (N = periode historique en bougies ~2 min x 2/5, pour
+        garder le meme horizon). Repli sur les bougies internes."""
+        n5 = max(5, round(period_2min_candles * 2 / 5))
+        c5 = getattr(state, "candle_history_5m", None)
+        if c5 and len(c5) >= n5:
+            sup, res = calc_support_resistance_from_candles(c5, n5)
+            return sup, res, f"{n5} bougies 5 min"
+        sup, res = calc_support_resistance_from_candles(state.candle_history, period_2min_candles)
+        return sup, res, "bougies internes (repli)"
+
     def _anti_range_threshold(self, state, absolute_pct, lookback_5m):
         """v4.281 — (seuil effectif en %, "relatif"|"absolu")."""
         base = getattr(state, "baseline_range_1h_pct", None)
@@ -5517,6 +5567,33 @@ class BotEngine:
         dur = lookback_5m * 5
         dur_txt = f"{dur // 60} h {dur % 60:02d}" if dur >= 60 else f"{dur} min"
         return f"marche en range (mouvement < {pct:.2f}% sur {dur_txt}, seuil {kind}{' a l actif' if kind == 'relatif' else ''})"
+
+    def spread_pct(self, ticker):
+        """v4.282 — SPREAD : ecart entre la meilleure offre d achat et de vente
+        du carnet d ordres, en % du prix milieu. Lu a la demande (REST
+        l2Book) avec un cache de MARKET_QUALITY_SPREAD_CACHE_SEC secondes par
+        actif. None si le carnet est indisponible."""
+        cache = getattr(self, "_spread_cache", None)
+        if cache is None:
+            cache = self._spread_cache = {}
+        now = time.time()
+        hit = cache.get(ticker)
+        if hit and now - hit[0] < self.cfg.get("MARKET_QUALITY_SPREAD_CACHE_SEC", 30):
+            return hit[1]
+        value = None
+        if self.info is not None:
+            try:
+                book = self.info.post("/info", {"type": "l2Book", "coin": ticker}) or {}
+                levels = book.get("levels") or []
+                if len(levels) == 2 and levels[0] and levels[1]:
+                    bid, ask = float(levels[0][0]["px"]), float(levels[1][0]["px"])
+                    mid = (bid + ask) / 2
+                    if mid > 0 and ask >= bid:
+                        value = round((ask - bid) / mid * 100, 4)
+            except Exception as e:
+                print(f"[SPREAD] Carnet d ordres {ticker} indisponible : {e}")
+        cache[ticker] = (now, value)
+        return value
 
     def market_quality(self, ticker, state):
         """v4.281 — QUALITE DU MARCHE d un actif, relative a ses habitudes :
@@ -5537,7 +5614,8 @@ class BotEngine:
         flow = self._compute_trade_flow_pressure(ticker, price_now=state.current_price)
         return {"vol_ratio": round(vol_ratio, 2) if vol_ratio is not None else None,
                 "activity_ratio": round(activity_ratio, 2) if activity_ratio is not None else None,
-                "flow": round(flow, 2) if flow is not None else None}
+                "flow": round(flow, 2) if flow is not None else None,
+                "spread_pct": self.spread_pct(ticker)}
 
     def _market_quality_block(self, ticker, state, strategy):
         """v4.281 — filtres de qualite du marche (DESACTIVES par defaut, a
@@ -5549,9 +5627,12 @@ class BotEngine:
         prefix = {"spot_accumulation": "SPOT_ACCUM", "accumulation": "ACCUMULATION",
                   "funding_contrarian": "FUNDING", "forex": "FOREX"}.get(strategy, "FOREX")
         min_conv = cfg.get(f"{prefix}_MIN_FLOW_CONVICTION", 0) or 0
-        if not (min_vol or min_act or min_conv):
+        max_spread = cfg.get("MARKET_QUALITY_MAX_SPREAD_PCT", 0) or 0
+        if not (min_vol or min_act or min_conv or max_spread):
             return None
         q = self.market_quality(ticker, state)
+        if max_spread and q["spread_pct"] is not None and q["spread_pct"] > max_spread:
+            return f"spread trop large ({q['spread_pct']:.3f}% > {max_spread}%)"
         if min_vol and q["vol_ratio"] is not None and q["vol_ratio"] < min_vol:
             return f"marche endormi (volatilite {q['vol_ratio']:.2f}x son habitude < {min_vol}x)"
         if min_act and q["activity_ratio"] is not None and q["activity_ratio"] < min_act:
@@ -6760,7 +6841,7 @@ class BotEngine:
             min_maturity = cfg.get("ACCUMULATION_REVERSAL_MIN_EMA_MATURITY", 100)
             data_mature = len(state.mtf_prices) >= min_maturity
             data_healthy = self._is_ws_healthy() if self.info is not None else True
-            ema200_now = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
+            ema200_now = self._trend_ema(state)
 
             if not data_mature or not data_healthy or ema200_now is None:
                 reason_skip = "EMA200 pas assez mature" if not data_mature else ("collecte instable" if not data_healthy else "EMA200 indisponible")
@@ -6902,7 +6983,7 @@ class BotEngine:
                 trend_ok_sl = True
                 ema200_sl = None
                 if cfg.get("SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND", 1):
-                    ema200_sl = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
+                    ema200_sl = self._trend_ema(state)
                     if ema200_sl is not None:
                         trend_ok_sl = (price > ema200_sl) if pos["type"] == "long" else (price < ema200_sl)
                 if pnl_pct <= -max_loss_pct:
@@ -6996,7 +7077,7 @@ class BotEngine:
                 min_maturity = cfg.get("SPOT_ACCUM_REVERSAL_MIN_EMA_MATURITY", 100)
                 data_mature = len(state.mtf_prices) >= min_maturity
                 data_healthy = self._is_ws_healthy() if self.info is not None else True
-                ema200_now = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
+                ema200_now = self._trend_ema(state)
 
                 if not data_mature or not data_healthy or ema200_now is None:
                     # Donnees pas assez fiables pour juger d un retournement
@@ -7263,7 +7344,7 @@ class BotEngine:
                     # tendance de fond a genuinement change.
                     trend_still_intact_sa = True
                     if cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
-                        ema200_hold_sa = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
+                        ema200_hold_sa = self._trend_ema(state)
                         if ema200_hold_sa is not None:
                             trend_still_intact_sa = (price > ema200_hold_sa) if pos["type"] == "long" else (price < ema200_hold_sa)
                     if trend_still_intact_sa:
@@ -7657,7 +7738,7 @@ class BotEngine:
                     # intacte.
                     trend_still_intact_t0 = False
                     if cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
-                        ema200_hold_t0 = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
+                        ema200_hold_t0 = self._trend_ema(state)
                         if ema200_hold_t0 is not None:
                             trend_still_intact_t0 = (price > ema200_hold_t0) if pos["type"] == "long" else (price < ema200_hold_t0)
                     if trend_still_intact_t0:
@@ -7786,7 +7867,7 @@ class BotEngine:
                 # qui a son propre trailing independant).
                 trend_still_intact = False  # par defaut si le filtre est desactive : comportement d origine (ferme normalement)
                 if cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
-                    ema200_hold = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
+                    ema200_hold = self._trend_ema(state)
                     if ema200_hold is not None:
                         if pos["type"] == "long":
                             trend_still_intact = price > ema200_hold
@@ -8014,13 +8095,13 @@ class BotEngine:
             # utilisant ce mecanisme) — pas de cout inutile pour les autres.
             if cfg.get("ACCUMULATION_ENABLED", False) or cfg.get("SPOT_ACCUM_ENABLED", True):
                 self._maybe_refresh_dynamic_trend(ticker, state)
-                self._maybe_refresh_5m_candles(ticker, state)
+            self._maybe_refresh_5m_candles(ticker, state)  # v4.283 — tous les modes (EMA de tendance, S/R)
             # Nouvelle fenetre : redemarre le suivi haut/bas a partir de ce
             # point de cloture (qui devient l ouverture approximative de la
             # bougie suivante).
             state.window_high = price
             state.window_low  = price
-        ema200 = calc_ema(list(state.mtf_prices), 200) if len(state.mtf_prices) >= 5 else None
+        ema200 = self._trend_ema(state)
         # v4.12 — FIX FAILLE : quand l EMA200 n est pas encore calculable
         # (donnees insuffisantes, ex: juste apres un redemarrage), l ancien
         # code mettait trend_up ET trend_down a True SIMULTANEMENT — la
@@ -8284,9 +8365,11 @@ class BotEngine:
         # tant que candle_history n a pas encore assez de bougies
         # accumulees (redemarrage recent).
         sr_period_candles = cfg.get("SR_PERIOD_CANDLES", 100)
-        support, resistance = calc_support_resistance_from_candles(state.candle_history, sr_period_candles)
+        support, resistance, sr_source = self._sr_levels(state, sr_period_candles)  # v4.283 — vraies bougies 5 min
         if support is None or resistance is None:
             support, resistance = calc_support_resistance(prices, sr_period)
+            sr_source = "prix bruts (repli)"
+        state.sr_display = {"support": support, "resistance": resistance, "source": sr_source}
 
         # v4.132 — SUR DEMANDE EXPLICITE : Accumulation utilise desormais un
         # S/R calcule sur 24h (720 bougies ~2min), distinct de la fenetre
@@ -8294,7 +8377,8 @@ class BotEngine:
         # partage tant que candle_history n a pas encore 720 bougies
         # accumulees (redemarrage recent).
         accum_sr_period_candles = cfg.get("ACCUMULATION_SR_PERIOD_CANDLES", 720)
-        support_accum, resistance_accum = calc_support_resistance_from_candles(state.candle_history, accum_sr_period_candles)
+        support_accum, resistance_accum, _src_ac = self._sr_levels(state, accum_sr_period_candles)  # v4.283
+        state.sr_display.update({"support_accum": support_accum, "resistance_accum": resistance_accum, "source_accum": _src_ac})
         if support_accum is None or resistance_accum is None:
             support_accum, resistance_accum = support, resistance
 
@@ -10512,9 +10596,10 @@ class BotEngine:
         try:  # v4.281 — qualite du marche AU MOMENT de l entree (calibrage des filtres)
             quality = self.market_quality(ticker, self.states.get(symbol) or state)
         except Exception:
-            quality = {"vol_ratio": None, "activity_ratio": None, "flow": None}
+            quality = {"vol_ratio": None, "activity_ratio": None, "flow": None, "spread_pct": None}
         opened_event = {
             "vol_ratio": quality["vol_ratio"], "activity_ratio": quality["activity_ratio"], "flow_at_entry": quality["flow"],
+            "spread_at_entry": quality.get("spread_pct"),  # v4.282
             "trade_uid": trade_uid,     # v4.264
             "slot_key": symbol,         # v4.264
             "is_accum_slot": is_accum_slot,
