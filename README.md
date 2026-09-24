@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32587935/README.md)
+[README.md](https://github.com/user-attachments/files/32588168/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.281** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.283** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -401,12 +401,31 @@ l'habitude de l'actif n'est pas connue. Réglages : `ANTI_RANGE_RELATIVE_ENABLED
 l'actif et affichée au diagnostic :
 - **volatilité** : amplitude de la dernière heure / amplitude horaire habituelle ;
 - **activité** : volume $ de la dernière heure / volume horaire habituel ;
-- **flux** : pression acheteurs/vendeurs.
+- **flux** : pression acheteurs/vendeurs ;
+- **spread** (v4.282) : écart entre meilleure offre d'achat et de vente du
+  carnet d'ordres, en % du prix — coût d'un aller-retour au marché en plus
+  des frais (lu à la demande, mis en cache 30 s par actif).
 
-Ces trois mesures sont enregistrées à **chaque entrée** (colonnes de l'export
+Ces quatre mesures sont enregistrées à **chaque entrée** (colonnes de l'export
 CSV). Les filtres correspondants (« marché endormi », « marché déserté »,
-« flux sans conviction » par mode) sont prêts mais **désactivés (0)** en
+« flux sans conviction » par mode, « spread trop large ») sont prêts mais **désactivés (0)** en
 attendant d'être calibrés sur les résultats réels.
+
+## 4unvicies. Indicateurs vérifiables sur le graphique Hyperliquid (v4.283)
+
+Hyperliquid ne fournit aucun indicateur calculé (EMA, support/résistance…) :
+le bot les calcule, désormais **entièrement à partir des vraies bougies
+Hyperliquid** :
+
+| Indicateur | Calcul | À vérifier sur le graphique |
+|---|---|---|
+| Tendance de chaque mode | **EMA 80 sur bougies 5 min** (~6 h 40, même horizon que l'ancienne EMA200 sur points internes de 2 min) | ajouter une EMA de longueur 80 en unité 5 min |
+| Support / résistance (entrées) | plus bas / plus haut des **40 dernières bougies 5 min** (~3 h 20) | |
+| Support / résistance Accumulation | **288 bougies 5 min** (~24 h) | |
+| Régime de marché | EMA200 / EMA50 sur bougies 1 h | EMA 200 en unité 1 h |
+
+Les bougies 5 min sont rechargées à chaque clôture. Le diagnostic affiche les
+valeurs exactes (« 📐 Niveaux ») pour comparaison directe avec le graphique.
 
 ## 5. Premier lancement
 
