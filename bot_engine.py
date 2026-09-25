@@ -33,10 +33,13 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.284"
-BOT_BUILD   = "2026-09-24-m"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.285"
+BOT_BUILD   = "2026-09-25-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.285 — FIX : l etoile filante detectee avant l entree fermait les LONG
+#        quelques secondes apres l ouverture ; Spot-Accum n achete plus
+#        pendant qu une etoile filante est en cours de confirmation.
 # 4.284 — Bougies 5 min et 1h recues en TEMPS REEL par WebSocket : chaque
 #        bougie est prise en compte a l instant de sa cloture ; REST reduit
 #        au chargement initial, a la resynchronisation (6 h) et au repli.
@@ -3070,6 +3073,13 @@ class SymbolState:
         self.spot_accum_peak_pnl_pct = None
         self.spot_accum_velocity_checkpoint = None
         self.sl_flow_patience_since = None  # v4.270
+        # v4.285 — FIX BUG : un signal "etoile filante" detecte AVANT l entree
+        # (et deja confirme depuis 30 min) restait memorise sur l actif : la
+        # position LONG etait fermee ~6 secondes apres son ouverture, a ~0 %,
+        # en payant les frais (31 trades Spot-Accum sur 92 du 23 au 25/09).
+        # Seul un signal apparu APRES l ouverture peut desormais la fermer.
+        self.shooting_star_pending_close = None
+        self.shooting_star_pending_since = None
 
     def trades_last_24h(self):
         cutoff = datetime.now().timestamp() - 86400
@@ -9685,6 +9695,11 @@ class BotEngine:
                        or self._market_quality_block(ticker, state, "spot_accumulation"))  # v4.276 / v4.281
         if _gate_v4276:
             snap["blocker"] = _gate_v4276
+            return
+        # v4.285 — COHERENCE entree/sortie : pas d achat pendant qu une etoile
+        # filante (signal BAISSIER, qui ferme les LONG) est en cours sur l actif.
+        if cfg.get("SHOOTING_STAR_DETECTION_ENABLED", True) and getattr(state, "shooting_star_pending_close", None) is not None:
+            snap["blocker"] = "etoile filante (signal baissier) en cours de confirmation"
             return
 
         snap["trend_up"] = trend_up
