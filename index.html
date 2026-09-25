@@ -537,6 +537,60 @@ function HoursStatsCard({ token }) {
   );
 }
 
+// v4.290 — Analyse statistique des stop loss (elargir le SL ? patienter ?)
+async function downloadAuthed(path, token, fallbackName) {
+  const r = await fetch(`${API}${path}`, {headers:{Authorization:`Bearer ${token}`}});
+  if (!r.ok) { let d={}; try{d=await r.json();}catch(_){} throw new Error(d.detail||`Erreur ${r.status}`); }
+  const blob = await r.blob();
+  const m = (r.headers.get("Content-Disposition")||"").match(/filename="([^"]+)"/);
+  const url = URL.createObjectURL(blob); const a = document.createElement("a");
+  a.href = url; a.download = m?m[1]:fallbackName; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+}
+function SlAnalysisCard({ token }) {
+  const [d, setD] = useState(null);
+  const [days, setDays] = useState(14);
+  useEffect(() => { (async () => {
+    try { setD(await apiCall(`/api/stats/sl-analysis?days=${days}`,"GET",null,token)); } catch(e) { setD({error:e.message}); }
+  })(); }, [token, days]);
+  const cell = {padding:"5px 7px",fontSize:11,borderBottom:"1px solid #131d33",textAlign:"center",whiteSpace:"nowrap",color:"#e2e8f0"};
+  const f = (v,s="") => v==null ? "—" : `${String(v).replace(".",",")}${s}`;
+  return (
+    <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:8}}>
+        <b style={{color:"#e2e8f0",fontSize:12}}>🛑 Analyse des stop loss — le prix revient-il ? faut-il élargir le SL ou patienter ?</b>
+        <span style={{display:"flex",gap:8}}>
+          <select value={days} onChange={e=>setDays(Number(e.target.value))} style={{background:"#0a0e1a",color:"#e2e8f0",border:"1px solid #1e2d4a",borderRadius:6,padding:"4px 6px",fontFamily:"inherit"}}>
+            {[3,7,14,30,90].map(x=><option key={x} value={x}>{x} derniers jours</option>)}
+          </select>
+          <button onClick={()=>downloadAuthed(`/api/export/sl-analysis.csv?days=${days}`,token,"analyse_stop_loss.csv").catch(e=>alert(e.message))}
+            style={{background:"#60a5fa",border:"none",borderRadius:7,padding:"6px 12px",color:"#04101f",fontFamily:"inherit",fontSize:12,fontWeight:800,cursor:"pointer"}}>📥 Télécharger (CSV)</button>
+        </span>
+      </div>
+      {!d ? <div style={{fontSize:11,color:"#64748b"}}>Chargement...</div> : d.error ? <div style={{fontSize:11,color:"#fca5a5"}}>{d.error}</div> :
+       d.modes.length===0 ? <div style={{fontSize:11,color:"#64748b"}}>Pas encore de SL analysés (le suivi se fait environ 2 h après chaque SL).</div> :
+       d.modes.map(m=>(
+        <div key={m.mode} style={{marginBottom:12}}>
+          <div style={{fontSize:12,color:"#e2e8f0",fontWeight:700,marginBottom:4}}>{m.mode} — {m.nb_sl} SL analysés</div>
+          <div style={{fontSize:11,color:"#94a3b8",marginBottom:6}}>
+            Prix revenu à l'entrée : <b>{f(m.retour_entree_30min_pct,"%")}</b> en 30 min · <b>{f(m.retour_entree_60min_pct,"%")}</b> en 1 h · <b>{f(m.retour_entree_120min_pct,"%")}</b> en 2 h
+            {" "}· délai médian {f(m.delai_median_retour_min," min")} (75 % : {f(m.delai_p75_retour_min," min")})
+            <br/>Pire recul avant ce retour : médian {f(m.recul_median_avant_retour_pct,"%")} · 75 % des cas ≤ {f(m.recul_p75_avant_retour_pct,"%")} · 90 % ≤ {f(m.recul_p90_avant_retour_pct,"%")}
+          </div>
+          <div style={{overflowX:"auto"}}><table style={{borderCollapse:"collapse"}}>
+            <thead><tr>{["SL simulé","revenu à l'entrée d'abord","SL touché","ni l'un ni l'autre","résultat réel","résultat simulé","gain estimé"].map(h=><th key={h} style={{...cell,color:"#64748b"}}>{h}</th>)}</tr></thead>
+            <tbody>{m.niveaux.map(l=><tr key={l.sl}>
+              <td style={cell}>{l.sl}</td><td style={cell}>{l.revenu_entree} ({f(l.pct_revenu_entree,"%")})</td><td style={cell}>{l.sl_touche}</td><td style={cell}>{l.ni_l_un_ni_l_autre}</td>
+              <td style={cell}>{f(l.resultat_reel_pts," pts")}</td><td style={cell}>{f(l.resultat_simule_pts," pts")}</td>
+              <td style={{...cell,color:l.gain_estime_pts>=0?"#22c55e":"#ef4444",fontWeight:800}}>{l.gain_estime_pts>=0?"+":""}{f(l.gain_estime_pts," pts")}</td>
+            </tr>)}</tbody>
+          </table></div>
+        </div>))}
+      <div style={{fontSize:10,color:"#64748b",marginTop:4}}>Suivi minute par minute pendant 2 h après chaque SL. Un trade revenu à l'entrée compte pour 0 (prudent) ; bougie ambiguë = SL touché. « pts » = somme des % de mouvement. Le détail trade par trade est dans l'export « Suivi » ci-dessous.</div>
+    </div>
+  );
+}
+
 function ManualTradingTab({ token }) {
   const [st, setSt] = useState(null);
   const [err, setErr] = useState("");
@@ -1508,6 +1562,7 @@ Confirmer ?`
       {tab==="historique" && (
         <div style={{padding:16}}>
           <HoursStatsCard token={token}/>
+          <SlAnalysisCard token={token}/>
           {/* v4.265 — export CSV du suivi Spot-Accum / Accumulation */}
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
             <div style={{fontSize:11,color:"#94a3b8",maxWidth:560}}>
