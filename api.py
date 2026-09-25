@@ -2373,7 +2373,7 @@ def _local_time(iso_str, tz):
         return ""
 
 
-_SIM_LABEL = {"entree": "revenu a l entree", "sl": "SL touche", "aucun": "ni l un ni l autre (1 h)"}
+_SIM_LABEL = {"entree": "revenu a l entree", "sl": "SL touche", "aucun": "ni l un ni l autre (2 h)"}
 
 
 def _fr(v, nd=4):
@@ -2431,6 +2431,7 @@ def _export_row(t, tz=timezone.utc):
         _fr(t.get("price_after_60m"), 6), _fr(after(t.get("price_after_60m")), 3),
         _fr(best_60, 3), back_to_entry,
         _SIM_LABEL.get(t.get("sim_sl_075"), ""), _SIM_LABEL.get(t.get("sim_sl_100"), ""), _SIM_LABEL.get(t.get("sim_sl_150"), ""),
+        _SIM_LABEL.get(t.get("sim_sl_200"), ""), _fr(t.get("sl_back_min"), 1), _fr(t.get("sl_mae_pct"), 3), _fr(t.get("sl_mark_120_pct"), 3),
         t.get("followup_status") or ("en attente" if t.get("closed_at") else ""),
         (t.get("entry_reasons") or "").replace(";", ","),
         _fr(t.get("vol_ratio"), 2), _fr(t.get("activity_ratio"), 2), _fr(t.get("flow_at_entry"), 2), _fr(t.get("spread_at_entry"), 4),
@@ -2447,10 +2448,98 @@ _EXPORT_HEADER = [
     "prix +60 min", "evolution +60 min % (dans le sens du trade)",
     "meilleur mouvement dans l heure suivant la sortie %", "trade perdant : prix revenu a l entree dans l heure",
     "si SL a 0,75 % : issue", "si SL a 1 % : issue", "si SL a 1,5 % : issue",
+    "si SL a 2 % : issue", "apres SL : minutes avant retour a l entree", "apres SL : pire recul depuis l entree avant retour %",
+    "apres SL : prix 2 h apres vs entree %",
     "statut du suivi", "raisons d entree",
     "volatilite a l entree (x habitude)", "activite a l entree (x habitude)", "flux a l entree", "spread a l entree %",
     "identifiant trade",
 ]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  v4.290 — ANALYSE STATISTIQUE DES STOP LOSS (elargir le SL ? patienter ?)
+# ─────────────────────────────────────────────────────────────────────────
+_SL_LEVELS = (("0,75 %", "sim_sl_075", 0.75), ("1 %", "sim_sl_100", 1.0), ("1,5 %", "sim_sl_150", 1.5), ("2 %", "sim_sl_200", 2.0))
+
+
+def _pctl(values, q):
+    if not values:
+        return None
+    v = sorted(values)
+    return v[min(len(v) - 1, int(round(q * (len(v) - 1))))]
+
+
+def _sl_analysis(days=None):
+    rows = [t for t in db.get_trades_for_export(days=days)
+            if t.get("closed_at") and (t.get("reason") or "").upper().startswith(("STOP LOSS", "SL "))
+            and (t.get("sim2_status") or "").startswith("ok")]
+    groups = {}
+    for t in rows:
+        groups.setdefault(_EXPORT_STRATEGY_LABEL.get(t.get("strategy"), t.get("strategy")), []).append(t)
+    if len(groups) > 1:
+        groups["Tous les modes"] = rows
+    out = []
+    for mode, ts in groups.items():
+        n = len(ts)
+        backs = [t["sl_back_min"] for t in ts if t.get("sl_back_min") is not None]
+        maes_back = [t["sl_mae_pct"] for t in ts if t.get("sl_back_min") is not None and t.get("sl_mae_pct") is not None]
+        actual = []
+        for t in ts:
+            sign = 1 if t.get("action") == "LONG" else -1
+            if t.get("entry_price") and t.get("exit_price"):
+                actual.append(sign * (t["exit_price"] - t["entry_price"]) / t["entry_price"] * 100)
+        actual_total = sum(actual)
+        levels = []
+        for label, col, pct in _SL_LEVELS:
+            back = sum(1 for t in ts if t.get(col) == "entree")
+            hit = sum(1 for t in ts if t.get(col) == "sl")
+            none = [t for t in ts if t.get(col) == "aucun"]
+            simulated = -pct * hit + sum(max(t.get("sl_mark_120_pct") or 0.0, -pct) for t in none)
+            levels.append({"sl": label, "revenu_entree": back, "sl_touche": hit, "ni_l_un_ni_l_autre": len(none),
+                           "pct_revenu_entree": round(back / n * 100, 1) if n else None,
+                           "resultat_simule_pts": round(simulated, 2), "resultat_reel_pts": round(actual_total, 2),
+                           "gain_estime_pts": round(simulated - actual_total, 2)})
+        out.append({
+            "mode": mode, "nb_sl": n,
+            "retour_entree_30min_pct": round(sum(1 for b in backs if b <= 30) / n * 100, 1) if n else None,
+            "retour_entree_60min_pct": round(sum(1 for b in backs if b <= 60) / n * 100, 1) if n else None,
+            "retour_entree_120min_pct": round(len(backs) / n * 100, 1) if n else None,
+            "delai_median_retour_min": _pctl(backs, 0.5),
+            "delai_p75_retour_min": _pctl(backs, 0.75),
+            "recul_median_avant_retour_pct": _pctl(maes_back, 0.5),
+            "recul_p75_avant_retour_pct": _pctl(maes_back, 0.75),
+            "recul_p90_avant_retour_pct": _pctl(maes_back, 0.9),
+            "niveaux": levels,
+        })
+    return out
+
+
+@app.get("/api/stats/sl-analysis")
+def sl_analysis(days: Optional[int] = Query(None, ge=1, le=3650), email: str = Depends(require_user)):
+    return {"days": days, "modes": _sl_analysis(days)}
+
+
+@app.get("/api/export/sl-analysis.csv")
+def export_sl_analysis(days: Optional[int] = Query(None, ge=1, le=3650), email: str = Depends(require_user)):
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
+    w.writerow(["mode", "nb SL analyses", "revenu a l entree en 30 min %", "en 60 min %", "en 2 h %",
+                "delai median de retour (min)", "delai 75e centile (min)",
+                "pire recul median avant retour %", "75e centile %", "90e centile %",
+                "SL simule", "revenu a l entree d abord", "SL simule touche", "ni l un ni l autre",
+                "% revenu a l entree", "resultat reel des SL (pts de %)", "resultat simule (pts de %)", "gain estime (pts de %)"])
+    for m in _sl_analysis(days):
+        for lv in m["niveaux"]:
+            w.writerow([m["mode"], m["nb_sl"], _fr(m["retour_entree_30min_pct"], 1), _fr(m["retour_entree_60min_pct"], 1),
+                        _fr(m["retour_entree_120min_pct"], 1), _fr(m["delai_median_retour_min"], 1), _fr(m["delai_p75_retour_min"], 1),
+                        _fr(m["recul_median_avant_retour_pct"], 3), _fr(m["recul_p75_avant_retour_pct"], 3), _fr(m["recul_p90_avant_retour_pct"], 3),
+                        lv["sl"], lv["revenu_entree"], lv["sl_touche"], lv["ni_l_un_ni_l_autre"], _fr(lv["pct_revenu_entree"], 1),
+                        _fr(lv["resultat_reel_pts"], 2), _fr(lv["resultat_simule_pts"], 2), _fr(lv["gain_estime_pts"], 2)])
+    stamp = datetime.now().strftime("%Y-%m-%d_%Hh%M")
+    return Response(content="\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="analyse_stop_loss_{stamp}.csv"'})
 
 
 @app.get("/api/export/accumulation-trades.csv")
