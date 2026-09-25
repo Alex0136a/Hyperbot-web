@@ -936,6 +936,7 @@ ADVANCED_SETTINGS = {
     "MARKET_REGIME_FILTER_ENABLED": {"label": "Regime de marche - filtre actif (1 = oui, 0 = non)", "default": 1},
     "MARKET_REGIME_BREADTH_PCT": {"label": "Regime de marche - % minimal d actifs dans le meme sens", "default": 60},
     "SITUATION_RULES_ENABLED":         {"label": "Situations de marche fond 1h x court terme 5 min (1) ou regime global (0)", "default": 1},
+    "SITUATION_ALLOW_COUNTERTREND":    {"label": "Autoriser les trades a contre-tendance de fond (1 = oui, 0 = non)", "default": 0},
     "SITUATION_REVERSAL_MIN_FLOW":     {"label": "Fin de repli / fin de rebond - flux minimal dans le sens du trade", "default": 0.2},
     "SITUATION_COUNTERTREND_MIN_FLOW": {"label": "Contre-tendance - flux minimal dans le sens du trade", "default": 0.3},
     "SITUATION_MIN_ROOM_PCT":          {"label": "Contre-tendance - marge minimale avant le niveau 1h oppose (%)", "default": 1.0},
@@ -951,8 +952,8 @@ ADVANCED_SETTINGS = {
     "MARKET_QUALITY_MAX_SPREAD_PCT":     {"label": "Qualite - spread maximal a l entree (% du prix, 0 = off)", "default": 0.0},
     "SPOT_ACCUM_BYPASS_REQUIRE_TREND": {"label": "Spot-Accum - cassures/rebonds exigent la tendance EMA200 (1/0)", "default": 1},
     "SPOT_ACCUM_RISING_SUPPORT_ENABLED": {"label": "Spot-Accum - achat sur repli (support ascendant) (1/0)", "default": 1},
-    "SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND":   {"label": "Spot-Accum - cassure fraiche autorisee contre l EMA200 (1/0)", "default": 1},
-    "ACCUMULATION_FRESH_BREAKOUT_COUNTER_TREND": {"label": "Accumulation - cassure fraiche autorisee contre l EMA200 (1/0)", "default": 1},
+    "SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND":   {"label": "Spot-Accum - cassure fraiche autorisee contre l EMA de tendance (1/0)", "default": 0},
+    "ACCUMULATION_FRESH_BREAKOUT_COUNTER_TREND": {"label": "Accumulation - cassure fraiche autorisee contre l EMA de tendance (1/0)", "default": 0},
     "FRESH_BREAKOUT_COUNTER_TREND_MIN_FLOW":     {"label": "Cassure fraiche contre-tendance - flux minimal exige", "default": 0.2},
     "SPOT_ACCUM_PIVOT_CANDLES": {"label": "Spot-Accum - creux : bougies 1h de chaque cote", "default": 2},
     "SPOT_ACCUM_BYPASS_FLOW_VETO":     {"label": "Spot-Accum - cassures/rebonds soumis au veto du flux (1/0)", "default": 1},
@@ -1112,7 +1113,7 @@ _ZERO_ALLOWED_INT_KEYS = {"CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
                           "ACCUMULATION_MAX_ENTRIES_PER_WINDOW", "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW",
                           "SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND",
-                          "MARKET_REGIME_FILTER_ENABLED", "SPOT_ACCUM_TRADE_HOUR_START_UTC", "ANTI_RANGE_RELATIVE_ENABLED", "SITUATION_RULES_ENABLED",
+                          "MARKET_REGIME_FILTER_ENABLED", "SPOT_ACCUM_TRADE_HOUR_START_UTC", "ANTI_RANGE_RELATIVE_ENABLED", "SITUATION_RULES_ENABLED", "SITUATION_ALLOW_COUNTERTREND",
                           "SPOT_ACCUM_BYPASS_REQUIRE_TREND", "SPOT_ACCUM_BYPASS_FLOW_VETO", "SPOT_ACCUM_RISING_SUPPORT_ENABLED",
                           "SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND", "ACCUMULATION_FRESH_BREAKOUT_COUNTER_TREND",
                           "ACCUMULATION_BYPASS_REQUIRE_TREND", "ACCUMULATION_BYPASS_FLOW_VETO", "ACCUMULATION_TRADE_HOUR_START_UTC",
@@ -1136,7 +1137,7 @@ def _coerce_advanced_value(key: str, value):
         return False, "doit etre entre 0 et 1 (pression de -1 a +1)"
     if key.endswith("_MIN_FLOW_CONVICTION") and not 0 <= value <= 1:
         return False, "entre 0 et 1"
-    if key == "SITUATION_RULES_ENABLED" and value not in (0, 1):
+    if key in ("SITUATION_RULES_ENABLED", "SITUATION_ALLOW_COUNTERTREND") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
     if key in ("SITUATION_REVERSAL_MIN_FLOW", "SITUATION_COUNTERTREND_MIN_FLOW") and not 0 <= value <= 1:
         return False, "entre 0 et 1"
