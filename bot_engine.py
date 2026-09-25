@@ -33,10 +33,13 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.283"
-BOT_BUILD   = "2026-09-24-l"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.284"
+BOT_BUILD   = "2026-09-24-m"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.284 — Bougies 5 min et 1h recues en TEMPS REEL par WebSocket : chaque
+#        bougie est prise en compte a l instant de sa cloture ; REST reduit
+#        au chargement initial, a la resynchronisation (6 h) et au repli.
 # 4.283 — Tendance (EMA80 5 min) et support/resistance calcules sur les
 #        VRAIES bougies 5 min Hyperliquid (verifiables sur le graphique),
 #        bougies rafraichies a chaque cloture ; valeurs affichees au diagnostic.
@@ -1224,6 +1227,9 @@ PROFILE_SWING = {
     # v4.283 — EMA de tendance sur les vraies bougies 5 min (80 x 5 min =
     # ~6 h 40, meme horizon que l ancienne EMA200 sur points de 2 min)
     "TREND_EMA_PERIOD_5M": 80,
+    # v4.284 — bougies en temps reel par WebSocket (1 = oui, 0 = REST seul)
+    "CANDLE_WS_ENABLED": 1,
+    "CANDLE_REST_RESYNC_SEC": 21600,   # resynchronisation de securite par REST (6 h)
     "ANTI_RANGE_RELATIVE_ENABLED": 1,
     "ANTI_RANGE_REL_MULT": 0.6,
     # v4.281 — QUALITE DU MARCHE (0 = desactive, en attente de calibrage)
@@ -5011,19 +5017,34 @@ class BotEngine:
         return low_last
 
     def _maybe_refresh_dynamic_trend(self, ticker, state):
-        """v4.203 — SUR DEMANDE EXPLICITE : rafraichit les VRAIES bougies 1h
-        (et la tendance dynamique qui en decoule) au maximum une fois par
-        heure par actif — evite de spammer l API a chaque cycle (~10s)."""
+        """v4.203 / v4.284 — bougies 1h. Depuis la 4.284, elles arrivent en
+        TEMPS REEL par WebSocket (voir _on_ws_candle) : l appel REST ne sert
+        plus qu au chargement initial de l historique, a la resynchronisation
+        de securite (toutes les 6 h) et au repli si le flux est muet."""
         now = time.time()
+        store = self._candle_store(ticker, "1h")
+        if store.get("ready") and not store.get("stale_resync") and self._ws_candle_fresh(store, 3600) and state.candle_history_1h \
+                and now - store.get("synced_at", 0) < self.cfg.get("CANDLE_REST_RESYNC_SEC", 21600):
+            return  # flux WebSocket actif : rien a recharger
         last_refresh = getattr(state, "dynamic_trend_last_refresh", 0)
-        if now - last_refresh < 3600 and state.candle_history_1h:
+        if not store.get("stale_resync") and now - last_refresh < 3600 and state.candle_history_1h \
+                and now - store.get("synced_at", 0) < self.cfg.get("CANDLE_REST_RESYNC_SEC", 21600):
             return
-        # v4.280 — 210 bougies 1h recuperees (au lieu de 60) pour calculer
-        # l EMA200 1h de CHAQUE actif (largeur du regime de marche, meme
-        # unite de temps que BTC). La tendance dynamique continue de n utiliser
-        # que les 60 dernieres (comportement inchange).
-        candles = self._fetch_1h_candles(ticker, count=210)
+        candles = self._fetch_candles_t(ticker, "1h", 210)
         if candles:
+            self._reset_candle_store(store, candles, 250)
+            self._apply_1h_candles(ticker)
+            for st in self._states_for_ticker(ticker):
+                st.dynamic_trend_last_refresh = now
+
+    def _apply_1h_candles(self, ticker):
+        """Recalcule tout ce qui depend des bougies 1h CLOTUREES de l actif
+        (EMA200 1h, habitudes, tendance dynamique, support ascendant)."""
+        store = self._candle_store(ticker, "1h")
+        candles = [c[1:] for c in store["closed"]]
+        if not candles:
+            return
+        for state in self._states_for_ticker(ticker):
             closes_1h = [c[2] for c in candles]
             state.ema200_1h = calc_ema(closes_1h, 200) if len(closes_1h) >= 200 else None
             state.last_close_1h = closes_1h[-1]
@@ -5037,35 +5058,126 @@ class BotEngine:
                 state.baseline_range_1h_pct = ranges[len(ranges) // 2]
             if len(notionals) >= 24:
                 state.baseline_notional_1h = notionals[len(notionals) // 2]
+            # La tendance dynamique n utilise que les 60 dernieres (comportement inchange)
             state.candle_history_1h = deque(candles[-60:], maxlen=200)
             self._update_dynamic_trend(state)
-            state.dynamic_trend_last_refresh = now
 
     def _maybe_refresh_5m_candles(self, ticker, state):
-        """v4.236 — SUR DEMANDE EXPLICITE : rafraichit les VRAIES bougies 5
-        minutes d Hyperliquid (alignees sur l horloge) — utilisees par la
-        detection de range, au lieu de mtf_prices (echantillonnage interne
-        du bot, PAS aligne sur les vraies bougies, confirme comme source
-        de confusion : un desaccord entre le range detecte par le bot et
-        le mouvement reel visible sur le graphique Hyperliquid, pour une
-        periode pourtant similaire). Rafraichit au maximum toutes les 5
-        minutes par actif."""
+        """v4.236 / v4.284 — bougies 5 min. Depuis la 4.284, elles arrivent en
+        TEMPS REEL par WebSocket : chaque bougie est prise en compte A L
+        INSTANT ou elle se cloture (la derniere bougie cloturee, soit
+        "l avant-derniere" du graphique). L appel REST ne sert plus qu au
+        chargement initial, a la resynchronisation de securite (6 h) et au
+        repli, cale sur les clotures, si le flux est muet."""
         now = time.time()
-        # v4.283 — rafraichi a CHAQUE cloture de bougie 5 min (10 s de marge
-        # pour que Hyperliquid la finalise), et non plus toutes les 300 s a
-        # une heure arbitraire : l EMA de tendance et les supports/resistances
-        # suivent ainsi exactement les bougies visibles sur le graphique.
+        store = self._candle_store(ticker, "5m")
+        if store.get("ready") and not store.get("stale_resync") and self._ws_candle_fresh(store, 300) and getattr(state, "candle_history_5m", None) \
+                and now - store.get("synced_at", 0) < self.cfg.get("CANDLE_REST_RESYNC_SEC", 21600):
+            return  # flux WebSocket actif : rien a recharger
         bucket = int((now - 10) // 300)
-        if bucket == getattr(state, "candles_5m_bucket", None) and getattr(state, "candle_history_5m", None):
+        if not store.get("stale_resync") and bucket == getattr(state, "candles_5m_bucket", None) \
+                and getattr(state, "candle_history_5m", None) \
+                and now - store.get("synced_at", 0) < self.cfg.get("CANDLE_REST_RESYNC_SEC", 21600):
             return
         # 500 bougies (~41 h) : historique suffisant pour que l EMA de tendance
         # converge vers la valeur du graphique, et pour le support / la
         # resistance d Accumulation (~24 h = 288 bougies).
-        candles = self._fetch_candles(ticker, "5m", count=500)
+        candles = self._fetch_candles_t(ticker, "5m", 500)
         if candles:
-            state.candle_history_5m = deque(candles, maxlen=600)
-            state.candles_5m_last_refresh = now
-            state.candles_5m_bucket = bucket
+            self._reset_candle_store(store, candles, 600)
+            self._apply_5m_candles(ticker)
+            for st in self._states_for_ticker(ticker):
+                st.candles_5m_bucket = bucket
+
+    def _apply_5m_candles(self, ticker):
+        store = self._candle_store(ticker, "5m")
+        candles = deque((c[1:] for c in store["closed"]), maxlen=600)
+        for state in self._states_for_ticker(ticker):
+            state.candle_history_5m = candles
+            state.candles_5m_last_refresh = time.time()
+
+    # ─────────────────────────────────────────────────────────────────────
+    #  v4.284 — FLUX DE BOUGIES EN TEMPS REEL (WebSocket Hyperliquid)
+    # ─────────────────────────────────────────────────────────────────────
+    def _candle_store(self, ticker, interval):
+        stores = getattr(self, "_candles_ws", None)
+        if stores is None:
+            stores = self._candles_ws = {}
+        return stores.setdefault((ticker, interval), {"closed": deque(), "forming": None, "last_msg": 0, "ready": False})
+
+    def _reset_candle_store(self, store, candles_t, maxlen):
+        store["closed"] = deque(candles_t, maxlen=maxlen)
+        store["ready"] = True
+        store["synced_at"] = time.time()
+        store["stale_resync"] = False
+
+    def _states_for_ticker(self, ticker):
+        return [st for slot, st in self.states.items() if ticker_from_slot_key(slot) == ticker]
+
+    def _ws_candle_fresh(self, store, interval_sec):
+        """Le flux a-t-il donne signe de vie recemment ? (un actif sans aucune
+        transaction ne recoit pas de mise a jour : repli REST au-dela)."""
+        return time.time() - store.get("last_msg", 0) < interval_sec * 2 + 60
+
+    def _fetch_candles_t(self, ticker, interval, count):
+        """Comme _fetch_candles, avec l horodatage d ouverture en tete :
+        (t, high, low, close, volume), bougies CLOTUREES uniquement."""
+        try:
+            interval_sec = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}.get(interval, 3600)
+            end_ms = int(time.time() * 1000)
+            req = {"coin": ticker, "interval": interval, "startTime": end_ms - count * interval_sec * 1000, "endTime": end_ms}
+            raw = self.info.post("/info", {"type": "candleSnapshot", "req": req})
+            if not raw or not isinstance(raw, list):
+                return []
+            return [(int(c["t"]), float(c["h"]), float(c["l"]), float(c["c"]), float(c.get("v", 0)))
+                    for c in raw if c.get("T", 0) <= end_ms]
+        except Exception as e:
+            print(f"[CANDLES] Echec recuperation bougies {interval} pour {ticker} : {e}")
+            return []
+
+    def _subscribe_candles(self):
+        """Abonnement aux bougies 5 min et 1h de chaque actif (demarrage ET
+        chaque reconnexion). Apres une reconnexion, l historique est marque a
+        resynchroniser : les bougies manquees pendant la coupure sont
+        rechargees par REST au prochain cycle."""
+        if not self.cfg.get("CANDLE_WS_ENABLED", 1):
+            return
+        tickers = sorted({ticker_from_slot_key(s) for s in self.cfg["SYMBOLS"]})
+        ok = 0
+        for t in tickers:
+            for iv in ("5m", "1h"):
+                self._candle_store(t, iv)["stale_resync"] = True
+                try:
+                    self.info.subscribe({"type": "candle", "coin": t, "interval": iv}, self._on_ws_candle)
+                    ok += 1
+                except Exception as e:
+                    print(f"[WS-CANDLES] Echec abonnement {t} {iv} : {e}")
+        self.emit("log", {"msg": f"Bougies temps reel actives ({ok}/{len(tickers) * 2} flux 5 min + 1h) — indicateurs mis a jour a chaque cloture.", "level": "ok"})
+
+    def _on_ws_candle(self, msg):
+        """Mise a jour de la bougie EN COURS ; quand une nouvelle bougie
+        commence, la precedente est cloturee et tous les indicateurs qui en
+        dependent sont recalcules immediatement."""
+        try:
+            d = msg.get("data") or {}
+            ticker, iv, t = d.get("s"), d.get("i"), int(d.get("t", 0))
+            if not ticker or iv not in ("5m", "1h") or not t:
+                return
+            store = self._candle_store(ticker, iv)
+            store["last_msg"] = time.time()
+            forming = store.get("forming")
+            if forming and t > forming["t"] and store.get("ready"):
+                closed = store["closed"]
+                if not closed or closed[-1][0] < forming["t"]:
+                    closed.append((forming["t"], forming["h"], forming["l"], forming["c"], forming["v"]))
+                    if iv == "5m":
+                        self._apply_5m_candles(ticker)
+                    else:
+                        self._apply_1h_candles(ticker)
+            store["forming"] = {"t": t, "o": float(d["o"]), "h": float(d["h"]), "l": float(d["l"]),
+                                "c": float(d["c"]), "v": float(d.get("v", 0))}
+        except Exception as e:
+            print(f"[WS-CANDLES] Erreur traitement bougie : {e}")
 
     def _is_candle_bullish_now(self, state):
         """v4.175 — SUR DEMANDE EXPLICITE : la bougie EN COURS est-elle verte
@@ -6242,6 +6354,7 @@ class BotEngine:
                     # pression calculee ne changeait plus jusqu au prochain
                     # redemarrage complet.
                     self._subscribe_trade_flow()
+                    self._subscribe_candles()  # v4.284
                     self._ws_subscribed = True
                     self._last_ws_tick = time.time()  # evite un "faux mort" immediat le temps du 1er tick
                     msg = "🔄 Reconnexion WebSocket effectuee (nouvelle connexion etablie)."
@@ -6428,6 +6541,7 @@ class BotEngine:
         # abonnement distinct par actif (contrairement a allMids, ce canal
         # ne fournit pas tous les actifs en une seule souscription).
         self._subscribe_trade_flow()
+        self._subscribe_candles()  # v4.284 — bougies 5 min / 1h en temps reel
         # v4.166 — SUR DEMANDE EXPLICITE : souscription SEPAREE pour le DEX
         # HIP-3 "xyz" (forex, mode Normal) — l API Hyperliquid isole les
         # DEX builder-deployes du DEX natif par defaut, un simple
