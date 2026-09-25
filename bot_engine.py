@@ -33,10 +33,12 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.289"
-BOT_BUILD   = "2026-09-25-e"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.290"
+BOT_BUILD   = "2026-09-25-f"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.290 — Suivi apres SL sur 2 h (delai de retour a l entree, pire recul,
+#        simulation SL 0,75/1/1,5/2 %) + rapport statistique telechargeable.
 # 4.289 — NETTOYAGE : moteur d entree simple pour Spot-Accum et Accumulation
 #        (garde-fous + 1 signal + 1 confirmation) ; diagnostic Funding.
 # 4.288 — Voie "continuation" (entree en tendance saine sans proximite d un
@@ -1299,6 +1301,7 @@ PROFILE_SWING = {
     # pour gagner + bougie dans le sens du trade. En PAPER seulement tant que
     # CONTINUATION_PAPER_ONLY = 1 (meme si le mode est en live).
     "CONTINUATION_ENABLED": 1,
+    "SL_FOLLOWUP_WINDOW_MIN": 120,   # v4.290 — suivi du prix apres chaque SL (etude du SL et de la patience)
     "CONTINUATION_PAPER_ONLY": 1,
     "CONTINUATION_MIN_FLOW": 0.3,
     "CONTINUATION_MIN_ACTIVITY": 1.0,
@@ -4454,18 +4457,21 @@ class BotEngine:
             interval, step_ms = ("1m", 60_000) if age_days < 3 else ("5m", 300_000)
             # Debut a la bougie SUIVANT la minute de sortie : la bougie de sortie
             # contient des prix anterieurs au SL (parfois meme l entree).
+            # v4.290 — fenetre portee a 2 h (etude de la PATIENCE : combien de
+            # temps et quel recul avant que le prix revienne a l entree).
+            window_min = self.cfg.get("SL_FOLLOWUP_WINDOW_MIN", 120)
             start_ms = int(closed * 1000) // step_ms * step_ms + step_ms
-            candles = self._candles(row["coin"], interval, start_ms, start_ms + 60 * 60_000)
+            candles = self._candles(row["coin"], interval, start_ms, start_ms + window_min * 60_000)
             if candles is None:
                 continue
             if not candles:
-                db.save_trade_followup(row["id"], {"sim_status": "bougies indisponibles"})
+                db.save_trade_followup(row["id"], {"sim_status": "bougies indisponibles", "sim2_status": "bougies indisponibles"})
                 continue
             candles = sorted(candles, key=lambda c: int(c["t"]))
             is_long = row.get("action") == "LONG"
             suffix = "" if interval == "1m" else " (5m)"
-            fields = {"sim_status": "ok" + suffix}
-            for col, sl_pct in (("sim_sl_075", 0.75), ("sim_sl_100", 1.0), ("sim_sl_150", 1.5)):
+            fields = {"sim_status": "ok" + suffix, "sim2_status": "ok" + suffix}
+            for col, sl_pct in (("sim_sl_075", 0.75), ("sim_sl_100", 1.0), ("sim_sl_150", 1.5), ("sim_sl_200", 2.0)):
                 sl_px = entry * (1 - sl_pct / 100) if is_long else entry * (1 + sl_pct / 100)
                 outcome = "aucun"
                 for c in candles:
@@ -4479,6 +4485,21 @@ class BotEngine:
                         outcome = "entree"
                         break
                 fields[col] = outcome
+            # Delai avant retour a l entree, et pire recul (depuis l ENTREE)
+            # subi avant ce retour : largeur de SL qui aurait permis de tenir.
+            worst = 0.0
+            back_min = None
+            for c in candles:
+                hi, lo = float(c["h"]), float(c["l"])
+                adverse = (entry - lo) / entry * 100 if is_long else (hi - entry) / entry * 100
+                worst = max(worst, adverse)
+                if (hi >= entry) if is_long else (lo <= entry):
+                    back_min = round((int(c["t"]) - int(closed * 1000)) / 60_000, 1)
+                    break
+            fields["sl_back_min"] = back_min
+            fields["sl_mae_pct"] = round(worst, 3)
+            last_close = float(candles[-1]["c"])
+            fields["sl_mark_120_pct"] = round(((last_close - entry) / entry * 100) * (1 if is_long else -1), 3)
             db.save_trade_followup(row["id"], fields)
 
     # ─────────────────────────────────────────────────────────────────────
