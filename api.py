@@ -935,6 +935,11 @@ ADVANCED_SETTINGS = {
     # v4.276 — regime de marche et plages horaires
     "MARKET_REGIME_FILTER_ENABLED": {"label": "Regime de marche - filtre actif (1 = oui, 0 = non)", "default": 1},
     "MARKET_REGIME_BREADTH_PCT": {"label": "Regime de marche - % minimal d actifs dans le meme sens", "default": 60},
+    "SITUATION_RULES_ENABLED":         {"label": "Situations de marche fond 1h x court terme 5 min (1) ou regime global (0)", "default": 1},
+    "SITUATION_REVERSAL_MIN_FLOW":     {"label": "Fin de repli / fin de rebond - flux minimal dans le sens du trade", "default": 0.2},
+    "SITUATION_COUNTERTREND_MIN_FLOW": {"label": "Contre-tendance - flux minimal dans le sens du trade", "default": 0.3},
+    "SITUATION_MIN_ROOM_PCT":          {"label": "Contre-tendance - marge minimale avant le niveau 1h oppose (%)", "default": 1.0},
+    "COUNTERTREND_TTP_MULT":           {"label": "Contre-tendance - facteur du trailing (0,6 = arme et repli a 60 %)", "default": 0.6},
     "ANTI_RANGE_RELATIVE_ENABLED": {"label": "Anti-range relatif a l actif (1) ou seuils absolus (0)", "default": 1},
     "ANTI_RANGE_REL_MULT":         {"label": "Anti-range relatif - part de l amplitude habituelle exigee", "default": 0.6},
     "MARKET_QUALITY_MIN_VOL_RATIO":      {"label": "Qualite - volatilite minimale (x habitude, 0 = off)", "default": 0.0},
@@ -1107,7 +1112,7 @@ _ZERO_ALLOWED_INT_KEYS = {"CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
                           "ACCUMULATION_MAX_ENTRIES_PER_WINDOW", "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW",
                           "SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND",
-                          "MARKET_REGIME_FILTER_ENABLED", "SPOT_ACCUM_TRADE_HOUR_START_UTC", "ANTI_RANGE_RELATIVE_ENABLED",
+                          "MARKET_REGIME_FILTER_ENABLED", "SPOT_ACCUM_TRADE_HOUR_START_UTC", "ANTI_RANGE_RELATIVE_ENABLED", "SITUATION_RULES_ENABLED",
                           "SPOT_ACCUM_BYPASS_REQUIRE_TREND", "SPOT_ACCUM_BYPASS_FLOW_VETO", "SPOT_ACCUM_RISING_SUPPORT_ENABLED",
                           "SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND", "ACCUMULATION_FRESH_BREAKOUT_COUNTER_TREND",
                           "ACCUMULATION_BYPASS_REQUIRE_TREND", "ACCUMULATION_BYPASS_FLOW_VETO", "ACCUMULATION_TRADE_HOUR_START_UTC",
@@ -1131,6 +1136,12 @@ def _coerce_advanced_value(key: str, value):
         return False, "doit etre entre 0 et 1 (pression de -1 a +1)"
     if key.endswith("_MIN_FLOW_CONVICTION") and not 0 <= value <= 1:
         return False, "entre 0 et 1"
+    if key == "SITUATION_RULES_ENABLED" and value not in (0, 1):
+        return False, "1 (oui) ou 0 (non)"
+    if key in ("SITUATION_REVERSAL_MIN_FLOW", "SITUATION_COUNTERTREND_MIN_FLOW") and not 0 <= value <= 1:
+        return False, "entre 0 et 1"
+    if key == "COUNTERTREND_TTP_MULT" and not 0.2 <= value <= 1:
+        return False, "entre 0,2 et 1"
     if key == "MARKET_QUALITY_MAX_SPREAD_PCT" and not 0 <= value <= 5:
         return False, "entre 0 et 5 %"
     if key in ("MARKET_QUALITY_MIN_VOL_RATIO", "MARKET_QUALITY_MIN_ACTIVITY_RATIO") and not 0 <= value <= 5:
@@ -2133,8 +2144,15 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             "trend_ema_source": getattr(state, "trend_ema_source", None),
             "support": _sr.get("support"), "resistance": _sr.get("resistance"), "sr_source": _sr.get("source"),
             "price": state.current_price,
+            # v4.286 — niveaux de STRUCTURE 1h
+            "support_1h": bot._structural_support(state), "resistance_1h": bot._structural_resistance(state),
         }
+        try:
+            situation = bot.situation(state) if ":" not in ticker else None
+        except Exception:
+            situation = None
         results.append({
+            "situation": situation,
             "levels": levels,
             "quality": quality,
             "blocked_reason": blocked_reason,
