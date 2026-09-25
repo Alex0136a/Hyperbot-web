@@ -194,7 +194,11 @@ def init_db():
                          ("sim_sl_075", "TEXT"), ("sim_sl_100", "TEXT"), ("sim_sl_150", "TEXT"),
                          ("sim_status", "TEXT"),
                          # v4.281 — qualite du marche a l entree
-                         ("vol_ratio", "REAL"), ("activity_ratio", "REAL"), ("flow_at_entry", "REAL")):
+                         ("vol_ratio", "REAL"), ("activity_ratio", "REAL"), ("flow_at_entry", "REAL"),
+                         ("spread_at_entry", "REAL"),  # v4.282
+                         # v4.290 — suivi apres SL sur 2 h
+                         ("sim_sl_200", "TEXT"), ("sl_back_min", "REAL"), ("sl_mae_pct", "REAL"),
+                         ("sl_mark_120_pct", "REAL"), ("sim2_status", "TEXT")):
             if col not in existing_cols:
                 conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
         if "fees_paid" not in existing_cols:
@@ -406,7 +410,7 @@ _OPEN_TRADE_FIELDS = (
     "confidence", "leverage", "position_size_pct", "risk_reward", "timeframe",
     "stop_loss", "take_profit1", "take_profit2", "rsi", "entry_reasons",
     "confidence_breakdown", "size_usd", "sl_pct_used", "ttp_arm1_pct_used",
-    "vol_ratio", "activity_ratio", "flow_at_entry",  # v4.281
+    "vol_ratio", "activity_ratio", "flow_at_entry", "spread_at_entry",  # v4.281 / v4.282
 )
 
 
@@ -553,7 +557,7 @@ def list_trades_needing_followup(min_age_minutes=62, max_age_days=16, limit=5):
         return [dict(r) for r in rows]
 
 
-def list_trades_needing_sim(min_age_minutes=62, max_age_days=16, limit=5):
+def list_trades_needing_sim(min_age_minutes=122, max_age_days=16, limit=5):
     """v4.269 — trades sortis par STOP LOSS dont la simulation "SL plus
     large" n a pas encore ete faite (y compris les trades deja suivis)."""
     now = datetime.now(timezone.utc)
@@ -562,7 +566,7 @@ def list_trades_needing_sim(min_age_minutes=62, max_age_days=16, limit=5):
     with _lock, _connect() as conn:
         rows = conn.execute(f"""
             SELECT * FROM trades
-            WHERE closed_at IS NOT NULL AND sim_status IS NULL
+            WHERE closed_at IS NOT NULL AND sim2_status IS NULL
               AND (reason LIKE 'STOP LOSS%' OR reason LIKE 'SL %')
               AND strategy IN ({",".join("?" * len(FOLLOWUP_STRATEGIES))})
               AND closed_at <= ? AND closed_at >= ?
@@ -573,7 +577,8 @@ def list_trades_needing_sim(min_age_minutes=62, max_age_days=16, limit=5):
 
 def save_trade_followup(trade_id, fields):
     allowed = ("price_after_30m", "price_after_60m", "high_60m", "low_60m", "fees_real", "pnl_real_hl", "followup_status",
-               "sim_sl_075", "sim_sl_100", "sim_sl_150", "sim_status")
+               "sim_sl_075", "sim_sl_100", "sim_sl_150", "sim_status",
+               "sim_sl_200", "sl_back_min", "sl_mae_pct", "sl_mark_120_pct", "sim2_status")
     data = {k: v for k, v in fields.items() if k in allowed}
     data["followup_at"] = now_iso()
     with _lock, _connect() as conn:
