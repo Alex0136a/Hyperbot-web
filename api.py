@@ -2262,6 +2262,22 @@ def stats_by_hour(days: int = Query(14, ge=1, le=90), email: str = Depends(requi
 
 
 # ─────────────────────────────────────────────────────────────────────────
+#  v4.292 — CONTROLE DE SYNCHRONISATION BOT <-> HYPERLIQUID
+# ─────────────────────────────────────────────────────────────────────────
+@app.get("/api/live-sync")
+def live_sync_report(email: str = Depends(require_user)):
+    rep = getattr(bot, "live_sync_report", None)
+    return rep or {"ts": None, "rows": [], "ok": None, "info": "premier controle dans les 2 minutes suivant le demarrage"}
+
+
+@app.post("/api/live-sync/run")
+def live_sync_run(email: str = Depends(require_user)):
+    if bot.info is None or not cfg.get("WALLET_ADDRESS"):
+        raise HTTPException(400, "Connexion Hyperliquid indisponible")
+    return bot.run_live_sync()
+
+
+# ─────────────────────────────────────────────────────────────────────────
 #  v4.273 — TRADING MANUEL
 # ─────────────────────────────────────────────────────────────────────────
 class ManualOrderBody(BaseModel):
