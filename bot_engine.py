@@ -33,10 +33,12 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.286"
-BOT_BUILD   = "2026-09-25-b"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.287"
+BOT_BUILD   = "2026-09-25-c"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.287 — Trades a contre-tendance desactives (achat en rebond baissier, short
+#        en repli haussier, cassure fraiche contre l EMA de tendance).
 # 4.286 — SITUATIONS DE MARCHE (fond 1h x court terme 5 min) : regles
 #        explicites pour Spot-Accum et Accumulation (hausse saine, repli dans
 #        une hausse, baisse saine, rebond dans une baisse), niveaux 1h ou 5 min
@@ -1255,8 +1257,8 @@ PROFILE_SWING = {
     "SPOT_ACCUM_BYPASS_REQUIRE_TREND": 1,
     # v4.279 — la cassure fraiche peut entrer contre l EMA200 si le flux
     # confirme franchement et que le regime n est pas oppose
-    "SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND": 1,
-    "ACCUMULATION_FRESH_BREAKOUT_COUNTER_TREND": 1,
+    "SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND": 0,   # v4.287 : desactivee avec les autres contre-tendances
+    "ACCUMULATION_FRESH_BREAKOUT_COUNTER_TREND": 0,
     "FRESH_BREAKOUT_COUNTER_TREND_MIN_FLOW": 0.2,
     # v4.278 — achat sur repli : support ascendant (dernier creux plus haut, 1h)
     "SPOT_ACCUM_RISING_SUPPORT_ENABLED": 1,
@@ -1281,6 +1283,10 @@ PROFILE_SWING = {
     "FUNDING_TRADE_HOUR_END_UTC": 24,
     # v4.286 — SITUATIONS DE MARCHE (fond 1h x court terme 5 min)
     "SITUATION_RULES_ENABLED": 1,          # 0 = ancien comportement (regime global)
+    # v4.287 — SUR DEMANDE EXPLICITE : trades a CONTRE-TENDANCE (achat dans un
+    # rebond baissier, short dans un repli haussier) desactives tant que les
+    # donnees n ont pas montre qu ils gagnent (1 = reactiver)
+    "SITUATION_ALLOW_COUNTERTREND": 0,
     "SITUATION_REVERSAL_MIN_FLOW": 0.2,    # "fin de repli / fin de rebond" : flux minimal dans le sens du trade
     "SITUATION_COUNTERTREND_MIN_FLOW": 0.3,  # trade contre la tendance de fond : flux minimal
     "SITUATION_MIN_ROOM_PCT": 1.0,         # contre-tendance : marge minimale avant le niveau 1h oppose
@@ -9453,6 +9459,10 @@ class BotEngine:
                 return
             finrebond_ac = situation_ac == "rebond dans une baisse"
             countertrend_ac = situation_ac == "repli dans une hausse"
+            if countertrend_ac and not cfg.get("SITUATION_ALLOW_COUNTERTREND", 0):
+                # v4.287 — SUR DEMANDE EXPLICITE : contre-tendance retiree
+                snap["blocker"] = "repli dans une hausse : short a contre-tendance desactive"
+                return
         snap["trend_down"] = trend_down
         breakout_lookback_ac = cfg.get("ACCUMULATION_BREAKOUT_LOOKBACK_CANDLES", 30)
         fresh_breakout_ac = self._detect_fresh_breakout(state, "short", breakout_lookback_ac)
@@ -9510,7 +9520,7 @@ class BotEngine:
         # v4.279 — meme exception que Spot-Accum pour la cassure fraiche
         # (vers le bas) contre une EMA200 encore haussiere.
         fresh_counter_ac = False
-        if (not trend_down and fresh_breakout_ac and cfg.get("ACCUMULATION_FRESH_BREAKOUT_COUNTER_TREND", 1)
+        if (not trend_down and fresh_breakout_ac and cfg.get("ACCUMULATION_FRESH_BREAKOUT_COUNTER_TREND", 0)
                 and cfg.get("ACCUMULATION_BYPASS_REQUIRE_TREND", 1)):
             regime_ac = self.market_regime().get("regime") if cfg.get("MARKET_REGIME_FILTER_ENABLED", 1) else "neutre"
             fp_fresh_ac = self._compute_trade_flow_pressure(ticker, price_now=price)
@@ -9872,6 +9882,11 @@ class BotEngine:
                 return
             repli_sa = situation_sa == "repli dans une hausse"
             rebond_sa = situation_sa == "rebond dans une baisse"
+            if rebond_sa and not cfg.get("SITUATION_ALLOW_COUNTERTREND", 0):
+                # v4.287 — SUR DEMANDE EXPLICITE : contre-tendance retiree
+                # (les achats contre la tendance de fond ont aggrave les pertes)
+                snap["blocker"] = "rebond dans une baisse : achat a contre-tendance desactive"
+                return
 
         snap["trend_up"] = trend_up
         # v4.150 — SUR DEMANDE EXPLICITE : meme detecteur de cassure fraiche
@@ -9925,7 +9940,7 @@ class BotEngine:
         # strictes que les autres voies : flux acheteur FRANC exige (et non
         # simplement "pas contraire") et regime de marche neutre ou haussier.
         fresh_counter_sa = False
-        if (not trend_up and fresh_breakout_sa and cfg.get("SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND", 1)
+        if (not trend_up and fresh_breakout_sa and cfg.get("SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND", 0)
                 and cfg.get("SPOT_ACCUM_BYPASS_REQUIRE_TREND", 1)):  # a 0, l ancien comportement (sans condition) s applique deja
             regime_sa = self.market_regime().get("regime") if cfg.get("MARKET_REGIME_FILTER_ENABLED", 1) else "neutre"
             fp_fresh_sa = self._compute_trade_flow_pressure(ticker, price_now=price)
