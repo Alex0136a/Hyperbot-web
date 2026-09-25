@@ -33,10 +33,14 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.287"
-BOT_BUILD   = "2026-09-25-c"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.289"
+BOT_BUILD   = "2026-09-25-e"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.289 — NETTOYAGE : moteur d entree simple pour Spot-Accum et Accumulation
+#        (garde-fous + 1 signal + 1 confirmation) ; diagnostic Funding.
+# 4.288 — Voie "continuation" (entree en tendance saine sans proximite d un
+#        niveau, sous 5 conditions), simulee en paper meme si le mode est live.
 # 4.287 — Trades a contre-tendance desactives (achat en rebond baissier, short
 #        en repli haussier, cassure fraiche contre l EMA de tendance).
 # 4.286 — SITUATIONS DE MARCHE (fond 1h x court terme 5 min) : regles
@@ -1282,11 +1286,24 @@ PROFILE_SWING = {
     "FUNDING_TRADE_HOUR_START_UTC": 0,
     "FUNDING_TRADE_HOUR_END_UTC": 24,
     # v4.286 — SITUATIONS DE MARCHE (fond 1h x court terme 5 min)
+    # v4.289 — moteur d entree : "simple" (garde-fous + 1 signal + 1
+    # confirmation) ou "legacy" (ancienne chaine de conditions)
+    "ENTRY_ENGINE_SIMPLE": 1,
     "SITUATION_RULES_ENABLED": 1,          # 0 = ancien comportement (regime global)
     # v4.287 — SUR DEMANDE EXPLICITE : trades a CONTRE-TENDANCE (achat dans un
     # rebond baissier, short dans un repli haussier) desactives tant que les
     # donnees n ont pas montre qu ils gagnent (1 = reactiver)
     "SITUATION_ALLOW_COUNTERTREND": 0,
+    # v4.287 — VOIE "CONTINUATION" : entree en tendance saine sans proximite
+    # d un niveau, si flux franc confirme + marche actif + pas d exces + place
+    # pour gagner + bougie dans le sens du trade. En PAPER seulement tant que
+    # CONTINUATION_PAPER_ONLY = 1 (meme si le mode est en live).
+    "CONTINUATION_ENABLED": 1,
+    "CONTINUATION_PAPER_ONLY": 1,
+    "CONTINUATION_MIN_FLOW": 0.3,
+    "CONTINUATION_MIN_ACTIVITY": 1.0,
+    "CONTINUATION_MAX_EXTENSION_ATR": 1.5,
+    "CONTINUATION_MIN_ROOM_X_SL": 2.0,
     "SITUATION_REVERSAL_MIN_FLOW": 0.2,    # "fin de repli / fin de rebond" : flux minimal dans le sens du trade
     "SITUATION_COUNTERTREND_MIN_FLOW": 0.3,  # trade contre la tendance de fond : flux minimal
     "SITUATION_MIN_ROOM_PCT": 1.0,         # contre-tendance : marge minimale avant le niveau 1h oppose
@@ -4566,6 +4583,55 @@ class BotEngine:
             name = "repli dans une hausse" if fond == "haussier" else "rebond dans une baisse"
         return {"fond": fond, "court": court, "name": name, "fond_source": src,
                 "ema_court": ema_s, "ema_fond": ema_l}
+
+    def _continuation_check(self, ticker, state, price, direction):
+        """v4.287 — VOIE "CONTINUATION" : entree dans une tendance saine SANS
+        proximite d un niveau, si l ensemble des signaux la justifie.
+        Retourne (True, detail) ou (False, raison du refus)."""
+        cfg = self.cfg
+        long_side = direction == "long"
+        # 1) flux franc ET confirme (lecture courante + lecture precedente)
+        need = cfg.get("CONTINUATION_MIN_FLOW", 0.3)
+        fp = self._compute_trade_flow_pressure(ticker, price_now=price)
+        hist = list(getattr(state, "trade_flow_history", None) or [])
+        prev = hist[-1] if hist else None
+        ok_flow = (fp is not None and prev is not None and
+                   (fp >= need and prev >= need if long_side else fp <= -need and prev <= -need))
+        if not ok_flow:
+            return False, f"flux pas assez franc et confirme (actuel {fp if fp is None else round(fp, 2)}, precedent {prev if prev is None else round(prev, 2)}, requis {'+' if long_side else '-'}{need})"
+        # 2) marche vivant
+        q = self.market_quality(ticker, state)
+        min_act = cfg.get("CONTINUATION_MIN_ACTIVITY", 1.0)
+        if q.get("activity_ratio") is None or q["activity_ratio"] < min_act:
+            return False, f"activite insuffisante ({q.get('activity_ratio')}x < {min_act}x)"
+        # 3) pas d exces : ecart a l EMA de tendance <= N x ATR 5 min
+        ema = self._trend_ema(state)
+        c5 = list(getattr(state, "candle_history_5m", None) or [])[-14:]
+        if not ema or len(c5) < 5:
+            return False, "EMA / bougies 5 min indisponibles"
+        atr = sum(c[0] - c[1] for c in c5) / len(c5)
+        ext = (price - ema) / atr if long_side else (ema - price) / atr
+        max_ext = cfg.get("CONTINUATION_MAX_EXTENSION_ATR", 1.5)
+        if atr <= 0 or ext > max_ext:
+            return False, f"prix trop eloigne de son EMA ({ext:.1f} ATR > {max_ext})"
+        # 4) place pour gagner : prochain niveau oppose a >= N x le SL
+        cap_key = "SPOT_ACCUM_SL_CAP_PCT" if long_side else "ACCUMULATION_SL_CAP_PCT"
+        sl_pct = cfg.get(cap_key) or cfg.get("STRUCTURAL_SL_HARD_CAP_PCT", 0.5)
+        if long_side:
+            levels = [lv for lv in (self._short_level(state, "resistance"), getattr(state, "dynamic_trend_resistance", None)) if lv and lv > price]
+            room = (min(levels) - price) / price * 100 if levels else None
+        else:
+            levels = [lv for lv in (self._short_level(state, "support"), getattr(state, "dynamic_trend_support", None)) if lv and lv < price]
+            room = (price - max(levels)) / price * 100 if levels else None
+        need_room = sl_pct * cfg.get("CONTINUATION_MIN_ROOM_X_SL", 2.0)
+        if room is not None and room < need_room:
+            return False, f"niveau oppose trop proche ({room:.2f}% < {need_room:.2f}%)"
+        # 5) bougie dans le sens du trade
+        if cfg.get("REQUIRE_ENTRY_CANDLE_COLOR", True):
+            if not (self._is_candle_bullish_now(state) if long_side else self._is_candle_bearish_now(state)):
+                return False, "bougie actuelle pas dans le sens du trade"
+        room_txt = f"{room:.2f}%" if room is not None else "sans plafond proche"
+        return True, f"flux {fp:+.2f}/{prev:+.2f}, activite {q['activity_ratio']}x, ecart EMA {ext:.1f} ATR, marge {room_txt}"
 
     def _structural_support(self, state):
         """Support de STRUCTURE (1h) : support ascendant s il existe, sinon
@@ -9411,6 +9477,145 @@ class BotEngine:
             "support": support, "resistance": resistance,
         })
 
+    def _simple_entry(self, mode, symbol, ticker, price, rsi, prices, state, pos_state):
+        """v4.289 — MOTEUR D ENTREE SIMPLE (Spot-Accum et Accumulation).
+
+        Remplace la longue chaine de conditions (une quinzaine, toutes
+        eliminatoires, dont six mesuraient la tendance) qui n etaient
+        presque jamais reunies en meme temps — ou trop tard. Trois etapes :
+
+          1. GARDE-FOUS (protegent le capital) : mode actif, actif
+             selectionne, plage horaire, qualite du marche (si activee),
+             situation compatible (jamais a contre-tendance de fond), etoile
+             filante en cours (achats).
+          2. UN SIGNAL parmi trois : proche d un niveau (structure 1h ou
+             5 min), cassure fraiche, continuation (tendance franche).
+             En "fin de repli / fin de rebond" : niveau 1h uniquement.
+          3. UNE CONFIRMATION : le flux ne contredit pas l entree (et, en fin
+             de repli / rebond, il la confirme : retournement).
+
+        Supprimes : stabilite 12 cycles, ADX, anti-range, couleur de bougie,
+        fourchette S/R minimale, seuil de confiance appris, voies fausse
+        cassure / volume / tendance persistante / etoile filante (doublons).
+        Restent dans l ouverture : plafond de positions, delai apres perte,
+        limite de rafales, conflit entre modes."""
+        cfg = self.cfg
+        long_side = mode == "spot_accumulation"
+        prefix = "SPOT_ACCUM" if long_side else "ACCUMULATION"
+        snap = {"ts": time.time(), "enabled": cfg.get(f"{prefix}_ENABLED", False), "engine": "simple"}
+        if long_side:
+            state.spot_accum_gate_snapshot = snap
+        else:
+            pos_state.accumulation_gate_snapshot = snap
+        if not snap["enabled"]:
+            snap["blocker"] = "mode desactive"
+            return
+        if pos_state.position:
+            snap["blocker"] = "position deja ouverte"
+            return
+        if not self._gate_active_or_auto_activate(ticker, 100, mode):
+            snap["blocker"] = "actif non selectionne pour ce mode"
+            return
+        gate = self._hours_block(mode) or self._market_quality_block(ticker, state, mode)
+        if gate:
+            snap["blocker"] = gate
+            return
+        if long_side and cfg.get("SHOOTING_STAR_DETECTION_ENABLED", True) and getattr(state, "shooting_star_pending_close", None) is not None:
+            snap["blocker"] = "etoile filante (signal baissier) en cours de confirmation"
+            return
+
+        # ── Situation ──────────────────────────────────────────────────
+        sit = self.situation(state, price)
+        situation = sit["name"]
+        snap["situation"] = situation
+        against = "baisse saine" if long_side else "hausse saine"
+        reversal = "repli dans une hausse" if long_side else "rebond dans une baisse"   # fin de repli / fin de rebond
+        countertrend = "rebond dans une baisse" if long_side else "repli dans une hausse"
+        if situation == against:
+            snap["blocker"] = f"{against} : fond (1h) ET court terme (5 min) contraires"
+            return
+        if situation == countertrend and not cfg.get("SITUATION_ALLOW_COUNTERTREND", 0):
+            snap["blocker"] = f"{countertrend} : trade a contre-tendance desactive"
+            return
+        if situation == "fond neutre" and sit.get("court") != ("haussier" if long_side else "baissier"):
+            snap["blocker"] = f"fond neutre et court terme {sit.get('court') or '?'}"
+            return
+
+        # ── Signal ─────────────────────────────────────────────────────
+        side = "support" if long_side else "resistance"
+        struct = self._structural_support(state) if long_side else self._structural_resistance(state)
+        short_lvl = self._short_level(state, side)
+        dyn = getattr(state, "dynamic_trend_support" if long_side else "dynamic_trend_resistance", None)
+        if situation == reversal:
+            cands = [(f"{side} de structure 1h", struct)]
+        else:
+            cands = [(f"{side} de tendance 1h", dyn), (f"{side} de structure 1h", struct), (f"{side} 5 min", short_lvl)]
+        lvl_label, lvl = self._first_near_level(state, price, cands, side)
+        fp = self._compute_trade_flow_pressure(ticker, price_now=price)
+        snap["entry_flow_pressure"] = fp
+        path = force_paper = None
+        if lvl_label:
+            art = "du" if long_side else "de la"
+            path = (f"fin de {'repli' if long_side else 'rebond'} sur {lvl_label} ${lvl:.6g}" if situation == reversal
+                    else f"proche {art} {lvl_label} ${lvl:.6g}")
+        elif situation != reversal:
+            if self._detect_fresh_breakout(state, "long" if long_side else "short", cfg.get(f"{prefix}_BREAKOUT_LOOKBACK_CANDLES", 30)):
+                path = "cassure fraiche"
+            elif cfg.get("CONTINUATION_ENABLED", 1):
+                ok, detail = self._continuation_check(ticker, state, price, "long" if long_side else "short")
+                snap["continuation_detail"] = detail
+                if ok:
+                    path = f"continuation ({detail})"
+                    force_paper = bool(cfg.get("CONTINUATION_PAPER_ONLY", 1))
+        if not path:
+            seen, parts = set(), []
+            for lab, v in cands:
+                if v and round(v, 10) not in seen:
+                    seen.add(round(v, 10))
+                    parts.append(f"{lab} ${v:.6g}")
+            listed = " / ".join(parts) or "aucun niveau"
+            extra = f" ; continuation : {snap['continuation_detail']}" if snap.get("continuation_detail") else ""
+            snap["blocker"] = f"aucun signal : pas proche d {'un support' if long_side else 'une resistance'} ({listed}), pas de cassure fraiche{extra}"
+            return
+
+        # ── Confirmation par le flux ───────────────────────────────────
+        veto = cfg.get("ENTRY_FLOW_CONTRADICTION_THRESHOLD", 0.3)
+        if fp is not None and (fp <= -veto if long_side else fp >= veto):
+            snap["blocker"] = f"flux contraire ({fp:+.2f})"
+            return
+        if situation == reversal:
+            need = cfg.get("SITUATION_REVERSAL_MIN_FLOW", 0.2)
+            if fp is None or (fp < need if long_side else fp > -need):
+                snap["blocker"] = f"{reversal} : le flux ne confirme pas encore le retournement ({'?' if fp is None else f'{fp:+.2f}'})"
+                return
+        confirm_min = cfg.get(f"{prefix}_ENTRY_FLOW_CONFIRM_MIN")
+        if confirm_min:
+            if fp is None or (fp < confirm_min if long_side else fp > -confirm_min):
+                snap["blocker"] = f"flux insuffisant ({'?' if fp is None else f'{fp:+.2f}'}, requis {'+' if long_side else '-'}{confirm_min})"
+                return
+
+        # ── Candidat (la confiance ne sert qu au classement) ───────────
+        flow_bonus = max(0.0, (fp if long_side else -fp)) * 15 if fp is not None else 0.0
+        confidence = min(70.0 + flow_bonus + (5.0 if lvl_label else 0.0), 90.0)
+        snap["confidence"] = round(confidence, 1)
+        snap["blocker"] = None
+        label = "🌱 Spot-Accumulation" if long_side else "🎯 Accumulation (short)"
+        reasons = [f"{label} — voie : {path} [situation : {situation}]",
+                   f"flux {fp:+.2f}" if fp is not None else "flux ?",
+                   f"RSI {rsi:.1f}" if rsi is not None else "RSI ?"]
+        cand = {"symbol": symbol, "ticker": ticker, "state": pos_state if not long_side else state,
+                "signal": "long" if long_side else "short", "price": price, "confidence": confidence,
+                "rsi": rsi, "rsi_mode": mode, "reasons": reasons, "prices": prices, "conf_breakdown": {},
+                "strategy": mode, "countertrend": situation == countertrend, "force_paper": bool(force_paper),
+                "entered_via_flirt": bool(lvl_label)}
+        if long_side:
+            cand.update({"support_at_entry": lvl if lvl_label else short_lvl, "resistance_at_entry": self._short_level(state, "resistance")})
+            self._pending_spot_accum_candidates.append(cand)
+        else:
+            cand.update({"entered_via_range": False, "support": self._short_level(state, "support"),
+                         "resistance": lvl if lvl_label else short_lvl})
+            self._pending_accumulation_candidates.append(cand)
+
     def _check_accumulation_signal(self, symbol, ticker, price, support, resistance,
                                     rsi, momentum_pct, ema200, trend_up, trend_down,
                                     prices, state, accum_state):
@@ -9424,6 +9629,8 @@ class BotEngine:
         L ancienne logique (LONG+SHORT, fenetre de proximite precise,
         detecteur de range/mode range) est retiree d ici — le mode range
         devient son PROPRE mode independant (_check_range_signal)."""
+        if self.cfg.get("ENTRY_ENGINE_SIMPLE", 1):  # v4.289 — moteur simple (0 = ancienne chaine)
+            return self._simple_entry("accumulation", symbol, ticker, price, rsi, prices, state, accum_state)
         cfg = self.cfg
         snap = {"ts": time.time(), "enabled": cfg.get("ACCUMULATION_ENABLED", False)}
         accum_state.accumulation_gate_snapshot = snap
@@ -9603,9 +9810,16 @@ class BotEngine:
             if volume_breakout_ac:
                 near_resistance = True  # v4.279 — deja verifie par la voie "volume"
             snap["near_resistance"] = near_resistance
+            if not near_resistance and situation_ac == "baisse saine" and cfg.get("CONTINUATION_ENABLED", 1):
+                cont_ok, cont_detail = self._continuation_check(ticker, state, price, "short")
+                snap["continuation_detail"] = cont_detail
+                if cont_ok:
+                    near_resistance = True
+                    snap["continuation"] = True
             if not near_resistance:
                 listed = " / ".join(f"{lab} ${lvl:.6g}" for lab, lvl in cands_ac if lvl)
-                snap["blocker"] = f"pas assez proche d une resistance ({listed or 'aucun niveau disponible'})"
+                extra = f" — continuation refusee : {snap['continuation_detail']}" if snap.get("continuation_detail") else ""
+                snap["blocker"] = f"pas assez proche d une resistance ({listed or 'aucun niveau disponible'}){extra}"
                 return
             if cfg.get("REQUIRE_ENTRY_CANDLE_COLOR", True):
                 bearish_now = self._is_candle_bearish_now(state)
@@ -9710,7 +9924,9 @@ class BotEngine:
 
         snap["blocker"] = None
 
-        if finrebond_ac:
+        if snap.get("continuation"):
+            path_ac = f"continuation ({snap.get('continuation_detail')})"
+        elif finrebond_ac:
             path_ac = f"fin de rebond sous {snap.get('entry_level')}"
         elif fresh_breakout_ac:
             path_ac = "cassure fraiche" + (" (contre-tendance, flux vendeur)" if snap.get("fresh_breakout_counter_trend") else "")
@@ -9738,6 +9954,7 @@ class BotEngine:
             "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": "accumulation",
             "reasons": reasons, "prices": prices, "conf_breakdown": {},
             "strategy": "accumulation", "entered_via_range": False, "countertrend": countertrend_ac,  # v4.286
+            "force_paper": bool(snap.get("continuation")) and bool(cfg.get("CONTINUATION_PAPER_ONLY", 1)),  # v4.287
             "support": support, "resistance": resistance,
             "entered_via_flirt": snap.get("entered_via_flirt", False),
         })
@@ -9758,19 +9975,29 @@ class BotEngine:
         _finalize_open), meme si le bot tourne par ailleurs en mode live.
         """
         cfg = self.cfg
+        # v4.289 — diagnostic : raison de chaque non-entree (Funding n en avait
+        # aucun, impossible de savoir pourquoi il ne tradait plus)
+        snap = {"ts": time.time()}
+        state.funding_gate_snapshot = snap
         if not cfg.get("FUNDING_MODE_ENABLED", False):
+            snap["blocker"] = "mode desactive"
             return
         if not self._gate_active_or_auto_activate(ticker, 100, "funding_contrarian"):
+            snap["blocker"] = "actif non selectionne pour ce mode"
             return  # actif desactive (Marches) ou exclu manuellement
-        if self._hours_block("funding_contrarian") or self._market_quality_block(ticker, state, "funding_contrarian"):
+        _gate_f = self._hours_block("funding_contrarian") or self._market_quality_block(ticker, state, "funding_contrarian")
+        if _gate_f:
+            snap["blocker"] = _gate_f
             return  # v4.276 — hors plage horaire du mode ; v4.281 — qualite du marche
 
         hourly_rate = self.funding_rates.get(ticker)
         if hourly_rate is None:
+            snap["blocker"] = "taux de financement pas encore recu"
             return  # pas encore de donnee de funding pour cet actif
 
         annual_pct = hourly_rate * 24 * 365 * 100  # annualise, en %
         threshold = cfg.get("FUNDING_ANNUAL_THRESHOLD_PCT", 25.0)
+        snap["annual_pct"] = round(annual_pct, 1)
 
         direction = None
         if annual_pct >= threshold:
@@ -9779,6 +10006,7 @@ class BotEngine:
             direction = "long"   # positionnement SHORT sur-leverage -> contrarian LONG
 
         if direction is None:
+            snap["blocker"] = f"taux {annual_pct:+.1f}%/an, pas assez extreme (seuil +/-{threshold:.0f}%)"
             return
 
         # ── Score de confiance dedie : plus le funding est extreme, plus la
@@ -9789,6 +10017,7 @@ class BotEngine:
 
         conf_threshold = self._get_confidence_threshold(ticker)
         if confidence < conf_threshold:
+            snap["blocker"] = f"confiance {confidence:.0f}% < seuil appris {conf_threshold:.0f}%"
             return
 
         # v4.155 — SUR DEMANDE EXPLICITE : meme protection que Normal — le
@@ -9798,6 +10027,7 @@ class BotEngine:
         if cfg.get("FUNDING_REQUIRE_ANTI_RANGE", True):
             is_ranging_funding = self._is_market_ranging(state, cfg.get("FUNDING_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("FUNDING_ANTI_RANGE_LOOKBACK", 200))
             if is_ranging_funding:
+                snap["blocker"] = self._anti_range_text(state, cfg.get("FUNDING_ANTI_RANGE_MIN_PCT", 2.0), cfg.get("FUNDING_ANTI_RANGE_LOOKBACK", 200))
                 return
 
         # v4.256 — SUR DEMANDE EXPLICITE : renforce l entree avec le VRAI
@@ -9815,6 +10045,7 @@ class BotEngine:
                 contradiction_threshold = cfg.get("FUNDING_ENTRY_FLOW_CONTRADICTION_THRESHOLD", 0.3)
                 contradicts = (flow_pressure_funding >= contradiction_threshold) if direction == "short" else (flow_pressure_funding <= -contradiction_threshold)
                 if contradicts:
+                    snap["blocker"] = f"flux contredit le pari ({flow_pressure_funding:+.2f})"
                     return
 
         reasons = [
@@ -9822,6 +10053,8 @@ class BotEngine:
             f"RSI {rsi:.1f}" if rsi is not None else "RSI ?",
         ]
 
+        snap["blocker"] = None
+        snap["direction"] = direction
         self._pending_funding_candidates.append({
             "symbol": symbol, "ticker": ticker, "state": state, "signal": direction,
             "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": "funding_contrarian",
@@ -9843,6 +10076,8 @@ class BotEngine:
         /api/entry-diagnostics (qui ne couvrait jusqu ici que le mode
         normal) — pour voir precisement quelle clause bloque, sans deviner.
         """
+        if self.cfg.get("ENTRY_ENGINE_SIMPLE", 1):  # v4.289 — moteur simple (0 = ancienne chaine)
+            return self._simple_entry("spot_accumulation", symbol, ticker, price, rsi, prices, state, state)
         cfg = self.cfg
         snap = {"ts": time.time(), "enabled": cfg.get("SPOT_ACCUM_ENABLED", False)}
         state.spot_accum_gate_snapshot = snap
@@ -10067,9 +10302,18 @@ class BotEngine:
                 near_support = True  # v4.279 — deja verifie par la voie "volume"
             snap["near_support"] = near_support
             snap["near_rising_support"] = near_rising
+            if not near_support and situation_sa == "hausse saine" and cfg.get("CONTINUATION_ENABLED", 1):
+                # v4.287 — la distance au support ne suffit plus a refuser :
+                # voie "continuation" si tous les autres signaux la justifient
+                cont_ok, cont_detail = self._continuation_check(ticker, state, price, "long")
+                snap["continuation_detail"] = cont_detail
+                if cont_ok:
+                    near_support = True
+                    snap["continuation"] = True
             if not near_support:
                 listed = " / ".join(f"{lab} ${lvl:.6g}" for lab, lvl in cands_sa if lvl)
-                snap["blocker"] = f"pas assez proche d un support ({listed or 'aucun niveau disponible'})"
+                extra = f" — continuation refusee : {snap['continuation_detail']}" if snap.get("continuation_detail") else ""
+                snap["blocker"] = f"pas assez proche d un support ({listed or 'aucun niveau disponible'}){extra}"
                 return
             snap["entered_via_rising_support"] = near_rising
             if cfg.get("REQUIRE_ENTRY_CANDLE_COLOR", True):
@@ -10163,7 +10407,9 @@ class BotEngine:
 
         # v4.278 — la VOIE d entree figure dans les raisons (colonne "raisons
         # d entree" de l export) pour mesurer laquelle gagne ou perd.
-        if repli_sa:
+        if snap.get("continuation"):
+            path_sa = f"continuation ({snap.get('continuation_detail')})"
+        elif repli_sa:
             path_sa = f"fin de repli sur {snap.get('entry_level')}"
         elif fresh_breakout_sa:
             path_sa = "cassure fraiche" + (" (contre-tendance, flux acheteur)" if snap.get("fresh_breakout_counter_trend") else "")
@@ -10191,6 +10437,7 @@ class BotEngine:
             "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": "spot_accumulation",
             "reasons": reasons, "prices": prices, "conf_breakdown": {},
             "strategy": "spot_accumulation", "countertrend": rebond_sa,  # v4.286
+            "force_paper": bool(snap.get("continuation")) and bool(cfg.get("CONTINUATION_PAPER_ONLY", 1)),  # v4.287
             "support_at_entry": support, "resistance_at_entry": resistance,
             "entered_via_flirt": snap.get("entered_via_flirt", False),
         })
@@ -10696,6 +10943,10 @@ class BotEngine:
         # basculer independamment entre paper et live — voir _effective_mode.
         # Le garde-fou Funding ci-dessous reste actif en plus, inchange.
         effective_mode_open = self._effective_mode(strategy)
+        if cand.get("force_paper") and effective_mode_open == "live":
+            # v4.287 — voie en phase de test : simulee meme si le mode est en live
+            effective_mode_open = "paper"
+            self.emit("log", {"msg": f"[{ticker}] Entree \"continuation\" simulee (paper) — voie en test, le mode reste en live pour les autres entrees.", "level": "dim"})
         funding_live_blocked = strategy == "funding_contrarian" and not cfg.get("FUNDING_MODE_LIVE_ALLOWED", False)
         if funding_live_blocked and effective_mode_open == "live":
             self.emit("log", {"msg": f"[{ticker}] 💰 Trade Funding Contrarian simule (paper) malgre le mode live — deverrouillez FUNDING_MODE_LIVE_ALLOWED pour l autoriser en reel.", "level": "warn"})
