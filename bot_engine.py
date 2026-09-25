@@ -33,10 +33,12 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.291"
-BOT_BUILD   = "2026-09-25-g"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.292"
+BOT_BUILD   = "2026-09-25-h"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.292 — Controle de synchronisation bot <-> Hyperliquid toutes les 2 min
+#        (positions fantomes / orphelines, sens, taille, entree, SL natif).
 # 4.291 — FIX : prix courant mis a jour pour TOUS les actifs par le WebSocket
 #        (il restait fige hors position : diagnostic et largeur du regime).
 # 4.290 — Suivi apres SL sur 2 h (delai de retour a l entree, pire recul,
@@ -1303,7 +1305,12 @@ PROFILE_SWING = {
     # pour gagner + bougie dans le sens du trade. En PAPER seulement tant que
     # CONTINUATION_PAPER_ONLY = 1 (meme si le mode est en live).
     "CONTINUATION_ENABLED": 1,
-    "SL_FOLLOWUP_WINDOW_MIN": 120,   # v4.290 — suivi du prix apres chaque SL (etude du SL et de la patience)
+    "SL_FOLLOWUP_WINDOW_MIN": 120,
+    # v4.292 — controle de synchronisation bot <-> Hyperliquid (positions live)
+    "LIVE_SYNC_INTERVAL_SEC": 120,
+    "LIVE_SYNC_AUTO_FIX": 1,
+    "LIVE_SYNC_SIZE_TOLERANCE": 0.05,
+    "LIVE_SYNC_CHECK_NATIVE_SL": 1,   # v4.290 — suivi du prix apres chaque SL (etude du SL et de la patience)
     "CONTINUATION_PAPER_ONLY": 1,
     "CONTINUATION_MIN_FLOW": 0.3,
     "CONTINUATION_MIN_ACTIVITY": 1.0,
@@ -1920,7 +1927,15 @@ def fetch_exchange_positions(info, wallet_address, tickers=None):
                 continue
             if coin and szi != 0:
                 lev = (p.get("leverage") or {}).get("value")
-                result[coin] = {"szi": szi, "entry": entry, "leverage": lev}
+                def _f(key):
+                    try:
+                        return float(p.get(key)) if p.get(key) is not None else None
+                    except (TypeError, ValueError):
+                        return None
+                result[coin] = {"szi": szi, "entry": entry, "leverage": lev,
+                                # v4.292 — infos supplementaires pour le controle de synchronisation
+                                "liquidation_px": _f("liquidationPx"), "unrealized_pnl": _f("unrealizedPnl"),
+                                "position_value": _f("positionValue")}
     return result
 
 
@@ -4706,6 +4721,155 @@ class BotEngine:
         inside = start <= h < end if start < end else (h >= start or h < end)
         return None if inside else f"hors plage horaire du mode ({start}h-{end}h UTC)"
 
+    # ─────────────────────────────────────────────────────────────────────
+    #  v4.292 — CONTROLE DE SYNCHRONISATION BOT <-> HYPERLIQUID (live)
+    # ─────────────────────────────────────────────────────────────────────
+    def _maybe_start_live_sync(self):
+        if self.info is None or not self.cfg.get("WALLET_ADDRESS"):
+            return
+        if time.time() - getattr(self, "_last_live_sync", 0) < self.cfg.get("LIVE_SYNC_INTERVAL_SEC", 120):
+            return
+        th = getattr(self, "_live_sync_thread", None)
+        if th is not None and th.is_alive():
+            return
+        self._last_live_sync = time.time()
+        self._live_sync_thread = threading.Thread(target=self.run_live_sync, daemon=True)
+        self._live_sync_thread.start()
+
+    def _bot_live_positions(self):
+        """Positions que le bot croit LIVE, par actif : [(libelle, state, pos, slot)]."""
+        out = {}
+        for pool_name, pool in (("", self.states), ("ACCUM__", self.accum_states)):
+            for slot, st in pool.items():
+                pos = st.position
+                if pos and self._position_mode(pos) == "live":
+                    out.setdefault(ticker_from_slot_key(slot), []).append(
+                        {"mode": pos.get("strategy", "forex"), "state": st, "pos": pos, "slot": slot})
+        manual = getattr(self, "manual", None)
+        if manual is not None:
+            for it in list(manual.items.values()):
+                if it.get("status") == "open" and it.get("mode") == "live" and it.get("market") == "perp":
+                    out.setdefault(it["ticker"], []).append({"mode": "manual", "state": None, "pos": None, "item": it})
+        return out
+
+    def run_live_sync(self):
+        """Compare les positions LIVE du bot avec celles REELLEMENT tenues sur
+        Hyperliquid (tous DEX), actif par actif, et corrige ce qui peut l etre
+        sans risque :
+          - position fantome (bot : ouverte / Hyperliquid : aucune) -> cloturee
+            cote bot au prix reel de sortie (SL natif, liquidation...) ;
+          - position orpheline (Hyperliquid : ouverte / bot : aucune) ->
+            reprise par le bot (identification par cloid, SL de secours) ;
+          - prix d entree / taille differents -> alignes sur Hyperliquid ;
+          - SL natif absent -> repose.
+        Une anomalie de position n est corrigee qu apres DEUX controles
+        consecutifs (evite les faux ecarts pendant une ouverture ou une
+        fermeture en cours) ; un sens oppose n est jamais corrige
+        automatiquement (alerte seulement)."""
+        cfg = self.cfg
+        wallet = cfg.get("WALLET_ADDRESS")
+        bot_pos = self._bot_live_positions()
+        tickers = sorted({ticker_from_slot_key(s) for s in cfg["SYMBOLS"]} | set(bot_pos))
+        exch = fetch_exchange_positions(self.info, wallet, tickers)
+        report = {"ts": time.time(), "rows": [], "ok": exch is not None}
+        if exch is None:
+            report["error"] = "positions Hyperliquid illisibles pour le moment"
+            self.live_sync_report = report
+            return report
+        auto = cfg.get("LIVE_SYNC_AUTO_FIX", 1)
+        prev_flags = getattr(self, "_live_sync_flags", {})
+        flags = {}
+        now = time.time()
+        for coin in sorted(set(bot_pos) | set(exch)):
+            entries = bot_pos.get(coin, [])
+            ep = exch.get(coin)
+            row = {"coin": coin, "bot": [], "hl": None, "status": "ok", "action": None}
+            bot_szi = 0.0
+            for e in entries:
+                if e["mode"] == "manual":
+                    it = e["item"]
+                    q = it["qty"] * (1 if it["direction"] == "long" else -1)
+                    row["bot"].append({"mode": "manuel", "sens": it["direction"], "entree": it["entry_price"], "qte": round(abs(q), 8)})
+                else:
+                    pos = e["pos"]
+                    q = pos["size"] * pos.get("leverage", 1) / pos["entry"] * (1 if pos["type"] == "long" else -1)
+                    row["bot"].append({"mode": pos.get("strategy", "forex"), "sens": pos["type"], "entree": pos["entry"],
+                                       "qte": round(abs(q), 8), "ouverte": pos.get("opened_at")})
+                bot_szi += q
+            if ep:
+                row["hl"] = {"sens": "long" if ep["szi"] > 0 else "short", "qte": abs(ep["szi"]), "entree": ep["entry"],
+                             "levier": ep.get("leverage"), "liquidation": ep.get("liquidation_px"),
+                             "pnl_latent": ep.get("unrealized_pnl"), "valeur": ep.get("position_value")}
+            recent = any(e.get("pos") and (now - self._pos_opened_ts(e["pos"])) < 90 for e in entries)
+            if entries and not ep:
+                row["status"] = "fantome"
+            elif ep and not entries:
+                row["status"] = "orpheline"
+            elif entries and ep:
+                if (bot_szi > 0) != (ep["szi"] > 0):
+                    row["status"] = "sens oppose"
+                elif abs(abs(ep["szi"]) - abs(bot_szi)) / abs(ep["szi"]) > cfg.get("LIVE_SYNC_SIZE_TOLERANCE", 0.05):
+                    row["status"] = "taille differente"
+                elif len(entries) == 1 and entries[0]["mode"] != "manual" \
+                        and abs(ep["entry"] - entries[0]["pos"]["entry"]) / ep["entry"] > 0.0005:
+                    row["status"] = "prix d entree different"
+            if row["status"] != "ok":
+                flags[coin] = row["status"]
+            confirmed = prev_flags.get(coin) == row["status"] and not recent
+            try:
+                if row["status"] == "fantome" and auto and confirmed:
+                    for e in entries:
+                        if e["mode"] == "manual":
+                            self.manual.reconcile(exch)  # cloture les positions manuelles absentes d Hyperliquid
+                        else:
+                            self._close_offline_position(e["state"], e["slot"], coin, dict(e["pos"]))
+                    row["action"] = "cloturee cote bot (plus ouverte sur Hyperliquid)"
+                elif row["status"] == "orpheline" and auto and confirmed and coin in {ticker_from_slot_key(s) for s in cfg["SYMBOLS"]}:
+                    if self._adopt_exchange_position(coin, ep, "long" if ep["szi"] > 0 else "short"):
+                        row["action"] = "reprise par le bot"
+                elif row["status"] in ("taille differente", "prix d entree different") and auto and confirmed and len(entries) == 1 and entries[0]["mode"] != "manual":
+                    pos = entries[0]["pos"]
+                    lev = pos.get("leverage", 1) or 1
+                    pos["entry"] = ep["entry"]
+                    pos["size"] = abs(ep["szi"]) * ep["entry"] / lev
+                    row["action"] = "alignee sur Hyperliquid (entree et taille)"
+                    self._save_open_positions()
+                elif row["status"] == "sens oppose":
+                    row["action"] = "ALERTE : verification manuelle requise (non corrige automatiquement)"
+                elif row["status"] != "ok" and not confirmed:
+                    row["action"] = "a confirmer au prochain controle"
+            except Exception as e_fix:
+                row["action"] = f"correction impossible : {e_fix}"
+            # SL natif present ?
+            if ep and entries and self.exchange is not None and cfg.get("LIVE_SYNC_CHECK_NATIVE_SL", 1):
+                try:
+                    sl_oids, _tp = _get_open_orders_by_type(self.info, wallet, coin)
+                    row["sl_natif"] = bool(sl_oids)
+                    if not sl_oids and auto and len(entries) == 1 and entries[0]["mode"] != "manual":
+                        ensure_sl_on_hyperliquid(self.exchange, self.info, wallet, coin, entries[0]["pos"], cfg)
+                        row["action"] = (row["action"] + " ; " if row["action"] else "") + "SL natif repose"
+                except Exception as e_sl:
+                    row["sl_natif"] = None
+                    print(f"[LIVE-SYNC] Controle SL natif {coin} impossible : {e_sl}")
+            if row["status"] != "ok" or row.get("action"):
+                self.emit("log", {"msg": f"🔄 Synchro Hyperliquid [{coin}] : {row['status']}" + (f" — {row['action']}" if row.get("action") else ""),
+                                  "level": "error" if row["status"] == "sens oppose" else "warn"})
+            report["rows"].append(row)
+        self._live_sync_flags = flags
+        try:
+            report["compte"] = {"valeur_compte": sync_capital_from_hyperliquid(self.info, wallet)}
+        except Exception:
+            pass
+        report["anomalies"] = sum(1 for r in report["rows"] if r["status"] != "ok")
+        self.live_sync_report = report
+        return report
+
+    def _pos_opened_ts(self, pos):
+        try:
+            return datetime.strptime(pos.get("opened_at", ""), "%d/%m/%Y %H:%M:%S").timestamp()
+        except (TypeError, ValueError):
+            return 0
+
     def _publish_opportunities(self, strategy, candidates):
         """v4.273 — transmet les candidats d entree du cycle au trading manuel."""
         manual = getattr(self, "manual", None)
@@ -6966,6 +7130,7 @@ class BotEngine:
                 self._finalize_pending_funding_candidates()
                 self._finalize_pending_spot_accum_candidates()
                 self._maybe_start_trade_followups()  # v4.265 — hors du fil de trading
+                self._maybe_start_live_sync()  # v4.292 — controle bot <-> Hyperliquid (fil separe)
                 if getattr(self, "manual", None) is not None:
                     try:
                         self.manual.on_cycle()  # v4.273 — expirations + secours si WebSocket muet
