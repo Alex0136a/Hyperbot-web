@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32665496/README.md)
+[Uploading README.md…]()
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.287** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.289** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -461,6 +461,47 @@ de tendance) : chaque mode ne trade que dans le sens de la tendance de fond.
 Réactivables via `SITUATION_ALLOW_COUNTERTREND` et
 `*_FRESH_BREAKOUT_COUNTER_TREND` (réglages avancés) lorsque des données
 montreront qu'ils sont gagnants.
+
+## 4trevicies. Voie « continuation » (v4.288)
+
+La distance à un support (Spot-Accum) ou à une résistance (Accumulation) n'est
+plus à elle seule une raison de refuser une entrée en **tendance saine**. La
+voie « continuation » autorise l'entrée loin d'un niveau si **toutes** ces
+conditions sont réunies :
+
+1. situation **hausse saine** (Spot-Accum) ou **baisse saine** (Accumulation) ;
+2. flux franc **et confirmé** : ≥ +0,3 (ou ≤ −0,3) sur la lecture actuelle ET la précédente ;
+3. marché actif : activité ≥ 1× l'habitude de l'actif ;
+4. pas d'excès : écart à l'EMA80 5 min ≤ 1,5 ATR 5 min ;
+5. place pour gagner : prochain niveau opposé (5 min et 1 h) à ≥ 2× le SL ;
+6. bougie dans le sens du trade.
+
+**Phase de test : ces entrées sont simulées en paper même si le mode est en
+live** (`CONTINUATION_PAPER_ONLY` = 1), et marquées « continuation » dans
+l'export. Le diagnostic indique la condition manquante quand la voie est
+refusée.
+
+## 4quattuorvicies. Nettoyage : moteur d'entrée simple (v4.289)
+
+Spot-Accum et Accumulation n'utilisent plus la longue chaîne de conditions
+éliminatoires, mais trois étapes :
+
+1. **Garde-fous** : mode actif, actif sélectionné, plage horaire, qualité du
+   marché (si activée), situation compatible (jamais à contre-tendance de
+   fond), étoile filante en cours (achats).
+2. **Un signal parmi trois** : proche d'un niveau (1 h ou 5 min — 1 h
+   seulement en fin de repli / de rebond), cassure fraîche, continuation.
+3. **Une confirmation** : le flux ne contredit pas l'entrée (et confirme le
+   retournement en fin de repli / de rebond).
+
+Supprimés : stabilité 12 cycles, ADX, anti-range, couleur de bougie,
+fourchette S/R minimale, seuil de confiance appris, voies fausse cassure,
+volume, tendance persistante et étoile filante (doublons). Restent à
+l'ouverture : plafond de positions, délai après perte, limite de rafales,
+conflit entre modes. Ancienne chaîne : `ENTRY_ENGINE_SIMPLE` = 0.
+
+**Funding** a maintenant sa ligne au diagnostic (« 💰 FUNDING »), qui indique
+pourquoi il n'entre pas (taux pas assez extrême, flux contraire, range…).
 
 ## 5. Premier lancement
 
