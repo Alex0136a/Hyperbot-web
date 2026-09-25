@@ -591,6 +591,43 @@ function SlAnalysisCard({ token }) {
   );
 }
 
+// v4.292 — Controle de synchronisation bot <-> Hyperliquid
+function LiveSyncCard({ token }) {
+  const [r, setR] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => { try { setR(await apiCall("/api/live-sync","GET",null,token)); } catch(e) { setR({error:e.message}); } }, [token]);
+  useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); }, [load]);
+  const run = async () => { setBusy(true); try { setR(await apiCall("/api/live-sync/run","POST",null,token)); } catch(e) { alert(e.message); } setBusy(false); };
+  const cell = {padding:"5px 7px",fontSize:11,borderBottom:"1px solid #131d33",whiteSpace:"nowrap",color:"#e2e8f0",textAlign:"left"};
+  const color = st => st==="ok"?"#22c55e":st==="sens oppose"?"#ef4444":"#fbbf24";
+  const fp = v => v==null?"—":Number(v).toPrecision(6);
+  return (
+    <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:8}}>
+        <b style={{color:"#e2e8f0",fontSize:12}}>🔄 Synchronisation bot ↔ Hyperliquid (positions live)</b>
+        <button disabled={busy} onClick={run} style={{background:"#60a5fa",border:"none",borderRadius:7,padding:"6px 12px",color:"#04101f",fontFamily:"inherit",fontSize:12,fontWeight:800,cursor:"pointer",opacity:busy?0.5:1}}>{busy?"Contrôle...":"Vérifier maintenant"}</button>
+      </div>
+      {!r ? <div style={{fontSize:11,color:"#64748b"}}>Chargement...</div> : r.error ? <div style={{fontSize:11,color:"#fca5a5"}}>{r.error}</div> : (<>
+        <div style={{fontSize:11,color:"#94a3b8",marginBottom:6}}>
+          {r.ts ? <>Dernier contrôle : {new Date(r.ts*1000).toLocaleTimeString()} · {r.rows.length===0?"aucune position live, ni côté bot ni sur Hyperliquid":`${r.anomalies||0} écart(s) sur ${r.rows.length} actif(s)`}{r.compte&&r.compte.valeur_compte!=null?` · valeur du compte Hyperliquid : ${r.compte.valeur_compte.toFixed(2)} $`:""}</> : (r.info||"")}
+        </div>
+        {r.rows && r.rows.length>0 && <div style={{overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%"}}>
+          <thead><tr>{["Actif","Bot","Hyperliquid","SL natif","État","Action"].map(h=><th key={h} style={{...cell,color:"#64748b"}}>{h}</th>)}</tr></thead>
+          <tbody>{r.rows.map(x=><tr key={x.coin}>
+            <td style={{...cell,fontWeight:800}}>{x.coin}</td>
+            <td style={cell}>{x.bot.length===0?"—":x.bot.map((b,i)=><div key={i}>{b.mode} {b.sens.toUpperCase()} {fp(b.qte)} @ {fp(b.entree)}</div>)}</td>
+            <td style={cell}>{x.hl?<>{x.hl.sens.toUpperCase()} {fp(x.hl.qte)} @ {fp(x.hl.entree)} · x{x.hl.levier??"?"}<br/><span style={{color:"#94a3b8"}}>liq. {fp(x.hl.liquidation)} · PnL latent {x.hl.pnl_latent!=null?x.hl.pnl_latent.toFixed(2)+" $":"—"}</span></>:"—"}</td>
+            <td style={{...cell,color:x.sl_natif===false?"#ef4444":"#e2e8f0"}}>{x.sl_natif==null?"—":x.sl_natif?"✓":"absent"}</td>
+            <td style={{...cell,color:color(x.status),fontWeight:700}}>{x.status==="ok"?"✓ synchronisé":x.status}</td>
+            <td style={{...cell,color:"#94a3b8",whiteSpace:"normal",minWidth:160}}>{x.action||""}</td>
+          </tr>)}</tbody>
+        </table></div>}
+        <div style={{fontSize:10,color:"#64748b",marginTop:6}}>Contrôle automatique toutes les 2 min. Un écart n'est corrigé qu'après deux contrôles consécutifs ; un sens opposé n'est jamais corrigé automatiquement.</div>
+      </>)}
+    </div>
+  );
+}
+
 function ManualTradingTab({ token }) {
   const [st, setSt] = useState(null);
   const [err, setErr] = useState("");
@@ -2581,6 +2618,7 @@ Confirmer ?`
       {/* PAPER TRADING */}
       {tab==="paper" && (
         <div style={{padding:16,maxWidth:900}}>
+          <LiveSyncCard token={token}/>
 
           {/* STATS PORTEFEUILLE */}
           <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,marginBottom:16}}>
