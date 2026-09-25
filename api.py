@@ -2151,19 +2151,24 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             "trend_ema": getattr(state, "trend_ema_value", None),
             "trend_ema_source": getattr(state, "trend_ema_source", None),
             "support": _sr.get("support"), "resistance": _sr.get("resistance"), "sr_source": _sr.get("source"),
-            "price": state.current_price,
+            "price": (lambda v: float(v) if v else state.current_price)((bot.all_mids or {}).get(ticker)),
             # v4.286 — niveaux de STRUCTURE 1h
             "support_1h": bot._structural_support(state), "resistance_1h": bot._structural_resistance(state),
         }
         try:
-            situation = bot.situation(state) if ":" not in ticker else None
+            _px = None
+            try:
+                _px = float((bot.all_mids or {}).get(ticker) or 0) or None
+            except (TypeError, ValueError):
+                pass
+            situation = bot.situation(state, _px) if ":" not in ticker else None
         except Exception:
             situation = None
         _fs = getattr(state, "funding_gate_snapshot", None) or {}
         if not cfg.get("FUNDING_MODE_ENABLED", False):
             blocker_funding = "mode desactive"
         elif not _fs:
-            blocker_funding = "pas encore evalue"
+            blocker_funding = snap.get("blocked_reason") or "pas encore evalue"
         elif _fs.get("blocker"):
             blocker_funding = _fs["blocker"]
         else:
