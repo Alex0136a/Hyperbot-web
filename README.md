@@ -4,7 +4,7 @@
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.289** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.290** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -502,6 +502,24 @@ conflit entre modes. Ancienne chaîne : `ENTRY_ENGINE_SIMPLE` = 0.
 
 **Funding** a maintenant sa ligne au diagnostic (« 💰 FUNDING »), qui indique
 pourquoi il n'entre pas (taux pas assez extrême, flux contraire, range…).
+
+## 4quinvicies. Analyse statistique des stop loss (v4.290)
+
+Après chaque SL (Spot-Accum, Accumulation, Funding, Manuel), le bot suit le
+prix **minute par minute pendant 2 h** et enregistre :
+- si un SL à 0,75 / 1 / 1,5 / 2 % aurait tenu (prix revenu à l'entrée d'abord)
+  ou aurait été touché ;
+- le **délai** avant que le prix revienne au niveau d'entrée ;
+- le **pire recul** (depuis l'entrée) subi avant ce retour — la largeur de SL
+  qui aurait permis de patienter ;
+- le prix 2 h après, par rapport à l'entrée.
+
+Onglet **Historique → 🛑 Analyse des stop loss** : synthèse par mode (part des
+SL suivis d'un retour à l'entrée en 30 min / 1 h / 2 h, délai médian, reculs
+médian / 75 % / 90 %, et pour chaque SL simulé le gain estimé en points de %),
+**téléchargeable en CSV**. Le détail trade par trade est dans l'export « Suivi »
+(4 colonnes « après SL » supplémentaires). Les SL des 16 derniers jours sont
+complétés rétroactivement.
 
 ## 5. Premier lancement
 
