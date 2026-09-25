@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32660874/README.md)
+[README.md](https://github.com/user-attachments/files/32664825/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.284** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.286** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -433,6 +433,27 @@ l'historique, à une resynchronisation de sécurité toutes les 6 h, après chaq
 reconnexion (bougies manquées) et en repli si le flux d'un actif reste muet.
 Le diagnostic affiche les
 valeurs exactes (« 📐 Niveaux ») pour comparaison directe avec le graphique.
+
+## 4duovicies. Situations de marché et choix des niveaux (v4.286)
+
+Chaque actif est classé en croisant sa tendance de **fond** (prix / EMA200
+1 h, ~8 jours) et sa tendance **court terme** (prix / EMA80 5 min, ~6 h 40) :
+
+| Situation | Spot-Accum (achat) | Accumulation (short) | Niveaux utilisés |
+|---|---|---|---|
+| **Hausse saine** (fond ↑, court ↑) | toutes les voies | ❌ | 1 h puis 5 min |
+| **Repli dans une hausse** (fond ↑, court ↓) | **fin de repli** : achat sur le support de structure 1 h + bougie haussière + flux ≥ +0,2 | **contre-tendance** : short sur la résistance 5 min, flux ≤ −0,3, ≥ 1 % de marge au-dessus du support 1 h, trailing resserré | Spot : 1 h / Accu : 5 min |
+| **Baisse saine** (fond ↓, court ↓) | ❌ | toutes les voies | 1 h puis 5 min |
+| **Rebond dans une baisse** (fond ↓, court ↑) | **contre-tendance** : achat sur le support 5 min, flux ≥ +0,3, ≥ 1 % de marge sous la résistance 1 h, trailing resserré | **fin de rebond** : short sous la résistance de structure 1 h + bougie baissière + flux ≤ −0,2 | Spot : 5 min / Accu : 1 h |
+| Fond neutre | règles court terme habituelles | règles court terme habituelles | 1 h |
+
+Règle de choix des niveaux : **dans le sens du fond**, le bot utilise la
+structure 1 h (support ascendant / résistance descendante, ou plus bas / plus
+haut de la tendance 1 h) ; **à contre-fond**, il utilise les niveaux 5 min
+(mouvement court) et exige de la marge avant le niveau 1 h opposé, qui sert
+de plafond / plancher. Le diagnostic affiche la situation de chaque actif et
+les deux jeux de niveaux. Ces règles remplacent le blocage par le régime
+global (`SITUATION_RULES_ENABLED` = 0 pour revenir à l'ancien comportement).
 
 ## 5. Premier lancement
 
