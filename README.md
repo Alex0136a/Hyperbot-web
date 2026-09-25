@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32671699/README.md)
+[Uploading README.md…]()
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.290** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.292** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -520,6 +520,25 @@ médian / 75 % / 90 %, et pour chaque SL simulé le gain estimé en points de %)
 **téléchargeable en CSV**. Le détail trade par trade est dans l'export « Suivi »
 (4 colonnes « après SL » supplémentaires). Les SL des 16 derniers jours sont
 complétés rétroactivement.
+
+## 4sexvicies. Synchronisation bot ↔ Hyperliquid (v4.292)
+
+Toutes les 2 min (fil séparé), le bot compare ses positions **live** (tous
+modes, trading manuel compris) avec celles réellement tenues sur Hyperliquid
+(DEX natif et xyz), actif par actif :
+
+| Écart | Correction automatique (après 2 contrôles consécutifs) |
+|---|---|
+| Position **fantôme** (bot : ouverte / Hyperliquid : aucune) | clôturée côté bot au prix réel de sortie |
+| Position **orpheline** (Hyperliquid : ouverte / bot : aucune) | reprise par le bot (identification par cloid) |
+| **Taille** ou **prix d'entrée** différents | alignés sur Hyperliquid |
+| **SL natif** absent | reposé immédiatement |
+| **Sens opposé** | jamais corrigé : alerte, vérification manuelle |
+
+Carte « 🔄 Synchronisation bot ↔ Hyperliquid » en haut de l'onglet de
+trading (bouton « Vérifier maintenant »), avec la position des deux côtés, le
+prix de liquidation, le PnL latent et la valeur du compte. Chaque écart est
+aussi journalisé. Réglages : `LIVE_SYNC_INTERVAL_SEC`, `LIVE_SYNC_AUTO_FIX`.
 
 ## 5. Premier lancement
 
