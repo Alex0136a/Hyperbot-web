@@ -33,10 +33,12 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.290"
-BOT_BUILD   = "2026-09-25-f"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.291"
+BOT_BUILD   = "2026-09-25-g"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.291 — FIX : prix courant mis a jour pour TOUS les actifs par le WebSocket
+#        (il restait fige hors position : diagnostic et largeur du regime).
 # 4.290 — Suivi apres SL sur 2 h (delai de retour a l entree, pire recul,
 #        simulation SL 0,75/1/1,5/2 %) + rapport statistique telechargeable.
 # 4.289 — NETTOYAGE : moteur d entree simple pour Spot-Accum et Accumulation
@@ -4537,7 +4539,10 @@ class BotEngine:
             if t in forex or ":" in t:
                 continue
             ema = getattr(st, "ema200_1h", None)
-            px = st.current_price or getattr(st, "last_close_1h", None)
+            try:  # v4.291 — prix FRAIS (flux temps reel) plutot que state.current_price
+                px = float((self.all_mids or {}).get(t) or 0) or st.current_price or getattr(st, "last_close_1h", None)
+            except (TypeError, ValueError):
+                px = st.current_price or getattr(st, "last_close_1h", None)
             if ema and px:
                 total += 1
                 up += px > ema * 1.001     # marge de 0,1 % : un actif colle a son EMA ne compte ni pour l un ni pour l autre
@@ -6327,6 +6332,14 @@ class BotEngine:
                     continue
                 if tick_price <= 0:
                     continue
+                # v4.291 — FIX : le prix courant n etait mis a jour par le
+                # WebSocket QUE pour les actifs EN POSITION (et le cycle REST
+                # ne l ecrit plus quand le WebSocket est sain) : pour tous les
+                # autres, il restait fige (dernier prix connu, ou 0). Le
+                # diagnostic affichait donc "prix en dessous" partout et une
+                # situation "fond neutre", et la largeur du regime de marche
+                # pouvait etre calculee sur des prix perimes.
+                state.current_price = tick_price
                 if state.window_high is None or tick_price > state.window_high:
                     state.window_high = tick_price
                 if state.window_low is None or tick_price < state.window_low:
@@ -6409,6 +6422,14 @@ class BotEngine:
                     continue
                 if tick_price <= 0:
                     continue
+                # v4.291 — FIX : le prix courant n etait mis a jour par le
+                # WebSocket QUE pour les actifs EN POSITION (et le cycle REST
+                # ne l ecrit plus quand le WebSocket est sain) : pour tous les
+                # autres, il restait fige (dernier prix connu, ou 0). Le
+                # diagnostic affichait donc "prix en dessous" partout et une
+                # situation "fond neutre", et la largeur du regime de marche
+                # pouvait etre calculee sur des prix perimes.
+                state.current_price = tick_price
                 if state.window_high is None or tick_price > state.window_high:
                     state.window_high = tick_price
                 if state.window_low is None or tick_price < state.window_low:
