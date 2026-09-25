@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32588168/README.md)
+[README.md](https://github.com/user-attachments/files/32660874/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.283** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.284** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -424,7 +424,14 @@ Hyperliquid** :
 | Support / résistance Accumulation | **288 bougies 5 min** (~24 h) | |
 | Régime de marché | EMA200 / EMA50 sur bougies 1 h | EMA 200 en unité 1 h |
 
-Les bougies 5 min sont rechargées à chaque clôture. Le diagnostic affiche les
+**Depuis la 4.284, les bougies 5 min et 1 h arrivent en temps réel par
+WebSocket** (canal `candle` d'Hyperliquid, 2 flux par actif) : chaque bougie
+est prise en compte à l'instant où elle se clôture — les indicateurs sont
+calculés sur la dernière bougie clôturée (« l'avant-dernière » du graphique),
+jamais sur la bougie en cours. Le REST ne sert plus qu'au chargement initial de
+l'historique, à une resynchronisation de sécurité toutes les 6 h, après chaque
+reconnexion (bougies manquées) et en repli si le flux d'un actif reste muet.
+Le diagnostic affiche les
 valeurs exactes (« 📐 Niveaux ») pour comparaison directe avec le graphique.
 
 ## 5. Premier lancement
