@@ -837,7 +837,7 @@ def clear_all_trades():
     print("".join(traceback.format_stack()[:-1]))
 
 
-def clear_trades_by_strategy(strategy):
+def clear_trades_by_strategy(strategy, keep_live=True):
     """v4.88 — SUR DEMANDE EXPLICITE : efface UNIQUEMENT l historique d une
     strategie precise (utilise au moment de basculer un mode en live, pour
     repartir sur un historique propre pour ce mode-la sans toucher aux
@@ -846,14 +846,17 @@ def clear_trades_by_strategy(strategy):
     "forex"."""
     import traceback
     with _lock, _connect() as conn:
+        # v4.298 — FIX : l historique LIVE (argent reel) n est plus JAMAIS
+        # efface : seul l historique paper l est. Avant, chaque bascule en
+        # live et chaque "Nettoyer" supprimaient aussi les trades reels — les
+        # pertes live disparaissaient des statistiques et des bilans.
+        live_guard = " AND (trade_mode IS NULL OR trade_mode != 'live')" if keep_live else ""
         if strategy == "forex":
-            rows = conn.execute("SELECT COUNT(*) AS c FROM trades WHERE strategy = ? OR strategy IS NULL OR strategy = 'normal'", (strategy,)).fetchone()
-            count_before = rows["c"]
-            conn.execute("DELETE FROM trades WHERE strategy = ? OR strategy IS NULL OR strategy = 'normal'", (strategy,))
+            where = "(strategy = ? OR strategy IS NULL OR strategy = 'normal')" + live_guard
         else:
-            rows = conn.execute("SELECT COUNT(*) AS c FROM trades WHERE strategy = ?", (strategy,)).fetchone()
-            count_before = rows["c"]
-            conn.execute("DELETE FROM trades WHERE strategy = ?", (strategy,))
+            where = "strategy = ?" + live_guard
+        count_before = conn.execute(f"SELECT COUNT(*) AS c FROM trades WHERE {where}", (strategy,)).fetchone()["c"]
+        conn.execute(f"DELETE FROM trades WHERE {where}", (strategy,))
         conn.commit()
     print(f"[AUDIT] clear_trades_by_strategy('{strategy}') appelee a {now_iso()} — {count_before} trade(s) supprime(s). Pile d appel :")
     print("".join(traceback.format_stack()[:-1]))
