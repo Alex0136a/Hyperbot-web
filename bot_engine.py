@@ -33,10 +33,13 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.294"
-BOT_BUILD   = "2026-09-25-j"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.295"
+BOT_BUILD   = "2026-09-26-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.295 — FIX RISQUE : le moteur simple activait le levier dynamique 2-5x sur
+#        toutes les entrees pres d un niveau (notionnel x2 a x10) ; levier 1
+#        par defaut, levier dynamique optionnel.
 # 4.294 — Trades live fermes : frais et PnL reels Hyperliquid releves dans la
 #        minute et affiches dans l historique a cote du PnL du bot.
 # 4.293 — PnL des positions live : quantite reelle Hyperliquid, PnL latent
@@ -1299,6 +1302,7 @@ PROFILE_SWING = {
     # v4.289 — moteur d entree : "simple" (garde-fous + 1 signal + 1
     # confirmation) ou "legacy" (ancienne chaine de conditions)
     "ENTRY_ENGINE_SIMPLE": 1,
+    "SIMPLE_ENGINE_DYNAMIC_LEVERAGE": 0,   # v4.295 — 1 = levier dynamique 2-5x sur les entrees pres d un niveau
     "SITUATION_RULES_ENABLED": 1,          # 0 = ancien comportement (regime global)
     # v4.287 — SUR DEMANDE EXPLICITE : trades a CONTRE-TENDANCE (achat dans un
     # rebond baissier, short dans un repli haussier) desactives tant que les
@@ -9862,7 +9866,13 @@ class BotEngine:
                 "signal": "long" if long_side else "short", "price": price, "confidence": confidence,
                 "rsi": rsi, "rsi_mode": mode, "reasons": reasons, "prices": prices, "conf_breakdown": {},
                 "strategy": mode, "countertrend": situation == countertrend, "force_paper": bool(force_paper),
-                "entered_via_flirt": bool(lvl_label)}
+                # v4.295 — FIX RISQUE : "entered_via_flirt" declenche le levier
+                # DYNAMIQUE 2-5x de Spot-Accum/Accumulation. Le moteur simple le
+                # mettait a vrai pour toute entree pres d un niveau : le
+                # notionnel des trades est passe de ~15-20 $ a 35-180 $ (SL a
+                # -0,87 $ sur NEAR). Levier dynamique desormais OPTIONNEL
+                # (desactive par defaut : levier 1, comme avant).
+                "entered_via_flirt": bool(lvl_label) and bool(cfg.get("SIMPLE_ENGINE_DYNAMIC_LEVERAGE", 0))}
         if long_side:
             cand.update({"support_at_entry": lvl if lvl_label else short_lvl, "resistance_at_entry": self._short_level(state, "resistance")})
             self._pending_spot_accum_candidates.append(cand)
