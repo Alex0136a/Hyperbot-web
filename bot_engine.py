@@ -33,10 +33,13 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.296"
-BOT_BUILD   = "2026-09-26-b"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.297"
+BOT_BUILD   = "2026-09-26-c"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.297 — FIX dimensionnement : un lot par pot (paper / live) au lieu d un
+#        lot partage ; positions comptees par pot (Accumulation comprise) ;
+#        capital live = valeur reelle du compte Hyperliquid.
 # 4.296 — Funding : deverrouillage du live reglable dans l interface ; trades
 #        live sous 10 $ de notionnel releves au minimum Hyperliquid.
 # 4.295 — FIX RISQUE : le moteur simple activait le levier dynamique 2-5x sur
@@ -3450,7 +3453,11 @@ def load_batch_entry_size():
         try:
             with open(BATCH_FILE, "r") as f:
                 data = json.load(f)
-            return data.get("batch_entry_size")
+            # v4.297 — un lot PAR mode (paper / live) ; ancien format = paper
+            if isinstance(data.get("by_mode"), dict):
+                return {k: v for k, v in data["by_mode"].items() if v}
+            v = data.get("batch_entry_size")
+            return {"paper": v} if v else {}
         except Exception as e:
             print(f"[BATCH] Erreur lecture fichier: {e} — E sera recalcule")
     return None
@@ -3458,7 +3465,10 @@ def load_batch_entry_size():
 def save_batch_entry_size(value):
     """Sauvegarde la taille d entree E figee pour le lot en cours."""
     import json, os, time
-    data = {"batch_entry_size": round(value, 6) if value is not None else None}
+    if isinstance(value, dict):  # v4.297 — un lot par mode
+        data = {"by_mode": {k: round(v, 6) for k, v in value.items() if v}}
+    else:
+        data = {"batch_entry_size": round(value, 6) if value is not None else None}
     tmp_file = BATCH_FILE + ".tmp"
     for attempt in range(3):
         try:
@@ -3526,7 +3536,7 @@ class BotEngine:
         self.cfg["CAPITAL_USD"] = self.capital
         # v4.1 — E fige par lot de trades (voir _enter_position) : None tant
         # qu aucun lot n est en cours, recalcule au prochain trade ouvert.
-        self.batch_entry_size = load_batch_entry_size()
+        self.batch_entry_sizes = load_batch_entry_size() or {}  # v4.297 — {"paper": E, "live": E}
         self.cycle = 0
         self.info = None
         self.exchange = None
@@ -4914,7 +4924,10 @@ class BotEngine:
             report["rows"].append(row)
         self._live_sync_flags = flags
         try:
-            report["compte"] = {"valeur_compte": sync_capital_from_hyperliquid(self.info, wallet)}
+            acct = sync_capital_from_hyperliquid(self.info, wallet)
+            report["compte"] = {"valeur_compte": acct}
+            if acct:
+                self.live_equity_real, self.live_equity_ts = acct, time.time()  # v4.297 — dimensionnement live
         except Exception:
             pass
         report["anomalies"] = sum(1 for r in report["rows"] if r["status"] != "ok")
@@ -10858,7 +10871,6 @@ class BotEngine:
         # se vide entierement (toutes les positions fermees), un nouveau lot
         # commence et E est recalcule sur la base du capital disponible a ce
         # moment-la : "chaque fois que le capital le permet".
-        open_count = sum(1 for s in self.states.values() if s.position)
         # v4.89 — SUR DEMANDE EXPLICITE : ne JAMAIS melanger capital virtuel
         # (paper) et capital reel (live) dans le dimensionnement — chaque
         # trade utilise EXCLUSIVEMENT le pot qui correspond a son propre
@@ -10867,13 +10879,24 @@ class BotEngine:
         # synchronise, repli sur CAPITAL_USD (comportement d origine, cas
         # ou aucun mode n a encore ete bascule en live).
         mode_for_sizing = self._effective_mode(strategy)
+        if cand.get("force_paper") or (strategy == "funding_contrarian" and not cfg.get("FUNDING_MODE_LIVE_ALLOWED", False)):
+            mode_for_sizing = "paper"  # v4.297 — dimensionne dans le pot ou il sera REELLEMENT trade
+        # v4.297 — FIX : positions ouvertes DU MEME POT (paper ou live),
+        # Accumulation comprise (avant : toutes confondues, sans Accumulation)
+        open_count = sum(1 for pool in (self.states, self.accum_states) for s in pool.values()
+                         if s.position and s.position.get("effective_mode", "paper") == mode_for_sizing)
         if mode_for_sizing == "live":
-            total_pnl = sum(s.live_pnl for s in self.states.values())
+            total_pnl = sum(s.live_pnl for s in self.states.values()) + sum(s.live_pnl for s in self.accum_states.values())
             base_capital = getattr(self, "live_capital_base", cfg["CAPITAL_USD"])
         else:
-            total_pnl = sum(s.paper_pnl for s in self.states.values())
+            total_pnl = sum(s.paper_pnl for s in self.states.values()) + sum(s.paper_pnl for s in self.accum_states.values())
             base_capital = cfg["CAPITAL_USD"]
         equity = base_capital + total_pnl
+        # v4.297 — en live : valeur REELLE du compte Hyperliquid (relevee toutes
+        # les 2 min par le controle de synchronisation)
+        if mode_for_sizing == "live" and getattr(self, "live_equity_real", None) \
+                and time.time() - getattr(self, "live_equity_ts", 0) < 600:
+            equity = self.live_equity_real
         # v4.153 — FIX BUG CRITIQUE : ne comptait QUE self.states
         # (Normal/Funding/Spot-Accum), jamais self.accum_states —
         # capital_available ignorait donc completement ce qu Accumulation
@@ -10911,12 +10934,15 @@ class BotEngine:
             self.emit("log", {"msg": f"[{ticker}] Capital disponible (${capital_available:.2f}) trop faible pour atteindre le minimum Hyperliquid ($10), meme avec un levier eleve — capital probablement engage ailleurs, nouvelle tentative dans {cooldown_sec//60} min.", "level": "warn"})
             return
 
-        if open_count == 0 or self.batch_entry_size is None:
-            self.batch_entry_size = equity * cfg["POSITION_SIZE_PCT"] / 100
-            save_batch_entry_size(self.batch_entry_size)
-            self.emit("log", {"msg": f"Nouveau lot — E fige a ${self.batch_entry_size:.2f} ({cfg['POSITION_SIZE_PCT']:.0f}% de ${equity:.2f}) pour jusqu a {cfg.get('MAX_OPEN_TRADES', 5)} trades simultanes", "level": "info"})
+        # v4.297 — FIX : un lot PAR pot. Avant, un seul E etait partage : fige
+        # par un trade PAPER, il dimensionnait aussi les trades LIVE (et
+        # inversement), quel que soit le capital reel.
+        if open_count == 0 or not self.batch_entry_sizes.get(mode_for_sizing):
+            self.batch_entry_sizes[mode_for_sizing] = equity * cfg["POSITION_SIZE_PCT"] / 100
+            save_batch_entry_size(self.batch_entry_sizes)
+            self.emit("log", {"msg": f"Nouveau lot {mode_for_sizing.upper()} — E fige a ${self.batch_entry_sizes[mode_for_sizing]:.2f} ({cfg['POSITION_SIZE_PCT']:.0f}% de ${equity:.2f})", "level": "info"})
 
-        size = min(self.batch_entry_size, capital_available)
+        size = min(self.batch_entry_sizes[mode_for_sizing], capital_available)
         # v4.46 — SUR DEMANDE EXPLICITE : taille INDEPENDANTE par mode, si
         # definie — contourne le batch_entry_size PARTAGE (fige pour tout le
         # lot, tous modes confondus) et calcule une taille dediee depuis
@@ -10957,7 +10983,7 @@ class BotEngine:
             max_combined_trades = max(cfg.get("ACCUMULATION_MAX_TRADES", 3), 1) + max(cfg.get("SPOT_ACCUM_MAX_TRADES", 3), 1)
             size = min(equity / max_combined_trades, capital_available)
         if size <= 0:
-            self.emit("log", {"msg": f"[{ticker}] Capital insuffisant pour E=${self.batch_entry_size:.2f} (disponible ${capital_available:.2f})", "level": "warn"})
+            self.emit("log", {"msg": f"[{ticker}] Capital insuffisant pour E=${self.batch_entry_sizes.get(mode_for_sizing, 0):.2f} (disponible ${capital_available:.2f})", "level": "warn"})
             return
 
         # v4.194 — SUR DEMANDE EXPLICITE : penalise les mauvais actifs /
