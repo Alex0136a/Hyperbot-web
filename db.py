@@ -198,7 +198,8 @@ def init_db():
                          ("spread_at_entry", "REAL"),  # v4.282
                          # v4.290 — suivi apres SL sur 2 h
                          ("sim_sl_200", "TEXT"), ("sl_back_min", "REAL"), ("sl_mae_pct", "REAL"),
-                         ("sl_mark_120_pct", "REAL"), ("sim2_status", "TEXT")):
+                         ("sl_mark_120_pct", "REAL"), ("sim2_status", "TEXT"),
+                         ("fills_status", "TEXT")):  # v4.294 — rapprochement rapide avec les remplissages Hyperliquid
             if col not in existing_cols:
                 conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
         if "fees_paid" not in existing_cols:
@@ -575,10 +576,26 @@ def list_trades_needing_sim(min_age_minutes=122, max_age_days=16, limit=5):
         return [dict(r) for r in rows]
 
 
+def list_live_trades_needing_fills(min_age_sec=45, max_age_days=16, limit=10):
+    """v4.294 — trades LIVE fermes dont les frais et le PnL reels Hyperliquid
+    n ont pas encore ete releves (tous modes)."""
+    now = datetime.now(timezone.utc)
+    newest = (now - timedelta(seconds=min_age_sec)).isoformat()
+    oldest = (now - timedelta(days=max_age_days)).isoformat()
+    with _lock, _connect() as conn:
+        rows = conn.execute("""
+            SELECT * FROM trades
+            WHERE closed_at IS NOT NULL AND trade_mode='live' AND fills_status IS NULL
+              AND closed_at <= ? AND closed_at >= ?
+            ORDER BY closed_at DESC LIMIT ?
+        """, (newest, oldest, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
 def save_trade_followup(trade_id, fields):
     allowed = ("price_after_30m", "price_after_60m", "high_60m", "low_60m", "fees_real", "pnl_real_hl", "followup_status",
                "sim_sl_075", "sim_sl_100", "sim_sl_150", "sim_status",
-               "sim_sl_200", "sl_back_min", "sl_mae_pct", "sl_mark_120_pct", "sim2_status")
+               "sim_sl_200", "sl_back_min", "sl_mae_pct", "sl_mark_120_pct", "sim2_status", "fills_status")
     data = {k: v for k, v in fields.items() if k in allowed}
     data["followup_at"] = now_iso()
     with _lock, _connect() as conn:
