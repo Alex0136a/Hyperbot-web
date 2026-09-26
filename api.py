@@ -1457,8 +1457,15 @@ def post_strategy_go_live(body: StrategyGoLiveBody, email: str = Depends(require
     if body.strategy not in valid_strategies:
         raise HTTPException(400, f"Mode inconnu : {body.strategy}")
 
-    closed_count = bot._close_all_trades_for_strategy(body.strategy)
-    deleted_count = db.clear_trades_by_strategy(body.strategy)
+    # v4.298 — FIX : la bascule en live ne ferme plus que les positions PAPER
+    # de ce mode et N EFFACE PLUS AUCUN historique (les statistiques live
+    # sont de toute facon calculees sur les seuls trades live). Avant, chaque
+    # aller-retour paper/live effacait les trades REELS du mode, et leurs
+    # pertes disparaissaient des bilans.
+    closed_count = bot._close_all_trades_for_strategy(body.strategy, paper_only=True)
+    deleted_count = 0
+    if db.get_meta(f"live_since_{body.strategy}") is None:
+        db.set_meta(f"live_since_{body.strategy}", db.now_iso())
 
     capital_synced = False
     new_capital = None
@@ -1468,6 +1475,8 @@ def post_strategy_go_live(body: StrategyGoLiveBody, email: str = Depends(require
             # v4.89 — FIX : alimente le pot LIVE separe, plus jamais le
             # capital paper partage — les deux ne se melangent plus.
             bot.live_capital_base = real_balance
+            if db.get_meta("live_initial_balance") is None:  # v4.298 — capital de depart du live, fige une fois
+                db.set_meta("live_initial_balance", str(real_balance))
             capital_synced = True
             new_capital = real_balance
             _push_log("ok", f"💰 Capital LIVE synchronise depuis Hyperliquid suite au passage de {body.strategy} en live : ${real_balance:.2f} (capital paper des autres modes inchange)")
@@ -1477,7 +1486,7 @@ def post_strategy_go_live(body: StrategyGoLiveBody, email: str = Depends(require
     current[body.strategy] = "live"
     _apply_and_persist("STRATEGY_MODE_OVERRIDE", current)
 
-    _push_log("warn", f"🔴 Mode {body.strategy} bascule en LIVE — {closed_count} position(s) fermee(s), {deleted_count} trade(s) d historique efface(s).")
+    _push_log("warn", f"🔴 Mode {body.strategy} bascule en LIVE — {closed_count} position(s) paper fermee(s), historique conserve.")
 
     return {
         "ok": True,
@@ -1503,9 +1512,9 @@ def post_strategy_clear_only(body: StrategyGoLiveBody, email: str = Depends(requ
         raise HTTPException(400, f"Mode inconnu : {body.strategy}")
 
     closed_count = bot._close_all_trades_for_strategy(body.strategy)
-    deleted_count = db.clear_trades_by_strategy(body.strategy)
+    deleted_count = db.clear_trades_by_strategy(body.strategy, keep_live=True)  # v4.298 : jamais les trades live
 
-    _push_log("info", f"🧹 Nettoyage {body.strategy} — {closed_count} position(s) fermee(s), {deleted_count} trade(s) d historique efface(s). Statut paper/live inchange.")
+    _push_log("info", f"🧹 Nettoyage {body.strategy} — {closed_count} position(s) fermee(s), {deleted_count} trade(s) PAPER efface(s) (historique live conserve). Statut paper/live inchange.")
 
     return {
         "ok": True,
