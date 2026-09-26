@@ -791,6 +791,11 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "opened_at": opened_at_iso,
                 "pnl": round(pnl, 4),
                 "pnl_pct": round(pnl_pct, 3),
+                # v4.293 — rapprochement avec Hyperliquid (positions live)
+                "pnl_hyperliquid": pos.get("hl_unrealized_pnl"),
+                "hl_sync_age_sec": round(time.time() - pos["hl_sync_ts"]) if pos.get("hl_sync_ts") else None,
+                "fees_est": round(pos["size"] * pos.get("leverage", 1) * 0.0009, 4),
+                "pnl_net_est": round(pnl - pos["size"] * pos.get("leverage", 1) * 0.0009, 4),
                 "peak_pnl": round(peak_pnl_usd, 4) if peak_pnl_usd is not None else None,
                 "peak_pnl_pct": peak_pnl_pct,
                 # v4.61 — SUR DEMANDE EXPLICITE : diagnostic precis du
@@ -892,6 +897,13 @@ def _trade_row_to_signal(row: Dict[str, Any]) -> Dict[str, Any]:
         "sl_pct_used": row["sl_pct_used"] if "sl_pct_used" in row.keys() else None,
         "ttp_arm1_pct_used": row["ttp_arm1_pct_used"] if "ttp_arm1_pct_used" in row.keys() else None,
         "adaptive_sl_ttp": bool(row["adaptive_sl_ttp"]) if "adaptive_sl_ttp" in row.keys() and row["adaptive_sl_ttp"] is not None else False,
+        # v4.294 — resultat REEL Hyperliquid (trades live)
+        "trade_mode": row["trade_mode"] if "trade_mode" in row.keys() else None,
+        "pnl_real_hl": row["pnl_real_hl"] if "pnl_real_hl" in row.keys() else None,
+        "fees_real": row["fees_real"] if "fees_real" in row.keys() else None,
+        "pnl_net_real": (row["pnl_real_hl"] - row["fees_real"])
+                        if "pnl_real_hl" in row.keys() and row["pnl_real_hl"] is not None and row["fees_real"] is not None else None,
+        "fills_status": row["fills_status"] if "fills_status" in row.keys() else None,
     }
 
 
