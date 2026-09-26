@@ -948,6 +948,16 @@ ADVANCED_SETTINGS = {
     "MARKET_REGIME_FILTER_ENABLED": {"label": "Regime de marche - filtre actif (1 = oui, 0 = non)", "default": 1},
     "MARKET_REGIME_BREADTH_PCT": {"label": "Regime de marche - % minimal d actifs dans le meme sens", "default": 60},
     "SITUATION_RULES_ENABLED":         {"label": "Situations de marche fond 1h x court terme 5 min (1) ou regime global (0)", "default": 1},
+    "ENTRY_ENGINE_MTF":                {"label": "Moteur TOP-DOWN multi-unites de temps pour Spot-Accum / Accumulation (1/0)", "default": 1},
+    "MTF_USE_DAILY":                   {"label": "Top-down - unite majeure Daily (1) ou H4 (0)", "default": 0},
+    "MTF_USE_H1":                      {"label": "Top-down - unite du signal H1 (1) ou M15 (0)", "default": 0},
+    "MTF_RISK_PCT":                    {"label": "Top-down - risque par trade (% du capital)", "default": 0.5},
+    "MTF_MIN_RR":                      {"label": "Top-down - rapport gain/risque minimal", "default": 1.5},
+    "MTF_MAX_NOTIONAL_USD":            {"label": "Top-down - notionnel maximal par trade ($)", "default": 30.0},
+    "MTF_MAX_RISK_PCT":                {"label": "Top-down - distance maximale au SL (% du prix)", "default": 4.0},
+    "MTF_ZONE_TOLERANCE_ATR":          {"label": "Top-down - marge autour d une zone (x ATR majeur)", "default": 0.25},
+    "MTF_ZONE_LOOKBACK":               {"label": "Top-down - bougies majeures examinees pour les zones", "default": 120},
+    "MTF_COOLDOWN_AFTER_SL_H":         {"label": "Top-down - pause sur un actif apres un SL (heures)", "default": 4},
     "ENTRY_ENGINE_SIMPLE":             {"label": "Moteur d entree simple Spot-Accum / Accumulation (1) ou ancienne chaine de conditions (0)", "default": 1},
     "SIMPLE_ENGINE_DYNAMIC_LEVERAGE":  {"label": "Moteur simple - levier dynamique 2-5x sur les entrees pres d un niveau (1/0)", "default": 0},
     "FUNDING_MODE_LIVE_ALLOWED":       {"label": "Funding - AUTORISER LE LIVE (verrou de securite : 0 = toujours simule en paper)", "default": 0},
@@ -1115,11 +1125,28 @@ ADVANCED_SETTINGS = {
 }
 
 
+# v4.300 — reglages des ANCIENNES methodes de Spot-Accum / Accumulation,
+# masques tant que la methode top-down est active (ils n ont plus d effet).
+_MTF_KEEP_KEYS = {"SPOT_ACCUM_TRADE_HOUR_START_UTC", "SPOT_ACCUM_TRADE_HOUR_END_UTC",
+                  "ACCUMULATION_TRADE_HOUR_START_UTC", "ACCUMULATION_TRADE_HOUR_END_UTC",
+                  "SPOT_ACCUM_MAX_TRADES", "ACCUMULATION_MAX_TRADES"}
+_MTF_OBSOLETE_PREFIXES = ("SPOT_ACCUM_", "ACCUMULATION_", "SITUATION_", "CONTINUATION_", "SIMPLE_ENGINE_",
+                          "COUNTERTREND_", "FRESH_BREAKOUT_", "MARKET_REGIME_")
+
+
+def _is_obsolete_for_mtf(key):
+    if key in _MTF_KEEP_KEYS:
+        return False
+    return key == "ENTRY_ENGINE_SIMPLE" or key.startswith(_MTF_OBSOLETE_PREFIXES)
+
+
 @app.get("/api/config/advanced")
 def get_advanced_config(email: str = Depends(require_user)):
+    hide = bool(cfg.get("ENTRY_ENGINE_MTF", 1))
     return {
         key: {"value": cfg.get(key, meta["default"]), "label": meta["label"], "default": meta["default"]}
         for key, meta in ADVANCED_SETTINGS.items()
+        if not (hide and _is_obsolete_for_mtf(key))
     }
 
 
@@ -1136,6 +1163,7 @@ _ZERO_ALLOWED_INT_KEYS = {"CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_
                           "ACCUMULATION_MAX_ENTRIES_PER_WINDOW", "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW",
                           "SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND",
                           "MARKET_REGIME_FILTER_ENABLED", "SPOT_ACCUM_TRADE_HOUR_START_UTC", "ANTI_RANGE_RELATIVE_ENABLED", "SITUATION_RULES_ENABLED", "SITUATION_ALLOW_COUNTERTREND", "CONTINUATION_ENABLED", "CONTINUATION_PAPER_ONLY", "ENTRY_ENGINE_SIMPLE", "SIMPLE_ENGINE_DYNAMIC_LEVERAGE", "FUNDING_MODE_LIVE_ALLOWED", "LIVE_MIN_NOTIONAL_BUMP",
+                          "ENTRY_ENGINE_MTF", "MTF_USE_DAILY", "MTF_USE_H1",
                           "SPOT_ACCUM_BYPASS_REQUIRE_TREND", "SPOT_ACCUM_BYPASS_FLOW_VETO", "SPOT_ACCUM_RISING_SUPPORT_ENABLED",
                           "SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND", "ACCUMULATION_FRESH_BREAKOUT_COUNTER_TREND",
                           "ACCUMULATION_BYPASS_REQUIRE_TREND", "ACCUMULATION_BYPASS_FLOW_VETO", "ACCUMULATION_TRADE_HOUR_START_UTC",
@@ -1159,7 +1187,7 @@ def _coerce_advanced_value(key: str, value):
         return False, "doit etre entre 0 et 1 (pression de -1 a +1)"
     if key.endswith("_MIN_FLOW_CONVICTION") and not 0 <= value <= 1:
         return False, "entre 0 et 1"
-    if key in ("SITUATION_RULES_ENABLED", "SITUATION_ALLOW_COUNTERTREND", "CONTINUATION_ENABLED", "CONTINUATION_PAPER_ONLY", "ENTRY_ENGINE_SIMPLE", "SIMPLE_ENGINE_DYNAMIC_LEVERAGE", "FUNDING_MODE_LIVE_ALLOWED", "LIVE_MIN_NOTIONAL_BUMP", "CONTINUATION_ENABLED", "CONTINUATION_PAPER_ONLY") and value not in (0, 1):
+    if key in ("SITUATION_RULES_ENABLED", "SITUATION_ALLOW_COUNTERTREND", "CONTINUATION_ENABLED", "CONTINUATION_PAPER_ONLY", "ENTRY_ENGINE_SIMPLE", "SIMPLE_ENGINE_DYNAMIC_LEVERAGE", "FUNDING_MODE_LIVE_ALLOWED", "LIVE_MIN_NOTIONAL_BUMP", "CONTINUATION_ENABLED", "CONTINUATION_PAPER_ONLY", "ENTRY_ENGINE_MTF", "MTF_USE_DAILY", "MTF_USE_H1") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
     if key in ("SITUATION_REVERSAL_MIN_FLOW", "SITUATION_COUNTERTREND_MIN_FLOW") and not 0 <= value <= 1:
         return False, "entre 0 et 1"
@@ -2185,9 +2213,11 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
                 _px = float((bot.all_mids or {}).get(ticker) or 0) or None
             except (TypeError, ValueError):
                 pass
-            situation = bot.situation(state, _px) if ":" not in ticker else None
+            situation = bot.situation(state, _px) if ":" not in ticker and not cfg.get("ENTRY_ENGINE_MTF", 1) else None
         except Exception:
             situation = None
+        if cfg.get("ENTRY_ENGINE_MTF", 1) and ":" not in ticker:
+            levels = None  # v4.300 — niveaux 5 min de l ancienne methode : sans objet
         _fs = getattr(state, "funding_gate_snapshot", None) or {}
         if not cfg.get("FUNDING_MODE_ENABLED", False):
             blocker_funding = "mode desactive"
@@ -2197,7 +2227,23 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             blocker_funding = _fs["blocker"]
         else:
             blocker_funding = f"signal {(_fs.get('direction') or '').upper()} ({_fs.get('annual_pct')}%/an) — candidat genere"
+        mtf_line = None
+        if ":" not in ticker and cfg.get("ENTRY_ENGINE_MTF", 1):
+            try:  # v4.299 — lecture top-down (bougies en cache uniquement : diagnostic instantane)
+                _p = float((bot.all_mids or {}).get(ticker) or 0) or state.current_price
+                mv = bot.mtf_view(ticker, _p, cache_only=True) if _p else None
+                if mv and mv.get("ok"):
+                    M = {"4h": "H4", "1d": "Daily"}.get(mv["major_tf"], mv["major_tf"])
+                    where = ("prix DANS la zone de support" if mv["in_support"] else
+                             "prix DANS la zone de resistance" if mv["in_resistance"] else "prix entre deux zones")
+                    mtf_line = (f"tendance {M} {mv['trend']} · support {M} {bot._zone_txt(mv['support'])} · "
+                                f"resistance {M} {bot._zone_txt(mv['resistance'])} · {where}")
+                elif mv:
+                    mtf_line = mv.get("why")
+            except Exception as e_m:
+                mtf_line = f"indisponible ({e_m})"
         results.append({
+            "mtf": mtf_line,
             "blocker_funding": blocker_funding,
             "situation": situation,
             "levels": levels,
