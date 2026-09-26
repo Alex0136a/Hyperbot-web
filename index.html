@@ -2945,6 +2945,8 @@ Confirmer ?`
                         <div style={{display:"flex",alignItems:"center",gap:8}}>
                           <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:12,fontWeight:700}}>{trade.pnl>=0?"+":""}{trade.pnl?.toFixed(2)} USDC</span>
                           <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:10}}>({trade.pnl_pct>=0?"+":""}{trade.pnl_pct?.toFixed(2)}%)</span>
+                          {trade.effective_mode==="live" && <span style={{color:"#94a3b8",fontSize:9}} title="PnL brut du bot (prix milieu) / PnL latent affiché par Hyperliquid (prix mark, au dernier contrôle) / PnL net après frais d'entrée et de sortie estimés (0,09 % du notionnel)">
+                            {trade.pnl_hyperliquid!=null?`Hyperliquid ${trade.pnl_hyperliquid>=0?"+":""}${trade.pnl_hyperliquid.toFixed(2)} (il y a ${trade.hl_sync_age_sec}s) · `:""}net est. {trade.pnl_net_est>=0?"+":""}{trade.pnl_net_est?.toFixed(2)}</span>}
                           <button onClick={async()=>{
                             if(!confirm(`Fermer ${trade.coin} manuellement ?`)) return;
                             try { await apiCall("/api/paper/close","POST",{trade_id:trade.id,reason:"MANUEL"},token); } catch(e) { alert("Fermeture non effectuée : "+e.message); }
@@ -3217,6 +3219,10 @@ Confirmer ?`
                       <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:11}}>
                         ({trade.pnl_pct>=0?"+":""}{trade.pnl_pct?.toFixed(2)}%)
                       </span>
+                      {trade.trade_mode==="live" && <span style={{color:"#94a3b8",fontSize:10}} title="Relevé dans les remplissages Hyperliquid : PnL de clôture (hors frais), frais réels d'entrée et de sortie, et résultat net pour le compte.">
+                        {trade.pnl_real_hl!=null ? <>Hyperliquid : {trade.pnl_real_hl>=0?"+":""}{trade.pnl_real_hl.toFixed(2)} · frais {trade.fees_real!=null?trade.fees_real.toFixed(3):"?"} · <b style={{color:(trade.pnl_net_real||0)>=0?"#34d399":"#f87171"}}>net {trade.pnl_net_real!=null?`${trade.pnl_net_real>=0?"+":""}${trade.pnl_net_real.toFixed(2)}`:"?"}</b></>
+                          : trade.fills_status ? `Hyperliquid : ${trade.fills_status}` : "Hyperliquid : relevé en cours…"}
+                      </span>}
                       {trade.peak_pnl_pct!=null ? <span style={{color:"#c084fc",fontSize:11}}>🏔️ pic +{trade.peak_pnl_pct.toFixed(2)}%</span>
                         : trade.peak_pnl!=null && <span style={{color:"#c084fc",fontSize:11}}>🏔️ pic +{trade.peak_pnl.toFixed(2)}$</span>}
                       <button onClick={async()=>{
