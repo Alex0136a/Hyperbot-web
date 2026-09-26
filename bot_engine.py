@@ -33,10 +33,13 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.297"
-BOT_BUILD   = "2026-09-26-c"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.298"
+BOT_BUILD   = "2026-09-26-d"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.298 — FIX : la bascule en live n efface plus l historique et ne ferme
+#        plus les positions reelles ; "Nettoyer" ne supprime plus jamais les
+#        trades live (seul l historique paper est efface).
 # 4.297 — FIX dimensionnement : un lot par pot (paper / live) au lieu d un
 #        lot partage ; positions comptees par pot (Accumulation comprise) ;
 #        capital live = valeur reelle du compte Hyperliquid.
@@ -4347,7 +4350,7 @@ class BotEngine:
         base = self.cfg.get("CONFIDENCE_MIN_PCT", 65.0)
         return self.confidence_thresholds.get(ticker, base)
 
-    def _close_all_trades_for_strategy(self, strategy):
+    def _close_all_trades_for_strategy(self, strategy, paper_only=False):
         """v4.88 — SUR DEMANDE EXPLICITE : ferme TOUTES les positions
         actuellement ouvertes pour une strategie precise (utilise juste
         avant de basculer ce mode en live, sur confirmation explicite de
@@ -4358,6 +4361,8 @@ class BotEngine:
         for slot_key, state in list(self.states.items()):
             pos = state.position
             if pos and pos.get("strategy", "forex") == strategy:
+                if paper_only and self._position_mode(pos) == "live":
+                    continue  # v4.298 — la bascule en live ne ferme plus les positions REELLES
                 price = state.current_price or pos.get("entry")
                 if price is None:
                     continue
@@ -4373,6 +4378,8 @@ class BotEngine:
             for slot_key, accum_state in list(self.accum_states.items()):
                 pos = accum_state.position
                 if pos:
+                    if paper_only and self._position_mode(pos) == "live":
+                        continue  # v4.298
                     price = accum_state.current_price or pos.get("entry")
                     if price is None:
                         continue
