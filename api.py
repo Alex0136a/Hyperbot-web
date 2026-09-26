@@ -2735,7 +2735,7 @@ def paper_reset(email: str = Depends(require_user)):
     bot.total_pnl_all = 0.0
     # v4.1 — un capital reinitialise demarre un lot neuf : l ancien E fige
     # (base sur l ancien capital) ne doit pas survivre a la reinitialisation.
-    bot.batch_entry_size = None
+    bot.batch_entry_sizes = {}  # v4.297 — un lot par pot
     bot.clear_all_persisted_files()
     be.save_capital(bot.capital, 0, 0.0)
     be.save_batch_entry_size(None)
@@ -3299,7 +3299,7 @@ def reset_all(email: str = Depends(require_user)):
     bot.capital = cfg["CAPITAL_USD"]
     bot.sessions = 0
     bot.total_pnl_all = 0.0
-    bot.batch_entry_size = None
+    bot.batch_entry_sizes = {}  # v4.297 — un lot par pot
     bot.clear_all_persisted_files()
     be.save_capital(bot.capital, 0, 0.0)
     be.save_batch_entry_size(None)
