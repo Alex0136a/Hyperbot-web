@@ -950,6 +950,8 @@ ADVANCED_SETTINGS = {
     "SITUATION_RULES_ENABLED":         {"label": "Situations de marche fond 1h x court terme 5 min (1) ou regime global (0)", "default": 1},
     "ENTRY_ENGINE_SIMPLE":             {"label": "Moteur d entree simple Spot-Accum / Accumulation (1) ou ancienne chaine de conditions (0)", "default": 1},
     "SIMPLE_ENGINE_DYNAMIC_LEVERAGE":  {"label": "Moteur simple - levier dynamique 2-5x sur les entrees pres d un niveau (1/0)", "default": 0},
+    "FUNDING_MODE_LIVE_ALLOWED":       {"label": "Funding - AUTORISER LE LIVE (verrou de securite : 0 = toujours simule en paper)", "default": 0},
+    "LIVE_MIN_NOTIONAL_BUMP":          {"label": "Live - relever les trades sous 10 $ au minimum Hyperliquid (1/0)", "default": 1},
     "SITUATION_ALLOW_COUNTERTREND":    {"label": "Autoriser les trades a contre-tendance de fond (1 = oui, 0 = non)", "default": 0},
     "CONTINUATION_ENABLED":            {"label": "Voie continuation (entree sans proximite d un niveau) (1/0)", "default": 1},
     "CONTINUATION_PAPER_ONLY":         {"label": "Voie continuation en paper seulement, meme si le mode est live (1/0)", "default": 1},
@@ -1133,7 +1135,7 @@ _ZERO_ALLOWED_INT_KEYS = {"CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
                           "ACCUMULATION_MAX_ENTRIES_PER_WINDOW", "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW",
                           "SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND",
-                          "MARKET_REGIME_FILTER_ENABLED", "SPOT_ACCUM_TRADE_HOUR_START_UTC", "ANTI_RANGE_RELATIVE_ENABLED", "SITUATION_RULES_ENABLED", "SITUATION_ALLOW_COUNTERTREND", "CONTINUATION_ENABLED", "CONTINUATION_PAPER_ONLY", "ENTRY_ENGINE_SIMPLE", "SIMPLE_ENGINE_DYNAMIC_LEVERAGE",
+                          "MARKET_REGIME_FILTER_ENABLED", "SPOT_ACCUM_TRADE_HOUR_START_UTC", "ANTI_RANGE_RELATIVE_ENABLED", "SITUATION_RULES_ENABLED", "SITUATION_ALLOW_COUNTERTREND", "CONTINUATION_ENABLED", "CONTINUATION_PAPER_ONLY", "ENTRY_ENGINE_SIMPLE", "SIMPLE_ENGINE_DYNAMIC_LEVERAGE", "FUNDING_MODE_LIVE_ALLOWED", "LIVE_MIN_NOTIONAL_BUMP",
                           "SPOT_ACCUM_BYPASS_REQUIRE_TREND", "SPOT_ACCUM_BYPASS_FLOW_VETO", "SPOT_ACCUM_RISING_SUPPORT_ENABLED",
                           "SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND", "ACCUMULATION_FRESH_BREAKOUT_COUNTER_TREND",
                           "ACCUMULATION_BYPASS_REQUIRE_TREND", "ACCUMULATION_BYPASS_FLOW_VETO", "ACCUMULATION_TRADE_HOUR_START_UTC",
@@ -1157,7 +1159,7 @@ def _coerce_advanced_value(key: str, value):
         return False, "doit etre entre 0 et 1 (pression de -1 a +1)"
     if key.endswith("_MIN_FLOW_CONVICTION") and not 0 <= value <= 1:
         return False, "entre 0 et 1"
-    if key in ("SITUATION_RULES_ENABLED", "SITUATION_ALLOW_COUNTERTREND", "CONTINUATION_ENABLED", "CONTINUATION_PAPER_ONLY", "ENTRY_ENGINE_SIMPLE", "SIMPLE_ENGINE_DYNAMIC_LEVERAGE", "CONTINUATION_ENABLED", "CONTINUATION_PAPER_ONLY") and value not in (0, 1):
+    if key in ("SITUATION_RULES_ENABLED", "SITUATION_ALLOW_COUNTERTREND", "CONTINUATION_ENABLED", "CONTINUATION_PAPER_ONLY", "ENTRY_ENGINE_SIMPLE", "SIMPLE_ENGINE_DYNAMIC_LEVERAGE", "FUNDING_MODE_LIVE_ALLOWED", "LIVE_MIN_NOTIONAL_BUMP", "CONTINUATION_ENABLED", "CONTINUATION_PAPER_ONLY") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
     if key in ("SITUATION_REVERSAL_MIN_FLOW", "SITUATION_COUNTERTREND_MIN_FLOW") and not 0 <= value <= 1:
         return False, "entre 0 et 1"
