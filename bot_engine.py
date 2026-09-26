@@ -23,6 +23,7 @@ import time
 import threading
 import json
 import db
+import mtf_analysis as mtf  # v4.299 — analyse multi-unites de temps
 from datetime import datetime
 from collections import deque
 import queue
@@ -33,10 +34,16 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.298"
-BOT_BUILD   = "2026-09-26-d"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.300"
+BOT_BUILD   = "2026-09-26-f"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.300 — NETTOYAGE Spot-Accum / Accumulation : methode top-down SEULE,
+#        evaluee en tete de cycle, sans aucun ancien filtre ni ancien moteur ;
+#        delai propre apres SL ; reglages et diagnostic obsoletes masques.
+# 4.299 — Moteur TOP-DOWN multi-unites de temps (H4/Daily -> M15/H1) pour
+#        Spot-Accum et Accumulation : tendance + zones cles, signal de bougie,
+#        SL sur la structure, objectif zone opposee, taille sur le risque.
 # 4.298 — FIX : la bascule en live n efface plus l historique et ne ferme
 #        plus les positions reelles ; "Nettoyer" ne supprime plus jamais les
 #        trades live (seul l historique paper est efface).
@@ -1309,6 +1316,24 @@ PROFILE_SWING = {
     # v4.286 — SITUATIONS DE MARCHE (fond 1h x court terme 5 min)
     # v4.289 — moteur d entree : "simple" (garde-fous + 1 signal + 1
     # confirmation) ou "legacy" (ancienne chaine de conditions)
+    # v4.299 — MOTEUR "TOP-DOWN" MULTI-UNITES DE TEMPS (Spot-Accum = achats,
+    # Accumulation = ventes) : tendance et zones cles sur l unite MAJEURE,
+    # signal de bougie sur l unite INFERIEURE, SL au-dela de la zone, objectif
+    # sur la zone opposee, taille calculee sur le risque.
+    "ENTRY_ENGINE_MTF": 1,
+    "MTF_MAJOR_TF": "4h",              # "4h" ou "1d"
+    "MTF_LOWER_TF": "15m",             # "15m" ou "1h"
+    "MTF_USE_DAILY": 0,                # 1 = unite majeure Daily au lieu de H4
+    "MTF_USE_H1": 0,                   # 1 = unite inferieure H1 au lieu de M15
+    "MTF_ZONE_LOOKBACK": 120,          # bougies majeures examinees pour les zones
+    "MTF_ZONE_TOLERANCE_ATR": 0.25,    # marge autour d une zone (x ATR majeur)
+    "MTF_MIN_RR": 1.5,                 # rapport gain/risque minimal
+    "MTF_RISK_PCT": 0.5,               # risque par trade, % du capital
+    "MTF_MAX_NOTIONAL_USD": 30.0,      # notionnel maximal par trade
+    "MTF_MAX_RISK_PCT": 4.0,           # distance maximale au SL (% du prix)
+    "MTF_BREAKEVEN_AT_R": 1.0,         # SL remonte au prix d entree a +1R
+    "MTF_TRAIL_FROM_R": 2.0,           # au-dela de +2R, SL suiveur a 1R du plus haut
+    "MTF_COOLDOWN_AFTER_SL_H": 4,      # pause sur un actif apres un SL (une bougie H4)
     "ENTRY_ENGINE_SIMPLE": 1,
     "SIMPLE_ENGINE_DYNAMIC_LEVERAGE": 0,
     # v4.296 — live : releve les trades sous le minimum Hyperliquid (10 $)
@@ -7327,6 +7352,8 @@ class BotEngine:
         # pour un mode qui n a pas ete personnalise (retombe sur le mode
         # global, exactement comme avant).
         mode = self._position_mode(pos)  # v4.264 — mode fige a l ouverture
+        if pos.get("engine") == "mtf":   # v4.299 — position top-down : gestion dediee
+            return self._manage_mtf(symbol, price, state, pos, ticker_from_slot_key(symbol), mode)
         # v4.33 — SECURITE EXPLICITE : un trade "funding_contrarian" reste
         # simule (paper) meme si le bot tourne globalement en mode live, tant
         # que FUNDING_MODE_LIVE_ALLOWED n est pas active manuellement — ce
@@ -8611,6 +8638,16 @@ class BotEngine:
         rsi = calc_rsi(prices, cfg["RSI_PERIOD"])
 
         # EMA specifiques au symbole ou globales
+        # v4.300 — NETTOYAGE : Spot-Accum et Accumulation n utilisent PLUS QUE
+        # la methode top-down, evaluee ICI, avant tous les anciens filtres du
+        # cycle (collecte d indicateurs internes, heures creuses, blackout CPI,
+        # ATR, stabilite, regime, situation...) qui ne s appliquent plus a eux.
+        if cfg.get("ENTRY_ENGINE_MTF", 1) and not is_forex_ticker and ":" not in ticker:
+            try:
+                self._mtf_entry("spot_accumulation", symbol, ticker, price, rsi, prices, state, state)
+                self._mtf_entry("accumulation", symbol, ticker, price, rsi, prices, state, self.accum_states[symbol])
+            except Exception as e_mtf:
+                print(f"[MTF] Erreur evaluation {ticker} : {type(e_mtf).__name__}: {e_mtf}")
         ema_short = cfg.get("SYMBOL_EMA_SHORT", {}).get(ticker, cfg["EMA_SHORT"])
         ema_long  = cfg.get("SYMBOL_EMA_LONG",  {}).get(ticker, cfg["EMA_LONG"])
         ema_s = calc_ema(prices, ema_short)
@@ -9761,6 +9798,208 @@ class BotEngine:
             "support": support, "resistance": resistance,
         })
 
+    # ─────────────────────────────────────────────────────────────────────
+    #  v4.299 — MOTEUR "TOP-DOWN" MULTI-UNITES DE TEMPS
+    # ─────────────────────────────────────────────────────────────────────
+    _TF_SEC = {"15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
+
+    def _mtf_candles(self, ticker, tf, count, cache_only=False):
+        """Bougies CLOTUREES Hyperliquid (avec prix d ouverture), rechargees
+        une seule fois par bougie (juste apres sa cloture)."""
+        sec = self._TF_SEC[tf]
+        cache = getattr(self, "_mtf_cache", None)
+        if cache is None:
+            cache = self._mtf_cache = {}
+        bucket = int((time.time() - 10) // sec)
+        hit = cache.get((ticker, tf))
+        if hit and (hit[0] == bucket or cache_only):
+            return hit[1]
+        out = hit[1] if hit else []
+        if cache_only:
+            return out
+        try:
+            end_ms = int(time.time() * 1000)
+            raw = self.info.post("/info", {"type": "candleSnapshot", "req": {
+                "coin": ticker, "interval": tf, "startTime": end_ms - (count + 1) * sec * 1000, "endTime": end_ms}})
+            if isinstance(raw, list) and raw:
+                out = [{"t": int(c["t"]), "o": float(c["o"]), "h": float(c["h"]), "l": float(c["l"]),
+                        "c": float(c["c"]), "v": float(c.get("v", 0))} for c in raw if int(c.get("T", 0)) <= end_ms]
+                cache[(ticker, tf)] = (bucket, out)
+        except Exception as e:
+            print(f"[MTF] Bougies {tf} {ticker} indisponibles : {e}")
+        return out
+
+    def mtf_view(self, ticker, price, cache_only=False):
+        """Lecture complete pour le diagnostic et l entree."""
+        cfg = self.cfg
+        major_tf = "1d" if cfg.get("MTF_USE_DAILY", 0) else cfg.get("MTF_MAJOR_TF", "4h")
+        lower_tf = "1h" if cfg.get("MTF_USE_H1", 0) else cfg.get("MTF_LOWER_TF", "15m")
+        major = self._mtf_candles(ticker, major_tf, 260 if major_tf == "4h" else 230, cache_only=cache_only)
+        if len(major) < 60:
+            return {"ok": False, "why": f"historique {major_tf} insuffisant ({len(major)} bougies)"}
+        tr, ef, es = mtf.trend(major)
+        a = mtf.atr(major) or 0
+        zones = mtf.find_zones(major, lookback=cfg.get("MTF_ZONE_LOOKBACK", 120))
+        sup, res = mtf.nearest_zones(zones, price)
+        tol = a * cfg.get("MTF_ZONE_TOLERANCE_ATR", 0.25)
+        return {"ok": True, "major_tf": major_tf, "lower_tf": lower_tf, "trend": tr, "ema_fast": ef, "ema_slow": es,
+                "atr": a, "support": sup, "resistance": res, "tolerance": tol,
+                "in_support": mtf.in_zone(price, sup, tol), "in_resistance": mtf.in_zone(price, res, tol)}
+
+    @staticmethod
+    def _zone_txt(z):
+        return f"{z['low']:.6g}-{z['high']:.6g} ({z['touches']} contact{'s' if z['touches'] > 1 else ''})" if z else "aucune"
+
+    def _mtf_entry(self, mode, symbol, ticker, price, rsi, prices, state, pos_state):
+        """1) tendance de fond + zones cles sur l unite MAJEURE ;
+        2) prix dans une zone dans le sens de la tendance ;
+        3) signal de bougie sur l unite INFERIEURE ;
+        4) plan : SL au-dela de la zone, objectif = zone opposee, R:R minimal."""
+        cfg = self.cfg
+        long_side = mode == "spot_accumulation"
+        prefix = "SPOT_ACCUM" if long_side else "ACCUMULATION"
+        snap = {"ts": time.time(), "enabled": cfg.get(f"{prefix}_ENABLED", False), "engine": "mtf"}
+        if long_side:
+            state.spot_accum_gate_snapshot = snap
+        else:
+            pos_state.accumulation_gate_snapshot = snap
+        if not snap["enabled"]:
+            snap["blocker"] = "mode desactive"
+            return
+        if pos_state.position:
+            snap["blocker"] = "position deja ouverte"
+            return
+        if not self._gate_active_or_auto_activate(ticker, 100, mode):
+            snap["blocker"] = "actif non selectionne pour ce mode"
+            return
+        gate = self._hours_block(mode) or self._market_quality_block(ticker, state, mode)
+        if gate:
+            snap["blocker"] = gate
+            return
+        if self.info is None:
+            snap["blocker"] = "donnees Hyperliquid indisponibles"
+            return
+        last_sl = getattr(self, "_mtf_last_sl", {}).get((mode, ticker))
+        wait_h = cfg.get("MTF_COOLDOWN_AFTER_SL_H", 4)
+        if last_sl and time.time() - last_sl < wait_h * 3600:
+            snap["blocker"] = f"SL recent sur cet actif — pause de {wait_h} h ({(wait_h * 3600 - (time.time() - last_sl)) / 60:.0f} min restantes)"
+            return
+        v = self.mtf_view(ticker, price)
+        if not v["ok"]:
+            snap["blocker"] = v["why"]
+            return
+        _lbl = {"4h": "H4", "1d": "Daily", "15m": "M15", "1h": "H1"}
+        M, L = _lbl.get(v["major_tf"], v["major_tf"]), _lbl.get(v["lower_tf"], v["lower_tf"])
+        want = "haussiere" if long_side else "baissiere"
+        snap["situation"] = f"tendance {M} {v['trend']}"
+        if v["trend"] != want:
+            snap["blocker"] = f"tendance {M} {v['trend']} (requis : {want})"
+            return
+        zone = v["support"] if long_side else v["resistance"]
+        target = v["resistance"] if long_side else v["support"]
+        inside = v["in_support"] if long_side else v["in_resistance"]
+        kind = "support" if long_side else "resistance"
+        if not inside:
+            dist = (abs(price - (zone["high"] if long_side else zone["low"])) / price * 100) if zone else None
+            snap["blocker"] = (f"tendance {M} {want} — attente du prix dans une zone de {kind} {M} "
+                               f"(plus proche : {self._zone_txt(zone)}" + (f", a {dist:.2f} %)" if dist is not None else ")"))
+            return
+        lower = self._mtf_candles(ticker, v["lower_tf"], 60)
+        name, extreme = mtf.candle_signal(lower, "long" if long_side else "short")
+        if not name:
+            snap["blocker"] = f"prix dans la zone de {kind} {M} {self._zone_txt(zone)} — attente d un signal de bougie {L}"
+            return
+        # le motif doit avoir touche la zone
+        if (long_side and extreme > zone["high"] + v["tolerance"]) or (not long_side and extreme < zone["low"] - v["tolerance"]):
+            snap["blocker"] = f"signal {L} ({name}) hors de la zone de {kind}"
+            return
+        plan = mtf.plan_trade("long" if long_side else "short", price, zone, target, extreme, v["atr"])
+        if not plan:
+            snap["blocker"] = "plan de trade invalide"
+            return
+        if plan["risk_pct"] > cfg.get("MTF_MAX_RISK_PCT", 4.0):
+            snap["blocker"] = f"SL trop eloigne ({plan['risk_pct']:.2f} % > {cfg.get('MTF_MAX_RISK_PCT', 4.0)} %)"
+            return
+        min_rr = cfg.get("MTF_MIN_RR", 1.5)
+        if plan["rr"] is None:
+            # pas de zone opposee identifiee : objectif = min_rr x le risque
+            plan["tp"] = price * (1 + plan["risk_pct"] * min_rr / 100) if long_side else price * (1 - plan["risk_pct"] * min_rr / 100)
+            plan["reward_pct"], plan["rr"] = plan["risk_pct"] * min_rr, min_rr
+        elif plan["rr"] < min_rr:
+            snap["blocker"] = f"rapport gain/risque {plan['rr']:.2f} < {min_rr} (objectif {kind} oppose trop proche)"
+            return
+        # taille calculee sur le RISQUE : perte au SL = MTF_RISK_PCT du capital
+        capital = self.cfg.get("CAPITAL_USD", 100.0)
+        if self._effective_mode(mode) == "live" and getattr(self, "live_equity_real", None):
+            capital = self.live_equity_real
+        notional = min(capital * cfg.get("MTF_RISK_PCT", 0.5) / plan["risk_pct"], cfg.get("MTF_MAX_NOTIONAL_USD", 30.0))
+        snap["blocker"] = None
+        label = "🌱 Spot-Accumulation" if long_side else "🎯 Accumulation (short)"
+        path = (f"top-down : tendance {M} {want} · zone de {kind} {M} {self._zone_txt(zone)} · signal {L} : {name} · "
+                f"SL {plan['sl']:.6g} (-{plan['risk_pct']:.2f} %) · objectif {plan['tp']:.6g} (+{plan['reward_pct']:.2f} %, R:R {plan['rr']:.1f})")
+        reasons = [f"{label} — voie : {path}", f"RSI {rsi:.1f}" if rsi is not None else "RSI ?"]
+        cand = {"symbol": symbol, "ticker": ticker, "state": state if long_side else pos_state,
+                "signal": "long" if long_side else "short", "price": price, "confidence": min(70 + 5 * plan["rr"], 95),
+                "rsi": rsi, "rsi_mode": mode, "reasons": reasons, "prices": prices, "conf_breakdown": {},
+                "strategy": mode, "countertrend": False, "force_paper": False, "entered_via_flirt": False,
+                "engine": "mtf", "mtf_sl": plan["sl"], "mtf_tp": plan["tp"], "mtf_notional": notional}
+        if long_side:
+            cand.update({"support_at_entry": zone["low"], "resistance_at_entry": target["high"] if target else None})
+            self._pending_spot_accum_candidates.append(cand)
+        else:
+            cand.update({"entered_via_range": False, "support": target["low"] if target else None, "resistance": zone["high"]})
+            self._pending_accumulation_candidates.append(cand)
+
+    def _manage_mtf(self, symbol, price, state, pos, ticker, mode):
+        """Gestion d une position "top-down" : SL sur la structure, objectif
+        sur la zone opposee, SL remonte au prix d entree a +1R, puis suiveur a
+        1R du meilleur prix au-dela de +2R."""
+        cfg = self.cfg
+        long_side = pos["type"] == "long"
+        r = pos.get("mtf_r") or abs(pos["entry"] - pos["sl"])
+        gain = (price - pos["entry"]) if long_side else (pos["entry"] - price)
+        best = pos.get("mtf_best", pos["entry"])
+        best = max(best, price) if long_side else min(best, price)
+        pos["mtf_best"] = best
+        reason = None
+        if (long_side and price <= pos["sl"]) or (not long_side and price >= pos["sl"]):
+            reason = "STOP LOSS (zone top-down)" if not pos.get("mtf_be_done") else "STOP SUIVEUR (top-down)"
+        elif pos.get("tp") and ((long_side and price >= pos["tp"]) or (not long_side and price <= pos["tp"])):
+            reason = "TAKE PROFIT (zone opposee)"
+        if reason:
+            _result = self._safe_close_position(state, price, reason, ticker, pos, symbol, mode)
+            if _result is None:
+                return
+            pnl, _, trade = _result
+            if reason.startswith("STOP LOSS"):
+                if not hasattr(self, "_mtf_last_sl"):
+                    self._mtf_last_sl = {}
+                self._mtf_last_sl[(pos.get("strategy"), ticker)] = time.time()
+            self.emit("trade", trade)
+            self.emit("log", {"msg": f"[{ticker}] {reason} @ ${price:.6g} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+            self._save_open_positions()
+            return
+        new_sl = None
+        if r > 0 and gain >= cfg.get("MTF_BREAKEVEN_AT_R", 1.0) * r and not pos.get("mtf_be_done"):
+            fee_pad = pos["entry"] * 0.001
+            new_sl = pos["entry"] + fee_pad if long_side else pos["entry"] - fee_pad
+            pos["mtf_be_done"] = True
+            self.emit("log", {"msg": f"[{ticker}] Top-down : +1R atteint — SL remonte au prix d entree ({new_sl:.6g})", "level": "signal"})
+        if r > 0 and pos.get("mtf_be_done") and abs(best - pos["entry"]) >= cfg.get("MTF_TRAIL_FROM_R", 2.0) * r:
+            trail = best - r if long_side else best + r
+            if (long_side and trail > pos["sl"]) or (not long_side and trail < pos["sl"]):
+                new_sl = trail
+        if new_sl is not None and new_sl != pos["sl"]:
+            pos["sl"] = new_sl
+            if mode == "live" and self.exchange is not None:
+                try:
+                    update_sl_on_hyperliquid(self.exchange, self.info, self.cfg.get("WALLET_ADDRESS"), ticker,
+                                             {"type": pos["type"], "entry": pos["entry"], "size": pos["size"] * pos.get("leverage", 1)},
+                                             new_sl, cfg)
+                except Exception as e:
+                    print(f"[MTF] Mise a jour du SL natif {ticker} impossible : {e}")
+            self._save_open_positions()
+
     def _simple_entry(self, mode, symbol, ticker, price, rsi, prices, state, pos_state):
         """v4.289 — MOTEUR D ENTREE SIMPLE (Spot-Accum et Accumulation).
 
@@ -9919,6 +10158,8 @@ class BotEngine:
         L ancienne logique (LONG+SHORT, fenetre de proximite precise,
         detecteur de range/mode range) est retiree d ici — le mode range
         devient son PROPRE mode independant (_check_range_signal)."""
+        if self.cfg.get("ENTRY_ENGINE_MTF", 1):  # v4.300 — top-down seul, deja evalue en tete de _process
+            return
         if self.cfg.get("ENTRY_ENGINE_SIMPLE", 1):  # v4.289 — moteur simple (0 = ancienne chaine)
             return self._simple_entry("accumulation", symbol, ticker, price, rsi, prices, state, accum_state)
         cfg = self.cfg
@@ -10366,6 +10607,8 @@ class BotEngine:
         /api/entry-diagnostics (qui ne couvrait jusqu ici que le mode
         normal) — pour voir precisement quelle clause bloque, sans deviner.
         """
+        if self.cfg.get("ENTRY_ENGINE_MTF", 1):  # v4.300 — top-down seul, deja evalue en tete de _process
+            return
         if self.cfg.get("ENTRY_ENGINE_SIMPLE", 1):  # v4.289 — moteur simple (0 = ancienne chaine)
             return self._simple_entry("spot_accumulation", symbol, ticker, price, rsi, prices, state, state)
         cfg = self.cfg
@@ -10851,6 +11094,8 @@ class BotEngine:
         loss_cooldown = {"accumulation": cfg.get("ACCUMULATION_LOSS_COOLDOWN_SEC", 3600),
                          "spot_accumulation": cfg.get("SPOT_ACCUM_LOSS_COOLDOWN_SEC", 0),
                          "funding_contrarian": cfg.get("FUNDING_LOSS_COOLDOWN_SEC", 0)}.get(strategy, 0) or 0
+        if cand.get("engine") == "mtf":
+            loss_cooldown = 0  # v4.300 — le top-down a son propre delai (par actif, apres SL)
         if (loss_cooldown and getattr(state, "last_closed_was_loss", False) and state.last_closed_at is not None
                 and state.last_closed_direction == signal and time.time() - state.last_closed_at < loss_cooldown):
             remaining = int(loss_cooldown - (time.time() - state.last_closed_at))
@@ -10861,7 +11106,7 @@ class BotEngine:
         # mouvement de marche = plusieurs positions perdantes a la fois).
         burst_max = {"accumulation": cfg.get("ACCUMULATION_MAX_ENTRIES_PER_WINDOW", 3),
                      "spot_accumulation": cfg.get("SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW", 0)}.get(strategy, 0) or 0
-        if burst_max:
+        if burst_max and cand.get("engine") != "mtf":  # v4.300
             window_s = cfg.get("ENTRY_BURST_WINDOW_SEC", 600)
             recent = [t for t in self._recent_entries.get(strategy, []) if time.time() - t < window_s]
             self._recent_entries[strategy] = recent
@@ -11027,6 +11272,10 @@ class BotEngine:
                 leverage = 1
         else:
             leverage = self._compute_prudent_leverage(ticker, confidence, rsi_mode)
+        if cand.get("engine") == "mtf":
+            # v4.299 — taille calculee sur le RISQUE (perte au SL = % fixe du capital), levier 1
+            leverage = 1
+            size = min(cand["mtf_notional"], capital_available)
         notional = size * leverage
 
         # ── v4.24 — SL/TTP adaptatifs a l ATR reel (optionnel) ───────────────
@@ -11218,6 +11467,9 @@ class BotEngine:
         # automatiquement (remplace par le Trailing TP en $ de _manage_position).
         tp_pct = cfg.get("SYMBOL_TP_PCT", {}).get(ticker, cfg["TAKE_PROFIT_PCT"])
         tp_p = price * (1 + tp_pct/100) if signal == "long" else price * (1 - tp_pct/100)
+        if cand.get("engine") == "mtf":
+            # v4.299 — SL sur la structure (aussi pose en ordre natif) et objectif sur la zone opposee
+            sl_p, tp_p = cand["mtf_sl"], cand["mtf_tp"]
 
         # v4.8 — FIX : "label"/"action" DOIT rester exactement "LONG"/"SHORT"
         # (sans prefixe) car c est la valeur utilisee pour retrouver le trade
@@ -11409,6 +11661,9 @@ class BotEngine:
         state.position["slot_key"] = symbol          # v4.264
         if cand.get("countertrend"):
             state.position["countertrend"] = True    # v4.286 — trailing resserre
+        if cand.get("engine") == "mtf":              # v4.299 — gestion top-down
+            state.position.update({"engine": "mtf", "sl": cand["mtf_sl"], "tp": cand["mtf_tp"],
+                                   "mtf_r": abs(state.position["entry"] - cand["mtf_sl"])})
         # v4.24 — memorise les seuils REELLEMENT appliques a CE trade (fixes
         # ou adaptatifs a l ATR) — _manage_position_impl les relit ici en
         # priorite, avec repli sur les valeurs fixes globales si absents
