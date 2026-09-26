@@ -2712,14 +2712,14 @@ Confirmer ?`
                           // = action irreversible (ferme les trades du mode,
                           // efface son historique) — confirmation obligatoire.
                           const confirmMsg = `Basculer ${stMeta.label} en LIVE va :\n\n` +
-                            `• Fermer immediatement tous les trades ouverts de ce mode\n` +
-                            `• Effacer definitivement son historique (statistiques remises a zero)\n` +
-                            `• Synchroniser le capital reel depuis Hyperliquid (partage avec les autres modes)\n\n` +
-                            `Cette action est IRREVERSIBLE. Continuer ?`;
+                            `• Fermer les trades PAPER ouverts de ce mode\n` +
+                            `• Conserver tout l'historique (paper et live)\n` +
+                            `• Synchroniser le capital reel depuis Hyperliquid\n\n` +
+                            `Les prochains trades de ce mode seront passes en ARGENT REEL. Continuer ?`;
                           if (!confirm(confirmMsg)) return;
                           try{
                             const r = await apiCall("/api/config/strategy-go-live","POST",{strategy:paperSubTab},token);
-                            alert(`${stMeta.label} est maintenant en LIVE.\n\n${r.closed_positions} trade(s) ferme(s), ${r.deleted_history} trade(s) d'historique efface(s).${r.capital_synced?`\nCapital synchronise : $${r.new_capital.toFixed(2)}`:"\n(Capital non synchronise — verifiez vos identifiants Hyperliquid.)"}`);
+                            alert(`${stMeta.label} est maintenant en LIVE.\n\n${r.closed_positions} trade(s) paper ferme(s), historique conserve.${r.capital_synced?`\nCapital synchronise : $${r.new_capital.toFixed(2)}`:"\n(Capital non synchronise — verifiez vos identifiants Hyperliquid.)"}`);
                             setStrategyPerf({});
                             setModeHistory({});
                             loadData();
@@ -2740,12 +2740,12 @@ Confirmer ?`
                       // au bouton LIVE ci-dessus).
                       const confirmMsg = `Nettoyer ${stMeta.label} va :\n\n` +
                         `• Fermer immediatement tous les trades ouverts de ce mode\n` +
-                        `• Effacer definitivement son historique (statistiques remises a zero)\n\n` +
+                        `• Effacer son historique PAPER (l'historique LIVE est toujours conserve)\n\n` +
                         `Le statut paper/live actuel est CONSERVE. Continuer ?`;
                       if (!confirm(confirmMsg)) return;
                       try{
                         const r = await apiCall("/api/config/strategy-clear-only","POST",{strategy:paperSubTab},token);
-                        alert(`${stMeta.label} nettoye.\n\n${r.closed_positions} trade(s) ferme(s), ${r.deleted_history} trade(s) d'historique efface(s).`);
+                        alert(`${stMeta.label} nettoye.\n\n${r.closed_positions} trade(s) ferme(s), ${r.deleted_history} trade(s) paper efface(s) (historique live conserve).`);
                         setStrategyPerf({});
                         setModeHistory({});
                         loadData();
