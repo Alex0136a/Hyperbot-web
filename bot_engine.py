@@ -33,10 +33,14 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.292"
-BOT_BUILD   = "2026-09-25-h"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.294"
+BOT_BUILD   = "2026-09-25-j"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.294 — Trades live fermes : frais et PnL reels Hyperliquid releves dans la
+#        minute et affiches dans l historique a cote du PnL du bot.
+# 4.293 — PnL des positions live : quantite reelle Hyperliquid, PnL latent
+#        Hyperliquid et frais estimes affiches (ecart bot / Hyperliquid).
 # 4.292 — Controle de synchronisation bot <-> Hyperliquid toutes les 2 min
 #        (positions fantomes / orphelines, sens, taille, entree, SL natif).
 # 4.291 — FIX : prix courant mis a jour pour TOUS les actifs par le WebSocket
@@ -4399,11 +4403,42 @@ class BotEngine:
             print(f"[FOLLOWUP] Bougies {coin} indisponibles : {e}")
             return None
 
+    def _reconcile_live_fills(self):
+        """v4.294 — dans la minute qui suit la fermeture d un trade LIVE : frais
+        REELS et PnL REEL ("closedPnl") lus dans les remplissages
+        Hyperliquid, pour afficher dans l historique le resultat exact du
+        compte a cote du calcul du bot."""
+        wallet = self.cfg.get("WALLET_ADDRESS")
+        if not wallet or self.info is None:
+            return
+        try:
+            rows = db.list_live_trades_needing_fills(limit=10)
+        except Exception as e:
+            print(f"[FILLS] Lecture base impossible : {e}")
+            return
+        for row in rows:
+            try:
+                opened = datetime.fromisoformat(row["created_at"]).timestamp()
+                closed = datetime.fromisoformat(row["closed_at"]).timestamp()
+                fills = self.info.user_fills_by_time(wallet, int(opened * 1000) - 5_000, int(closed * 1000) + 30_000) or []
+            except Exception as e:
+                print(f"[FILLS] Remplissages {row.get('coin')} indisponibles : {e}")
+                continue
+            mine = [f for f in fills if f.get("coin") == row["coin"]]
+            if not mine:
+                db.save_trade_followup(row["id"], {"fills_status": "aucun remplissage trouve"})
+                continue
+            fees = sum(float(f.get("fee") or 0) for f in mine)
+            closed_pnl = sum(float(f.get("closedPnl") or 0) for f in mine)
+            db.save_trade_followup(row["id"], {"fees_real": round(fees, 6), "pnl_real_hl": round(closed_pnl, 6),
+                                               "fills_status": f"ok ({len(mine)} remplissages)"})
+
     def _run_trade_followups(self):
         """Pour chaque trade Spot-Accum / Accumulation ferme depuis plus d
         une heure : prix a +30 et +60 min apres la sortie, plus haut/plus bas
         sur cette heure (bougies Hyperliquid), et pour le live, frais et PnL
         reels issus des remplissages Hyperliquid."""
+        self._reconcile_live_fills()  # v4.294 — rapide (une minute apres la fermeture)
         try:
             pending = db.list_trades_needing_followup(limit=5)
         except Exception as e:
@@ -4438,7 +4473,7 @@ class BotEngine:
                 if in_hour:
                     fields["high_60m"] = max(float(c["h"]) for c in in_hour)
                     fields["low_60m"] = min(float(c["l"]) for c in in_hour)
-            if row.get("trade_mode") == "live" and wallet:
+            if row.get("trade_mode") == "live" and wallet and not row.get("fills_status"):  # v4.294 : deja releve sinon
                 try:
                     fills = self.info.user_fills_by_time(wallet, int(opened * 1000) - 60_000, int(closed * 1000) + 60_000) or []
                     mine = [f for f in fills if f.get("coin") == row["coin"]]
@@ -4796,6 +4831,19 @@ class BotEngine:
                     row["bot"].append({"mode": pos.get("strategy", "forex"), "sens": pos["type"], "entree": pos["entry"],
                                        "qte": round(abs(q), 8), "ouverte": pos.get("opened_at")})
                 bot_szi += q
+            # v4.293 — position unique du bot : on memorise la quantite REELLE
+            # executee, le PnL latent Hyperliquid et on aligne silencieusement
+            # les petits ecarts (arrondi de la quantite a l execution) pour que
+            # le PnL affiche par le bot parte de la meme base que Hyperliquid.
+            if ep and len(entries) == 1 and entries[0]["mode"] != "manual" and (bot_szi > 0) == (ep["szi"] > 0):
+                pos1 = entries[0]["pos"]
+                pos1["hl_qty"] = abs(ep["szi"])
+                pos1["hl_unrealized_pnl"] = ep.get("unrealized_pnl")
+                pos1["hl_sync_ts"] = now
+                if abs(abs(ep["szi"]) - abs(bot_szi)) / abs(ep["szi"]) <= cfg.get("LIVE_SYNC_SIZE_TOLERANCE", 0.05):
+                    lev1 = pos1.get("leverage", 1) or 1
+                    pos1["entry"] = ep["entry"]
+                    pos1["size"] = abs(ep["szi"]) * ep["entry"] / lev1
             if ep:
                 row["hl"] = {"sens": "long" if ep["szi"] > 0 else "short", "qte": abs(ep["szi"]), "entree": ep["entry"],
                              "levier": ep.get("leverage"), "liquidation": ep.get("liquidation_px"),
@@ -4811,8 +4859,8 @@ class BotEngine:
                 elif abs(abs(ep["szi"]) - abs(bot_szi)) / abs(ep["szi"]) > cfg.get("LIVE_SYNC_SIZE_TOLERANCE", 0.05):
                     row["status"] = "taille differente"
                 elif len(entries) == 1 and entries[0]["mode"] != "manual" \
-                        and abs(ep["entry"] - entries[0]["pos"]["entry"]) / ep["entry"] > 0.0005:
-                    row["status"] = "prix d entree different"
+                        and abs(ep["entry"] - entries[0]["pos"]["entry"]) / ep["entry"] > 0.005:
+                    row["status"] = "prix d entree different"  # v4.293 : ecarts < 0,5 % alignes silencieusement
             if row["status"] != "ok":
                 flags[coin] = row["status"]
             confirmed = prev_flags.get(coin) == row["status"] and not recent
