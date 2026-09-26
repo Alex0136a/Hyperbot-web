@@ -33,10 +33,12 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.295"
-BOT_BUILD   = "2026-09-26-a"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.296"
+BOT_BUILD   = "2026-09-26-b"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
+# 4.296 — Funding : deverrouillage du live reglable dans l interface ; trades
+#        live sous 10 $ de notionnel releves au minimum Hyperliquid.
 # 4.295 — FIX RISQUE : le moteur simple activait le levier dynamique 2-5x sur
 #        toutes les entrees pres d un niveau (notionnel x2 a x10) ; levier 1
 #        par defaut, levier dynamique optionnel.
@@ -396,7 +398,7 @@ CONFIG = {
     # n est pas active manuellement, meme si le bot est en mode live —
     # protege un capital de trading deja fragilise pendant la phase de test.
     "FUNDING_MODE_ENABLED": False,
-    "FUNDING_MODE_LIVE_ALLOWED": False,  # reste paper-only tant que non deverrouille explicitement
+    "FUNDING_MODE_LIVE_ALLOWED": 0,  # reste paper-only tant que non deverrouille explicitement (v4.296 : reglable dans l interface)
     # v4.87 — SUR DEMANDE EXPLICITE : chaque mode peut desormais basculer
     # INDEPENDAMMENT entre paper et live. None = suit le mode global du bot
     # (aucun changement de comportement tant que rien n est personnalise).
@@ -1302,7 +1304,10 @@ PROFILE_SWING = {
     # v4.289 — moteur d entree : "simple" (garde-fous + 1 signal + 1
     # confirmation) ou "legacy" (ancienne chaine de conditions)
     "ENTRY_ENGINE_SIMPLE": 1,
-    "SIMPLE_ENGINE_DYNAMIC_LEVERAGE": 0,   # v4.295 — 1 = levier dynamique 2-5x sur les entrees pres d un niveau
+    "SIMPLE_ENGINE_DYNAMIC_LEVERAGE": 0,
+    # v4.296 — live : releve les trades sous le minimum Hyperliquid (10 $)
+    "LIVE_MIN_NOTIONAL_BUMP": 1,
+    "LIVE_MIN_NOTIONAL_TARGET_USD": 10.5,   # v4.295 — 1 = levier dynamique 2-5x sur les entrees pres d un niveau
     "SITUATION_RULES_ENABLED": 1,          # 0 = ancien comportement (regime global)
     # v4.287 — SUR DEMANDE EXPLICITE : trades a CONTRE-TENDANCE (achat dans un
     # rebond baissier, short dans un repli haussier) desactives tant que les
@@ -11264,6 +11269,15 @@ class BotEngine:
             # quelques minutes avant de retenter CE ticket specifiquement,
             # le temps qu un autre trade se ferme et libere du capital.
             projected_notional = size * max(leverage, 1)
+            # v4.296 — trades trop petits pour Hyperliquid (Funding : ~6 $ de
+            # notionnel) : taille relevee juste au-dessus du minimum de 10 $,
+            # si le capital disponible le permet (option, activee par defaut).
+            if projected_notional < 10.0 and cfg.get("LIVE_MIN_NOTIONAL_BUMP", 1):
+                bumped_size = cfg.get("LIVE_MIN_NOTIONAL_TARGET_USD", 10.5) / max(leverage, 1)
+                if bumped_size <= capital_available:
+                    self.emit("log", {"msg": f"[{ticker}] Notionnel ${projected_notional:.2f} sous le minimum Hyperliquid : taille relevee a ${bumped_size * max(leverage, 1):.2f}.", "level": "dim"})
+                    size = bumped_size
+                    projected_notional = size * max(leverage, 1)
             if projected_notional < 10.0:
                 cooldown_sec = cfg.get("INSUFFICIENT_NOTIONAL_COOLDOWN_SEC", 180)
                 last_attempt = getattr(state, "_last_insufficient_notional_attempt", 0)
