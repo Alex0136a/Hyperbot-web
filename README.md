@@ -1,10 +1,10 @@
-[Uploading README.md…]()
+[README.md](https://github.com/user-attachments/files/32684983/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.292** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.300** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -539,6 +539,43 @@ Carte « 🔄 Synchronisation bot ↔ Hyperliquid » en haut de l'onglet de
 trading (bouton « Vérifier maintenant »), avec la position des deux côtés, le
 prix de liquidation, le PnL latent et la valeur du compte. Chaque écart est
 aussi journalisé. Réglages : `LIVE_SYNC_INTERVAL_SEC`, `LIVE_SYNC_AUTO_FIX`.
+
+## 4septemvicies. Moteur « top-down » multi-unités de temps (v4.299)
+
+Spot-Accum (achats) et Accumulation (ventes) utilisent désormais l'approche
+**top-down** sur les vraies bougies Hyperliquid (`mtf_analysis.py`) :
+
+1. **Unité majeure (H4 par défaut, ou Daily)** : tendance de fond (clôture /
+   EMA50 / EMA200) et **zones clés** (sommets et creux de marché regroupés ;
+   un ancien plafond cassé devient un plancher). Spot-Accum n'achète qu'en
+   tendance haussière, Accumulation ne vend qu'en tendance baissière.
+2. **Attente** que le prix entre dans une zone de support (achat) ou de
+   résistance (vente), avec une marge de 0,25 ATR.
+3. **Unité inférieure (M15 par défaut, ou H1)** : signal de bougie de
+   retournement sur la dernière bougie clôturée — avalement, marteau / étoile
+   filante, étoile du matin / du soir — dont la mèche a touché la zone.
+4. **Plan de trade** : SL au-delà de la zone et du motif (+ 0,15 ATR), posé
+   aussi en ordre natif ; objectif = zone opposée ; rapport gain/risque ≥ 1,5.
+   **Taille calculée sur le risque** : perte au SL = 0,5 % du capital
+   (notionnel plafonné à 30 $), levier 1.
+5. **Gestion** : SL remonté au prix d'entrée à +1R, puis SL suiveur à 1R du
+   meilleur prix au-delà de +2R ; sortie à l'objectif.
+
+Le diagnostic affiche pour chaque actif la ligne « 📊 TOP-DOWN » (tendance,
+zones, position du prix). Tous les paramètres sont réglables (réglages
+avancés « Top-down »). Moteur précédent : `ENTRY_ENGINE_MTF` = 0.
+
+## 4duodetriginta. Nettoyage : top-down seul pour Spot-Accum et Accumulation (v4.300)
+
+Spot-Accum et Accumulation n'utilisent plus **que** la méthode top-down,
+évaluée en tête de chaque cycle, **avant** tous les anciens filtres (collecte
+d'indicateurs internes, heures creuses, blackout CPI, ATR, stabilité, régime,
+situation, anti-range, continuation…) qui ne s'appliquent plus à eux. Les
+anciens moteurs (chaîne historique, moteur simple) ne sont plus appelés, et
+l'ancien délai après perte / la limite de rafales ne s'appliquent plus à leurs
+trades (le top-down a sa propre pause de 4 h sur un actif après un SL).
+Les ~70 réglages et les lignes de diagnostic des anciennes méthodes sont
+masqués tant que le top-down est actif. Funding et Forex ne sont pas concernés.
 
 ## 5. Premier lancement
 
