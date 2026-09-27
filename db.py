@@ -198,8 +198,7 @@ def init_db():
                          ("spread_at_entry", "REAL"),  # v4.282
                          # v4.290 — suivi apres SL sur 2 h
                          ("sim_sl_200", "TEXT"), ("sl_back_min", "REAL"), ("sl_mae_pct", "REAL"),
-                         ("sl_mark_120_pct", "REAL"), ("sim2_status", "TEXT"),
-                         ("fills_status", "TEXT")):  # v4.294 — rapprochement rapide avec les remplissages Hyperliquid
+                         ("sl_mark_120_pct", "REAL"), ("sim2_status", "TEXT")):
             if col not in existing_cols:
                 conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
         if "fees_paid" not in existing_cols:
@@ -576,26 +575,10 @@ def list_trades_needing_sim(min_age_minutes=122, max_age_days=16, limit=5):
         return [dict(r) for r in rows]
 
 
-def list_live_trades_needing_fills(min_age_sec=45, max_age_days=16, limit=10):
-    """v4.294 — trades LIVE fermes dont les frais et le PnL reels Hyperliquid
-    n ont pas encore ete releves (tous modes)."""
-    now = datetime.now(timezone.utc)
-    newest = (now - timedelta(seconds=min_age_sec)).isoformat()
-    oldest = (now - timedelta(days=max_age_days)).isoformat()
-    with _lock, _connect() as conn:
-        rows = conn.execute("""
-            SELECT * FROM trades
-            WHERE closed_at IS NOT NULL AND trade_mode='live' AND fills_status IS NULL
-              AND closed_at <= ? AND closed_at >= ?
-            ORDER BY closed_at DESC LIMIT ?
-        """, (newest, oldest, limit)).fetchall()
-        return [dict(r) for r in rows]
-
-
 def save_trade_followup(trade_id, fields):
     allowed = ("price_after_30m", "price_after_60m", "high_60m", "low_60m", "fees_real", "pnl_real_hl", "followup_status",
                "sim_sl_075", "sim_sl_100", "sim_sl_150", "sim_status",
-               "sim_sl_200", "sl_back_min", "sl_mae_pct", "sl_mark_120_pct", "sim2_status", "fills_status")
+               "sim_sl_200", "sl_back_min", "sl_mae_pct", "sl_mark_120_pct", "sim2_status")
     data = {k: v for k, v in fields.items() if k in allowed}
     data["followup_at"] = now_iso()
     with _lock, _connect() as conn:
@@ -675,31 +658,48 @@ def get_open_trade_id_by_coin_action(coin, action, strategy=None):
         return row["id"] if row else None
 
 
-def get_trades(limit=50, only_closed=False, order_by_close=False):
+def get_trades(limit=50, only_closed=False, order_by_close=False, since=None):
     """v4.114 — SUR DEMANDE EXPLICITE : order_by_close=True trie par date de
     FERMETURE (closed_at DESC, plus recent en premier) au lieu de l ordre
     d OUVERTURE (id DESC, comportement d origine) — pour un historique de
     trades FERMES, trier par ouverture est incorrect : un trade ouvert tot
     mais ferme tard apparaissait avant un trade ouvert tard mais ferme vite,
     inversant l ordre reel de l historique. Comportement par defaut
-    INCHANGE (order_by_close=False) pour ne rien casser des autres usages."""
+    INCHANGE (order_by_close=False) pour ne rien casser des autres usages.
+    v4.306 — SUR DEMANDE EXPLICITE : since (ISO UTC) ne renvoie que les
+    trades FERMES a partir de cette date/heure — utilise par le bouton
+    "reinitialiser les statistiques" de l onglet Historique (voir
+    meta['stats_reset_at']). N affecte QUE les requetes qui le passent
+    explicitement ; sans since, comportement inchange."""
     with _lock, _connect() as conn:
         q = "SELECT * FROM trades"
+        conds = []
         if only_closed:
-            q += " WHERE closed_at IS NOT NULL"
+            conds.append("closed_at IS NOT NULL")
+        if since:
+            conds.append("closed_at IS NOT NULL AND closed_at >= ?")
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
         if order_by_close:
             q += " ORDER BY closed_at DESC LIMIT ?"
         else:
             q += " ORDER BY id DESC LIMIT ?"
-        rows = conn.execute(q, (limit,)).fetchall()
+        params = ((since,) if since else ()) + (limit,)
+        rows = conn.execute(q, params).fetchall()
         return [dict(r) for r in rows]
 
 
-def get_all_closed_trades():
+def get_all_closed_trades(since=None):
+    """v4.306 — SUR DEMANDE EXPLICITE : voir get_trades ci-dessus, meme
+    parametre since pour le point de reinitialisation des statistiques."""
     with _lock, _connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM trades WHERE closed_at IS NOT NULL ORDER BY closed_at ASC"
-        ).fetchall()
+        q = "SELECT * FROM trades WHERE closed_at IS NOT NULL"
+        params = ()
+        if since:
+            q += " AND closed_at >= ?"
+            params = (since,)
+        q += " ORDER BY closed_at ASC"
+        rows = conn.execute(q, params).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -837,7 +837,7 @@ def clear_all_trades():
     print("".join(traceback.format_stack()[:-1]))
 
 
-def clear_trades_by_strategy(strategy, keep_live=True):
+def clear_trades_by_strategy(strategy):
     """v4.88 — SUR DEMANDE EXPLICITE : efface UNIQUEMENT l historique d une
     strategie precise (utilise au moment de basculer un mode en live, pour
     repartir sur un historique propre pour ce mode-la sans toucher aux
@@ -846,17 +846,14 @@ def clear_trades_by_strategy(strategy, keep_live=True):
     "forex"."""
     import traceback
     with _lock, _connect() as conn:
-        # v4.298 — FIX : l historique LIVE (argent reel) n est plus JAMAIS
-        # efface : seul l historique paper l est. Avant, chaque bascule en
-        # live et chaque "Nettoyer" supprimaient aussi les trades reels — les
-        # pertes live disparaissaient des statistiques et des bilans.
-        live_guard = " AND (trade_mode IS NULL OR trade_mode != 'live')" if keep_live else ""
         if strategy == "forex":
-            where = "(strategy = ? OR strategy IS NULL OR strategy = 'normal')" + live_guard
+            rows = conn.execute("SELECT COUNT(*) AS c FROM trades WHERE strategy = ? OR strategy IS NULL OR strategy = 'normal'", (strategy,)).fetchone()
+            count_before = rows["c"]
+            conn.execute("DELETE FROM trades WHERE strategy = ? OR strategy IS NULL OR strategy = 'normal'", (strategy,))
         else:
-            where = "strategy = ?" + live_guard
-        count_before = conn.execute(f"SELECT COUNT(*) AS c FROM trades WHERE {where}", (strategy,)).fetchone()["c"]
-        conn.execute(f"DELETE FROM trades WHERE {where}", (strategy,))
+            rows = conn.execute("SELECT COUNT(*) AS c FROM trades WHERE strategy = ?", (strategy,)).fetchone()
+            count_before = rows["c"]
+            conn.execute("DELETE FROM trades WHERE strategy = ?", (strategy,))
         conn.commit()
     print(f"[AUDIT] clear_trades_by_strategy('{strategy}') appelee a {now_iso()} — {count_before} trade(s) supprime(s). Pile d appel :")
     print("".join(traceback.format_stack()[:-1]))
