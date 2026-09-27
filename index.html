@@ -926,7 +926,7 @@ function App() {
   const [orphanedLoading, setOrphanedLoading] = useState(false);
   // v4.316 — analyse des series de gains/pertes Funding
   const [streaksResult, setStreaksResult] = useState(null);
-  const [streaksLoading, setStreaksLoading] = useState(false);
+  const [streaksLoading, setStreaksLoading] = useState(null);  // v4.318 — null ou la strategy en cours de chargement
   const [wsEvents, setWsEvents] = useState(null);
   const [indicatorCoin, setIndicatorCoin] = useState("BTC");
   const [atrSummary, setAtrSummary] = useState(null);
@@ -1738,30 +1738,35 @@ Confirmer ?`
               </div>
             )}
           </div>
-          {/* v4.316 — SUR DEMANDE EXPLICITE : plus longue serie de gains vs
-              plus longue serie de pertes (Funding Contrarian), avec
-              comparaison des conditions moyennes a l entree. */}
+          {/* v4.316/v4.318 — SUR DEMANDE EXPLICITE : plus longue serie de
+              gains vs plus longue serie de pertes, pour Funding, Spot-Accum
+              ou Accumulation au choix, avec comparaison des conditions
+              moyennes a l entree. */}
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
               <div style={{fontSize:11,color:"#94a3b8",maxWidth:560}}>
-                <b style={{color:"#e2e8f0"}}>📈📉 Séries Funding : plus longue série de gains vs de pertes</b><br/>
-                Compare les conditions moyennes à l'entrée (flux, volatilité, activité, spread, score, heure UTC, actifs) entre la plus longue série gagnante et la plus longue série perdante.
+                <b style={{color:"#e2e8f0"}}>📈📉 Séries : plus longue série de gains vs de pertes</b><br/>
+                Compare les conditions moyennes à l'entrée (flux, volatilité, activité, spread, score, heure UTC, actifs) entre la plus longue série gagnante et la plus longue série perdante, pour le mode choisi.
               </div>
-              <button onClick={async()=>{
-                setStreaksLoading(true);
-                try{
-                  const r = await apiCall("/api/stats/funding-streaks","GET",null,token);
-                  setStreaksResult(r);
-                }catch(e){ alert("Erreur : "+e.message); }
-                setStreaksLoading(false);
-              }} style={{background:"#818cf8",border:"none",borderRadius:7,padding:"10px 16px",color:"#1e1b4b",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer"}}>
-                {streaksLoading?"Analyse...":"📈📉 Analyser les séries"}
-              </button>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                {[["funding_contrarian","💰 Funding"],["spot_accumulation","🌱 Spot-Accum"],["accumulation","🎯 Accumulation"]].map(([strat,label])=>(
+                  <button key={strat} onClick={async()=>{
+                    setStreaksLoading(strat);
+                    try{
+                      const r = await apiCall("/api/stats/streaks?strategy="+strat,"GET",null,token);
+                      setStreaksResult(r);
+                    }catch(e){ alert("Erreur : "+e.message); }
+                    setStreaksLoading(null);
+                  }} style={{background:"#818cf8",border:"none",borderRadius:7,padding:"10px 16px",color:"#1e1b4b",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer"}}>
+                    {streaksLoading===strat?"Analyse...":label}
+                  </button>
+                ))}
+              </div>
             </div>
             {streaksResult && (
               <div style={{marginTop:12,fontSize:11}}>
                 <div style={{color:"#94a3b8",marginBottom:10}}>
-                  {streaksResult.total_funding_trades_closed} trades Funding fermés · {streaksResult.n_win_streaks} série(s) de gains · {streaksResult.n_loss_streaks} série(s) de pertes
+                  {streaksResult.total_trades_closed} trades {streaksResult.strategy} fermés · {streaksResult.n_win_streaks} série(s) de gains · {streaksResult.n_loss_streaks} série(s) de pertes
                 </div>
                 <div style={{overflowX:"auto"}}>
                   <table style={{width:"100%",borderCollapse:"collapse"}}>
