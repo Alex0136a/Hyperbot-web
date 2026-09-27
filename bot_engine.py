@@ -34,13 +34,10 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.300"
-BOT_BUILD   = "2026-09-26-f"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.299"
+BOT_BUILD   = "2026-09-26-e"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
-# 4.300 — NETTOYAGE Spot-Accum / Accumulation : methode top-down SEULE,
-#        evaluee en tete de cycle, sans aucun ancien filtre ni ancien moteur ;
-#        delai propre apres SL ; reglages et diagnostic obsoletes masques.
 # 4.299 — Moteur TOP-DOWN multi-unites de temps (H4/Daily -> M15/H1) pour
 #        Spot-Accum et Accumulation : tendance + zones cles, signal de bougie,
 #        SL sur la structure, objectif zone opposee, taille sur le risque.
@@ -1333,7 +1330,6 @@ PROFILE_SWING = {
     "MTF_MAX_RISK_PCT": 4.0,           # distance maximale au SL (% du prix)
     "MTF_BREAKEVEN_AT_R": 1.0,         # SL remonte au prix d entree a +1R
     "MTF_TRAIL_FROM_R": 2.0,           # au-dela de +2R, SL suiveur a 1R du plus haut
-    "MTF_COOLDOWN_AFTER_SL_H": 4,      # pause sur un actif apres un SL (une bougie H4)
     "ENTRY_ENGINE_SIMPLE": 1,
     "SIMPLE_ENGINE_DYNAMIC_LEVERAGE": 0,
     # v4.296 — live : releve les trades sous le minimum Hyperliquid (10 $)
@@ -8638,16 +8634,6 @@ class BotEngine:
         rsi = calc_rsi(prices, cfg["RSI_PERIOD"])
 
         # EMA specifiques au symbole ou globales
-        # v4.300 — NETTOYAGE : Spot-Accum et Accumulation n utilisent PLUS QUE
-        # la methode top-down, evaluee ICI, avant tous les anciens filtres du
-        # cycle (collecte d indicateurs internes, heures creuses, blackout CPI,
-        # ATR, stabilite, regime, situation...) qui ne s appliquent plus a eux.
-        if cfg.get("ENTRY_ENGINE_MTF", 1) and not is_forex_ticker and ":" not in ticker:
-            try:
-                self._mtf_entry("spot_accumulation", symbol, ticker, price, rsi, prices, state, state)
-                self._mtf_entry("accumulation", symbol, ticker, price, rsi, prices, state, self.accum_states[symbol])
-            except Exception as e_mtf:
-                print(f"[MTF] Erreur evaluation {ticker} : {type(e_mtf).__name__}: {e_mtf}")
         ema_short = cfg.get("SYMBOL_EMA_SHORT", {}).get(ticker, cfg["EMA_SHORT"])
         ema_long  = cfg.get("SYMBOL_EMA_LONG",  {}).get(ticker, cfg["EMA_LONG"])
         ema_s = calc_ema(prices, ema_short)
@@ -9879,11 +9865,6 @@ class BotEngine:
         if self.info is None:
             snap["blocker"] = "donnees Hyperliquid indisponibles"
             return
-        last_sl = getattr(self, "_mtf_last_sl", {}).get((mode, ticker))
-        wait_h = cfg.get("MTF_COOLDOWN_AFTER_SL_H", 4)
-        if last_sl and time.time() - last_sl < wait_h * 3600:
-            snap["blocker"] = f"SL recent sur cet actif — pause de {wait_h} h ({(wait_h * 3600 - (time.time() - last_sl)) / 60:.0f} min restantes)"
-            return
         v = self.mtf_view(ticker, price)
         if not v["ok"]:
             snap["blocker"] = v["why"]
@@ -9961,6 +9942,21 @@ class BotEngine:
         best = pos.get("mtf_best", pos["entry"])
         best = max(best, price) if long_side else min(best, price)
         pos["mtf_best"] = best
+        # v4.301 — FIX BUG CRITIQUE : le pic de PnL latent (peak_pnl_usd /
+        # absolute_peak_pnl_usd) n etait JAMAIS mis a jour pour les positions
+        # "top-down" (engine == "mtf") — _manage_position_impl retourne ICI
+        # (voir plus haut, ligne ~7351) AVANT d atteindre le bloc generique
+        # de suivi du pic (v4.18), reserve aux autres moteurs. Consequence :
+        # close_position() ne trouvait jamais de pic memorise pour un trade
+        # top-down, et enregistrait systematiquement peak_pnl_usd/
+        # peak_pnl_pct a NULL en base, meme sur un trade brievement en
+        # profit avant de repartir en perte. Reproduit ici, en miroir exact
+        # de la logique generique (v4.18), a partir du gain deja calcule
+        # ci-dessus (levier toujours x1 sur ce moteur, voir _finalize_open).
+        pnl_usd_now = pos["size"] * pos.get("leverage", 1) * gain / pos["entry"]
+        if pnl_usd_now > 0 and (state.peak_pnl_usd is None or pnl_usd_now > state.peak_pnl_usd):
+            state.peak_pnl_usd = pnl_usd_now
+            state.absolute_peak_pnl_usd = pnl_usd_now
         reason = None
         if (long_side and price <= pos["sl"]) or (not long_side and price >= pos["sl"]):
             reason = "STOP LOSS (zone top-down)" if not pos.get("mtf_be_done") else "STOP SUIVEUR (top-down)"
@@ -9971,10 +9967,6 @@ class BotEngine:
             if _result is None:
                 return
             pnl, _, trade = _result
-            if reason.startswith("STOP LOSS"):
-                if not hasattr(self, "_mtf_last_sl"):
-                    self._mtf_last_sl = {}
-                self._mtf_last_sl[(pos.get("strategy"), ticker)] = time.time()
             self.emit("trade", trade)
             self.emit("log", {"msg": f"[{ticker}] {reason} @ ${price:.6g} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
             self._save_open_positions()
@@ -10158,8 +10150,8 @@ class BotEngine:
         L ancienne logique (LONG+SHORT, fenetre de proximite precise,
         detecteur de range/mode range) est retiree d ici — le mode range
         devient son PROPRE mode independant (_check_range_signal)."""
-        if self.cfg.get("ENTRY_ENGINE_MTF", 1):  # v4.300 — top-down seul, deja evalue en tete de _process
-            return
+        if self.cfg.get("ENTRY_ENGINE_MTF", 1):  # v4.299 — moteur top-down multi-unites de temps
+            return self._mtf_entry("accumulation", symbol, ticker, price, rsi, prices, state, accum_state)
         if self.cfg.get("ENTRY_ENGINE_SIMPLE", 1):  # v4.289 — moteur simple (0 = ancienne chaine)
             return self._simple_entry("accumulation", symbol, ticker, price, rsi, prices, state, accum_state)
         cfg = self.cfg
@@ -10607,8 +10599,8 @@ class BotEngine:
         /api/entry-diagnostics (qui ne couvrait jusqu ici que le mode
         normal) — pour voir precisement quelle clause bloque, sans deviner.
         """
-        if self.cfg.get("ENTRY_ENGINE_MTF", 1):  # v4.300 — top-down seul, deja evalue en tete de _process
-            return
+        if self.cfg.get("ENTRY_ENGINE_MTF", 1):  # v4.299 — moteur top-down multi-unites de temps
+            return self._mtf_entry("spot_accumulation", symbol, ticker, price, rsi, prices, state, state)
         if self.cfg.get("ENTRY_ENGINE_SIMPLE", 1):  # v4.289 — moteur simple (0 = ancienne chaine)
             return self._simple_entry("spot_accumulation", symbol, ticker, price, rsi, prices, state, state)
         cfg = self.cfg
@@ -11094,8 +11086,6 @@ class BotEngine:
         loss_cooldown = {"accumulation": cfg.get("ACCUMULATION_LOSS_COOLDOWN_SEC", 3600),
                          "spot_accumulation": cfg.get("SPOT_ACCUM_LOSS_COOLDOWN_SEC", 0),
                          "funding_contrarian": cfg.get("FUNDING_LOSS_COOLDOWN_SEC", 0)}.get(strategy, 0) or 0
-        if cand.get("engine") == "mtf":
-            loss_cooldown = 0  # v4.300 — le top-down a son propre delai (par actif, apres SL)
         if (loss_cooldown and getattr(state, "last_closed_was_loss", False) and state.last_closed_at is not None
                 and state.last_closed_direction == signal and time.time() - state.last_closed_at < loss_cooldown):
             remaining = int(loss_cooldown - (time.time() - state.last_closed_at))
@@ -11106,7 +11096,7 @@ class BotEngine:
         # mouvement de marche = plusieurs positions perdantes a la fois).
         burst_max = {"accumulation": cfg.get("ACCUMULATION_MAX_ENTRIES_PER_WINDOW", 3),
                      "spot_accumulation": cfg.get("SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW", 0)}.get(strategy, 0) or 0
-        if burst_max and cand.get("engine") != "mtf":  # v4.300
+        if burst_max:
             window_s = cfg.get("ENTRY_BURST_WINDOW_SEC", 600)
             recent = [t for t in self._recent_entries.get(strategy, []) if time.time() - t < window_s]
             self._recent_entries[strategy] = recent
