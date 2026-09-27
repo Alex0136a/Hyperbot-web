@@ -669,6 +669,23 @@ def get_open_trade_id_by_coin_action(coin, action, strategy=None):
         return row["id"] if row else None
 
 
+def debug_open_rows_for_coin_action(coin, action):
+    """v4.313 — SUR DEMANDE EXPLICITE : diagnostic pour comprendre POURQUOI
+    une fermeture ne retrouve aucune ligne ouverte correspondante (ni par
+    trade_uid, ni par coin/action/strategy) — retourne TOUTES les lignes
+    encore marquees ouvertes pour ce coin+action, toutes strategies
+    confondues, avec leur trade_uid/strategy/created_at exacts. Permet de
+    voir d un coup d oeil une desynchronisation (ex : strategy differente
+    de celle attendue, trade_uid absent ou different) plutot que de deviner."""
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, trade_uid, strategy, created_at, entry_price FROM trades "
+            "WHERE coin=? AND action=? AND closed_at IS NULL ORDER BY id DESC",
+            (coin, action)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def get_trades(limit=50, only_closed=False, order_by_close=False, since=None):
     """v4.114 — SUR DEMANDE EXPLICITE : order_by_close=True trie par date de
     FERMETURE (closed_at DESC, plus recent en premier) au lieu de l ordre
