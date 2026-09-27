@@ -8352,8 +8352,17 @@ class BotEngine:
                     # filtre, un simple repli de la marge tier0 (souvent
                     # tres fine) suffisait a fermer, meme en pleine tendance
                     # intacte.
+                    # v4.305 — SUR DEMANDE EXPLICITE : DESACTIVE pour Funding
+                    # Contrarian — ce mode vise un scalp rapide sur un
+                    # desequilibre de funding, pas un suivi de tendance ; le
+                    # laisser "courir sans limite tant que l EMA200 tient"
+                    # a produit 7 allers-retours complets (pic +0.5 a +0.93%
+                    # -> perte finale quasi symetrique) sur le lot du 26/09,
+                    # confirmes un par un. Pour ce mode, un plancher de
+                    # profit ferme (pic - marge, sans exception tendance)
+                    # est desormais toujours applique.
                     trend_still_intact_t0 = False
-                    if cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
+                    if pos.get("strategy") != "funding_contrarian" and cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
                         ema200_hold_t0 = self._trend_ema(state)
                         if ema200_hold_t0 is not None:
                             trend_still_intact_t0 = (price > ema200_hold_t0) if pos["type"] == "long" else (price < ema200_hold_t0)
@@ -8482,7 +8491,11 @@ class BotEngine:
                 # Applique a Normal/Accumulation/Funding (pas Spot-Accum,
                 # qui a son propre trailing independant).
                 trend_still_intact = False  # par defaut si le filtre est desactive : comportement d origine (ferme normalement)
-                if cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
+                # v4.305 — SUR DEMANDE EXPLICITE : meme exclusion que tier0
+                # ci-dessus pour Funding Contrarian (voir commentaire tier0) —
+                # plancher de profit toujours ferme, jamais de "on laisse
+                # courir tant que l EMA200 tient" pour ce mode.
+                if pos.get("strategy") != "funding_contrarian" and cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
                     ema200_hold = self._trend_ema(state)
                     if ema200_hold is not None:
                         if pos["type"] == "long":
