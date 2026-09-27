@@ -915,6 +915,11 @@ function App() {
   const [assetProba, setAssetProba] = useState(null);
   const [assetProbaLoading, setAssetProbaLoading] = useState(false);
   const [assetProbaMinTrades, setAssetProbaMinTrades] = useState(5);
+  // v4.306 — SUR DEMANDE EXPLICITE : point de reinitialisation des
+  // statistiques affichees (onglet Historique), independant de la
+  // reinitialisation complete (qui efface reellement les donnees).
+  const [statsResetAt, setStatsResetAt] = useState(null);
+  const [statsResetLoaded, setStatsResetLoaded] = useState(false);
   const [wsEvents, setWsEvents] = useState(null);
   const [indicatorCoin, setIndicatorCoin] = useState("BTC");
   const [atrSummary, setAtrSummary] = useState(null);
@@ -927,6 +932,18 @@ function App() {
   const [strategyPerf, setStrategyPerf] = useState({});
   const [strategyPerfLoading, setStrategyPerfLoading] = useState(false);
   const [showMarketPanel, setShowMarketPanel] = useState(false);
+  // v4.306 — charge le point de reinitialisation des statistiques a la
+  // premiere ouverture de l onglet Historique (pas a chaque re-render).
+  useEffect(() => {
+    if (tab !== "historique" || statsResetLoaded) return;
+    (async () => {
+      try {
+        const r = await apiCall("/api/stats/reset-point", "GET", null, token);
+        setStatsResetAt(r.stats_reset_at || null);
+      } catch (_) {}
+      setStatsResetLoaded(true);
+    })();
+  }, [tab, statsResetLoaded, token]);
   // v4.51 — refs pour les champs objectif/prix d'armement (Spot-Accum),
   // desormais confirmes par un bouton explicite plutot qu au blur silencieux.
   const targetInputRef = useRef({});
@@ -1598,6 +1615,43 @@ Confirmer ?`
 
       {tab==="historique" && (
         <div style={{padding:16}}>
+          {/* v4.306 — SUR DEMANDE EXPLICITE : point de depart des
+              statistiques affichees (Bilan, Performance par mode, taux de
+              reussite...), sans rien supprimer — distinct de la
+              "REINITIALISATION COMPLETE" plus bas qui, elle, efface
+              reellement les donnees. */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+            <div style={{fontSize:11,color:"#94a3b8",maxWidth:560}}>
+              <b style={{color:"#e2e8f0"}}>🔄 Point de départ des statistiques</b><br/>
+              {!statsResetLoaded ? "Chargement..." : statsResetAt ? (
+                <>Les statistiques ci-dessous (Bilan, Performance par mode, taux de réussite) ne comptent que les trades fermés depuis le <b style={{color:"#e2e8f0"}}>{new Date(statsResetAt).toLocaleString()}</b>. L'historique complet, les trades individuels et les exports CSV restent inchangés.</>
+              ) : (
+                <>Les statistiques ci-dessous portent sur tout l'historique. Réinitialiser marque un nouveau point de départ pour elles seules — utile après un changement de réglages, sans rien supprimer.</>
+              )}
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              {statsResetAt && (
+                <button onClick={async()=>{
+                  if(!window.confirm("Revenir aux statistiques sur tout l'historique ?\n\nAucune donnée n'est supprimée : ceci retire seulement le filtre d'affichage.")) return;
+                  try{
+                    await apiCall("/api/stats/reset-point","DELETE",null,token);
+                    setStatsResetAt(null);
+                  }catch(e){ alert("Erreur : "+e.message); }
+                }} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 16px",color:"#e2e8f0",fontFamily:"inherit",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+                  Voir tout l'historique
+                </button>
+              )}
+              <button onClick={async()=>{
+                if(!window.confirm("Réinitialiser le point de départ des statistiques ?\n\nÀ partir de maintenant, le taux de réussite, le PnL net, le Bilan et la Performance par mode ne compteront que les trades fermés à partir de cet instant.\n\nRien n'est supprimé : l'historique complet, chaque trade individuel et les exports CSV restent inchangés et consultables à tout moment.\n\nContinuer ?")) return;
+                try{
+                  const r = await apiCall("/api/stats/reset-point","POST",null,token);
+                  setStatsResetAt(r.stats_reset_at);
+                }catch(e){ alert("Erreur : "+e.message); }
+              }} style={{background:"#f59e0b",border:"none",borderRadius:7,padding:"10px 16px",color:"#1a1200",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer"}}>
+                🔄 Réinitialiser les statistiques
+              </button>
+            </div>
+          </div>
           <HoursStatsCard token={token}/>
           <SlAnalysisCard token={token}/>
           {/* v4.265 — export CSV du suivi Spot-Accum / Accumulation */}
