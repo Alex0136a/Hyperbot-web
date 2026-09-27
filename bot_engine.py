@@ -1367,6 +1367,16 @@ PROFILE_SWING = {
     "MTF_SCORE_WEIGHT_QUALITY": 0.10,
     "ASSET_WIN_RATE_REFRESH_SEC": 900,   # rafraichissement du cache de performance historique par actif (15 min)
     "ASSET_WIN_RATE_MIN_TRADES": 5,      # echantillon minimal avant de faire confiance au taux de reussite d un actif
+    # v4.317 — SUR DEMANDE EXPLICITE : filtre de qualite du marche ACTIVE
+    # pour Funding Contrarian, calibre depuis l analyse reelle de la plus
+    # longue serie perdante (11 trades, -0.49 USDC, spread moyen 0.024% et
+    # activite moyenne 1.19x, contre 0.014%/0.99x sur la serie gagnante).
+    # Spot-Accum/Accumulation restent SANS filtre de qualite pour l instant
+    # (pas encore leur propre analyse) — voir MARKET_QUALITY_MAX_SPREAD_PCT/
+    # MARKET_QUALITY_MAX_ACTIVITY_RATIO (globaux, a 0/desactives) si vous
+    # voulez un jour un seuil commun a tous les modes.
+    "FUNDING_MAX_SPREAD_PCT": 0.02,
+    "FUNDING_MAX_ACTIVITY_RATIO": 1.1,
     "ENTRY_ENGINE_SIMPLE": 1,
     "SIMPLE_ENGINE_DYNAMIC_LEVERAGE": 0,
     # v4.296 — live : releve les trades sous le minimum Hyperliquid (10 $)
@@ -6235,15 +6245,28 @@ class BotEngine:
     def _market_quality_block(self, ticker, state, strategy):
         """v4.281 — filtres de qualite du marche (DESACTIVES par defaut, a
         calibrer avec l export CSV) : marche endormi, deserte, flux sans
-        conviction (ce dernier reglable par mode)."""
+        conviction (ce dernier reglable par mode).
+        v4.317 — SUR DEMANDE EXPLICITE : calibre pour Funding Contrarian a
+        partir d une vraie analyse de serie (voir /api/stats/funding-streaks) —
+        la plus longue serie perdante (11 trades, -0.49 USDC) etait
+        concentree sur une fenetre horaire precise avec spread +71% plus
+        large (0.024% vs 0.014%) ET activite anormalement ELEVEE (1.19x vs
+        0.99x) que la serie gagnante — signature d un mouvement de marche
+        directionnel (news/volatilite generale), pas un vrai desequilibre
+        de funding a corriger. Ajoute un plafond MAXIMUM d activite (le
+        filtre existant ne bloquait qu un marche TROP CALME, jamais TROP
+        ACTIF) et des seuils PAR STRATEGIE (repli sur le seuil global si
+        non defini) pour ne calibrer QUE Funding sans affecter Spot-Accum/
+        Accumulation tant qu on n a pas leur propre analyse."""
         cfg = self.cfg
-        min_vol = cfg.get("MARKET_QUALITY_MIN_VOL_RATIO", 0) or 0
-        min_act = cfg.get("MARKET_QUALITY_MIN_ACTIVITY_RATIO", 0) or 0
         prefix = {"spot_accumulation": "SPOT_ACCUM", "accumulation": "ACCUMULATION",
                   "funding_contrarian": "FUNDING", "forex": "FOREX"}.get(strategy, "FOREX")
+        min_vol = cfg.get(f"{prefix}_MIN_VOL_RATIO", cfg.get("MARKET_QUALITY_MIN_VOL_RATIO", 0)) or 0
+        min_act = cfg.get(f"{prefix}_MIN_ACTIVITY_RATIO", cfg.get("MARKET_QUALITY_MIN_ACTIVITY_RATIO", 0)) or 0
+        max_act = cfg.get(f"{prefix}_MAX_ACTIVITY_RATIO", cfg.get("MARKET_QUALITY_MAX_ACTIVITY_RATIO", 0)) or 0
         min_conv = cfg.get(f"{prefix}_MIN_FLOW_CONVICTION", 0) or 0
-        max_spread = cfg.get("MARKET_QUALITY_MAX_SPREAD_PCT", 0) or 0
-        if not (min_vol or min_act or min_conv or max_spread):
+        max_spread = cfg.get(f"{prefix}_MAX_SPREAD_PCT", cfg.get("MARKET_QUALITY_MAX_SPREAD_PCT", 0)) or 0
+        if not (min_vol or min_act or max_act or min_conv or max_spread):
             return None
         q = self.market_quality(ticker, state)
         if max_spread and q["spread_pct"] is not None and q["spread_pct"] > max_spread:
@@ -6252,6 +6275,8 @@ class BotEngine:
             return f"marche endormi (volatilite {q['vol_ratio']:.2f}x son habitude < {min_vol}x)"
         if min_act and q["activity_ratio"] is not None and q["activity_ratio"] < min_act:
             return f"marche deserte (activite {q['activity_ratio']:.2f}x son habitude < {min_act}x)"
+        if max_act and q["activity_ratio"] is not None and q["activity_ratio"] > max_act:
+            return f"marche trop actif ({q['activity_ratio']:.2f}x son habitude > {max_act}x — mouvement directionnel probable, pas un repli a corriger)"
         if min_conv:
             if q["flow"] is None:
                 return "flux sans donnees suffisantes (conviction exigee)"
