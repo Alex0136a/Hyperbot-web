@@ -2026,7 +2026,7 @@ def get_strategy_performance(strategy: str, email: str = Depends(require_user)):
     (normal/accumulation/funding_contrarian/spot_accumulation), calculee a
     la demande depuis l historique reel en base — pour le bouton
     "Performance" de chaque sous-onglet de l onglet Paper Trading."""
-    all_closed = db.get_all_closed_trades()
+    all_closed = db.get_all_closed_trades(since=db.get_meta("stats_reset_at"))  # v4.306 — point de reinitialisation
     filtered = [t for t in all_closed if (t.get("strategy") or "forex") == strategy]
     wins = [t for t in filtered if (t.get("pnl") or 0) > 0]
     losses = [t for t in filtered if (t.get("pnl") or 0) <= 0]
@@ -2319,10 +2319,11 @@ def get_market_regime(email: str = Depends(require_user)):
 def stats_by_hour(days: int = Query(14, ge=1, le=90), email: str = Depends(require_user)):
     """Resultats par mode et par tranche de 4 h UTC (trades fermes)."""
     labels = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation", "funding_contrarian": "Funding", "forex": "Forex", "manual": "Manuel"}
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    days_cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    reset_at = db.get_meta("stats_reset_at")  # v4.306 — point de reinitialisation des statistiques (onglet Historique)
     out = {}
-    for t in db.get_all_closed_trades():
-        if not t.get("closed_at") or (t.get("created_at") or "") < since or t.get("pnl") is None:
+    for t in db.get_all_closed_trades(since=reset_at):
+        if not t.get("closed_at") or (t.get("created_at") or "") < days_cutoff or t.get("pnl") is None:
             continue
         try:
             h = datetime.fromisoformat(t["created_at"]).astimezone(timezone.utc).hour
@@ -2715,7 +2716,8 @@ def get_signals(limit: int = Query(50), strategy: str = Query(None), email: str 
 
 @app.get("/api/stats")
 def get_stats(email: str = Depends(require_user)):
-    rows = db.get_trades(limit=100000)
+    reset_at = db.get_meta("stats_reset_at")  # v4.306 — point de reinitialisation des statistiques
+    rows = db.get_trades(limit=100000, since=reset_at) if reset_at else db.get_trades(limit=100000)
     if not rows:
         return {"total": 0, "longs": 0, "shorts": 0, "avg_confidence": 0, "avg_rr": "--"}
     longs = sum(1 for r in rows if r["action"] == "LONG")
@@ -2745,7 +2747,7 @@ def paper_portfolio(email: str = Depends(require_user)):
     realized_pnl = sum(s.pnl for s in bot.states.values()) + sum(s.pnl for s in bot.accum_states.values())
     initial_balance = float(db.get_meta("initial_balance", cfg["CAPITAL_USD"])) or 1.0
 
-    closed = db.get_all_closed_trades()
+    closed = db.get_all_closed_trades(since=db.get_meta("stats_reset_at"))  # v4.306 — point de reinitialisation
     wins = sum(1 for r in closed if (r["pnl"] or 0) > 0)
     win_rate = round(wins / len(closed) * 100, 1) if closed else 0
 
@@ -2761,6 +2763,37 @@ def paper_portfolio(email: str = Depends(require_user)):
         "total_pnl_pct": round(unrealized_pnl / initial_balance * 100, 3),
         "win_rate": win_rate,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  v4.306 — SUR DEMANDE EXPLICITE : point de reinitialisation des
+#  STATISTIQUES affichees dans l onglet Historique (win rate, PnL net,
+#  Bilan, Performance par mode...), SANS RIEN SUPPRIMER en base — a la
+#  difference de "REINITIALISATION COMPLETE" (/api/paper/reset) qui, elle,
+#  efface reellement les signaux/trades/historique. Ici, tous les trades
+#  restent en base et dans les exports CSV — seule la fenetre utilisee pour
+#  calculer les statistiques affichees est deplacee a "a partir de
+#  maintenant". Stocke dans meta['stats_reset_at'] (ISO UTC) ; None = pas de
+#  reinitialisation active, comportement d origine (tout l historique).
+# ─────────────────────────────────────────────────────────────────────────
+@app.get("/api/stats/reset-point")
+def get_stats_reset_point(email: str = Depends(require_user)):
+    return {"stats_reset_at": db.get_meta("stats_reset_at")}
+
+
+@app.post("/api/stats/reset-point")
+def set_stats_reset_point(email: str = Depends(require_user)):
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db.set_meta("stats_reset_at", now_iso)
+    print(f"[AUDIT] /api/stats/reset-point (definir) appele par {email} a {now_iso}")
+    return {"ok": True, "stats_reset_at": now_iso}
+
+
+@app.delete("/api/stats/reset-point")
+def clear_stats_reset_point(email: str = Depends(require_user)):
+    db.set_meta("stats_reset_at", "")
+    print(f"[AUDIT] /api/stats/reset-point (effacer) appele par {email} a {datetime.now(timezone.utc).isoformat()}")
+    return {"ok": True, "stats_reset_at": None}
 
 
 @app.post("/api/paper/reset")
@@ -3016,7 +3049,7 @@ def get_daily_table(email: str = Depends(require_user)):
     coherent avec le decoupage en jours fixes (plus de session glissante
     de 24h ni de blocage en fin de journee). Concu pour etre telecharge
     en tableau (CSV) depuis l interface."""
-    closed = db.get_all_closed_trades()
+    closed = db.get_all_closed_trades(since=db.get_meta("stats_reset_at"))  # v4.306 — point de reinitialisation
     today_str = datetime.now(timezone.utc).strftime("%d/%m")
     day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     recent = [r for r in closed if r["created_at"] and _day_key(r["created_at"]) == today_str]
@@ -3039,7 +3072,7 @@ def get_daily_table(email: str = Depends(require_user)):
 
 @app.get("/api/bilan")
 def get_bilan(email: str = Depends(require_user)):
-    closed = db.get_all_closed_trades()
+    closed = db.get_all_closed_trades(since=db.get_meta("stats_reset_at"))  # v4.306 — point de reinitialisation
     total_pnl_realized = sum(s.pnl for s in bot.states.values())  # realise cette session
     initial_balance = float(db.get_meta("initial_balance", cfg["CAPITAL_USD"]))
     open_positions = _open_positions()
@@ -3238,7 +3271,7 @@ def get_stats_daily(email: str = Depends(require_user)):
     # total_wins_usdc, net_pnl, close_reason...), completement different de
     # ce que renvoyait cette route auparavant (une simple liste avec les
     # noms de _aggregate) — d ou la page blanche sans aucune donnee.
-    closed = db.get_all_closed_trades()
+    closed = db.get_all_closed_trades(since=db.get_meta("stats_reset_at"))  # v4.306 — point de reinitialisation
     wins_rows   = [r for r in closed if (r["pnl"] or 0) > 0]
     losses_rows = [r for r in closed if (r["pnl"] or 0) <= 0]
     total_wins_usdc = round(sum(r["pnl"] for r in wins_rows), 2)
