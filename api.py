@@ -2249,8 +2249,23 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
                     M = {"4h": "H4", "1d": "Daily"}.get(mv["major_tf"], mv["major_tf"])
                     where = ("prix DANS la zone de support" if mv["in_support"] else
                              "prix DANS la zone de resistance" if mv["in_resistance"] else "prix entre deux zones")
-                    mtf_line = (f"tendance {M} {mv['trend']} · support {M} {bot._zone_txt(mv['support'])} · "
-                                f"resistance {M} {bot._zone_txt(mv['resistance'])} · {where}")
+                    # v4.307 — FIX BUG CONFIRME : quand le prix est a l
+                    # interieur d une zone UNIQUE, mtf.nearest_zones()
+                    # renvoie cette meme zone comme support ET resistance
+                    # (les deux conditions sont vraies a la fois) — l
+                    # affichage montrait alors "support X · resistance X"
+                    # avec les MEMES bornes, laissant croire a 2 zones
+                    # distinctes alors qu il n y en a qu une. Confirme sur 8
+                    # actifs reels (AAVE, BTC, CRV, ETH, INJ, PENDLE, SUSHI,
+                    # WIF). Ce cas a aussi un impact reel sur le calcul de l
+                    # objectif (voir bot_engine._mtf_entry, meme version) —
+                    # ici, seul l affichage est corrige.
+                    if mv["support"] is mv["resistance"] and mv["support"] is not None:
+                        mtf_line = (f"tendance {M} {mv['trend']} · zone unique {M} {bot._zone_txt(mv['support'])} "
+                                    f"(support ET resistance, aucune zone opposee distincte) · {where}")
+                    else:
+                        mtf_line = (f"tendance {M} {mv['trend']} · support {M} {bot._zone_txt(mv['support'])} · "
+                                    f"resistance {M} {bot._zone_txt(mv['resistance'])} · {where}")
                 elif mv:
                     mtf_line = mv.get("why")
             except Exception as e_m:
