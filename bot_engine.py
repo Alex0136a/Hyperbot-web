@@ -1330,6 +1330,24 @@ PROFILE_SWING = {
     "MTF_MAX_RISK_PCT": 4.0,           # distance maximale au SL (% du prix)
     "MTF_BREAKEVEN_AT_R": 1.0,         # SL remonte au prix d entree a +1R
     "MTF_TRAIL_FROM_R": 2.0,           # au-dela de +2R, SL suiveur a 1R du plus haut
+    # v4.304 — SUR DEMANDE EXPLICITE : deux confirmations SUPPLEMENTAIRES,
+    # exigees en plus du signal de bougie M15/H1 existant, pour filtrer les
+    # faux rebonds observes sur le lot du 26/09 (7 trades, 7 SL, tous des
+    # LONG altcoins pris dans un marche global baissier) :
+    #   1) STRUCTURE H1 : la bougie de retournement (M15 ou H1 selon
+    #      MTF_LOWER_TF) ne suffit plus seule — exige aussi que l EMA courte
+    #      H1 (MTF_H1_STRUCTURE_EMA_PERIOD) soit orientee dans le sens du
+    #      trade, preuve d un vrai changement de structure au-dela d une
+    #      seule bougie.
+    #   2) FLUX DE TRANSACTIONS : exige que la pression achat/vente reelle
+    #      (_compute_trade_flow_pressure, deja utilisee ailleurs pour la
+    #      tolerance du trailing) ne soit pas hostile au sens du trade —
+    #      filtre les rebonds sur bougie haussiere alors que le flux reel
+    #      reste vendeur (piege classique en marche baissier).
+    "MTF_REQUIRE_H1_STRUCTURE": 1,      # 1 = exige la confirmation de structure H1
+    "MTF_H1_STRUCTURE_EMA_PERIOD": 20,  # periode de l EMA H1 dont la pente est verifiee
+    "MTF_REQUIRE_FLOW_CONFIRM": 1,      # 1 = exige la confirmation du flux de transactions
+    "MTF_MIN_FLOW_PRESSURE": 0.0,       # seuil minimal (0 = juste "pas hostile" ; 0.15-0.3 = plus strict)
     "ENTRY_ENGINE_SIMPLE": 1,
     "SIMPLE_ENGINE_DYNAMIC_LEVERAGE": 0,
     # v4.296 — live : releve les trades sous le minimum Hyperliquid (10 $)
@@ -9840,7 +9858,9 @@ class BotEngine:
         """1) tendance de fond + zones cles sur l unite MAJEURE ;
         2) prix dans une zone dans le sens de la tendance ;
         3) signal de bougie sur l unite INFERIEURE ;
-        4) plan : SL au-dela de la zone, objectif = zone opposee, R:R minimal."""
+        4) v4.304 — confirmation de structure H1 (pente EMA) ET du flux reel
+           de transactions — au-dela de la seule bougie ;
+        5) plan : SL au-dela de la zone, objectif = zone opposee, R:R minimal."""
         cfg = self.cfg
         long_side = mode == "spot_accumulation"
         prefix = "SPOT_ACCUM" if long_side else "ACCUMULATION"
@@ -9894,6 +9914,39 @@ class BotEngine:
         if (long_side and extreme > zone["high"] + v["tolerance"]) or (not long_side and extreme < zone["low"] - v["tolerance"]):
             snap["blocker"] = f"signal {L} ({name}) hors de la zone de {kind}"
             return
+        # v4.304 — SUR DEMANDE EXPLICITE : la bougie {L} seule ne suffit plus
+        # — exige aussi que la structure H1 (pente de l EMA courte) confirme
+        # le retournement, au-dela d une seule bougie qui peut etre un
+        # rebond sans lendemain (observe sur le lot du 26/09 : 7 LONG
+        # altcoins pris dans une baisse generale, tous stoppes).
+        if cfg.get("MTF_REQUIRE_H1_STRUCTURE", 1):
+            h1_candles = self._mtf_candles(ticker, "1h", 60)
+            ema_period = cfg.get("MTF_H1_STRUCTURE_EMA_PERIOD", 20)
+            h1_closes = [c["c"] for c in h1_candles]
+            ema_now = mtf.ema(h1_closes, ema_period)
+            ema_prev = mtf.ema(h1_closes[:-1], ema_period) if len(h1_closes) > ema_period else None
+            h1_ok = (ema_now is not None and ema_prev is not None and
+                     (ema_now > ema_prev if long_side else ema_now < ema_prev))
+            if not h1_ok:
+                snap["blocker"] = (f"signal {L} ({name}) mais structure H1 pas encore confirmee "
+                                   f"(EMA{ema_period} H1 doit {'monter' if long_side else 'baisser'})")
+                return
+        # v4.304 — SUR DEMANDE EXPLICITE : exige aussi que le flux reel de
+        # transactions (achat/vente agressif, deja calcule ailleurs pour la
+        # tolerance du trailing) ne soit pas hostile au sens du trade —
+        # filtre un rebond sur bougie sans vraie pression acheteuse/vendeuse
+        # reelle derriere. Prudence : donnee indisponible = trade bloque
+        # (pas ignore silencieusement) quand la confirmation est exigee.
+        flow = self._compute_trade_flow_pressure(ticker, price)
+        if cfg.get("MTF_REQUIRE_FLOW_CONFIRM", 1):
+            min_flow = cfg.get("MTF_MIN_FLOW_PRESSURE", 0.0)
+            req = min_flow if long_side else -min_flow
+            flow_ok = flow is not None and (flow >= req if long_side else flow <= req)
+            if not flow_ok:
+                snap["blocker"] = (f"signal {L} ({name}) mais flux de transactions "
+                                   f"{'indisponible' if flow is None else f'{flow:+.2f}'} "
+                                   f"(requis {'>=' if long_side else '<='} {req:+.2f})")
+                return
         plan = mtf.plan_trade("long" if long_side else "short", price, zone, target, extreme, v["atr"])
         if not plan:
             snap["blocker"] = "plan de trade invalide"
@@ -9916,7 +9969,8 @@ class BotEngine:
         notional = min(capital * cfg.get("MTF_RISK_PCT", 0.5) / plan["risk_pct"], cfg.get("MTF_MAX_NOTIONAL_USD", 30.0))
         snap["blocker"] = None
         label = "🌱 Spot-Accumulation" if long_side else "🎯 Accumulation (short)"
-        path = (f"top-down : tendance {M} {want} · zone de {kind} {M} {self._zone_txt(zone)} · signal {L} : {name} · "
+        flow_txt = f"flux {flow:+.2f}" if flow is not None else "flux indisponible"
+        path = (f"top-down : tendance {M} {want} · zone de {kind} {M} {self._zone_txt(zone)} · signal {L} : {name} · {flow_txt} · "
                 f"SL {plan['sl']:.6g} (-{plan['risk_pct']:.2f} %) · objectif {plan['tp']:.6g} (+{plan['reward_pct']:.2f} %, R:R {plan['rr']:.1f})")
         reasons = [f"{label} — voie : {path}", f"RSI {rsi:.1f}" if rsi is not None else "RSI ?"]
         cand = {"symbol": symbol, "ticker": ticker, "state": state if long_side else pos_state,
