@@ -2701,15 +2701,17 @@ def export_accumulation_trades(days: Optional[int] = Query(None, ge=1, le=3650),
                     headers={"Content-Disposition": f'attachment; filename="suivi_trades_{stamp}.csv"'})
 
 
-@app.get("/api/stats/funding-streaks")
-def get_funding_streaks(email: str = Depends(require_user)):
-    """v4.316 — SUR DEMANDE EXPLICITE : detecte la plus longue serie de gains
-    consecutifs et la plus longue serie de pertes consecutives sur Funding
-    Contrarian, et compare les conditions moyennes a l entree entre les
-    deux — flux, volatilite/activite relatives, spread, score de
-    confiance, heure UTC, repartition par actif — pour faire ressortir ce
-    qui distingue statistiquement une serie gagnante d une serie perdante."""
-    trades = [t for t in db.get_all_closed_trades() if t.get("strategy") == "funding_contrarian" and t.get("pnl") is not None]
+@app.get("/api/stats/streaks")
+def get_streaks(strategy: str = Query(..., pattern="^(funding_contrarian|spot_accumulation|accumulation)$"),
+                email: str = Depends(require_user)):
+    """v4.316/v4.318 — SUR DEMANDE EXPLICITE : detecte la plus longue serie de
+    gains consecutifs et la plus longue serie de pertes consecutives, et
+    compare les conditions moyennes a l entree entre les deux — flux,
+    volatilite/activite relatives, spread, score de confiance, heure UTC,
+    repartition par actif. v4.318 : generalise a n importe laquelle des 3
+    strategies top-down/funding (auparavant reserve a Funding Contrarian
+    seul) — meme logique, un seul endpoint parametre par `strategy`."""
+    trades = [t for t in db.get_all_closed_trades() if t.get("strategy") == strategy and t.get("pnl") is not None]
     trades.sort(key=lambda t: t.get("closed_at") or t.get("created_at") or "")
 
     streaks = []
@@ -2771,12 +2773,20 @@ def get_funding_streaks(email: str = Depends(require_user)):
         }
 
     return {
-        "total_funding_trades_closed": len(trades),
+        "strategy": strategy,
+        "total_trades_closed": len(trades),
         "n_win_streaks": len(win_streaks),
         "n_loss_streaks": len(loss_streaks),
         "longest_win_streak": summarize(longest_win),
         "longest_loss_streak": summarize(longest_loss),
     }
+
+
+@app.get("/api/stats/funding-streaks")
+def get_funding_streaks(email: str = Depends(require_user)):
+    """v4.316 — CONSERVE pour compatibilite (l URL existante continue de
+    fonctionner) — redirige vers le nouvel endpoint generalise ci-dessus."""
+    return get_streaks(strategy="funding_contrarian", email=email)
 
 
 @app.get("/api/diagnostics/orphaned-trades")
