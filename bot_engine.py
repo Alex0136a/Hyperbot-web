@@ -1348,6 +1348,7 @@ PROFILE_SWING = {
     "MTF_H1_STRUCTURE_EMA_PERIOD": 20,  # periode de l EMA H1 dont la pente est verifiee
     "MTF_REQUIRE_FLOW_CONFIRM": 1,      # 1 = exige la confirmation du flux de transactions
     "MTF_MIN_FLOW_PRESSURE": 0.0,       # seuil minimal (0 = juste "pas hostile" ; 0.15-0.3 = plus strict)
+    "MTF_REQUIRE_REAL_TARGET_ZONE": 1,  # v4.308 — 1 = bloque l entree quand il n y a pas de zone opposee distincte (pas d objectif synthetique)
     "ENTRY_ENGINE_SIMPLE": 1,
     "SIMPLE_ENGINE_DYNAMIC_LEVERAGE": 0,
     # v4.296 — live : releve les trades sous le minimum Hyperliquid (10 $)
@@ -9985,7 +9986,18 @@ class BotEngine:
             return
         min_rr = cfg.get("MTF_MIN_RR", 1.5)
         if plan["rr"] is None:
-            # pas de zone opposee identifiee : objectif = min_rr x le risque
+            # v4.308 — SUR DEMANDE EXPLICITE : auparavant, l absence de zone
+            # opposee distincte (voir v4.307, "zone unique") declenchait un
+            # repli automatique vers un objectif synthetique (min_rr x le
+            # risque), non rattache a aucune structure de marche reelle —
+            # jugee peu fiable (rien ne garantit que le prix reagira
+            # precisement a ce niveau arbitraire). Bloque desormais ce cas
+            # au lieu de trader avec un objectif synthetique.
+            if cfg.get("MTF_REQUIRE_REAL_TARGET_ZONE", 1):
+                snap["blocker"] = (f"aucune zone {'de resistance' if long_side else 'de support'} distincte "
+                                    f"pour un objectif reel (zone unique support/resistance) — trade ignore")
+                return
+            # repli conserve si MTF_REQUIRE_REAL_TARGET_ZONE est desactive
             plan["tp"] = price * (1 + plan["risk_pct"] * min_rr / 100) if long_side else price * (1 - plan["risk_pct"] * min_rr / 100)
             plan["reward_pct"], plan["rr"] = plan["risk_pct"] * min_rr, min_rr
         elif plan["rr"] < min_rr:
