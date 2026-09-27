@@ -22,11 +22,36 @@ NOTES :
 import time
 import threading
 import json
+import os
 import db
 import mtf_analysis as mtf  # v4.299 — analyse multi-unites de temps
 from datetime import datetime
 from collections import deque
 import queue
+
+# v4.302 — FIX BUG CRITIQUE : POSITIONS_FILE/CAPITAL_FILE/STATE_FILE/
+# LOG_FILE/BATCH_FILE/CONFIDENCE_FILE/INDICATOR_*_FILE utilisaient des noms
+# de fichiers RELATIFS (repertoire de travail courant du process), jamais
+# colocalises avec la base SQLite — laquelle respecte deja HYPERBOT_DB_PATH
+# (donc le volume persistant Railway, quand il est configure sur ce
+# chemin). Sur un simple REDEMARRAGE du meme conteneur, le repertoire de
+# travail survit, donc le probleme restait invisible. Mais sur un
+# REDEPLOIEMENT COMPLET (nouveau build/conteneur), ce repertoire est
+# recree entierement VIDE : ces fichiers disparaissaient silencieusement
+# (aucune position restauree, aucune trace de fermeture), alors que
+# l historique en base (lui, sur le volume) restait intact — confirme par
+# un cas reel (toutes les positions ouvertes perdues sans trace apres un
+# redeploy, historique des trades fermes pourtant intact). Colocalise
+# desormais TOUS ces fichiers avec la base de donnees : des que
+# HYPERBOT_DB_PATH pointe vers le volume monte, ils en heritent
+# automatiquement, sans configuration supplementaire. Repli sur le
+# repertoire de travail courant si HYPERBOT_DB_PATH n est pas defini
+# (comportement inchange pour un usage local/dev).
+_DATA_DIR = os.path.dirname(os.path.abspath(db.DB_PATH))
+
+
+def _data_path(filename):
+    return os.path.join(_DATA_DIR, filename)
 
 # ─────────────────────────────────────────────
 #  VERSION
@@ -3322,9 +3347,9 @@ class SymbolState:
 # Fichiers de persistance specifiques au profil (swing/scalp)
 # Evite les conflits d ecriture quand 2 instances tournent dans le meme dossier
 _PROFILE_SUFFIX = CONFIG.get("PROFILE", "swing")
-CAPITAL_FILE = f"hyperbot_capital_{_PROFILE_SUFFIX}.json"
-STATE_FILE   = f"hyperbot_session_state_{_PROFILE_SUFFIX}.json"
-LOG_FILE     = f"hyperbot_log_{_PROFILE_SUFFIX}.txt"
+CAPITAL_FILE = _data_path(f"hyperbot_capital_{_PROFILE_SUFFIX}.json")
+STATE_FILE   = _data_path(f"hyperbot_session_state_{_PROFILE_SUFFIX}.json")
+LOG_FILE     = _data_path(f"hyperbot_log_{_PROFILE_SUFFIX}.txt")
 
 def write_log(msg, level="info"):
     """Ecrit un message dans le fichier de log avec horodatage.
@@ -3465,7 +3490,7 @@ def save_capital(capital, sessions, total_pnl):
             return
 
 
-BATCH_FILE = f"hyperbot_batch_{_PROFILE_SUFFIX}.json"
+BATCH_FILE = _data_path(f"hyperbot_batch_{_PROFILE_SUFFIX}.json")
 
 def load_batch_entry_size():
     """Charge la taille d entree E figee pour le lot en cours (survit a un
@@ -3614,9 +3639,9 @@ class BotEngine:
         self.all_mids = {}  # v3.2 : cache brut de tous les prix Hyperliquid (affichage marche complet)
 
     # ── Sauvegarde des positions ouvertes pour reconciliation au redemarrage ──
-    POSITIONS_FILE = "hyperbot_positions.json"
-    CONFIDENCE_FILE = "hyperbot_confidence.json"
-    INDICATOR_STATE_FILE = "hyperbot_indicators.json"
+    POSITIONS_FILE = _data_path("hyperbot_positions.json")
+    CONFIDENCE_FILE = _data_path("hyperbot_confidence.json")
+    INDICATOR_STATE_FILE = _data_path("hyperbot_indicators.json")
     # v4.22 — SUR DEMANDE EXPLICITE : fichier SEPARE pour l historique de
     # diagnostic (graphes RSI/MACD/EMA200/ATR/S-R, voir indicator_history).
     # Contrairement a INDICATOR_STATE_FILE (regle des 5 min, pour la
@@ -3624,7 +3649,7 @@ class BotEngine:
     # a l identique quelle que soit la duree de la coupure — c est un
     # historique de consultation, pas une donnee de decision, une coupure
     # longue n invalide pas l interet de regarder ce qui s est passe avant.
-    INDICATOR_HISTORY_FILE = "hyperbot_indicator_history.json"
+    INDICATOR_HISTORY_FILE = _data_path("hyperbot_indicator_history.json")
     INDICATOR_RESUME_MAX_GAP_SEC = 300  # 5 min — au-dela, on repart en collecte fraiche
 
     def _save_open_positions(self):
