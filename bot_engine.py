@@ -22,38 +22,11 @@ NOTES :
 import time
 import threading
 import json
-import os
 import db
 import mtf_analysis as mtf  # v4.299 — analyse multi-unites de temps
 from datetime import datetime
 from collections import deque
 import queue
-
-# v4.303 — FIX BUG CRITIQUE (v4.302 avait introduit ce bug) : le correctif
-# precedent deduisait le dossier de donnees via
-# os.path.dirname(os.path.abspath(db.DB_PATH)) — MAIS db.DB_PATH lit
-# HYPERBOT_DB_PATH, une variable qui n a JAMAIS existe sur ce deploiement
-# (la bonne variable, deja utilisee par api.py et documentee dans
-# README.md, est HYPERBOT_DATA_DIR). Pire : os.path.abspath() resout un
-# chemin relatif par rapport au repertoire de travail COURANT au moment de
-# l APPEL — or ce calcul s executait a l IMPORT de bot_engine.py (fait par
-# api.py AVANT son propre os.chdir() vers HYPERBOT_DATA_DIR, voir api.py :
-# "les imports locaux DOIVENT se faire AVANT tout changement de repertoire
-# courant", pour eviter un ModuleNotFoundError). _DATA_DIR se figeait donc
-# TOUJOURS sur le dossier du CODE (/app), jamais sur le Volume (/data),
-# meme avec HYPERBOT_DATA_DIR correctement definie — confirme par un cas
-# reel (toutes les positions perdues malgre le Volume et la variable en
-# place). Corrige en lisant DIRECTEMENT HYPERBOT_DATA_DIR (la MEME
-# variable canonique que api.py, voir sa section "Dossier de donnees
-# persistantes"), sans jamais resoudre de chemin absolu a l import — un
-# simple os.path.join() ne touche pas le disque et ne depend d aucun
-# repertoire courant, donc aucun risque d ordre d execution. Repli sur "."
-# (comportement d origine) si la variable n est pas definie.
-_DATA_DIR = os.environ.get("HYPERBOT_DATA_DIR", ".")
-
-
-def _data_path(filename):
-    return os.path.join(_DATA_DIR, filename)
 
 # ─────────────────────────────────────────────
 #  VERSION
@@ -3349,9 +3322,9 @@ class SymbolState:
 # Fichiers de persistance specifiques au profil (swing/scalp)
 # Evite les conflits d ecriture quand 2 instances tournent dans le meme dossier
 _PROFILE_SUFFIX = CONFIG.get("PROFILE", "swing")
-CAPITAL_FILE = _data_path(f"hyperbot_capital_{_PROFILE_SUFFIX}.json")
-STATE_FILE   = _data_path(f"hyperbot_session_state_{_PROFILE_SUFFIX}.json")
-LOG_FILE     = _data_path(f"hyperbot_log_{_PROFILE_SUFFIX}.txt")
+CAPITAL_FILE = f"hyperbot_capital_{_PROFILE_SUFFIX}.json"
+STATE_FILE   = f"hyperbot_session_state_{_PROFILE_SUFFIX}.json"
+LOG_FILE     = f"hyperbot_log_{_PROFILE_SUFFIX}.txt"
 
 def write_log(msg, level="info"):
     """Ecrit un message dans le fichier de log avec horodatage.
@@ -3492,7 +3465,7 @@ def save_capital(capital, sessions, total_pnl):
             return
 
 
-BATCH_FILE = _data_path(f"hyperbot_batch_{_PROFILE_SUFFIX}.json")
+BATCH_FILE = f"hyperbot_batch_{_PROFILE_SUFFIX}.json"
 
 def load_batch_entry_size():
     """Charge la taille d entree E figee pour le lot en cours (survit a un
@@ -3641,9 +3614,9 @@ class BotEngine:
         self.all_mids = {}  # v3.2 : cache brut de tous les prix Hyperliquid (affichage marche complet)
 
     # ── Sauvegarde des positions ouvertes pour reconciliation au redemarrage ──
-    POSITIONS_FILE = _data_path("hyperbot_positions.json")
-    CONFIDENCE_FILE = _data_path("hyperbot_confidence.json")
-    INDICATOR_STATE_FILE = _data_path("hyperbot_indicators.json")
+    POSITIONS_FILE = "hyperbot_positions.json"
+    CONFIDENCE_FILE = "hyperbot_confidence.json"
+    INDICATOR_STATE_FILE = "hyperbot_indicators.json"
     # v4.22 — SUR DEMANDE EXPLICITE : fichier SEPARE pour l historique de
     # diagnostic (graphes RSI/MACD/EMA200/ATR/S-R, voir indicator_history).
     # Contrairement a INDICATOR_STATE_FILE (regle des 5 min, pour la
@@ -3651,7 +3624,7 @@ class BotEngine:
     # a l identique quelle que soit la duree de la coupure — c est un
     # historique de consultation, pas une donnee de decision, une coupure
     # longue n invalide pas l interet de regarder ce qui s est passe avant.
-    INDICATOR_HISTORY_FILE = _data_path("hyperbot_indicator_history.json")
+    INDICATOR_HISTORY_FILE = "hyperbot_indicator_history.json"
     INDICATOR_RESUME_MAX_GAP_SEC = 300  # 5 min — au-dela, on repart en collecte fraiche
 
     def _save_open_positions(self):
