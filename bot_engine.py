@@ -1349,6 +1349,7 @@ PROFILE_SWING = {
     "MTF_REQUIRE_FLOW_CONFIRM": 1,      # 1 = exige la confirmation du flux de transactions
     "MTF_MIN_FLOW_PRESSURE": 0.0,       # seuil minimal (0 = juste "pas hostile" ; 0.15-0.3 = plus strict)
     "MTF_REQUIRE_REAL_TARGET_ZONE": 1,  # v4.308 — 1 = bloque l entree quand il n y a pas de zone opposee distincte (pas d objectif synthetique)
+    "MTF_CLOSE_ON_ZONE_BREAK": 1,       # v4.309 — 1 = ferme des que le prix casse la zone d entree (avant meme le SL classique)
     "ENTRY_ENGINE_SIMPLE": 1,
     "SIMPLE_ENGINE_DYNAMIC_LEVERAGE": 0,
     # v4.296 — live : releve les trades sous le minimum Hyperliquid (10 $)
@@ -10020,10 +10021,12 @@ class BotEngine:
                 "strategy": mode, "countertrend": False, "force_paper": False, "entered_via_flirt": False,
                 "engine": "mtf", "mtf_sl": plan["sl"], "mtf_tp": plan["tp"], "mtf_notional": notional}
         if long_side:
-            cand.update({"support_at_entry": zone["low"], "resistance_at_entry": target["high"] if target else None})
+            cand.update({"support_at_entry": zone["low"], "resistance_at_entry": target["high"] if target else None,
+                         "mtf_zone_bound": zone["low"]})  # v4.309 — borne de la zone, pour la cassure structurelle
             self._pending_spot_accum_candidates.append(cand)
         else:
-            cand.update({"entered_via_range": False, "support": target["low"] if target else None, "resistance": zone["high"]})
+            cand.update({"entered_via_range": False, "support": target["low"] if target else None, "resistance": zone["high"],
+                         "mtf_zone_bound": zone["high"]})  # v4.309 — borne de la zone, pour la cassure structurelle
             self._pending_accumulation_candidates.append(cand)
 
     def _manage_mtf(self, symbol, price, state, pos, ticker, mode):
@@ -10053,7 +10056,23 @@ class BotEngine:
             state.peak_pnl_usd = pnl_usd_now
             state.absolute_peak_pnl_usd = pnl_usd_now
         reason = None
-        if (long_side and price <= pos["sl"]) or (not long_side and price >= pos["sl"]):
+        # v4.309 — SUR DEMANDE EXPLICITE : cassure structurelle de la zone
+        # elle-meme (support pour un long, resistance pour un short) —
+        # generalement ATTEINTE AVANT le SL classique, puisque celui-ci
+        # inclut en plus l extreme de la bougie de signal et une marge ATR
+        # (donc plus loin de l entree que la zone seule). Confirme par un
+        # cas reel (AAVE : zone de support 155.3-156.91, SL a 154.0127 —
+        # le prix avait deja casse la zone bien avant d atteindre le SL,
+        # sans qu aucune sortie ne se declenche). Sortie IMMEDIATE des que
+        # le prix passe la borne, y compris intra-bougie (pas d attente
+        # d une bougie cloturee) — voulu explicitement, quitte a sortir sur
+        # une simple meche.
+        zone_bound = pos.get("mtf_zone_bound")
+        if cfg.get("MTF_CLOSE_ON_ZONE_BREAK", 1) and zone_bound is not None and (
+            (long_side and price < zone_bound) or (not long_side and price > zone_bound)
+        ):
+            reason = "STRUCTURE CASSEE (zone top-down)"
+        elif (long_side and price <= pos["sl"]) or (not long_side and price >= pos["sl"]):
             reason = "STOP LOSS (zone top-down)" if not pos.get("mtf_be_done") else "STOP SUIVEUR (top-down)"
         elif pos.get("tp") and ((long_side and price >= pos["tp"]) or (not long_side and price <= pos["tp"])):
             reason = "TAKE PROFIT (zone opposee)"
@@ -11748,7 +11767,8 @@ class BotEngine:
             state.position["countertrend"] = True    # v4.286 — trailing resserre
         if cand.get("engine") == "mtf":              # v4.299 — gestion top-down
             state.position.update({"engine": "mtf", "sl": cand["mtf_sl"], "tp": cand["mtf_tp"],
-                                   "mtf_r": abs(state.position["entry"] - cand["mtf_sl"])})
+                                   "mtf_r": abs(state.position["entry"] - cand["mtf_sl"]),
+                                   "mtf_zone_bound": cand.get("mtf_zone_bound")})  # v4.309 — cassure structurelle
         # v4.24 — memorise les seuils REELLEMENT appliques a CE trade (fixes
         # ou adaptatifs a l ATR) — _manage_position_impl les relit ici en
         # priorite, avec repli sur les valeurs fixes globales si absents
