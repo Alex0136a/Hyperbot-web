@@ -29,25 +29,27 @@ from datetime import datetime
 from collections import deque
 import queue
 
-# v4.302 — FIX BUG CRITIQUE : POSITIONS_FILE/CAPITAL_FILE/STATE_FILE/
-# LOG_FILE/BATCH_FILE/CONFIDENCE_FILE/INDICATOR_*_FILE utilisaient des noms
-# de fichiers RELATIFS (repertoire de travail courant du process), jamais
-# colocalises avec la base SQLite — laquelle respecte deja HYPERBOT_DB_PATH
-# (donc le volume persistant Railway, quand il est configure sur ce
-# chemin). Sur un simple REDEMARRAGE du meme conteneur, le repertoire de
-# travail survit, donc le probleme restait invisible. Mais sur un
-# REDEPLOIEMENT COMPLET (nouveau build/conteneur), ce repertoire est
-# recree entierement VIDE : ces fichiers disparaissaient silencieusement
-# (aucune position restauree, aucune trace de fermeture), alors que
-# l historique en base (lui, sur le volume) restait intact — confirme par
-# un cas reel (toutes les positions ouvertes perdues sans trace apres un
-# redeploy, historique des trades fermes pourtant intact). Colocalise
-# desormais TOUS ces fichiers avec la base de donnees : des que
-# HYPERBOT_DB_PATH pointe vers le volume monte, ils en heritent
-# automatiquement, sans configuration supplementaire. Repli sur le
-# repertoire de travail courant si HYPERBOT_DB_PATH n est pas defini
-# (comportement inchange pour un usage local/dev).
-_DATA_DIR = os.path.dirname(os.path.abspath(db.DB_PATH))
+# v4.303 — FIX BUG CRITIQUE (v4.302 avait introduit ce bug) : le correctif
+# precedent deduisait le dossier de donnees via
+# os.path.dirname(os.path.abspath(db.DB_PATH)) — MAIS db.DB_PATH lit
+# HYPERBOT_DB_PATH, une variable qui n a JAMAIS existe sur ce deploiement
+# (la bonne variable, deja utilisee par api.py et documentee dans
+# README.md, est HYPERBOT_DATA_DIR). Pire : os.path.abspath() resout un
+# chemin relatif par rapport au repertoire de travail COURANT au moment de
+# l APPEL — or ce calcul s executait a l IMPORT de bot_engine.py (fait par
+# api.py AVANT son propre os.chdir() vers HYPERBOT_DATA_DIR, voir api.py :
+# "les imports locaux DOIVENT se faire AVANT tout changement de repertoire
+# courant", pour eviter un ModuleNotFoundError). _DATA_DIR se figeait donc
+# TOUJOURS sur le dossier du CODE (/app), jamais sur le Volume (/data),
+# meme avec HYPERBOT_DATA_DIR correctement definie — confirme par un cas
+# reel (toutes les positions perdues malgre le Volume et la variable en
+# place). Corrige en lisant DIRECTEMENT HYPERBOT_DATA_DIR (la MEME
+# variable canonique que api.py, voir sa section "Dossier de donnees
+# persistantes"), sans jamais resoudre de chemin absolu a l import — un
+# simple os.path.join() ne touche pas le disque et ne depend d aucun
+# repertoire courant, donc aucun risque d ordre d execution. Repli sur "."
+# (comportement d origine) si la variable n est pas definie.
+_DATA_DIR = os.environ.get("HYPERBOT_DATA_DIR", ".")
 
 
 def _data_path(filename):
