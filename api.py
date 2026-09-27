@@ -250,7 +250,21 @@ def _consume_events():
                     # retrouver la ligne d ouverture d origine (confidence,
                     # levier, SL/TP initiaux resteront vides pour cette
                     # ligne specifiquement, mais le PnL est preserve).
-                    msg = f"[event_consumer] ATTENTION : aucun trade ouvert trouve en base pour {ticker}/{action} (symbol brut={data.get('symbol')!r}, type brut={data.get('type')!r}) — creation d un enregistrement de secours."
+                    # v4.313 — SUR DEMANDE EXPLICITE : la ligne "ouverte"
+                    # d origine, elle, reste orpheline en base pour toujours
+                    # (jamais fermee) — confirme par un cas reel (plusieurs
+                    # orphelins Spot-Accum/Funding/Forex). Journalise ici
+                    # TOUT ce qui pourrait expliquer l echec de correspondance
+                    # (trade_uid recherche, et l etat REEL de toutes les
+                    # lignes encore ouvertes pour ce coin+action, toutes
+                    # strategies confondues) — la PROCHAINE occurrence donnera
+                    # la preuve exacte au lieu de deviner.
+                    debug_rows = db.debug_open_rows_for_coin_action(ticker, action)
+                    msg = (f"[event_consumer] ATTENTION : aucun trade ouvert trouve en base pour {ticker}/{action} "
+                           f"(symbol brut={data.get('symbol')!r}, type brut={data.get('type')!r}, "
+                           f"trade_uid recherche={data.get('trade_uid')!r}, strategy recherchee={data.get('strategy')!r}) "
+                           f"— lignes encore ouvertes pour ce coin/action (toutes strategies) : {debug_rows} "
+                           f"— creation d un enregistrement de secours.")
                     print(msg)
                     _push_log("error", msg)
                     db.insert_orphaned_closed_trade(
