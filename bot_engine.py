@@ -9911,6 +9911,22 @@ class BotEngine:
             return
         zone = v["support"] if long_side else v["resistance"]
         target = v["resistance"] if long_side else v["support"]
+        # v4.307 — FIX BUG CONFIRME : nearest_zones() (mtf_analysis.py) peut
+        # renvoyer LA MEME zone comme support ET resistance quand le prix
+        # est a l interieur d une zone unique (elle satisfait les deux
+        # conditions low<=price ET high>=price a la fois). Sans ce
+        # correctif, "target" recevait alors cette meme zone, et
+        # plan_trade() calculait un objectif silencieusement invalide
+        # (target_zone["low"] > price presque toujours faux dans ce cas),
+        # retombant sur le repli R:R minimal SANS AUCUNE trace dans le
+        # diagnostic — confirme sur 8 actifs reels (AAVE, BTC, CRV, ETH,
+        # INJ, PENDLE, SUSHI, WIF) qui affichaient support == resistance.
+        # Traite desormais explicitement ce cas comme "pas de zone opposee
+        # distincte" (target=None), pour que le repli R:R minimal se
+        # declenche de facon EXPLICITE et intentionnelle plutot que par
+        # effet de bord.
+        if target is zone:
+            target = None
         inside = v["in_support"] if long_side else v["in_resistance"]
         kind = "support" if long_side else "resistance"
         if not inside:
