@@ -8432,7 +8432,19 @@ class BotEngine:
                 # normalement — remplace l ancienne sortie IMMEDIATE sur
                 # simple changement de couleur (jugee trop agressive,
                 # coupait des mouvements encore valides).
-                color_reversed_t0 = cfg.get("EARLY_REVERSAL_EXIT_ENABLED", True) and self._candle_color_confirms_reversal(state, pos["type"])
+                # v4.315 — SUR DEMANDE EXPLICITE : meme traitement que le
+                # filtre de tendance (v4.305) — pour Funding Contrarian,
+                # n exige plus la confirmation de couleur de bougie avant de
+                # fermer au plancher tier0. Cette confirmation peut arriver
+                # TROP TARD lors d un retournement rapide : le prix franchit
+                # deja le plancher de protection, mais la fermeture est
+                # reportee jusqu a ce que la bougie confirme aussi — le
+                # temps que les deux s alignent, le prix a parfois deja
+                # atteint le SL complet. Confirme par 3 cas reels (WIF
+                # +0.53%->-0.94%, SUI +0.86%->-0.82%, SUI +0.75%->-0.72%).
+                color_reversed_t0 = pos.get("strategy") == "funding_contrarian" or (
+                    cfg.get("EARLY_REVERSAL_EXIT_ENABLED", True) and self._candle_color_confirms_reversal(state, pos["type"])
+                )
                 if color_reversed_t0 and pnl_pct <= tier0_lock_pct:
                     # v4.82 — SUR DEMANDE EXPLICITE : meme filtre "la
                     # tendance tient toujours" que le tier1 (v4.77), etendu
@@ -8665,7 +8677,15 @@ class BotEngine:
                     self._persist_capital_snapshot()
                     return
                 else:
-                    if not self._ttp_confirmed_to_close(state, pos["type"]):
+                    # v4.315 — SUR DEMANDE EXPLICITE : meme bypass que pour
+                    # le tier0 ci-dessus — pour Funding Contrarian, n exige
+                    # plus la confirmation de couleur de bougie (patience
+                    # incluse) avant de fermer au plancher tier1. C est
+                    # precisement cette branche (tendance jugee "non
+                    # intacte", toujours vraie pour Funding depuis v4.305)
+                    # qui gerait les trades Funding — la confirmation
+                    # pouvait arriver trop tard lors d un retournement rapide.
+                    if pos.get("strategy") != "funding_contrarian" and not self._ttp_confirmed_to_close(state, pos["type"]):
                         self._save_open_positions()
                         return
                     _result = self._safe_close_position(state, price, "TRAILING TAKE PROFIT", ticker, pos, symbol, mode)
