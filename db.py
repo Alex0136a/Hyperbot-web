@@ -714,6 +714,27 @@ def get_all_closed_trades(since=None):
         return [dict(r) for r in rows]
 
 
+def get_stale_open_trades(older_than_minutes=20):
+    """v4.312 — SUR DEMANDE EXPLICITE : diagnostic pour une position disparue
+    du bot SANS AUCUNE trace (ni ouverte, ni dans l historique) — hypothese :
+    la fermeture s est bien produite EN MEMOIRE (le bot l a retiree), mais l
+    ecriture en base de la clOture a echoue (aucune ligne 'open' en base a
+    faire correspondre, ex : upsert_open_trade jamais appele avec succes a l
+    ouverture) — laissant une ligne orpheline, TOUJOURS marquee ouverte en
+    base indefiniment, invisible cote dashboard (qui lit l etat du bot, pas
+    la base, pour les positions ouvertes) et invisible cote historique
+    (jamais de closed_at). Retourne les lignes 'open' en base depuis plus de
+    older_than_minutes — l appelant les croise avec les positions REELLEMENT
+    ouvertes cote bot pour ne garder que les vraies orphelines."""
+    with _lock, _connect() as conn:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=older_than_minutes)).isoformat()
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE closed_at IS NULL AND created_at <= ? ORDER BY created_at DESC",
+            (cutoff,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def delete_trades_older_than(days):
     with _lock, _connect() as conn:
         cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
