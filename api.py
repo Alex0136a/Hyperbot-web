@@ -2701,6 +2701,84 @@ def export_accumulation_trades(days: Optional[int] = Query(None, ge=1, le=3650),
                     headers={"Content-Disposition": f'attachment; filename="suivi_trades_{stamp}.csv"'})
 
 
+@app.get("/api/stats/funding-streaks")
+def get_funding_streaks(email: str = Depends(require_user)):
+    """v4.316 — SUR DEMANDE EXPLICITE : detecte la plus longue serie de gains
+    consecutifs et la plus longue serie de pertes consecutives sur Funding
+    Contrarian, et compare les conditions moyennes a l entree entre les
+    deux — flux, volatilite/activite relatives, spread, score de
+    confiance, heure UTC, repartition par actif — pour faire ressortir ce
+    qui distingue statistiquement une serie gagnante d une serie perdante."""
+    trades = [t for t in db.get_all_closed_trades() if t.get("strategy") == "funding_contrarian" and t.get("pnl") is not None]
+    trades.sort(key=lambda t: t.get("closed_at") or t.get("created_at") or "")
+
+    streaks = []
+    current = None
+    for t in trades:
+        is_win = (t["pnl"] or 0) > 0
+        if current and current["is_win"] == is_win:
+            current["trades"].append(t)
+        else:
+            current = {"is_win": is_win, "trades": [t]}
+            streaks.append(current)
+    win_streaks = [s for s in streaks if s["is_win"]]
+    loss_streaks = [s for s in streaks if not s["is_win"]]
+    longest_win = max(win_streaks, key=lambda s: len(s["trades"])) if win_streaks else None
+    longest_loss = max(loss_streaks, key=lambda s: len(s["trades"])) if loss_streaks else None
+
+    def summarize(streak):
+        if not streak:
+            return None
+        rows = streak["trades"]
+
+        def avg(key):
+            vals = [r.get(key) for r in rows if r.get(key) is not None]
+            return round(sum(vals) / len(vals), 3) if vals else None
+
+        hour_counts = {}
+        for r in rows:
+            try:
+                h = datetime.fromisoformat(r["created_at"]).hour
+                hour_counts[h] = hour_counts.get(h, 0) + 1
+            except (TypeError, ValueError, KeyError):
+                pass
+        coin_counts = {}
+        for r in rows:
+            c = r.get("coin")
+            if c:
+                coin_counts[c] = coin_counts.get(c, 0) + 1
+        reason_counts = {}
+        for r in rows:
+            rs = r.get("reason") or "?"
+            reason_counts[rs] = reason_counts.get(rs, 0) + 1
+        return {
+            "length": len(rows),
+            "start": rows[0].get("created_at"),
+            "end": rows[-1].get("closed_at"),
+            "total_pnl": round(sum(r.get("pnl") or 0 for r in rows), 4),
+            "avg_confidence": avg("confidence"),
+            "avg_flow_at_entry": avg("flow_at_entry"),
+            "avg_vol_ratio": avg("vol_ratio"),
+            "avg_activity_ratio": avg("activity_ratio"),
+            "avg_spread_at_entry": avg("spread_at_entry"),
+            "avg_peak_pnl_pct": avg("peak_pnl_pct"),
+            "hour_distribution_utc": dict(sorted(hour_counts.items())),
+            "coin_distribution": dict(sorted(coin_counts.items(), key=lambda x: -x[1])),
+            "reason_distribution": reason_counts,
+            "trades": [{"id": r.get("id"), "coin": r.get("coin"), "action": r.get("action"), "pnl": r.get("pnl"),
+                       "reason": r.get("reason"), "created_at": r.get("created_at"), "closed_at": r.get("closed_at")}
+                      for r in rows],
+        }
+
+    return {
+        "total_funding_trades_closed": len(trades),
+        "n_win_streaks": len(win_streaks),
+        "n_loss_streaks": len(loss_streaks),
+        "longest_win_streak": summarize(longest_win),
+        "longest_loss_streak": summarize(longest_loss),
+    }
+
+
 @app.get("/api/diagnostics/orphaned-trades")
 def get_orphaned_trades(older_than_minutes: int = Query(20, ge=1, le=1440), email: str = Depends(require_user)):
     """v4.312 — SUR DEMANDE EXPLICITE : diagnostic pour des positions
