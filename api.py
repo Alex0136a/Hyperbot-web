@@ -236,7 +236,7 @@ def _consume_events():
                 if not trade_id:
                     trade_id = db.get_open_trade_id_by_coin_action(ticker, action, data.get("strategy"))
                 if trade_id:
-                    db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"), peak_pnl=data.get("peak_pnl_usd"), peak_pnl_pct=data.get("peak_pnl_pct"), fees_paid=data.get("fees_paid"), exit_price_source=data.get("exit_price_source"))
+                    db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"), peak_pnl=data.get("peak_pnl_usd"), peak_pnl_pct=data.get("peak_pnl_pct"), fees_paid=data.get("fees_paid"), exit_price_source=data.get("exit_price_source"), mtf_trend_intact_at_close=data.get("mtf_trend_intact_at_close"))
                 else:
                     # v3.2 — diagnostic : auparavant, si aucune ligne ouverte
                     # ne correspondait (coin/action), la fermeture etait
@@ -2556,6 +2556,7 @@ def _export_row(t, tz=timezone.utc):
         (t.get("entry_reasons") or "").replace(";", ","),
         _fr(t.get("vol_ratio"), 2), _fr(t.get("activity_ratio"), 2), _fr(t.get("flow_at_entry"), 2), _fr(t.get("spread_at_entry"), 4),
         t.get("trade_uid") or "",
+        {1: "oui", 0: "non"}.get(t.get("mtf_trend_intact_at_close"), ""),  # v4.310
     ]
 
 
@@ -2573,6 +2574,7 @@ _EXPORT_HEADER = [
     "statut du suivi", "raisons d entree",
     "volatilite a l entree (x habitude)", "activite a l entree (x habitude)", "flux a l entree", "spread a l entree %",
     "identifiant trade",
+    "tendance H4 encore intacte a la sortie (top-down)",  # v4.310
 ]
 
 
@@ -2909,12 +2911,25 @@ def paper_close(body: PaperCloseBody, email: str = Depends(require_user)):
                 price, exit_source = real_exit, "hyperliquid"
         pnl, win, trade = state.close_position(price, body.reason)
         trade["symbol"] = body.trade_id
+        # v4.310 — meme diagnostic que pour une fermeture automatique (voir
+        # bot_engine._safe_close_position) — coherence entre les deux voies
+        # de fermeture pour un trade top-down ferme manuellement.
+        if pos_snapshot.get("engine") == "mtf":
+            try:
+                mv = bot.mtf_view(ticker, price, cache_only=True)
+                if mv and mv.get("ok"):
+                    want = "haussiere" if trade["type"] == "long" else "baissiere"
+                    trade["mtf_trend_at_close"] = mv["trend"]
+                    trade["mtf_trend_intact_at_close"] = (mv["trend"] == want)
+            except Exception:
+                pass
         action = "LONG" if trade["type"] == "long" else "SHORT"
         trade_id = db.get_open_trade_id_by_uid(pos_snapshot.get("trade_uid")) or \
             db.get_open_trade_id_by_coin_action(ticker, action, real_strategy)
         if trade_id:
             db.close_trade(trade_id, trade["exit"], trade["pnl"], trade["reason"],
-                           fees_paid=trade.get("fees_paid"), exit_price_source=exit_source)
+                           fees_paid=trade.get("fees_paid"), exit_price_source=exit_source,
+                           mtf_trend_intact_at_close=trade.get("mtf_trend_intact_at_close"))
         bot._save_open_positions()
     _push_log("warn", f"[{ticker}] Fermeture manuelle @ ${price:.2f} | PnL: {pnl:+.2f}$")
     return {"ok": True, "pnl": pnl, "real_close_confirmed": close_order_ok}
