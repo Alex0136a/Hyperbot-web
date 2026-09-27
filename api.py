@@ -747,7 +747,33 @@ def _open_positions() -> List[Dict[str, Any]]:
             # plus jamais mis a jour pour Accumulation/Forex/Funding
             # depuis l unification, risquant d y afficher un pic obsolete
             # ou absent.
-            if pos.get("strategy") in ("spot_accumulation", "accumulation", "forex", "funding_contrarian"):
+            # v4.301 — FIX BUG D AFFICHAGE : une position "top-down" (engine
+            # == "mtf") a sa PROPRE gestion de sortie (_manage_mtf, SL/TP sur
+            # la structure, breakeven a +1R, suiveur au-dela de +2R) —
+            # totalement independante de state.spot_accum_armed / 
+            # state.spot_accum_peak_pnl_pct, qui ne sont JAMAIS mis a jour
+            # pour ce moteur (voir bot_engine.py, _manage_position_impl
+            # retourne vers _manage_mtf avant d atteindre ce mecanisme).
+            # Sans ce cas separe, le tableau de bord affichait a tort
+            # "Trailing : pas encore arme" en boucle sur des trades top-down
+            # deja passes en breakeven/suiveur depuis longtemps — confirme
+            # par un cas reel (SL deja remonte au prix d entree +1R, pic en
+            # cours depuis des heures, badge pourtant reste "pas encore
+            # arme"). Utilise desormais le vrai pic (v4.301, voir
+            # _manage_mtf) et l etat reel de breakeven/suiveur de CE trade.
+            if pos.get("engine") == "mtf":
+                peak_pnl_usd = (
+                    state.peak_pnl_usd if state.peak_pnl_usd is not None
+                    else state.absolute_peak_pnl_usd
+                )
+                pos_size = pos.get("size", 0)
+                pos_leverage = pos.get("leverage", 1)
+                peak_pnl_pct = (
+                    round(peak_pnl_usd / (pos_size * pos_leverage) * 100, 3)
+                    if peak_pnl_usd is not None and pos_size and pos_leverage
+                    else None
+                )
+            elif pos.get("strategy") in ("spot_accumulation", "accumulation", "forex", "funding_contrarian"):
                 peak_pnl_pct = round(state.spot_accum_peak_pnl_pct, 3) if state.spot_accum_peak_pnl_pct is not None else None
                 # v4.231 — ROLLBACK URGENT de v4.229 (voir bot_engine.py) :
                 # spot_accum_peak_pnl_pct est de nouveau un % BRUT — la
@@ -805,6 +831,13 @@ def _open_positions() -> List[Dict[str, Any]]:
                 # malgre un trailing dynamique cense s armer a 1%).
                 "tp_stage": state.tp_stage,  # 0=aucun, 1=arme (tier1)
                 "effective_mode": pos.get("effective_mode", "paper"),  # v4.90 — mode reel de CE trade
+                # v4.301 — champs dedies au moteur top-down : distincts de
+                # spot_accum_armed (jamais mis a jour pour ce moteur, voir
+                # plus haut) — reflete l etat REEL de _manage_mtf sur ce
+                # trade precis (SL deja remonte a l entree ? suiveur actif ?).
+                "mtf_engine": pos.get("engine") == "mtf",
+                "mtf_be_done": pos.get("mtf_be_done", False),
+                "mtf_target": pos.get("tp"),
                 "spot_accum_armed": state.spot_accum_armed,  # v4.62 — FIX : Spot-Accum a son propre armement, separe de tp_stage
                 "spot_accum_arm_pct_used": cfg.get("SPOT_ACCUM_TTP_ARM_PCT"),  # v4.63 — seuil REELLEMENT lu, pour verifier sans deviner
                 "spot_accum_peak_pnl_pct_internal": round(state.spot_accum_peak_pnl_pct, 3) if state.spot_accum_peak_pnl_pct is not None else None,
@@ -957,7 +990,6 @@ ADVANCED_SETTINGS = {
     "MTF_MAX_RISK_PCT":                {"label": "Top-down - distance maximale au SL (% du prix)", "default": 4.0},
     "MTF_ZONE_TOLERANCE_ATR":          {"label": "Top-down - marge autour d une zone (x ATR majeur)", "default": 0.25},
     "MTF_ZONE_LOOKBACK":               {"label": "Top-down - bougies majeures examinees pour les zones", "default": 120},
-    "MTF_COOLDOWN_AFTER_SL_H":         {"label": "Top-down - pause sur un actif apres un SL (heures)", "default": 4},
     "ENTRY_ENGINE_SIMPLE":             {"label": "Moteur d entree simple Spot-Accum / Accumulation (1) ou ancienne chaine de conditions (0)", "default": 1},
     "SIMPLE_ENGINE_DYNAMIC_LEVERAGE":  {"label": "Moteur simple - levier dynamique 2-5x sur les entrees pres d un niveau (1/0)", "default": 0},
     "FUNDING_MODE_LIVE_ALLOWED":       {"label": "Funding - AUTORISER LE LIVE (verrou de securite : 0 = toujours simule en paper)", "default": 0},
@@ -1125,28 +1157,11 @@ ADVANCED_SETTINGS = {
 }
 
 
-# v4.300 — reglages des ANCIENNES methodes de Spot-Accum / Accumulation,
-# masques tant que la methode top-down est active (ils n ont plus d effet).
-_MTF_KEEP_KEYS = {"SPOT_ACCUM_TRADE_HOUR_START_UTC", "SPOT_ACCUM_TRADE_HOUR_END_UTC",
-                  "ACCUMULATION_TRADE_HOUR_START_UTC", "ACCUMULATION_TRADE_HOUR_END_UTC",
-                  "SPOT_ACCUM_MAX_TRADES", "ACCUMULATION_MAX_TRADES"}
-_MTF_OBSOLETE_PREFIXES = ("SPOT_ACCUM_", "ACCUMULATION_", "SITUATION_", "CONTINUATION_", "SIMPLE_ENGINE_",
-                          "COUNTERTREND_", "FRESH_BREAKOUT_", "MARKET_REGIME_")
-
-
-def _is_obsolete_for_mtf(key):
-    if key in _MTF_KEEP_KEYS:
-        return False
-    return key == "ENTRY_ENGINE_SIMPLE" or key.startswith(_MTF_OBSOLETE_PREFIXES)
-
-
 @app.get("/api/config/advanced")
 def get_advanced_config(email: str = Depends(require_user)):
-    hide = bool(cfg.get("ENTRY_ENGINE_MTF", 1))
     return {
         key: {"value": cfg.get(key, meta["default"]), "label": meta["label"], "default": meta["default"]}
         for key, meta in ADVANCED_SETTINGS.items()
-        if not (hide and _is_obsolete_for_mtf(key))
     }
 
 
@@ -2213,11 +2228,9 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
                 _px = float((bot.all_mids or {}).get(ticker) or 0) or None
             except (TypeError, ValueError):
                 pass
-            situation = bot.situation(state, _px) if ":" not in ticker and not cfg.get("ENTRY_ENGINE_MTF", 1) else None
+            situation = bot.situation(state, _px) if ":" not in ticker else None
         except Exception:
             situation = None
-        if cfg.get("ENTRY_ENGINE_MTF", 1) and ":" not in ticker:
-            levels = None  # v4.300 — niveaux 5 min de l ancienne methode : sans objet
         _fs = getattr(state, "funding_gate_snapshot", None) or {}
         if not cfg.get("FUNDING_MODE_ENABLED", False):
             blocker_funding = "mode desactive"
