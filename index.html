@@ -56,6 +56,65 @@ async function apiCall(path, method="GET", body=null, token=null) {
   return data;
 }
 
+// v4.319 — SUR DEMANDE EXPLICITE : telecharge n importe quelle donnee
+// d analyse (series de gains/pertes, trades orphelins...) en CSV, pour
+// pouvoir l envoyer facilement (ex: a Claude) sans copier-coller un
+// tableau. `rows` : tableau de tableaux (1re ligne = en-tetes) ; valeurs
+// echappees pour rester valides meme avec des virgules/guillemets dedans.
+function downloadCSV(filename, rows) {
+  const esc = v => {
+    const s = v === null || v === undefined ? "" : String(v);
+    return /[",\n;]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const csv = rows.map(row => row.map(esc).join(";")).join("\r\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// v4.319 — construit les lignes CSV d une reponse /api/stats/streaks
+// (les deux series cote a cote, meme mise en page que le tableau affiche).
+function streaksToCSVRows(result) {
+  const w = result.longest_win_streak, l = result.longest_loss_streak;
+  const fmt = (s, fn) => s ? fn(s) : "";
+  const rows = [
+    ["Strategie", result.strategy],
+    ["Total trades fermes", result.total_trades_closed],
+    ["Nb series de gains", result.n_win_streaks],
+    ["Nb series de pertes", result.n_loss_streaks],
+    [],
+    ["", "Plus longue serie de gains", "Plus longue serie de pertes"],
+    ["Longueur", fmt(w,s=>s.length), fmt(l,s=>s.length)],
+    ["PnL total", fmt(w,s=>s.total_pnl), fmt(l,s=>s.total_pnl)],
+    ["Debut", fmt(w,s=>s.start), fmt(l,s=>s.start)],
+    ["Fin", fmt(w,s=>s.end), fmt(l,s=>s.end)],
+    ["Score/confiance moyen", fmt(w,s=>s.avg_confidence), fmt(l,s=>s.avg_confidence)],
+    ["Flux moyen a l'entree", fmt(w,s=>s.avg_flow_at_entry), fmt(l,s=>s.avg_flow_at_entry)],
+    ["Volatilite relative moyenne", fmt(w,s=>s.avg_vol_ratio), fmt(l,s=>s.avg_vol_ratio)],
+    ["Activite relative moyenne", fmt(w,s=>s.avg_activity_ratio), fmt(l,s=>s.avg_activity_ratio)],
+    ["Spread moyen a l'entree", fmt(w,s=>s.avg_spread_at_entry), fmt(l,s=>s.avg_spread_at_entry)],
+    ["Pic moyen atteint (%)", fmt(w,s=>s.avg_peak_pnl_pct), fmt(l,s=>s.avg_peak_pnl_pct)],
+    ["Actifs", fmt(w,s=>Object.entries(s.coin_distribution||{}).map(([c,n])=>`${c}x${n}`).join(" ")), fmt(l,s=>Object.entries(s.coin_distribution||{}).map(([c,n])=>`${c}x${n}`).join(" "))],
+    ["Motifs de sortie", fmt(w,s=>Object.entries(s.reason_distribution||{}).map(([r,n])=>`${r}x${n}`).join(" ")), fmt(l,s=>Object.entries(s.reason_distribution||{}).map(([r,n])=>`${r}x${n}`).join(" "))],
+    ["Heures UTC", fmt(w,s=>Object.entries(s.hour_distribution_utc||{}).map(([h,n])=>`${h}hx${n}`).join(" ")), fmt(l,s=>Object.entries(s.hour_distribution_utc||{}).map(([h,n])=>`${h}hx${n}`).join(" "))],
+    [],
+    ["Detail des trades — serie de gains"],
+    ["id","actif","sens","pnl","motif","ouvert","ferme"],
+    ...((w?.trades)||[]).map(t=>[t.id,t.coin,t.action,t.pnl,t.reason,t.created_at,t.closed_at]),
+    [],
+    ["Detail des trades — serie de pertes"],
+    ["id","actif","sens","pnl","motif","ouvert","ferme"],
+    ...((l?.trades)||[]).map(t=>[t.id,t.coin,t.action,t.pnl,t.reason,t.created_at,t.closed_at]),
+  ];
+  return rows;
+}
+
 // ── CONSTANTES ───────────────────────────────────────────────
 const ALL_COINS = ["BTC","ETH","SOL","ARB","AVAX","LINK","OP","INJ","TIA","BNB","HYPE","PAXG","TAO","WIF","JUP","PENDLE","EIGEN","RENDER","SUI","APT","SEI","DOGE","XRP","NEAR","AAVE","UNI","CRV","SUSHI","GMX","POL","xyz:EUR","xyz:JPY","xyz:KRW","xyz:DXY"];
 // v4.42 — reglages SL/TTP dedies au mode Accumulation : valeur vide = null
@@ -1708,8 +1767,15 @@ Confirmer ?`
             </div>
             {orphanedResult && (
               <div style={{marginTop:12,fontSize:11}}>
-                <div style={{color:"#94a3b8",marginBottom:6}}>
-                  {orphanedResult.stale_open_in_db} trade(s) "ouvert" en base depuis plus de {orphanedResult.checked_older_than_minutes} min · <b style={{color:orphanedResult.orphaned_count>0?"#f87171":"#34d399"}}>{orphanedResult.orphaned_count} orpheline(s)</b>
+                <div style={{color:"#94a3b8",marginBottom:6,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+                  <span>{orphanedResult.stale_open_in_db} trade(s) "ouvert" en base depuis plus de {orphanedResult.checked_older_than_minutes} min · <b style={{color:orphanedResult.orphaned_count>0?"#f87171":"#34d399"}}>{orphanedResult.orphaned_count} orpheline(s)</b></span>
+                  {orphanedResult.orphaned_count>0 && (
+                    <button onClick={()=>downloadCSV(`trades_orphelins_${new Date().toISOString().slice(0,10)}.csv`,
+                      [["id","actif","sens","mode","ouvert_le","entree"], ...orphanedResult.orphaned.map(t=>[t.id,t.coin,t.action,t.strategy,t.created_at,t.entry_price])])}
+                      style={{background:"#334155",border:"none",borderRadius:6,padding:"6px 12px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+                      📥 Télécharger (CSV)
+                    </button>
+                  )}
                 </div>
                 {orphanedResult.orphaned_count===0 ? (
                   <div style={{color:"#34d399"}}>Aucune ligne orpheline trouvée.</div>
@@ -1765,8 +1831,12 @@ Confirmer ?`
             </div>
             {streaksResult && (
               <div style={{marginTop:12,fontSize:11}}>
-                <div style={{color:"#94a3b8",marginBottom:10}}>
-                  {streaksResult.total_trades_closed} trades {streaksResult.strategy} fermés · {streaksResult.n_win_streaks} série(s) de gains · {streaksResult.n_loss_streaks} série(s) de pertes
+                <div style={{color:"#94a3b8",marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+                  <span>{streaksResult.total_trades_closed} trades {streaksResult.strategy} fermés · {streaksResult.n_win_streaks} série(s) de gains · {streaksResult.n_loss_streaks} série(s) de pertes</span>
+                  <button onClick={()=>downloadCSV(`series_${streaksResult.strategy}_${new Date().toISOString().slice(0,10)}.csv`, streaksToCSVRows(streaksResult))}
+                    style={{background:"#334155",border:"none",borderRadius:6,padding:"6px 12px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+                    📥 Télécharger cette analyse (CSV)
+                  </button>
                 </div>
                 <div style={{overflowX:"auto"}}>
                   <table style={{width:"100%",borderCollapse:"collapse"}}>
