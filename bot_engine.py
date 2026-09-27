@@ -1350,6 +1350,7 @@ PROFILE_SWING = {
     "MTF_MIN_FLOW_PRESSURE": 0.0,       # seuil minimal (0 = juste "pas hostile" ; 0.15-0.3 = plus strict)
     "MTF_REQUIRE_REAL_TARGET_ZONE": 1,  # v4.308 — 1 = bloque l entree quand il n y a pas de zone opposee distincte (pas d objectif synthetique)
     "MTF_CLOSE_ON_ZONE_BREAK": 1,       # v4.309 — 1 = ferme des que le prix casse la zone d entree (avant meme le SL classique)
+    "MTF_CLOSE_ON_TREND_REVERSAL": 1,   # v4.311 — 1 = ferme des que la tendance H4 d origine se retourne completement
     "ENTRY_ENGINE_SIMPLE": 1,
     "SIMPLE_ENGINE_DYNAMIC_LEVERAGE": 0,
     # v4.296 — live : releve les trades sous le minimum Hyperliquid (10 $)
@@ -10082,6 +10083,22 @@ class BotEngine:
             state.peak_pnl_usd = pnl_usd_now
             state.absolute_peak_pnl_usd = pnl_usd_now
         reason = None
+        # v4.311 — SUR DEMANDE EXPLICITE : ferme IMMEDIATEMENT si la tendance
+        # H4 D ORIGINE (celle qui justifiait le trade) s est completement
+        # RETOURNEE (pas juste neutre — l inverse exact) pendant que la
+        # position est ouverte, au lieu d attendre le SL/la cassure de zone.
+        # Verifie en priorite (avant meme la cassure de zone) : un
+        # retournement complet de la tendance de fond est l invalidation la
+        # plus fondamentale, independante d ou se trouve le prix par rapport
+        # a la zone ou au SL. cache_only=True : jamais d appel reseau
+        # bloquant, relit juste les bougies H4 deja en cache (rafraichies a
+        # chaque cloture naturelle de bougie).
+        if cfg.get("MTF_CLOSE_ON_TREND_REVERSAL", 1):
+            want = "haussiere" if long_side else "baissiere"
+            opposite = "baissiere" if long_side else "haussiere"
+            mv = self.mtf_view(ticker, price, cache_only=True)
+            if mv and mv.get("ok") and mv["trend"] == opposite:
+                reason = "TENDANCE RETOURNEE (H4)"
         # v4.309 — SUR DEMANDE EXPLICITE : cassure structurelle de la zone
         # elle-meme (support pour un long, resistance pour un short) —
         # generalement ATTEINTE AVANT le SL classique, puisque celui-ci
@@ -10094,7 +10111,9 @@ class BotEngine:
         # d une bougie cloturee) — voulu explicitement, quitte a sortir sur
         # une simple meche.
         zone_bound = pos.get("mtf_zone_bound")
-        if cfg.get("MTF_CLOSE_ON_ZONE_BREAK", 1) and zone_bound is not None and (
+        if reason:
+            pass
+        elif cfg.get("MTF_CLOSE_ON_ZONE_BREAK", 1) and zone_bound is not None and (
             (long_side and price < zone_bound) or (not long_side and price > zone_bound)
         ):
             reason = "STRUCTURE CASSEE (zone top-down)"
