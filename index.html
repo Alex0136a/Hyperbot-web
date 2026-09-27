@@ -920,6 +920,10 @@ function App() {
   // reinitialisation complete (qui efface reellement les donnees).
   const [statsResetAt, setStatsResetAt] = useState(null);
   const [statsResetLoaded, setStatsResetLoaded] = useState(false);
+  // v4.312 — diagnostic des trades orphelins (ferme cote bot, jamais
+  // enregistre comme ferme en base) — voir GET /api/diagnostics/orphaned-trades
+  const [orphanedResult, setOrphanedResult] = useState(null);
+  const [orphanedLoading, setOrphanedLoading] = useState(false);
   const [wsEvents, setWsEvents] = useState(null);
   const [indicatorCoin, setIndicatorCoin] = useState("BTC");
   const [atrSummary, setAtrSummary] = useState(null);
@@ -1677,6 +1681,59 @@ Confirmer ?`
             }} style={{background:"#60a5fa",border:"none",borderRadius:7,padding:"10px 16px",color:"#04101f",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer"}}>
               📥 Télécharger le suivi (CSV)
             </button>
+          </div>
+          {/* v4.312 — SUR DEMANDE EXPLICITE : diagnostic des trades orphelins
+              (fermes cote bot mais jamais enregistres comme fermes en base) —
+              contourne le besoin d appeler l API a la main (console/bookmarklet
+              bloques par le navigateur de l utilisateur). */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+              <div style={{fontSize:11,color:"#94a3b8",maxWidth:560}}>
+                <b style={{color:"#e2e8f0"}}>🔍 Trades orphelins (fermés côté bot, jamais enregistrés en base)</b><br/>
+                Compare les trades marqués "ouverts" en base depuis plus de 20 minutes avec les positions réellement ouvertes côté bot — ce qui ne correspond à rien de réel est une ligne orpheline (fermeture jamais correctement enregistrée en base).
+              </div>
+              <button onClick={async()=>{
+                setOrphanedLoading(true);
+                try{
+                  const r = await apiCall("/api/diagnostics/orphaned-trades?older_than_minutes=20","GET",null,token);
+                  setOrphanedResult(r);
+                }catch(e){ alert("Erreur : "+e.message); }
+                setOrphanedLoading(false);
+              }} style={{background:"#f87171",border:"none",borderRadius:7,padding:"10px 16px",color:"#2b0505",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer"}}>
+                {orphanedLoading?"Recherche...":"🔍 Vérifier les trades orphelins"}
+              </button>
+            </div>
+            {orphanedResult && (
+              <div style={{marginTop:12,fontSize:11}}>
+                <div style={{color:"#94a3b8",marginBottom:6}}>
+                  {orphanedResult.stale_open_in_db} trade(s) "ouvert" en base depuis plus de {orphanedResult.checked_older_than_minutes} min · <b style={{color:orphanedResult.orphaned_count>0?"#f87171":"#34d399"}}>{orphanedResult.orphaned_count} orpheline(s)</b>
+                </div>
+                {orphanedResult.orphaned_count===0 ? (
+                  <div style={{color:"#34d399"}}>Aucune ligne orpheline trouvée.</div>
+                ) : (
+                  <div style={{overflowX:"auto"}}>
+                    <table style={{width:"100%",borderCollapse:"collapse"}}>
+                      <thead><tr style={{color:"#94a3b8",textAlign:"left"}}>
+                        <th style={{padding:"4px 8px"}}>ID</th><th style={{padding:"4px 8px"}}>Actif</th><th style={{padding:"4px 8px"}}>Sens</th>
+                        <th style={{padding:"4px 8px"}}>Mode</th><th style={{padding:"4px 8px"}}>Ouvert le</th><th style={{padding:"4px 8px"}}>Entrée</th>
+                      </tr></thead>
+                      <tbody>
+                        {orphanedResult.orphaned.map(t=>(
+                          <tr key={t.id} style={{borderTop:"1px solid #1e2d4a"}}>
+                            <td style={{padding:"4px 8px"}}>{t.id}</td>
+                            <td style={{padding:"4px 8px"}}>{t.coin}</td>
+                            <td style={{padding:"4px 8px"}}>{t.action}</td>
+                            <td style={{padding:"4px 8px"}}>{t.strategy}</td>
+                            <td style={{padding:"4px 8px"}}>{t.created_at}</td>
+                            <td style={{padding:"4px 8px"}}>{t.entry_price}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:assetProba?12:0}}>
