@@ -1351,6 +1351,22 @@ PROFILE_SWING = {
     "MTF_REQUIRE_REAL_TARGET_ZONE": 1,  # v4.308 — 1 = bloque l entree quand il n y a pas de zone opposee distincte (pas d objectif synthetique)
     "MTF_CLOSE_ON_ZONE_BREAK": 1,       # v4.309 — 1 = ferme des que le prix casse la zone d entree (avant meme le SL classique)
     "MTF_CLOSE_ON_TREND_REVERSAL": 1,   # v4.311 — 1 = ferme des que la tendance H4 d origine se retourne completement
+    # v4.314 — SUR DEMANDE EXPLICITE : score composite de priorisation des
+    # candidats top-down ("comportement plus large", pas seulement l instant
+    # T) — remplace le simple min(70+5xRR, 95) par une pondération de 5
+    # facteurs : R:R (40%), force du flux (20%), force de la zone / nombre
+    # de contacts (15%), performance historique REELLE de cet actif precis
+    # (15%), qualite du marche (10%). Utilise pour CLASSER les candidats
+    # quand plusieurs sont en concurrence pour un nombre limite d emplacements
+    # (SPOT_ACCUM_MAX_TRADES / ACCUMULATION_MAX_TRADES) — le mieux note
+    # gagne, au lieu d un ordre base sur le seul R:R.
+    "MTF_SCORE_WEIGHT_RR": 0.40,
+    "MTF_SCORE_WEIGHT_FLOW": 0.20,
+    "MTF_SCORE_WEIGHT_ZONE": 0.15,
+    "MTF_SCORE_WEIGHT_HISTORY": 0.15,
+    "MTF_SCORE_WEIGHT_QUALITY": 0.10,
+    "ASSET_WIN_RATE_REFRESH_SEC": 900,   # rafraichissement du cache de performance historique par actif (15 min)
+    "ASSET_WIN_RATE_MIN_TRADES": 5,      # echantillon minimal avant de faire confiance au taux de reussite d un actif
     "ENTRY_ENGINE_SIMPLE": 1,
     "SIMPLE_ENGINE_DYNAMIC_LEVERAGE": 0,
     # v4.296 — live : releve les trades sous le minimum Hyperliquid (10 $)
@@ -3550,6 +3566,13 @@ class BotEngine:
         # pas a chaque cycle — voir _refresh_funding_rates_if_due).
         self.funding_rates = {}          # ticker -> taux horaire (float)
         self._funding_last_refresh = 0.0  # timestamp du dernier rafraichissement
+        # v4.314 — SUR DEMANDE EXPLICITE : cache de la performance historique
+        # REELLE par actif (taux de reussite sur les trades top-down deja
+        # fermes), pour ponderer la priorisation des candidats top-down —
+        # rafraichi periodiquement (voir _refresh_asset_win_rates_if_due),
+        # jamais recalcule a chaque cycle (requete DB couteuse sinon).
+        self._asset_win_rates = {}       # ticker -> {"win_rate": 0-100, "n": int} ou absent si echantillon insuffisant
+        self._asset_win_rates_last_refresh = 0.0
         # Sauvegarder les noms originaux (vrais tickers sans suffixe)
         # Normaliser : si cfg["SYMBOLS"] contient deja des slot_keys, les extraire
         raw_symbols = [ticker_from_slot_key(s) for s in cfg["SYMBOLS"]]
@@ -6780,6 +6803,43 @@ class BotEngine:
         except Exception as e:
             print(f"[FUNDING] Erreur rafraichissement funding rate : {e} — cache precedent conserve.")
 
+    def _refresh_asset_win_rates_if_due(self):
+        """v4.314 — SUR DEMANDE EXPLICITE : rafraichit self._asset_win_rates
+        (taux de reussite REEL par actif, calcule depuis l historique des
+        trades top-down deja fermes — spot_accumulation et accumulation),
+        au plus une fois toutes les ASSET_WIN_RATE_REFRESH_SEC secondes (15
+        min par defaut) — c est une donnee lente (ne change significativement
+        qu avec de nouveaux trades fermes), inutile de la recalculer a
+        chaque cycle. Objectif : donner au score de priorisation des
+        candidats un vrai "comportement plus large" par actif, pas
+        seulement les donnees de l instant T — demande explicite."""
+        now_ts = time.time()
+        refresh_sec = self.cfg.get("ASSET_WIN_RATE_REFRESH_SEC", 900)
+        if (now_ts - self._asset_win_rates_last_refresh) < refresh_sec:
+            return
+        try:
+            trades = db.get_all_closed_trades()
+            by_coin = {}
+            for t in trades:
+                if (t.get("strategy") or "") not in ("spot_accumulation", "accumulation"):
+                    continue
+                pnl = t.get("pnl")
+                coin = t.get("coin")
+                if pnl is None or not coin:
+                    continue
+                by_coin.setdefault(coin, []).append(pnl)
+            min_trades = self.cfg.get("ASSET_WIN_RATE_MIN_TRADES", 5)
+            new_rates = {}
+            for coin, pnls in by_coin.items():
+                if len(pnls) < min_trades:
+                    continue  # echantillon insuffisant — reste neutre (absent du cache)
+                wins = sum(1 for p in pnls if p > 0)
+                new_rates[coin] = {"win_rate": round(wins / len(pnls) * 100, 1), "n": len(pnls)}
+            self._asset_win_rates = new_rates
+            self._asset_win_rates_last_refresh = now_ts
+        except Exception as e:
+            print(f"[ASSET-WIN-RATE] Erreur rafraichissement : {e} — cache precedent conserve.")
+
     def _check_ws_health_alert(self):
         """ALARME WebSocket — appelee une fois par cycle depuis _run.
         Detecte les TRANSITIONS de sante (sain -> defaillant, defaillant ->
@@ -7162,6 +7222,7 @@ class BotEngine:
                 self.cycle += 1
                 self._check_ws_health_alert()
                 self._refresh_funding_rates_if_due()  # v4.33
+                self._refresh_asset_win_rates_if_due()  # v4.314
                 self._decay_confidence_thresholds()
                 prices = self._get_prices_with_timeout(cfg.get("PRICE_FETCH_TIMEOUT_SEC", 10))
                 in_hours = is_trading_hours(cfg)
@@ -10039,11 +10100,38 @@ class BotEngine:
         snap["blocker"] = None
         label = "🌱 Spot-Accumulation" if long_side else "🎯 Accumulation (short)"
         flow_txt = f"flux {flow:+.2f}" if flow is not None else "flux indisponible"
+        # v4.314 — SUR DEMANDE EXPLICITE : score composite de priorisation —
+        # "comportement plus large" de l actif, pas seulement les donnees de
+        # l instant T. 5 facteurs, chacun ramene a une echelle 0-100 puis
+        # pondere (poids configurables, voir CONFIG). Un facteur dont la
+        # donnee est indisponible (flux non mesure, historique insuffisant)
+        # reste NEUTRE (50) plutot que de penaliser ou avantager par defaut.
+        rr_score = min(max((plan["rr"] - min_rr) / max(4.0 - min_rr, 0.01), 0.0), 1.0) * 100
+        flow_score = min(abs(flow), 1.0) * 100 if flow is not None else 50.0
+        zone_score = min(zone.get("touches", 1) / 10.0, 1.0) * 100
+        hist = self._asset_win_rates.get(ticker)
+        hist_score = hist["win_rate"] if hist else 50.0
+        mq = self.market_quality(ticker, state)
+        quality_penalty = 0.0
+        if mq.get("spread_pct") is not None:
+            quality_penalty += min(mq["spread_pct"] * 1000, 50)
+        if mq.get("activity_ratio") is not None and mq["activity_ratio"] < 0.3:
+            quality_penalty += 20
+        quality_score = max(0.0, 100.0 - quality_penalty)
+        confidence = (
+            cfg.get("MTF_SCORE_WEIGHT_RR", 0.40) * rr_score +
+            cfg.get("MTF_SCORE_WEIGHT_FLOW", 0.20) * flow_score +
+            cfg.get("MTF_SCORE_WEIGHT_ZONE", 0.15) * zone_score +
+            cfg.get("MTF_SCORE_WEIGHT_HISTORY", 0.15) * hist_score +
+            cfg.get("MTF_SCORE_WEIGHT_QUALITY", 0.10) * quality_score
+        )
+        score_txt = (f"score {confidence:.0f} (R:R {rr_score:.0f} · flux {flow_score:.0f} · zone {zone_score:.0f} · "
+                     f"historique {hist_score:.0f}{'' if hist else ' (neutre, echantillon insuffisant)'} · marche {quality_score:.0f})")
         path = (f"top-down : tendance {M} {want} · zone de {kind} {M} {self._zone_txt(zone)} · signal {L} : {name} · {flow_txt} · "
-                f"SL {plan['sl']:.6g} (-{plan['risk_pct']:.2f} %) · objectif {plan['tp']:.6g} (+{plan['reward_pct']:.2f} %, R:R {plan['rr']:.1f})")
+                f"SL {plan['sl']:.6g} (-{plan['risk_pct']:.2f} %) · objectif {plan['tp']:.6g} (+{plan['reward_pct']:.2f} %, R:R {plan['rr']:.1f}) · {score_txt}")
         reasons = [f"{label} — voie : {path}", f"RSI {rsi:.1f}" if rsi is not None else "RSI ?"]
         cand = {"symbol": symbol, "ticker": ticker, "state": state if long_side else pos_state,
-                "signal": "long" if long_side else "short", "price": price, "confidence": min(70 + 5 * plan["rr"], 95),
+                "signal": "long" if long_side else "short", "price": price, "confidence": confidence,
                 "rsi": rsi, "rsi_mode": mode, "reasons": reasons, "prices": prices, "conf_breakdown": {},
                 "strategy": mode, "countertrend": False, "force_paper": False, "entered_via_flirt": False,
                 "engine": "mtf", "mtf_sl": plan["sl"], "mtf_tp": plan["tp"], "mtf_notional": notional}
