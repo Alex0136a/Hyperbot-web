@@ -169,6 +169,16 @@ def init_db():
             conn.execute("ALTER TABLE trades ADD COLUMN is_accum_slot INTEGER")
         if "status" not in existing_cols:
             conn.execute("ALTER TABLE trades ADD COLUMN status TEXT")
+        if "mtf_trend_intact_at_close" not in existing_cols:
+            # v4.310 — SUR DEMANDE EXPLICITE : pour un trade top-down, la
+            # tendance H4 D ORIGINE (celle qui justifiait l entree) est-elle
+            # ENCORE dans le meme sens au moment precis de la fermeture ?
+            # NULL = non applicable (trade non top-down) ou non determinable
+            # (donnees H4 indisponibles) ; 1 = tendance encore intacte
+            # (simple repli) ; 0 = tendance deja retournee (vrai changement
+            # de regime). Objectif : distinguer objectivement les deux
+            # hypotheses sur une serie de pertes SL/structure cassee.
+            conn.execute("ALTER TABLE trades ADD COLUMN mtf_trend_intact_at_close INTEGER")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_uid ON trades(trade_uid) WHERE trade_uid IS NOT NULL")
         # v4.273 — TRADING MANUEL : ordres programmes et positions manuelles
         # (donnees completes en JSON, statut indexe).
@@ -526,12 +536,13 @@ def insert_orphaned_closed_trade(coin, action, entry_price, exit_price, pnl, rea
 
 
 def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=None, fees_paid=None,
-                exit_price_source=None):
+                exit_price_source=None, mtf_trend_intact_at_close=None):
     with _lock, _connect() as conn:
         conn.execute(
             "UPDATE trades SET exit_price=?, pnl=?, reason=?, closed_at=?, peak_pnl=?, peak_pnl_pct=?, fees_paid=?, "
-            "exit_price_source=?, status='closed' WHERE id=?",
-            (exit_price, pnl, reason, now_iso(), peak_pnl, peak_pnl_pct, fees_paid, exit_price_source, trade_id)
+            "exit_price_source=?, mtf_trend_intact_at_close=?, status='closed' WHERE id=?",
+            (exit_price, pnl, reason, now_iso(), peak_pnl, peak_pnl_pct, fees_paid, exit_price_source,
+             mtf_trend_intact_at_close, trade_id)
         )
         conn.commit()
 
