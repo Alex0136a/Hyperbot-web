@@ -2687,7 +2687,47 @@ def export_accumulation_trades(days: Optional[int] = Query(None, ge=1, le=3650),
                     headers={"Content-Disposition": f'attachment; filename="suivi_trades_{stamp}.csv"'})
 
 
-@app.get("/api/entry-diagnostics/{ticker}")
+@app.get("/api/diagnostics/orphaned-trades")
+def get_orphaned_trades(older_than_minutes: int = Query(20, ge=1, le=1440), email: str = Depends(require_user)):
+    """v4.312 — SUR DEMANDE EXPLICITE : diagnostic pour des positions
+    disparues du bot SANS AUCUNE trace (ni ouvertes, ni dans l historique).
+    Croise les lignes marquees 'ouvertes' en base depuis plus de
+    older_than_minutes avec les positions REELLEMENT ouvertes cote bot
+    (bot.states + bot.accum_states) — ce qui ne correspond a aucune position
+    reelle est une ligne ORPHELINE : la fermeture s est produite en memoire
+    (voir _safe_close_position) mais son ecriture en base a echoue (pas de
+    ligne 'open' correspondante a l instant de la fermeture, ou trade_uid
+    desynchronise), la laissant coincee 'ouverte' en base pour toujours."""
+    live_uids = set()
+    live_coin_action_strategy = set()
+    for pool in (bot.states, bot.accum_states):
+        for st in pool.values():
+            if st.position:
+                uid = st.position.get("trade_uid")
+                if uid:
+                    live_uids.add(uid)
+                ticker = be.ticker_from_slot_key(next((k for k, v in pool.items() if v is st), ""))
+                action = "LONG" if st.position.get("type") == "long" else "SHORT"
+                live_coin_action_strategy.add((ticker, action, st.position.get("strategy") or "forex"))
+    stale = db.get_stale_open_trades(older_than_minutes=older_than_minutes)
+    orphaned = []
+    for t in stale:
+        uid = t.get("trade_uid")
+        key = (t.get("coin"), t.get("action"), t.get("strategy") or "forex")
+        if uid and uid in live_uids:
+            continue  # bien vivante cote bot, juste pas encore fermee — normal
+        if not uid and key in live_coin_action_strategy:
+            continue
+        orphaned.append(t)
+    return {
+        "checked_older_than_minutes": older_than_minutes,
+        "stale_open_in_db": len(stale),
+        "orphaned_count": len(orphaned),
+        "orphaned": orphaned,
+    }
+
+
+
 def get_entry_diagnostics_one(ticker: str, email: str = Depends(require_user)):
     """v4.40 — Detail COMPLET de l instantane des portes d entree pour UN
     actif precis (tous les champs bruts, pas juste le resume compact)."""
