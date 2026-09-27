@@ -7329,6 +7329,32 @@ class BotEngine:
         pnl, _, trade = state.close_position(price, reason)
         trade["symbol"] = symbol
         trade["exit_price_source"] = exit_source
+        # v4.310 — SUR DEMANDE EXPLICITE : pour un trade top-down, enregistre
+        # si la tendance H4 D ORIGINE (celle qui justifiait l entree) est
+        # ENCORE intacte au moment precis de la fermeture — independant des
+        # etats internes du bot (mtf_be_done, tp_stage, etc.), recalcule a
+        # neuf depuis les vraies bougies H4 en cache. Objectif : distinguer
+        # objectivement un simple repli dans une tendance encore valide
+        # (tendance toujours dans le sens du trade a la sortie) d un vrai
+        # changement de regime (tendance deja repassee neutre/opposee) —
+        # question posee explicitement sur une serie de pertes SL/structure
+        # cassee. cache_only=True : ne bloque jamais la fermeture sur un
+        # appel reseau, utilise les bougies H4 deja en cache (rafraichies a
+        # chaque cloture de bougie par le cycle normal).
+        if pos and pos.get("engine") == "mtf":
+            try:
+                mv = self.mtf_view(ticker, price, cache_only=True)
+                if mv and mv.get("ok"):
+                    want = "haussiere" if pos["type"] == "long" else "baissiere"
+                    trade["mtf_trend_at_close"] = mv["trend"]
+                    trade["mtf_trend_intact_at_close"] = (mv["trend"] == want)
+                else:
+                    trade["mtf_trend_at_close"] = None
+                    trade["mtf_trend_intact_at_close"] = None
+            except Exception as e:
+                print(f"[MTF-TREND-CLOSE] {ticker} : verification impossible : {e}")
+                trade["mtf_trend_at_close"] = None
+                trade["mtf_trend_intact_at_close"] = None
         return pnl, _, trade
 
     def _manage_position_impl(self, symbol, price, state):
