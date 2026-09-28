@@ -996,7 +996,7 @@ ADVANCED_SETTINGS = {
     # v4.268 — TTP Funding
     "FUNDING_TTP_ARM_PCT":       {"label": "Funding - TTP armement (% de prix)", "default": 1.0},
     # v4.276 — regime de marche et plages horaires
-    "MARKET_REGIME_FILTER_ENABLED": {"label": "Regime de marche - filtre actif (1 = oui, 0 = non)", "default": 1},
+    "MARKET_REGIME_FILTER_ENABLED": {"label": "Regime de marche - filtre actif (1 = oui, 0 = non)", "default": 0},
     "MARKET_REGIME_BREADTH_PCT": {"label": "Regime de marche - % minimal d actifs dans le meme sens", "default": 60},
     "SITUATION_RULES_ENABLED":         {"label": "Situations de marche fond 1h x court terme 5 min (1) ou regime global (0)", "default": 1},
     "ENTRY_ENGINE_MTF":                {"label": "Moteur TOP-DOWN multi-unites de temps pour Spot-Accum / Accumulation (1/0)", "default": 1},
