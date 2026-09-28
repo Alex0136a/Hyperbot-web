@@ -61,6 +61,15 @@ async function apiCall(path, method="GET", body=null, token=null) {
 // pouvoir l envoyer facilement (ex: a Claude) sans copier-coller un
 // tableau. `rows` : tableau de tableaux (1re ligne = en-tetes) ; valeurs
 // echappees pour rester valides meme avec des virgules/guillemets dedans.
+// v4.325 — SUR DEMANDE EXPLICITE : affichage harmonise avec Hyperliquid, qui
+// montre le PnL en % de MARGE (ROE = mouvement de prix x levier). Affichage
+// SEULEMENT : les seuils internes du bot (SL, TTP, armement) restent compares
+// au mouvement de prix brut (voir bot_engine.py / v4.231).
+function _roe(pricePct, lev) {
+  if (pricePct === null || pricePct === undefined) return pricePct;
+  return lev > 1 ? pricePct * lev : pricePct;
+}
+
 function downloadCSV(filename, rows) {
   const esc = v => {
     const s = v === null || v === undefined ? "" : String(v);
@@ -3198,7 +3207,8 @@ Confirmer ?`
                         </div>
                         <div style={{display:"flex",alignItems:"center",gap:8}}>
                           <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:12,fontWeight:700}}>{trade.pnl>=0?"+":""}{trade.pnl?.toFixed(2)} USDC</span>
-                          <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:10}}>({trade.pnl_pct>=0?"+":""}{trade.pnl_pct?.toFixed(2)}%)</span>
+                          <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:10}}>({_roe(trade.pnl_pct,trade.leverage)>=0?"+":""}{_roe(trade.pnl_pct,trade.leverage)?.toFixed(2)}%)</span>
+                          {trade.leverage>1 && trade.pnl_pct!=null && <span style={{color:"#94a3b8",fontSize:9}} title="PnL affiché en % de marge comme sur Hyperliquid (mouvement de prix x levier). Les seuils du bot restent en mouvement de prix.">prix {trade.pnl_pct>=0?"+":""}{trade.pnl_pct.toFixed(2)}% · x{trade.leverage}</span>}
                           {trade.effective_mode==="live" && <span style={{color:"#94a3b8",fontSize:9}} title="PnL brut du bot (prix milieu) / PnL latent affiché par Hyperliquid (prix mark, au dernier contrôle) / PnL net après frais d'entrée et de sortie estimés (0,09 % du notionnel)">
                             {trade.pnl_hyperliquid!=null?`Hyperliquid ${trade.pnl_hyperliquid>=0?"+":""}${trade.pnl_hyperliquid.toFixed(2)} (il y a ${trade.hl_sync_age_sec}s) · `:""}net est. {trade.pnl_net_est>=0?"+":""}{trade.pnl_net_est?.toFixed(2)}</span>}
                           <button onClick={async()=>{
@@ -3237,8 +3247,9 @@ Confirmer ?`
                         <span style={{color:"#f87171"}}>SL: ${trade.stop_loss?.toFixed(4)}</span>
                         <span style={{color:"#34d399"}}>TP1: ${trade.take_profit1?.toFixed(4)}</span>
                         <span style={{color:"#34d399"}}>TP2: ${trade.take_profit2?.toFixed(4)}</span>
-                        <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:10}}>({trade.pnl_pct>=0?"+":""}{trade.pnl_pct?.toFixed(2)}%)</span>
-                        {trade.peak_pnl_pct!=null ? <span style={{color:"#c084fc",fontSize:10}}>🏔️ pic +{trade.peak_pnl_pct.toFixed(2)}%</span>
+                        <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:10}}>({_roe(trade.pnl_pct,trade.leverage)>=0?"+":""}{_roe(trade.pnl_pct,trade.leverage)?.toFixed(2)}%)</span>
+                          {trade.leverage>1 && trade.pnl_pct!=null && <span style={{color:"#94a3b8",fontSize:9}} title="PnL affiché en % de marge comme sur Hyperliquid (mouvement de prix x levier). Les seuils du bot restent en mouvement de prix.">prix {trade.pnl_pct>=0?"+":""}{trade.pnl_pct.toFixed(2)}% · x{trade.leverage}</span>}
+                        {trade.peak_pnl_pct!=null ? <span style={{color:"#c084fc",fontSize:10}}>🏔️ pic +{_roe(trade.peak_pnl_pct,trade.leverage).toFixed(2)}%{trade.leverage>1?` (prix +${trade.peak_pnl_pct.toFixed(2)}%)`:""}</span>
                           : trade.peak_pnl!=null && <span style={{color:"#c084fc",fontSize:10}}>🏔️ pic +{trade.peak_pnl.toFixed(2)}$</span>}
                       </div>
                       {/* v4.61/v4.63 — diagnostic precis du trailing : quel
@@ -3251,7 +3262,7 @@ Confirmer ?`
                         {trade.mtf_engine ? (
                           <>Top-down : {trade.mtf_be_done?"SL remonté à l'entrée (+1R atteint) — suiveur actif au-delà de +2R":"SL initial sur la zone (pas encore à +1R)"}{trade.mtf_target!=null && ` · objectif $${Number(trade.mtf_target).toPrecision(6)}`}{trade.peak_pnl_pct!=null && ` · pic +${trade.peak_pnl_pct.toFixed(2)}%`}</>
                         ) : usesUnifiedExit ? (
-                          <>Trailing : {trade.spot_accum_armed?`armé (pic interne +${trade.spot_accum_peak_pnl_pct_internal}%)`:`pas encore armé (seuil actif : ${trade.spot_accum_arm_pct_used}% de PnL, PnL actuel : ${trade.pnl_pct}%)`}</>
+                          <>Trailing : {trade.spot_accum_armed?`armé (pic interne +${trade.leverage>1?(trade.spot_accum_peak_pnl_pct_internal*trade.leverage).toFixed(2)+"% de marge":trade.spot_accum_peak_pnl_pct_internal+"%"})`:(trade.leverage>1?`pas encore armé (seuil actif : ${(trade.spot_accum_arm_pct_used*trade.leverage).toFixed(2)}% de marge = ${trade.spot_accum_arm_pct_used}% de mouvement de prix à x${trade.leverage}, actuel : ${_roe(trade.pnl_pct,trade.leverage).toFixed(2)}% de marge)`:`pas encore armé (seuil actif : ${trade.spot_accum_arm_pct_used}% de PnL, PnL actuel : ${trade.pnl_pct}%)`)}</>
                         ) : (
                           <>
                             Trailing : {trade.tp_stage===1?"tier1 armé":trade.tier0_armed?"tier0 (protection anticipée)":"aucun tier armé"}
@@ -3473,13 +3484,14 @@ Confirmer ?`
                         {trade.pnl>=0?"+":""}{trade.pnl?.toFixed(2)} USDC
                       </span>
                       <span style={{color:trade.pnl>=0?"#34d399":"#f87171",fontSize:11}}>
-                        ({trade.pnl_pct>=0?"+":""}{trade.pnl_pct?.toFixed(2)}%)
+                        ({_roe(trade.pnl_pct,trade.leverage)>=0?"+":""}{_roe(trade.pnl_pct,trade.leverage)?.toFixed(2)}%)
                       </span>
+                      {trade.leverage>1 && trade.pnl_pct!=null && <span style={{color:"#94a3b8",fontSize:10}} title="PnL affiché en % de marge comme sur Hyperliquid (mouvement de prix x levier). Les seuils du bot restent en mouvement de prix.">prix {trade.pnl_pct>=0?"+":""}{trade.pnl_pct.toFixed(2)}% · x{trade.leverage}</span>}
                       {trade.trade_mode==="live" && <span style={{color:"#94a3b8",fontSize:10}} title="Relevé dans les remplissages Hyperliquid : PnL de clôture (hors frais), frais réels d'entrée et de sortie, et résultat net pour le compte.">
                         {trade.pnl_real_hl!=null ? <>Hyperliquid : {trade.pnl_real_hl>=0?"+":""}{trade.pnl_real_hl.toFixed(2)} · frais {trade.fees_real!=null?trade.fees_real.toFixed(3):"?"} · <b style={{color:(trade.pnl_net_real||0)>=0?"#34d399":"#f87171"}}>net {trade.pnl_net_real!=null?`${trade.pnl_net_real>=0?"+":""}${trade.pnl_net_real.toFixed(2)}`:"?"}</b></>
                           : trade.fills_status ? `Hyperliquid : ${trade.fills_status}` : "Hyperliquid : relevé en cours…"}
                       </span>}
-                      {trade.peak_pnl_pct!=null ? <span style={{color:"#c084fc",fontSize:11}}>🏔️ pic +{trade.peak_pnl_pct.toFixed(2)}%</span>
+                      {trade.peak_pnl_pct!=null ? <span style={{color:"#c084fc",fontSize:11}}>🏔️ pic +{_roe(trade.peak_pnl_pct,trade.leverage).toFixed(2)}%{trade.leverage>1?` (prix +${trade.peak_pnl_pct.toFixed(2)}%)`:""}</span>
                         : trade.peak_pnl!=null && <span style={{color:"#c084fc",fontSize:11}}>🏔️ pic +{trade.peak_pnl.toFixed(2)}$</span>}
                       <button onClick={async()=>{
                         try { await apiCall("/api/paper/close","POST",{trade_id:trade.id,reason:"MANUEL"},token); } catch(e) { alert("Fermeture non effectuée : "+e.message); }
