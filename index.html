@@ -70,6 +70,16 @@ function _roe(pricePct, lev) {
   return lev > 1 ? pricePct * lev : pricePct;
 }
 
+// v4.326 — affiche une moyenne avec le nombre de trades reellement utilises
+// ("n=2/5") des qu il manque la donnee sur au moins un trade de la serie.
+function _avgN(s, avgKey, srcKey, suffix) {
+  const v = s[avgKey];
+  if (v === null || v === undefined) return "—";
+  const n = s.sample_n ? s.sample_n[srcKey] : undefined;
+  const tag = (n !== undefined && n < s.length) ? ` (n=${n}/${s.length})` : "";
+  return v + (suffix || "") + tag;
+}
+
 function downloadCSV(filename, rows) {
   const esc = v => {
     const s = v === null || v === undefined ? "" : String(v);
@@ -103,12 +113,12 @@ function streaksToCSVRows(result) {
     ["PnL total", fmt(w,s=>s.total_pnl), fmt(l,s=>s.total_pnl)],
     ["Debut", fmt(w,s=>s.start), fmt(l,s=>s.start)],
     ["Fin", fmt(w,s=>s.end), fmt(l,s=>s.end)],
-    ["Score/confiance moyen", fmt(w,s=>s.avg_confidence), fmt(l,s=>s.avg_confidence)],
-    ["Flux moyen a l'entree", fmt(w,s=>s.avg_flow_at_entry), fmt(l,s=>s.avg_flow_at_entry)],
-    ["Volatilite relative moyenne", fmt(w,s=>s.avg_vol_ratio), fmt(l,s=>s.avg_vol_ratio)],
-    ["Activite relative moyenne", fmt(w,s=>s.avg_activity_ratio), fmt(l,s=>s.avg_activity_ratio)],
-    ["Spread moyen a l'entree", fmt(w,s=>s.avg_spread_at_entry), fmt(l,s=>s.avg_spread_at_entry)],
-    ["Pic moyen atteint (%)", fmt(w,s=>s.avg_peak_pnl_pct), fmt(l,s=>s.avg_peak_pnl_pct)],
+    ["Score/confiance moyen", fmt(w,s=>_avgN(s,"avg_confidence","confidence")), fmt(l,s=>_avgN(s,"avg_confidence","confidence"))],
+    ["Flux moyen a l'entree", fmt(w,s=>_avgN(s,"avg_flow_at_entry","flow_at_entry")), fmt(l,s=>_avgN(s,"avg_flow_at_entry","flow_at_entry"))],
+    ["Volatilite relative moyenne", fmt(w,s=>_avgN(s,"avg_vol_ratio","vol_ratio")), fmt(l,s=>_avgN(s,"avg_vol_ratio","vol_ratio"))],
+    ["Activite relative moyenne", fmt(w,s=>_avgN(s,"avg_activity_ratio","activity_ratio")), fmt(l,s=>_avgN(s,"avg_activity_ratio","activity_ratio"))],
+    ["Spread moyen a l'entree", fmt(w,s=>_avgN(s,"avg_spread_at_entry","spread_at_entry")), fmt(l,s=>_avgN(s,"avg_spread_at_entry","spread_at_entry"))],
+    ["Pic moyen atteint (%)", fmt(w,s=>_avgN(s,"avg_peak_pnl_pct","peak_pnl_pct")), fmt(l,s=>_avgN(s,"avg_peak_pnl_pct","peak_pnl_pct"))],
     ["Actifs", fmt(w,s=>Object.entries(s.coin_distribution||{}).map(([c,n])=>`${c}x${n}`).join(" ")), fmt(l,s=>Object.entries(s.coin_distribution||{}).map(([c,n])=>`${c}x${n}`).join(" "))],
     ["Motifs de sortie", fmt(w,s=>Object.entries(s.reason_distribution||{}).map(([r,n])=>`${r}x${n}`).join(" ")), fmt(l,s=>Object.entries(s.reason_distribution||{}).map(([r,n])=>`${r}x${n}`).join(" "))],
     ["Heures UTC", fmt(w,s=>Object.entries(s.hour_distribution_utc||{}).map(([h,n])=>`${h}hx${n}`).join(" ")), fmt(l,s=>Object.entries(s.hour_distribution_utc||{}).map(([h,n])=>`${h}hx${n}`).join(" "))],
@@ -1859,12 +1869,12 @@ Confirmer ?`
                         ["Longueur", s=>s.length+" trades"],
                         ["PnL total", s=>(s.total_pnl>=0?"+":"")+s.total_pnl+" USDC"],
                         ["Période", s=>new Date(s.start).toLocaleString()+" → "+new Date(s.end).toLocaleString()],
-                        ["Score/confiance moy.", s=>s.avg_confidence??"—"],
-                        ["Flux moy. à l'entrée", s=>s.avg_flow_at_entry??"—"],
-                        ["Volatilité relative moy.", s=>s.avg_vol_ratio??"—"],
-                        ["Activité relative moy.", s=>s.avg_activity_ratio??"—"],
-                        ["Spread moy. à l'entrée", s=>s.avg_spread_at_entry??"—"],
-                        ["Pic moyen atteint", s=>(s.avg_peak_pnl_pct!=null?s.avg_peak_pnl_pct+"%":"—")],
+                        ["Score/confiance moy.", s=>_avgN(s,"avg_confidence","confidence")],
+                        ["Flux moy. à l'entrée", s=>_avgN(s,"avg_flow_at_entry","flow_at_entry")],
+                        ["Volatilité relative moy.", s=>_avgN(s,"avg_vol_ratio","vol_ratio")],
+                        ["Activité relative moy.", s=>_avgN(s,"avg_activity_ratio","activity_ratio")],
+                        ["Spread moy. à l'entrée", s=>_avgN(s,"avg_spread_at_entry","spread_at_entry")],
+                        ["Pic moyen atteint", s=>_avgN(s,"avg_peak_pnl_pct","peak_pnl_pct","%")],
                         ["Actifs", s=>Object.entries(s.coin_distribution||{}).map(([c,n])=>`${c}×${n}`).join(", ")],
                         ["Motifs de sortie", s=>Object.entries(s.reason_distribution||{}).map(([r,n])=>`${r}×${n}`).join(", ")],
                         ["Heures UTC", s=>Object.entries(s.hour_distribution_utc||{}).map(([h,n])=>`${h}h×${n}`).join(", ")],
