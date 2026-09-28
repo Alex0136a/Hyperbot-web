@@ -2834,9 +2834,57 @@ def get_entry_funnel(days: int = Query(7, ge=1, le=30), email: str = Depends(req
                 ass = json.loads(db.get_meta(f"funnel_assets:{d}:{m}") or "{}")
             except (TypeError, ValueError):
                 ass = {}
-            rows.append({"day": d, "counts": cnt, "assets": ass})
+            try:
+                rrs = json.loads(db.get_meta(f"funnel_rr:{d}:{m}") or "[]")
+            except (TypeError, ValueError):
+                rrs = []
+            rows.append({"day": d, "counts": cnt, "assets": ass, "rr": rrs})
         out[m] = rows
     return {"days": days, "modes": out}
+
+
+@app.get("/api/stats/blocked-signals")
+def get_blocked_signals(days: int = Query(7, ge=1, le=30), email: str = Depends(require_user)):
+    """v4.338 — SUR DEMANDE EXPLICITE : que devient un signal BLOQUE par un filtre ?
+    Pour chaque signal complet (zone + signal M15) arrete par un filtre, on regarde
+    2 h plus tard (bougies M15) si le prix a touche +1R avant le SL, le SL d abord,
+    l objectif, ou ni l un ni l autre — avec SL/objectif hypothetiques identiques
+    aux vrais trades. La ligne "candidat" (trades reellement pris) sert de reference.
+    Alimente par bot_engine._blocked_note / _blocked_followups_if_due (lecture seule)."""
+    today = datetime.now(timezone.utc).date()
+    out = {}
+    for m in ("spot_accumulation", "accumulation"):
+        gates = {}
+        for i in range(days):
+            d = (today - timedelta(days=i)).isoformat()
+            try:
+                agg = json.loads(db.get_meta(f"blocked_agg:{d}:{m}") or "{}")
+            except (TypeError, ValueError):
+                agg = {}
+            for g, v in agg.items():
+                t = gates.setdefault(g, {"n": 0, "sl": 0, "r1": 0, "tp": 0, "none": 0, "amb": 0,
+                                         "mfe": [], "mae": [], "fin": [], "assets": {}})
+                for k in ("n", "sl", "r1", "tp", "none", "amb"):
+                    t[k] += v.get(k, 0)
+                for k in ("mfe", "mae", "fin"):
+                    t[k] += v.get(k, [])
+                for e in v.get("ev", []):
+                    t["assets"].setdefault(e["t"], 0)
+                    t["assets"][e["t"]] += 1
+
+        def med(a):
+            a = sorted(a)
+            return round(a[len(a) // 2], 3) if a else None
+
+        out[m] = {g: {"n": t["n"], "sl": t["sl"], "r1": t["r1"], "tp": t["tp"], "none": t["none"], "amb": t["amb"],
+                      "mfe_med": med(t["mfe"]), "mae_med": med(t["mae"]), "fin_med": med(t["fin"]),
+                      "assets": sorted(t["assets"], key=lambda a: -t["assets"][a])}
+                  for g, t in gates.items()}
+    try:
+        pending = len(json.loads(db.get_meta("blocked_pending") or "[]"))
+    except (TypeError, ValueError):
+        pending = 0
+    return {"days": days, "modes": out, "pending": pending}
 
 
 @app.get("/api/stats/funding-streaks")
