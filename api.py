@@ -2682,7 +2682,7 @@ def export_sl_analysis(days: Optional[int] = Query(None, ge=1, le=3650), email: 
 def export_accumulation_trades(days: Optional[int] = Query(None, ge=1, le=3650),
                                tz: Optional[str] = Query(None, max_length=64),
                                email: str = Depends(require_user)):
-    """v4.265 — Suivi complet des trades Spot-Accum et Accumulation, au format
+    """v4.265 — Suivi complet des trades Spot-Accum, Accumulation, Funding et (v4.323) Forex, au format
     CSV lisible directement par Excel (separateur ;, virgule decimale).
     Les colonnes +30/+60 min se remplissent automatiquement environ une
     heure apres chaque fermeture (bougies Hyperliquid) ; pour le live, frais
@@ -2702,7 +2702,7 @@ def export_accumulation_trades(days: Optional[int] = Query(None, ge=1, le=3650),
 
 
 @app.get("/api/stats/streaks")
-def get_streaks(strategy: str = Query(..., pattern="^(funding_contrarian|spot_accumulation|accumulation)$"),
+def get_streaks(strategy: str = Query(..., pattern="^(funding_contrarian|spot_accumulation|accumulation|forex)$"),
                 email: str = Depends(require_user)):
     """v4.316/v4.318 — SUR DEMANDE EXPLICITE : detecte la plus longue serie de
     gains consecutifs et la plus longue serie de pertes consecutives, et
