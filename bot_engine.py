@@ -1347,6 +1347,7 @@ PROFILE_SWING = {
     "MTF_REQUIRE_H1_STRUCTURE": 1,      # 1 = exige la confirmation de structure H1
     "MTF_H1_STRUCTURE_EMA_PERIOD": 20,  # periode de l EMA H1 dont la pente est verifiee
     "MTF_REQUIRE_FLOW_CONFIRM": 1,      # 1 = exige la confirmation du flux de transactions
+    "MTF_FLOW_MISSING_BLOCKS": 0,       # v4.328 : 1 = bloque quand le flux est indisponible (ancien comportement) ; 0 = laisse passer (score neutre)
     "MTF_MIN_FLOW_PRESSURE": 0.0,       # seuil minimal (0 = juste "pas hostile" ; 0.15-0.3 = plus strict)
     "MTF_REQUIRE_REAL_TARGET_ZONE": 1,  # v4.308 — 1 = bloque l entree quand il n y a pas de zone opposee distincte (pas d objectif synthetique)
     "MTF_CLOSE_ON_ZONE_BREAK": 1,       # v4.309 — 1 = ferme des que le prix casse la zone d entree (avant meme le SL classique)
@@ -10199,9 +10200,32 @@ class BotEngine:
                     mm_ok = True
             if not mm_ok:
                 dist = (abs(price - (zone["high"] if long_side else zone["low"])) / price * 100) if zone else None
+                # v4.328 — diagnostic : POURQUOI le chemin "tendance" ne s active pas
+                if not cfg.get("MTF_TREND_PATH_ENABLED", 1):
+                    tp_txt = "chemin tendance desactive"
+                elif mm is None:
+                    tp_txt = "chemin tendance : pas de creux/sommet 1h exploitable"
+                else:
+                    d_atr = abs(price - mm[0]) / v["atr"] if v["atr"] else None
+                    tp_txt = (f"chemin tendance : niveau 1h a {d_atr:.2f} ATR H4 (tolerance {cfg.get('MTF_TREND_ZONE_TOLERANCE_ATR', 0.25)})"
+                              if d_atr is not None else "chemin tendance : ATR indisponible")
                 snap["blocker"] = (f"tendance {M} {want} — attente du prix dans une zone de {kind} {M} "
-                                   f"(plus proche : {self._zone_txt(zone)}" + (f", a {dist:.2f} %)" if dist is not None else ")"))
+                                   f"(plus proche : {self._zone_txt(zone)}" + (f", a {dist:.2f} %)" if dist is not None else ")")
+                                   + f" · {tp_txt}")
                 return
+        elif target is None and cfg.get("MTF_TREND_PATH_ENABLED", 1):
+            # v4.328 — zone UNIQUE (aucune zone opposee distincte) : au lieu de
+            # bloquer (MTF_REQUIRE_REAL_TARGET_ZONE), essaie l objectif par
+            # MESURE DE MOUVEMENT (swing precedent projete) — un vrai niveau
+            # issu de la structure, pas un R:R arbitraire. Constate : 5 des 9
+            # actifs en zone de support sur le dernier releve etaient en zone
+            # unique, donc bloques meme si le signal de bougie apparaissait.
+            mm2 = self._measured_move_level(state, "long" if long_side else "short")
+            if mm2 is not None:
+                _lvl2, _tgt2 = mm2
+                if (long_side and _tgt2 > price) or (not long_side and _tgt2 < price):
+                    target = {"low": _tgt2, "high": _tgt2, "touches": 1}
+                    mtf_path = "zone+mesure"
         lower = self._mtf_candles(ticker, v["lower_tf"], 60)
         name, extreme = mtf.candle_signal(lower, "long" if long_side else "short")
         if not name:
@@ -10238,7 +10262,19 @@ class BotEngine:
         if cfg.get("MTF_REQUIRE_FLOW_CONFIRM", 1):
             min_flow = cfg.get("MTF_MIN_FLOW_PRESSURE", 0.0)
             req = min_flow if long_side else -min_flow
-            flow_ok = flow is not None and (flow >= req if long_side else flow <= req)
+            # v4.328 — CORRECTION DE CALIBRAGE : "flux indisponible" (moins de 20
+            # transactions ou moins de 5 000 $ echanges sur 180 s) n est PAS un
+            # flux defavorable — c est un manque de donnees, frequent sur les
+            # actifs peu liquides (constate : SUSHI et INJ, signal M15 haussier
+            # en zone de support, bloques uniquement pour cette raison ; ~11
+            # actifs sur 29 sans donnee au meme instant). Bloquer sur ce cas
+            # (choix de v4.304) excluait justement les actifs calmes ; le score
+            # reste neutre (50) pour le flux. Repasser MTF_FLOW_MISSING_BLOCKS
+            # a 1 pour l ancien comportement.
+            if flow is None:
+                flow_ok = not cfg.get("MTF_FLOW_MISSING_BLOCKS", 0)
+            else:
+                flow_ok = (flow >= req) if long_side else (flow <= req)
             if not flow_ok:
                 snap["blocker"] = (f"signal {L} ({name}) mais flux de transactions "
                                    f"{'indisponible' if flow is None else f'{flow:+.2f}'} "
@@ -10305,7 +10341,7 @@ class BotEngine:
         )
         score_txt = (f"score {confidence:.0f} (R:R {rr_score:.0f} · flux {flow_score:.0f} · zone {zone_score:.0f} · "
                      f"historique {hist_score:.0f}{'' if hist else ' (neutre, echantillon insuffisant)'} · marche {quality_score:.0f})")
-        path_lbl = "top-down (tendance, mesure de mouvement)" if mtf_path == "tendance" else "top-down"
+        path_lbl = {"tendance": "top-down (tendance, mesure de mouvement)", "zone+mesure": "top-down (zone unique, objectif par mesure de mouvement)"}.get(mtf_path, "top-down")
         path = (f"{path_lbl} : tendance {M} {want} · zone de {kind} {M} {self._zone_txt(zone)} · signal {L} : {name} · {flow_txt} · "
                 f"SL {plan['sl']:.6g} (-{plan['risk_pct']:.2f} %) · objectif {plan['tp']:.6g} (+{plan['reward_pct']:.2f} %, R:R {plan['rr']:.1f}) · {score_txt}")
         reasons = [f"{label} — voie : {path}", f"RSI {rsi:.1f}" if rsi is not None else "RSI ?"]
