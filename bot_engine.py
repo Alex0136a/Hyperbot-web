@@ -246,6 +246,15 @@ CONFIG = {
     "FOREX_CRYPTO_MIN_TRADES": 10,       # echantillon minimal avant de fier le score
     "FOREX_CRYPTO_MIN_WIN_RATE": 55.0,   # taux de reussite minimal (%)
     "FOREX_CRYPTO_MAX_LEVERAGE": 5,      # plafond de levier pour ces cryptos (le levier reste dynamique en dessous)
+    # v4.333 — SUR DEMANDE EXPLICITE : reglages PROPRES AU MODE FOREX. Les seuils
+    # herites du crypto (armement 0.4 %, flux >= 0.3 % de pic) etaient rarement
+    # atteints par des devises (pics observes 0.01 a 0.5 %) : le trailing ne
+    # s armait presque jamais. Valeurs en % de MOUVEMENT DE PRIX (pas de marge).
+    "FOREX_TTP_ARM_PCT": 0.15,                       # armement du trailing (crypto : SPOT_ACCUM_TTP_ARM_PCT = 0.4)
+    "FOREX_TTP_FLOW_REVERSAL_MIN_PEAK_PCT": 0.12,    # pic minimal pour la sortie sur retournement de flux (crypto : 0.3)
+    "FOREX_ENTRY_MIN_PCT": 5.0,                      # fenetre d entree : % de l amplitude S/R au-dessus du support (long) / sous la resistance (short)
+    "FOREX_ENTRY_MAX_PCT": 30.0,                     # (avant : 5 a 10 %, herite du crypto)
+    "FOREX_TREND_HOLD_FILTER_ENABLED": 0,            # 0 = plus de "tendance encore intacte -> position maintenue" pour Forex
     # v4.163 — marge ISOLEE obligatoire pour les marches HIP-3 (contrairement
     # aux cryptos, en marge croisee) — voir application dans le passage d
     # ordre et l ajustement de levier.
@@ -8108,6 +8117,8 @@ class BotEngine:
             #    premier), puis suit le pic avec une marge de
             #    SPOT_ACCUM_TTP_TOLERANCE_PCT (0.5% par defaut).
             arm_pct = cfg.get("SPOT_ACCUM_TTP_ARM_PCT", 3.0)
+            if pos.get("strategy") == "forex":   # v4.333 : seuil propre au Forex
+                arm_pct = cfg.get("FOREX_TTP_ARM_PCT", arm_pct)
             # v4.230 — SUR DEMANDE EXPLICITE : tolerance desormais relative
             # a la volatilite REELLE de l actif (ATR), pas un % fixe
             # identique pour tous — un actif volatil a une tolerance plus
@@ -8176,7 +8187,9 @@ class BotEngine:
                         flow_reversed = (flow_pressure_ttp <= flow_reversal_threshold) if pos["type"] == "long" else (flow_pressure_ttp >= -flow_reversal_threshold)
                         # N agit que si un pic significatif existe deja (pas
                         # sur un trade a peine ouvert, sans profit a proteger).
-                        if flow_reversed and state.spot_accum_peak_pnl_pct >= cfg.get("TTP_FLOW_REVERSAL_MIN_PEAK_PCT", 0.3):
+                        _fr_min_peak = (cfg.get("FOREX_TTP_FLOW_REVERSAL_MIN_PEAK_PCT", 0.12) if pos.get("strategy") == "forex"
+                                        else cfg.get("TTP_FLOW_REVERSAL_MIN_PEAK_PCT", 0.3))   # v4.333
+                        if flow_reversed and state.spot_accum_peak_pnl_pct >= _fr_min_peak:
                             _result = self._safe_close_position(state, price, "TRAILING TAKE PROFIT (retournement flux)", ticker, pos, symbol, mode)
 
                             if _result is None:
@@ -8306,7 +8319,14 @@ class BotEngine:
                     # position dont on ne peut pas encore confirmer que la
                     # tendance de fond a genuinement change.
                     trend_still_intact_sa = True
-                    if cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True):
+                    # v4.333 — SUR DEMANDE EXPLICITE : filtre desactive pour Forex (comme
+                    # pour Funding) — un repli depuis le pic ne doit plus etre ignore
+                    # sous pretexte que le prix reste du bon cote de l EMA200. La
+                    # confirmation (bougie/flux + patience) reste inchangee.
+                    _hold_on = cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True)
+                    if pos.get("strategy") == "forex":
+                        _hold_on = bool(cfg.get("FOREX_TREND_HOLD_FILTER_ENABLED", 0))
+                    if _hold_on:
                         ema200_hold_sa = self._trend_ema(state)
                         if ema200_hold_sa is not None:
                             trend_still_intact_sa = (price > ema200_hold_sa) if pos["type"] == "long" else (price < ema200_hold_sa)
@@ -9743,12 +9763,12 @@ class BotEngine:
             normal_stability_cycles = cfg.get("FOREX_TREND_STABILITY_CYCLES", 24)
             long_level_ok = (
                 self._unified_trend_confirmed(prices, trend_up, state, "trend_up_streak", normal_stability_cycles, momentum_min_change_override=forex_momentum_override)
-                and self._unified_proximity_ok(price, support, resistance, "long")
+                and self._unified_proximity_ok(price, support, resistance, "long", min_pct_override=cfg.get("FOREX_ENTRY_MIN_PCT", 5.0), max_pct_override=cfg.get("FOREX_ENTRY_MAX_PCT", 30.0))
                 and self._unified_sr_amplitude_ok(support, resistance)
             )
             short_level_ok = (
                 self._unified_trend_confirmed(prices, trend_down, state, "trend_down_streak", normal_stability_cycles, momentum_min_change_override=forex_momentum_override)
-                and self._unified_proximity_ok(price, support, resistance, "short")
+                and self._unified_proximity_ok(price, support, resistance, "short", min_pct_override=cfg.get("FOREX_ENTRY_MIN_PCT", 5.0), max_pct_override=cfg.get("FOREX_ENTRY_MAX_PCT", 30.0))
                 and self._unified_sr_amplitude_ok(support, resistance)
             )
 
