@@ -856,7 +856,7 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "mtf_be_done": pos.get("mtf_be_done", False),
                 "mtf_target": pos.get("tp"),
                 "spot_accum_armed": state.spot_accum_armed,  # v4.62 — FIX : Spot-Accum a son propre armement, separe de tp_stage
-                "spot_accum_arm_pct_used": cfg.get("SPOT_ACCUM_TTP_ARM_PCT"),  # v4.63 — seuil REELLEMENT lu, pour verifier sans deviner
+                "spot_accum_arm_pct_used": (cfg.get("FOREX_TTP_ARM_PCT") if pos.get("strategy") == "forex" else cfg.get("SPOT_ACCUM_TTP_ARM_PCT")),  # v4.63 — seuil REELLEMENT lu, pour verifier sans deviner
                 "spot_accum_peak_pnl_pct_internal": round(state.spot_accum_peak_pnl_pct, 3) if state.spot_accum_peak_pnl_pct is not None else None,
                 "tier0_armed": state.tier0_armed,
                 # v4.241 — SUR DEMANDE EXPLICITE, FIX BUG D AFFICHAGE : ces
@@ -1094,6 +1094,11 @@ ADVANCED_SETTINGS = {
     "SPOT_ACCUM_TREND_STABILITY_CYCLES":   {"label": "Spot-Accum - stabilité tendance requise avant entrée (cycles ~10s)", "default": 24},
     "FOREX_TREND_STABILITY_CYCLES":       {"label": "Forex - stabilité tendance requise avant entrée (cycles ~10s)", "default": 12},
     "FOREX_ANTI_RANGE_MIN_PCT":  {"label": "Forex - mouvement minimal pour ne pas etre en range (%)", "default": 0.25},
+    "FOREX_TTP_ARM_PCT":         {"label": "Forex - armement du trailing (% de mouvement de PRIX)", "default": 0.15},
+    "FOREX_TTP_FLOW_REVERSAL_MIN_PEAK_PCT": {"label": "Forex - pic minimal pour sortie sur retournement de flux (%)", "default": 0.12},
+    "FOREX_ENTRY_MIN_PCT":       {"label": "Forex - entree : minimum (% de l'amplitude S/R)", "default": 5.0},
+    "FOREX_ENTRY_MAX_PCT":       {"label": "Forex - entree : maximum (% de l'amplitude S/R)", "default": 30.0},
+    "FOREX_TREND_HOLD_FILTER_ENABLED": {"label": "Forex - garder la position tant que la tendance tient (1 = oui, 0 = non)", "default": 0},
     "FOREX_LONG_TERM_MOMENTUM_MIN_CHANGE_PCT": {"label": "Forex - momentum long terme minimal (%)", "default": 0.4},
     "ACCUMULATION_TREND_STABILITY_CYCLES": {"label": "Accumulation - stabilité tendance requise avant entrée (cycles ~10s)", "default": 24},
     "SR_PERIOD":               {"label": "Support/Resistance - periode (cycles, repli seulement)", "default": 50},
