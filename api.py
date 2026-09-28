@@ -855,6 +855,11 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "mtf_engine": pos.get("engine") == "mtf",
                 "mtf_be_done": pos.get("mtf_be_done", False),
                 "mtf_target": pos.get("tp"),
+                # v4.336 — SL dynamique Forex : niveau courant, pic et etat (affichage)
+                "dsl_on": bool(pos.get("strategy") == "forex" and cfg.get("FOREX_DYNAMIC_SL", 1)),
+                "dsl_sl": pos.get("dsl_sl"),
+                "dsl_peak": pos.get("dsl_peak"),
+                "dsl_arm_pct": cfg.get("FOREX_TTP_ARM_PCT"),
                 "spot_accum_armed": state.spot_accum_armed,  # v4.62 — FIX : Spot-Accum a son propre armement, separe de tp_stage
                 "spot_accum_arm_pct_used": (cfg.get("FOREX_TTP_ARM_PCT") if pos.get("strategy") == "forex" else cfg.get("SPOT_ACCUM_TTP_ARM_PCT")),  # v4.63 — seuil REELLEMENT lu, pour verifier sans deviner
                 "spot_accum_peak_pnl_pct_internal": round(state.spot_accum_peak_pnl_pct, 3) if state.spot_accum_peak_pnl_pct is not None else None,
@@ -1095,6 +1100,9 @@ ADVANCED_SETTINGS = {
     "FOREX_TREND_STABILITY_CYCLES":       {"label": "Forex - stabilité tendance requise avant entrée (cycles ~10s)", "default": 12},
     "FOREX_ANTI_RANGE_MIN_PCT":  {"label": "Forex - mouvement minimal pour ne pas etre en range (%)", "default": 0.25},
     "FOREX_TTP_ARM_PCT":         {"label": "Forex - armement du trailing (% de mouvement de PRIX)", "default": 0.15},
+    "FOREX_DYNAMIC_SL":          {"label": "Forex - stop loss dynamique (1 = oui, 0 = non)", "default": 1},
+    "FOREX_DSL_FEE_PAD_PCT":     {"label": "Forex - SL dynamique : plancher apres armement = entree + frais (%)", "default": 0.10},
+    "FOREX_DSL_TRAIL_FRACTION":  {"label": "Forex - SL dynamique : distance du suiveur (fraction du gain maximal)", "default": 0.40},
     "FOREX_TTP_FLOW_REVERSAL_MIN_PEAK_PCT": {"label": "Forex - pic minimal pour sortie sur retournement de flux (%)", "default": 0.12},
     "FOREX_ENTRY_MIN_PCT":       {"label": "Forex - entree : minimum (% de l'amplitude S/R)", "default": 5.0},
     "FOREX_ENTRY_MAX_PCT":       {"label": "Forex - entree : maximum (% de l'amplitude S/R)", "default": 30.0},
