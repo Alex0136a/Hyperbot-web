@@ -702,6 +702,8 @@ def _open_positions() -> List[Dict[str, Any]]:
             # rester coherent avec CETTE decision reelle, pas avec le ROE%
             # d Hyperliquid (le montant $ ci-dessous, lui, reste correct et
             # leverage-ajuste — seul le % redevient brut).
+            # v4.325 — pnl_pct reste BRUT ici (comparable aux seuils internes) ; l interface
+            # l affiche en % de marge (x levier) comme Hyperliquid, avec le % de prix a cote.
             leverage_for_pnl = pos.get("leverage", 1)
             pnl_pct = raw_price_move_pct
             pnl = pos["size"] * leverage_for_pnl * pnl_pct / 100
@@ -831,6 +833,7 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "opened_at": opened_at_iso,
                 "pnl": round(pnl, 4),
                 "pnl_pct": round(pnl_pct, 3),
+                "roe_pct": round(pnl_pct * (leverage_for_pnl or 1), 3),  # v4.324 : % de MARGE (mouvement de prix x levier), affichage seul
                 # v4.293 — rapprochement avec Hyperliquid (positions live)
                 "pnl_hyperliquid": pos.get("hl_unrealized_pnl"),
                 "hl_sync_age_sec": round(time.time() - pos["hl_sync_ts"]) if pos.get("hl_sync_ts") else None,
@@ -936,6 +939,7 @@ def _trade_row_to_signal(row: Dict[str, Any]) -> Dict[str, Any]:
         "exit_price": row["exit_price"],
         "pnl": row["pnl"],
         "pnl_pct": exit_pnl_pct,
+        "roe_pct": (round(exit_pnl_pct * (row["leverage"] or 1), 3) if exit_pnl_pct is not None else None),  # v4.324 : % de marge, affichage seul
         "reason": row["reason"],
         "strategy": row["strategy"] if "strategy" in row.keys() else "forex",
         "peak_pnl": row["peak_pnl"] if "peak_pnl" in row.keys() else None,
