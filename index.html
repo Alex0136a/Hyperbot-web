@@ -88,7 +88,9 @@ const FUNNEL_STAGES = [
   ["signal","… et signal de bougie M15"],
   ["signal_flux","… et flux favorable ou non mesuré  ← zone + signal + flux"],
   ["h1","… et structure H1"],
-  ["candidat","Candidat généré"],
+  ["sl_ok","… et SL pas trop éloigné"],
+  ["objectif","… et objectif réel disponible"],
+  ["candidat","Candidat généré (R:R ≥ minimum)"],
   ["nt_zone","SANS tendance : prix dans une zone"],
   ["nt_signal","SANS tendance : … + signal M15"],
   ["nt_signal_flux","SANS tendance : … + flux  ← vos 3 conditions, sans tendance"],
@@ -1904,6 +1906,12 @@ Confirmer ?`
                       })}
                     </tbody>
                   </table>
+                  {(()=>{
+                    const agg={};
+                    days.forEach(d=>Object.entries(d.assets||{}).forEach(([st,l])=>{agg[st]=[...new Set([...(agg[st]||[]),...l])];}));
+                    const rowsA=[["signal_flux","Actifs zone + signal + flux"],["nt_signal_flux","Actifs zone + signal + flux SANS tendance"],["h1","… qui passent la structure H1"],["objectif","… avec un objectif réel"],["candidat","… candidats générés"]].filter(([k])=>agg[k]&&agg[k].length);
+                    return rowsA.length? <div style={{marginTop:6,fontSize:10,color:"#94a3b8"}}>{rowsA.map(([k,l])=><div key={k}>{l} : <b style={{color:"#e2e8f0"}}>{agg[k].join(", ")}</b></div>)}</div> : null;
+                  })()}
                 </div>
               );
             })}
