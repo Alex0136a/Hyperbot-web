@@ -2737,8 +2737,16 @@ def get_streaks(strategy: str = Query(..., pattern="^(funding_contrarian|spot_ac
             return None
         rows = streak["trades"]
 
+        # v4.326 — SUR DEMANDE EXPLICITE : nombre de trades REELLEMENT utilises
+        # pour chaque moyenne (les colonnes d entree — flux, volatilite,
+        # activite, spread — sont vides pour les trades ouverts avant leur
+        # enregistrement : une moyenne calculee sur 1 trade sur 5 ne doit pas
+        # se lire comme une moyenne de la serie entiere).
+        sample_n = {}
+
         def avg(key):
             vals = [r.get(key) for r in rows if r.get(key) is not None]
+            sample_n[key] = len(vals)
             return round(sum(vals) / len(vals), 3) if vals else None
 
         hour_counts = {}
@@ -2768,6 +2776,7 @@ def get_streaks(strategy: str = Query(..., pattern="^(funding_contrarian|spot_ac
             "avg_activity_ratio": avg("activity_ratio"),
             "avg_spread_at_entry": avg("spread_at_entry"),
             "avg_peak_pnl_pct": avg("peak_pnl_pct"),
+            "sample_n": sample_n,  # v4.326 : {colonne: nb de trades avec une valeur}
             "hour_distribution_utc": dict(sorted(hour_counts.items())),
             "coin_distribution": dict(sorted(coin_counts.items(), key=lambda x: -x[1])),
             "reason_distribution": reason_counts,
