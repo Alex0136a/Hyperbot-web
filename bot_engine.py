@@ -10021,7 +10021,17 @@ class BotEngine:
             snap["blocker"] = "mode desactive"
             return
         if pos_state.position:
-            snap["blocker"] = "position deja ouverte"
+            occ_strat = pos_state.position.get("strategy") or "?"
+            # v4.320 — SUR DEMANDE EXPLICITE : precise QUELLE strategie
+            # occupe reellement le slot partage (self.states, commun a
+            # Normal/Spot-Accum/Funding/Forex pour un meme actif) — sans
+            # ca, un slot occupe par Funding affichait "position deja
+            # ouverte" sous l etiquette Spot-Accum, laissant croire a tort
+            # que Spot-Accum lui-meme avait un trade ouvert. Confirme par
+            # un cas reel (NEAR : Spot-Accum disait "deja ouverte", le
+            # trade reel apparaissait sous Funding).
+            snap["blocker"] = (f"position deja ouverte (occupee par {occ_strat})" if occ_strat != mode
+                                else "position deja ouverte")
             return
         if not self._gate_active_or_auto_activate(ticker, 100, mode):
             snap["blocker"] = "actif non selectionne pour ce mode"
@@ -10318,7 +10328,10 @@ class BotEngine:
             snap["blocker"] = "mode desactive"
             return
         if pos_state.position:
-            snap["blocker"] = "position deja ouverte"
+            occ_strat = pos_state.position.get("strategy") or "?"
+            # v4.320 — voir la meme correction dans _mtf_entry ci-dessus.
+            snap["blocker"] = (f"position deja ouverte (occupee par {occ_strat})" if occ_strat != mode
+                                else "position deja ouverte")
             return
         if not self._gate_active_or_auto_activate(ticker, 100, mode):
             snap["blocker"] = "actif non selectionne pour ce mode"
