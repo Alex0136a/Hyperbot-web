@@ -234,6 +234,18 @@ CONFIG = {
     # ignorent completement, et inversement Normal ignore desormais les
     # cryptos (voir isolation dans _process).
     "FOREX_MODE_SYMBOLS": ["xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY", "PAXG"],
+    # v4.331 — SUR DEMANDE EXPLICITE : le mode Forex (stratégie "Normal") peut
+    # AUSSI trader quelques cryptos ayant un bon score, en paper comme en live
+    # (le mode paper/live reste celui du mode Forex), avec le levier dynamique
+    # habituel de ce mode (_compute_prudent_leverage). Score = taux de reussite
+    # historique REEL de l actif (tous modes confondus, hors manuel). Aucune
+    # regle horaire forex ne s applique a ces cryptos (marche 24/7), marge
+    # croisee comme les autres cryptos.
+    "FOREX_CRYPTO_ENABLED": 1,
+    "FOREX_CRYPTO_SYMBOLS": [],          # cryptos TOUJOURS eligibles (liste manuelle), en plus du score
+    "FOREX_CRYPTO_MIN_TRADES": 10,       # echantillon minimal avant de fier le score
+    "FOREX_CRYPTO_MIN_WIN_RATE": 55.0,   # taux de reussite minimal (%)
+    "FOREX_CRYPTO_MAX_LEVERAGE": 5,      # plafond de levier pour ces cryptos (le levier reste dynamique en dessous)
     # v4.163 — marge ISOLEE obligatoire pour les marches HIP-3 (contrairement
     # aux cryptos, en marge croisee) — voir application dans le passage d
     # ordre et l ajustement de levier.
@@ -3593,6 +3605,7 @@ class BotEngine:
         # jamais recalcule a chaque cycle (requete DB couteuse sinon).
         self._asset_win_rates = {}       # ticker -> {"win_rate": 0-100, "n": int} ou absent si echantillon insuffisant
         self._asset_win_rates_last_refresh = 0.0
+        self._asset_win_rates_all = {}  # v4.331 : ticker -> {"win_rate", "n"} sur TOUS les modes (hors manuel)
         # Sauvegarder les noms originaux (vrais tickers sans suffixe)
         # Normaliser : si cfg["SYMBOLS"] contient deja des slot_keys, les extraire
         raw_symbols = [ticker_from_slot_key(s) for s in cfg["SYMBOLS"]]
@@ -6989,6 +7002,21 @@ class BotEngine:
         except Exception as e:
             print(f"[FUNDING] Erreur rafraichissement funding rate : {e} — cache precedent conserve.")
 
+    def _forex_crypto_eligible(self, ticker):
+        """v4.331 — vrai si le mode Forex (Normal) peut trader cette CRYPTO :
+        actif de la liste manuelle FOREX_CRYPTO_SYMBOLS, OU score suffisant
+        (taux de reussite historique >= FOREX_CRYPTO_MIN_WIN_RATE sur au moins
+        FOREX_CRYPTO_MIN_TRADES trades, tous modes hors manuel)."""
+        cfg = self.cfg
+        if not cfg.get("FOREX_CRYPTO_ENABLED", 1):
+            return False
+        if ticker in cfg.get("FOREX_MODE_SYMBOLS", []) or ticker.startswith("xyz:"):
+            return False  # deja un actif forex, ou hors univers crypto
+        if ticker in cfg.get("FOREX_CRYPTO_SYMBOLS", []):
+            return True
+        sc = getattr(self, "_asset_win_rates_all", {}).get(ticker)
+        return bool(sc and sc["win_rate"] >= cfg.get("FOREX_CRYPTO_MIN_WIN_RATE", 55.0))
+
     def _refresh_asset_win_rates_if_due(self):
         """v4.314 — SUR DEMANDE EXPLICITE : rafraichit self._asset_win_rates
         (taux de reussite REEL par actif, calcule depuis l historique des
@@ -7006,12 +7034,16 @@ class BotEngine:
         try:
             trades = db.get_all_closed_trades()
             by_coin = {}
+            by_coin_all = {}
             for t in trades:
-                if (t.get("strategy") or "") not in ("spot_accumulation", "accumulation"):
-                    continue
                 pnl = t.get("pnl")
                 coin = t.get("coin")
                 if pnl is None or not coin:
+                    continue
+                strat = t.get("strategy") or ""
+                if strat != "manual":
+                    by_coin_all.setdefault(coin, []).append(pnl)   # v4.331 : score du mode Forex-crypto
+                if strat not in ("spot_accumulation", "accumulation"):
                     continue
                 by_coin.setdefault(coin, []).append(pnl)
             min_trades = self.cfg.get("ASSET_WIN_RATE_MIN_TRADES", 5)
@@ -7022,6 +7054,11 @@ class BotEngine:
                 wins = sum(1 for p in pnls if p > 0)
                 new_rates[coin] = {"win_rate": round(wins / len(pnls) * 100, 1), "n": len(pnls)}
             self._asset_win_rates = new_rates
+            # v4.331 — meme calcul sur tous les modes, seuil propre au mode Forex-crypto
+            fx_min = self.cfg.get("FOREX_CRYPTO_MIN_TRADES", 10)
+            self._asset_win_rates_all = {
+                c: {"win_rate": round(sum(1 for p_ in v if p_ > 0) / len(v) * 100, 1), "n": len(v)}
+                for c, v in by_coin_all.items() if len(v) >= fx_min}
             self._asset_win_rates_last_refresh = now_ts
         except Exception as e:
             print(f"[ASSET-WIN-RATE] Erreur rafraichissement : {e} — cache precedent conserve.")
@@ -9833,7 +9870,9 @@ class BotEngine:
         # dedie exclusivement au forex — ignore completement les cryptos
         # (voir isolation inverse pour Accumulation/Funding/Spot-Accum plus
         # haut dans _process).
-        if not is_forex_ticker:
+        # v4.331 — SUR DEMANDE EXPLICITE : exception pour les cryptos a bon
+        # score (voir _forex_crypto_eligible) — le mode Forex peut les trader.
+        if not (is_forex_ticker or self._forex_crypto_eligible(ticker)):
             long_entry_ok = False
             short_entry_ok = False
 
@@ -11870,6 +11909,8 @@ class BotEngine:
                 leverage = 1
         else:
             leverage = self._compute_prudent_leverage(ticker, confidence, rsi_mode)
+            if self._forex_crypto_eligible(ticker):   # v4.331 : plafond propre aux cryptos du mode Forex
+                leverage = min(leverage, max(int(cfg.get("FOREX_CRYPTO_MAX_LEVERAGE", 5)), 1))
         if cand.get("engine") == "mtf":
             # v4.299 — taille calculee sur le RISQUE (perte au SL = % fixe du capital), levier 1
             leverage = 1
