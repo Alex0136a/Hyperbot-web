@@ -1258,7 +1258,7 @@ PROFILE_SWING = {
     # reference (BTC) est du meme cote de son EMA200 sur l unite de temps
     # choisie, avec EMA50 du meme cote, ET une majorite des actifs suivis
     # (MARKET_REGIME_BREADTH_PCT) est du meme cote de sa propre EMA200.
-    "MARKET_REGIME_FILTER_ENABLED": 1,
+    "MARKET_REGIME_FILTER_ENABLED": 0,   # v4.327 : SUR DEMANDE EXPLICITE, plus de blocage global par regime de marche — chaque mode juge la tendance de SON actif
     # v4.281 — ANTI-RANGE RELATIF A L ACTIF : mouvement minimal exige =
     # amplitude horaire mediane de l actif (7 j) x ANTI_RANGE_REL_MULT x
     # racine(duree de la fenetre en heures). Les seuils absolus (*_ANTI_RANGE_MIN_PCT)
@@ -1355,6 +1355,7 @@ PROFILE_SWING = {
     # ascendant / resistance descendante + objectif par mesure de
     # mouvement), pour capter une tendance qui s eloigne de toute zone H4 —
     # OU distinct du chemin "zone" classique, pas une condition en plus.
+    "MTF_TREND_LIVE_PRICE": 1,           # v4.327 : 1 = tendance de fond calculee avec le prix live (WebSocket) ; 0 = derniere cloture H4 seule
     "MTF_TREND_PATH_ENABLED": 1,
     "MTF_TREND_ZONE_TOLERANCE_ATR": 0.25,  # tolerance (x ATR majeur) autour du support ascendant / resistance descendante
     # v4.314 — SUR DEMANDE EXPLICITE : score composite de priorisation des
@@ -10058,7 +10059,15 @@ class BotEngine:
         major = self._mtf_candles(ticker, major_tf, 260 if major_tf == "4h" else 230, cache_only=cache_only)
         if len(major) < 60:
             return {"ok": False, "why": f"historique {major_tf} insuffisant ({len(major)} bougies)"}
-        tr, ef, es = mtf.trend(major)
+        # v4.327 — SUR DEMANDE EXPLICITE : la tendance de fond suit le prix LIVE
+        # (flux WebSocket) au lieu de la seule derniere cloture H4 (jusqu a 4 h
+        # de retard sur un retournement). Le prix courant est ajoute comme
+        # derniere valeur PROVISOIRE de la serie (cloture en cours) ; desactivable
+        # via MTF_TREND_LIVE_PRICE=0 (retour au calcul sur bougies cloturees).
+        trend_candles = major
+        if price and cfg.get("MTF_TREND_LIVE_PRICE", 1):
+            trend_candles = major + [{**major[-1], "c": float(price)}]
+        tr, ef, es = mtf.trend(trend_candles)
         a = mtf.atr(major) or 0
         zones = mtf.find_zones(major, lookback=cfg.get("MTF_ZONE_LOOKBACK", 120))
         sup, res = mtf.nearest_zones(zones, price)
@@ -10088,6 +10097,22 @@ class BotEngine:
             pos_state.accumulation_gate_snapshot = snap
         if not snap["enabled"]:
             snap["blocker"] = "mode desactive"
+            return
+        # v4.327 — SUR DEMANDE EXPLICITE : un actif deja ouvert dans N IMPORTE
+        # QUEL autre mode (Spot-Accum, Accumulation, Funding, Forex — pools
+        # self.states ET self.accum_states) est indisponible ; remplace le
+        # blocage global par regime de marche. Verifie les DEUX pools (avant :
+        # seulement celui du mode courant, donc un short Accumulation pouvait
+        # s ouvrir sur un actif deja long en Spot-Accum ou en Funding).
+        _occ = None
+        for _pool in (self.states, self.accum_states):
+            _st = _pool.get(symbol)
+            if _st is not None and _st.position:
+                _occ = _st.position.get("strategy") or "?"
+                break
+        if _occ is not None:
+            snap["blocker"] = ("position deja ouverte" if _occ == mode
+                               else f"actif deja ouvert dans un autre mode ({_occ})")
             return
         if pos_state.position:
             occ_strat = pos_state.position.get("strategy") or "?"
