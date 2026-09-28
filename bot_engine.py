@@ -7866,7 +7866,21 @@ class BotEngine:
                     reason_skip = "EMA200 pas assez mature" if not data_mature else ("collecte instable" if not data_healthy else "EMA200 indisponible")
                     if state.spot_accum_reversal_count > 0:
                         self.emit("log", {"msg": f"[{ticker}] 🌱 Retournement en cours d'evaluation suspendu ({reason_skip}) — compteur conserve a {state.spot_accum_reversal_count}", "level": "dim"})
-                elif price < ema200_now:
+                elif ((price < ema200_now) if pos.get("type") == "long" else (price > ema200_now)):
+                    # v4.322 — FIX BUG CONFIRME : ce compteur ne testait QUE
+                    # "prix sous l EMA" (logique LONG), pour tous les modes
+                    # partageant ce bloc (Spot-Accum, Accumulation, Forex).
+                    # Pour un SHORT, "prix sous l EMA" = la tendance CONTINUE
+                    # dans le sens du trade : le compteur montait donc
+                    # pendant que le short gagnait, et apres ~30 min
+                    # (SPOT_ACCUM_REVERSAL_CONFIRM_CYCLES) la position etait
+                    # fermee en plein mouvement favorable ("RETOURNEMENT
+                    # CONFIRME"), puis re-ouverte quelques minutes plus tard
+                    # puisque les conditions d entree restaient valides.
+                    # Observe sur PAXG SHORT (fermes apres 26 a 65 min) : 14
+                    # des 16 sorties "RETOURNEMENT CONFIRME" du lot Forex
+                    # etaient des SHORT. Le bloc dedie Accumulation (plus
+                    # haut) gerait deja correctement les deux sens.
                     state.spot_accum_reversal_count += 1
                 else:
                     state.spot_accum_reversal_count = 0
@@ -7888,7 +7902,7 @@ class BotEngine:
                         self._register_win(ticker)
                     else:
                         self._register_max_loss(ticker, pos.get("confidence"))
-                    self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} RETOURNEMENT CONFIRME (prix sous l'EMA200 depuis {confirm_needed} cycles, donnees matures et saines) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "warn"})
+                    self.emit("log", {"msg": f"[{ticker}] {mode_label_sa} RETOURNEMENT CONFIRME (prix {'sous' if pos.get('type') == 'long' else 'au-dessus de'} l'EMA depuis {confirm_needed} cycles, donnees matures et saines) @ ${price:.2f} | PnL: ${pnl:.2f}", "level": "warn"})
                     state.spot_accum_reversal_count = 0
                     self._save_open_positions()
                     return
