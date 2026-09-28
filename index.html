@@ -96,6 +96,19 @@ const FUNNEL_STAGES = [
   ["nt_signal_flux","SANS tendance : … + flux  ← vos 3 conditions, sans tendance"],
 ];
 const FUNNEL_MODES = {spot_accumulation:"🌱 Spot-Accum", accumulation:"🎯 Accumulation"};
+// v4.337 — resume des refus apres la structure H1 (SL trop loin / sans objectif / R:R)
+function funnelRefusals(days) {
+  const all = days.flatMap(d => d.rr || []);
+  const med = a => { const v=a.filter(x=>x!=null).sort((x,y)=>x-y); return v.length ? v[Math.floor(v.length/2)] : null; };
+  const out = [];
+  const rr = all.filter(x=>x.k==="rr");
+  if (rr.length) out.push([`R:R sous le minimum : ${rr.length} refus, R:R médian ${med(rr.map(x=>x.rr))}, risque médian ${med(rr.map(x=>x.risk))} %, gain médian ${med(rr.map(x=>x.gain))} %`, [...new Set(rr.map(x=>x.t))].join(", ")]);
+  const so = all.filter(x=>x.k==="sans_objectif");
+  if (so.length) out.push([`Sans objectif réel : ${so.length} refus, risque médian ${med(so.map(x=>x.risk))} %`, [...new Set(so.map(x=>x.t))].join(", ")]);
+  const sf = all.filter(x=>x.k==="sl_far");
+  if (sf.length) out.push([`SL trop éloigné : ${sf.length} refus, risque médian ${med(sf.map(x=>x.risk))} %`, [...new Set(sf.map(x=>x.t))].join(", ")]);
+  return out;
+}
 function funnelRows(result) {
   const rows = [];
   for (const [mode, label] of Object.entries(FUNNEL_MODES)) {
@@ -105,7 +118,36 @@ function funnelRows(result) {
       const vals = days.map(d=>(d.counts||{})[key]||0);
       rows.push([lbl, ...vals, vals.reduce((a,b)=>a+b,0)]);
     }
+    // v4.337 — actifs concernes par etape + refus apres H1 (dans le CSV pour analyse)
+    const aggA = {};
+    days.forEach(d => Object.entries(d.assets||{}).forEach(([st,l]) => { aggA[st] = [...new Set([...(aggA[st]||[]), ...l])]; }));
+    for (const [st, lbl] of [["signal_flux","Actifs zone + signal + flux"],["nt_signal_flux","Actifs zone + signal + flux SANS tendance"],["h1","Actifs qui passent la structure H1"],["objectif","Actifs avec un objectif réel"],["candidat","Actifs candidats"]]) {
+      if (aggA[st] && aggA[st].length) rows.push([lbl, aggA[st].join(" ")]);
+    }
+    funnelRefusals(days).forEach(([a,b]) => rows.push([a, b]));
     rows.push([]);
+  }
+  return rows;
+}
+
+// v4.338 — suivi des signaux bloques : libelles et lignes CSV
+const BLOCKED_GATES = [
+  ["candidat","Candidat généré = trades réellement pris (référence)"],
+  ["h1","Bloqué par la structure H1"],
+  ["flux","Bloqué par le flux défavorable"],
+  ["sl_far","Bloqué : SL trop éloigné"],
+  ["sans_objectif","Bloqué : sans objectif réel"],
+  ["rr","Bloqué : R:R insuffisant"],
+];
+const _pct = (v,n) => n ? Math.round(v/n*100) : "—";
+function blockedRows(result) {
+  const rows = [["Mode","Etape","Signaux","+1R avant SL (%)","Objectif (%)","SL d'abord (%)","Ni l'un ni l'autre (%)","dont ambigus","Gain max median (%)","Perte max mediane (%)","Variation a 2 h mediane (%)","Actifs"]];
+  for (const [mode, label] of Object.entries(FUNNEL_MODES)) {
+    const g = (result.modes||{})[mode] || {};
+    for (const [k, lbl] of BLOCKED_GATES) {
+      const v = g[k]; if (!v) continue;
+      rows.push([label, lbl, v.n, _pct(v.r1,v.n), _pct(v.tp,v.n), _pct(v.sl,v.n), _pct(v.none,v.n), v.amb, v.mfe_med, v.mae_med, v.fin_med, (v.assets||[]).join(" ")]);
+    }
   }
   return rows;
 }
@@ -1034,6 +1076,9 @@ function App() {
   const [orphanedLoading, setOrphanedLoading] = useState(false);
   // v4.316 — analyse des series de gains/pertes Funding
   // v4.330 — entonnoir d entree (nombre d alignements des conditions sur 7 jours)
+  // v4.338 — suivi des signaux bloques (que s est-il passe 2 h apres ?)
+  const [blockedResult, setBlockedResult] = useState(null);
+  const [blockedLoading, setBlockedLoading] = useState(false);
   const [funnelResult, setFunnelResult] = useState(null);
   const [funnelLoading, setFunnelLoading] = useState(false);
   const [streaksResult, setStreaksResult] = useState(null);
@@ -1910,11 +1955,77 @@ Confirmer ?`
                     const agg={};
                     days.forEach(d=>Object.entries(d.assets||{}).forEach(([st,l])=>{agg[st]=[...new Set([...(agg[st]||[]),...l])];}));
                     const rowsA=[["signal_flux","Actifs zone + signal + flux"],["nt_signal_flux","Actifs zone + signal + flux SANS tendance"],["h1","… qui passent la structure H1"],["objectif","… avec un objectif réel"],["candidat","… candidats générés"]].filter(([k])=>agg[k]&&agg[k].length);
-                    return rowsA.length? <div style={{marginTop:6,fontSize:10,color:"#94a3b8"}}>{rowsA.map(([k,l])=><div key={k}>{l} : <b style={{color:"#e2e8f0"}}>{agg[k].join(", ")}</b></div>)}</div> : null;
+                    const ref=funnelRefusals(days);
+                    return (rowsA.length||ref.length)? <div style={{marginTop:6,fontSize:10,color:"#94a3b8"}}>{rowsA.map(([k,l])=><div key={k}>{l} : <b style={{color:"#e2e8f0"}}>{agg[k].join(", ")}</b></div>)}{ref.map(([a,b],i)=><div key={"r"+i}>{a} : <b style={{color:"#e2e8f0"}}>{b}</b></div>)}</div> : null;
                   })()}
                 </div>
               );
             })}
+          </div>
+          {/* v4.338 — SUR DEMANDE EXPLICITE : que devient un signal bloque ?
+              Compare, 2 h apres, le prix aux SL/objectif hypothetiques. */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+              <div style={{fontSize:11,color:"#94a3b8",maxWidth:560}}>
+                <b style={{color:"#e2e8f0"}}>🧪 Signaux bloqués : que s'est-il passé ensuite ?</b><br/>
+                Pour chaque signal arrêté par un filtre, on regarde 2 h plus tard si le prix a gagné autant que le risque (+1R) avant de toucher le SL. Comparez chaque ligne à la référence (trades réellement pris) : un filtre est déraisonnable s'il bloque des signaux qui auraient fait au moins aussi bien.
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <button onClick={async()=>{
+                  setBlockedLoading(true);
+                  try{ setBlockedResult(await apiCall("/api/stats/blocked-signals?days=7","GET",null,token)); }
+                  catch(e){ alert("Erreur : "+e.message); }
+                  setBlockedLoading(false);
+                }} style={{background:"#a78bfa",border:"none",borderRadius:7,padding:"10px 16px",color:"#1e1040",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer"}}>
+                  {blockedLoading?"Chargement...":"🧪 Voir le suivi"}
+                </button>
+                {blockedResult && (
+                  <button onClick={()=>downloadCSV(`signaux_bloques_${new Date().toISOString().slice(0,10)}.csv`, blockedRows(blockedResult))}
+                    style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 16px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                    📥 CSV
+                  </button>
+                )}
+              </div>
+            </div>
+            {blockedResult && (
+              <div style={{marginTop:10,fontSize:11}}>
+                <div style={{color:"#94a3b8",marginBottom:6}}>{blockedResult.pending} signal(aux) en attente d'évaluation (résultat visible 2 h 15 après le blocage).</div>
+                {Object.entries(FUNNEL_MODES).map(([mode,label])=>{
+                  const g=(blockedResult.modes||{})[mode]||{};
+                  const rowsG=BLOCKED_GATES.filter(([k])=>g[k]);
+                  return (
+                    <div key={mode} style={{marginTop:8,overflowX:"auto"}}>
+                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                        <thead><tr style={{color:"#94a3b8",textAlign:"right"}}>
+                          <th style={{padding:"4px 8px",textAlign:"left",color:"#e2e8f0"}}>{label}</th>
+                          <th style={{padding:"4px 8px"}}>Signaux</th><th style={{padding:"4px 8px",color:"#34d399"}}>+1R avant SL</th>
+                          <th style={{padding:"4px 8px",color:"#34d399"}}>Objectif</th><th style={{padding:"4px 8px",color:"#f87171"}}>SL d'abord</th>
+                          <th style={{padding:"4px 8px"}}>Ni l'un ni l'autre</th><th style={{padding:"4px 8px"}}>Gain max méd.</th>
+                          <th style={{padding:"4px 8px"}}>Perte max méd.</th><th style={{padding:"4px 8px"}}>À 2 h méd.</th>
+                        </tr></thead>
+                        <tbody>
+                          {rowsG.length===0 && <tr><td colSpan={9} style={{padding:"6px 8px",color:"#94a3b8",textAlign:"left"}}>Pas encore de signal évalué.</td></tr>}
+                          {rowsG.map(([k,lbl])=>{const v=g[k]; const ref=k==="candidat";
+                            return (
+                              <tr key={k} style={{borderTop:"1px solid #1e2d4a",background:ref?"#13203a":"transparent"}}>
+                                <td style={{padding:"4px 8px",textAlign:"left",color:ref?"#e2e8f0":"#94a3b8"}} title={(v.assets||[]).join(", ")}>{lbl}</td>
+                                <td style={{padding:"4px 8px",textAlign:"right",fontWeight:700,color:"#e2e8f0"}}>{v.n}</td>
+                                <td style={{padding:"4px 8px",textAlign:"right"}}>{_pct(v.r1,v.n)}{v.n?"%":""}</td>
+                                <td style={{padding:"4px 8px",textAlign:"right"}}>{_pct(v.tp,v.n)}{v.n?"%":""}</td>
+                                <td style={{padding:"4px 8px",textAlign:"right"}}>{_pct(v.sl,v.n)}{v.n?"%":""}{v.amb?` (dont ${v.amb} ambigus)`:""}</td>
+                                <td style={{padding:"4px 8px",textAlign:"right"}}>{_pct(v.none,v.n)}{v.n?"%":""}</td>
+                                <td style={{padding:"4px 8px",textAlign:"right"}}>{v.mfe_med??"—"}%</td>
+                                <td style={{padding:"4px 8px",textAlign:"right"}}>{v.mae_med??"—"}%</td>
+                                <td style={{padding:"4px 8px",textAlign:"right"}}>{v.fin_med??"—"}%</td>
+                              </tr>
+                            );})}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
           {/* v4.316/v4.318 — SUR DEMANDE EXPLICITE : plus longue serie de
               gains vs plus longue serie de pertes, pour Funding, Spot-Accum
