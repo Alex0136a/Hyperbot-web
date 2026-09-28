@@ -254,6 +254,16 @@ CONFIG = {
     "FOREX_TTP_FLOW_REVERSAL_MIN_PEAK_PCT": 0.12,    # pic minimal pour la sortie sur retournement de flux (crypto : 0.3)
     "FOREX_ENTRY_MIN_PCT": 5.0,                      # fenetre d entree : % de l amplitude S/R au-dessus du support (long) / sous la resistance (short)
     "FOREX_ENTRY_MAX_PCT": 30.0,                     # (avant : 5 a 10 %, herite du crypto)
+    # v4.336 — SUR DEMANDE EXPLICITE : STOP LOSS DYNAMIQUE pour Forex (remplace le
+    # plancher pur). Le SL MONTE (jamais ne descend) au fur et a mesure que le
+    # gain progresse : breakeven + frais des l armement, puis suiveur a distance
+    # max(marge ATR, fraction du gain maximal). Valeurs en % de mouvement de PRIX.
+    "FOREX_DYNAMIC_SL": 1,
+    "FOREX_DSL_FEE_PAD_PCT": 0.10,        # plancher apres armement : entree + frais aller-retour (~0.09 % en taker)
+    "FOREX_DSL_TRAIL_FRACTION": 0.40,     # distance du suiveur >= 40 % du gain maximal (jamais plus serre que la marge ATR)
+    "FOREX_DSL_FALLBACK_TOL_PCT": 0.08,   # marge de repli si l ATR n est pas encore disponible
+    "FOREX_DSL_EXCHANGE_MIN_STEP_PCT": 0.03,  # live : ne met a jour le SL natif Hyperliquid que si le SL a bouge d au moins ce %
+    "FOREX_PURE_FLOOR": 0,                # v4.335 (plancher pur) : desactive tant que le SL dynamique est actif                           # v4.335 : 1 = plancher pur (pic - marge ATR), sans condition de bougie/flux, comme Funding
     "FOREX_TREND_HOLD_FILTER_ENABLED": 0,            # 0 = plus de "tendance encore intacte -> position maintenue" pour Forex
     # v4.163 — marge ISOLEE obligatoire pour les marches HIP-3 (contrairement
     # aux cryptos, en marge croisee) — voir application dans le passage d
@@ -7031,6 +7041,72 @@ class BotEngine:
         except Exception as e:
             print(f"[FUNDING] Erreur rafraichissement funding rate : {e} — cache precedent conserve.")
 
+    def _forex_dynamic_sl(self, state, pos, price, pnl_pct, ticker, symbol, mode):
+        """v4.336 — STOP LOSS DYNAMIQUE (Forex). Retourne True si la position a ete
+        fermee ce cycle (ou si une fermeture est en cours de nouvelle tentative).
+        Le SL ne fait que MONTER pour un long (descendre pour un short) :
+          - avant armement (pic < FOREX_TTP_ARM_PCT) : rien, le SL initial reste ;
+          - apres armement : plancher = entree + frais (FOREX_DSL_FEE_PAD_PCT), puis
+            suiveur = pic - max(marge ATR, FOREX_DSL_TRAIL_FRACTION x pic).
+        Le SL est memorise sur la position (dsl_sl, persiste au redemarrage), reflete
+        dans pos["sl"] (affichage) et, en live, pousse vers le SL natif Hyperliquid."""
+        cfg = self.cfg
+        long_side = pos["type"] == "long"
+        entry = pos["entry"]
+        peak = max(pos.get("dsl_peak") or 0.0, pnl_pct)
+        pos["dsl_peak"] = peak
+        arm = cfg.get("FOREX_TTP_ARM_PCT", 0.15)
+        if peak >= arm and price > 0:
+            atr_abs, _ = calc_true_range_atr(list(state.candle_history), cfg.get("ATR_PERIOD", 14))
+            if atr_abs is not None and atr_abs > 0:
+                tol = atr_abs / price * 100 * cfg.get("TTP_ATR_TOLERANCE_MULTIPLIER", 1.0)
+            else:
+                tol = cfg.get("FOREX_DSL_FALLBACK_TOL_PCT", 0.08)
+            dist = max(tol, peak * cfg.get("FOREX_DSL_TRAIL_FRACTION", 0.40))
+            floor_pct = max(cfg.get("FOREX_DSL_FEE_PAD_PCT", 0.10), peak - dist)
+            new_sl = entry * (1 + floor_pct / 100) if long_side else entry * (1 - floor_pct / 100)
+            cur = pos.get("dsl_sl")
+            if cur is None or (long_side and new_sl > cur) or ((not long_side) and new_sl < cur):
+                pos["dsl_sl"] = new_sl
+                if (long_side and new_sl > pos["sl"]) or ((not long_side) and new_sl < pos["sl"]):
+                    pos["sl"] = new_sl
+                pushed = pos.get("dsl_sl_pushed")
+                step = cfg.get("FOREX_DSL_EXCHANGE_MIN_STEP_PCT", 0.03)
+                if mode == "live" and self.exchange is not None and (
+                        pushed is None or abs(new_sl - pushed) / entry * 100 >= step):
+                    try:
+                        update_sl_on_hyperliquid(self.exchange, self.info, self.cfg.get("WALLET_ADDRESS"), ticker,
+                                                 {"type": pos["type"], "entry": entry,
+                                                  "size": pos["size"] * pos.get("leverage", 1)},
+                                                 new_sl, cfg)
+                        pos["dsl_sl_pushed"] = new_sl
+                    except Exception as e:
+                        print(f"[DSL] Mise a jour du SL natif {ticker} impossible : {e}")
+                self._save_open_positions()
+        sl = pos.get("dsl_sl")
+        if sl is not None and ((long_side and price <= sl) or ((not long_side) and price >= sl)):
+            _result = self._safe_close_position(state, price, "STOP DYNAMIQUE (Forex)", ticker, pos, symbol, mode)
+            if _result is None:
+                return True   # fermeture reelle non confirmee : on reessaie au cycle suivant
+            pnl, _, trade = _result
+            self.emit("trade", trade)
+            if pnl > 0:
+                self._register_win(ticker)
+            else:
+                self._register_max_loss(ticker, pos.get("confidence"))
+            if long_side:
+                state.post_win_confirm_long = True
+                state.confirm_count_long = 0
+            else:
+                state.post_win_confirm_short = True
+                state.confirm_count_short = 0
+            self.emit("log", {"msg": f"[{ticker}] ⚡ Forex STOP DYNAMIQUE @ ${price:.5g} (SL ${sl:.5g}, pic +{peak:.2f}%) | PnL: ${pnl:.2f}",
+                              "level": "win" if pnl > 0 else "loss"})
+            self._save_open_positions()
+            self._persist_capital_snapshot()
+            return True
+        return False
+
     def _forex_crypto_eligible(self, ticker):
         """v4.331 — vrai si le mode Forex (Normal) peut trader cette CRYPTO :
         actif de la liste manuelle FOREX_CRYPTO_SYMBOLS, OU score suffisant
@@ -7869,6 +7945,11 @@ class BotEngine:
             }
             mode_label_sa = _label_map_sa.get(pos.get("strategy"), "🎯 Accumulation")
 
+            # v4.336 — SUR DEMANDE EXPLICITE : SL dynamique Forex (voir _forex_dynamic_sl)
+            _forex_dsl_on = pos.get("strategy") == "forex" and bool(cfg.get("FOREX_DYNAMIC_SL", 1))
+            if _forex_dsl_on and self._forex_dynamic_sl(state, pos, price, pnl_pct, ticker, symbol, mode):
+                return
+
             # v4.227 — SUR DEMANDE EXPLICITE : etoile filante ROUGE
             # confirmee sur 30 min — signal de sortie pour une position
             # LONG existante (Spot-Accum). Verifiee tot dans le bloc,
@@ -8302,7 +8383,13 @@ class BotEngine:
                     if flow_pressure_gate is not None:
                         gate_threshold = cfg.get("TTP_FLOW_GATE_THRESHOLD", 0.15)
                         color_reversed_sa = (flow_pressure_gate <= -gate_threshold) if pos["type"] == "long" else (flow_pressure_gate >= gate_threshold)
-                if color_reversed_sa and pnl_pct <= state.spot_accum_peak_pnl_pct - tolerance_pct:
+                # v4.335 — SUR DEMANDE EXPLICITE : PLANCHER PUR pour Forex, comme pour
+                # Funding (v4.315) — la fermeture ne depend plus d une bougie ou d un
+                # flux qui se retourne : des que le PnL repasse sous (pic - marge de
+                # repli ATR), on ferme. Desactivable via FOREX_PURE_FLOOR = 0.
+                if pos.get("strategy") == "forex" and cfg.get("FOREX_PURE_FLOOR", 1):
+                    color_reversed_sa = True
+                if color_reversed_sa and pnl_pct <= state.spot_accum_peak_pnl_pct - tolerance_pct and not _forex_dsl_on:
                     # v4.83 — SUR DEMANDE EXPLICITE : meme filtre "la
                     # tendance tient toujours" que tier0/tier1 (v4.77/v4.82),
                     # etendu a Spot-Accum — le seuil structurel (support +
@@ -8323,9 +8410,18 @@ class BotEngine:
                     # pour Funding) — un repli depuis le pic ne doit plus etre ignore
                     # sous pretexte que le prix reste du bon cote de l EMA200. La
                     # confirmation (bougie/flux + patience) reste inchangee.
+                    # v4.334 — CORRECTION D UN BUG DE MON CORRECTIF v4.333 : la valeur par
+                    # defaut de trend_still_intact_sa est True (benefice du doute quand l
+                    # EMA200 est indisponible). Avec le filtre desactive, elle restait donc
+                    # True et la branche "tendance intacte -> position maintenue" s
+                    # executait TOUJOURS (le plafond de redonnage ne s active qu a partir
+                    # d un pic de 2.5 %, jamais atteint en Forex) : l inverse du but voulu.
+                    # Desormais, filtre desactive => "tendance intacte" = False.
                     _hold_on = cfg.get("TTP_TREND_HOLD_FILTER_ENABLED", True)
                     if pos.get("strategy") == "forex":
                         _hold_on = bool(cfg.get("FOREX_TREND_HOLD_FILTER_ENABLED", 0))
+                        if not _hold_on:
+                            trend_still_intact_sa = False
                     if _hold_on:
                         ema200_hold_sa = self._trend_ema(state)
                         if ema200_hold_sa is not None:
