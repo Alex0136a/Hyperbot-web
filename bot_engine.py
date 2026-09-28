@@ -12188,7 +12188,7 @@ class BotEngine:
             # perte $ reste plafonnee (SL en % de E) — ce chiffre SOUS-ESTIME
             # donc le vrai ratio $ reel des que le levier depasse x1 (le
             # ratio reel s ameliore avec le levier, puisque seul le gain grossit).
-            "risk_reward": round(arm1_price_pct / sl_pct_of_e, 2) if sl_pct_of_e else None,
+            "risk_reward": round(arm1_price_pct * max(leverage, 1) / sl_pct_of_e, 2) if sl_pct_of_e else None,  # v4.324 : x levier (le SL est en % de E, le TTP en % de prix)
             "timeframe": cfg.get("PROFILE", "swing"),
             "entry": price,
             "stop_loss": sl_p,
