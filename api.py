@@ -2204,8 +2204,11 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
         # trade que FOREX_MODE_SYMBOLS (devises xyz + PAXG). Pour une crypto,
         # "aucun obstacle" etait trompeur — et pour une devise, le filtre
         # anti-range (blocage le plus frequent) n apparaissait pas.
-        if ticker not in cfg.get("FOREX_MODE_SYMBOLS", []):
-            blocker_long = blocker_short = "non concerne (crypto : le mode Forex ne trade que les devises et PAXG)"
+        if ticker not in cfg.get("FOREX_MODE_SYMBOLS", []) and not bot._forex_crypto_eligible(ticker):
+            _sc = getattr(bot, "_asset_win_rates_all", {}).get(ticker)
+            _why = (f"score {_sc['win_rate']:.0f}% sur {_sc['n']} trades < {cfg.get('FOREX_CRYPTO_MIN_WIN_RATE', 55.0)}%"
+                    if _sc else f"score non etabli (moins de {cfg.get('FOREX_CRYPTO_MIN_TRADES', 10)} trades)")
+            blocker_long = blocker_short = f"non concerne (crypto non eligible au mode Forex : {_why})"
         elif not has_position and (snap.get("forex_ranging") or snap.get("quality_block")):
             range_txt = snap.get("quality_block") or snap.get("forex_range_text") or "marche en range"
             blocker_long = blocker_long or range_txt
