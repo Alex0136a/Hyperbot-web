@@ -548,7 +548,7 @@ def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=N
 
 
 # ── v4.265 — Suivi apres sortie + export ─────────────────────────────────
-FOLLOWUP_STRATEGIES = ("spot_accumulation", "accumulation", "funding_contrarian", "manual")  # v4.269 : + Funding ; v4.273 : + Manuel
+FOLLOWUP_STRATEGIES = ("spot_accumulation", "accumulation", "funding_contrarian", "forex", "manual")  # v4.269 : + Funding ; v4.273 : + Manuel ; v4.323 : + Forex (export CSV et suivi +30/+60 min)
 
 
 def list_trades_needing_followup(min_age_minutes=62, max_age_days=16, limit=5):
