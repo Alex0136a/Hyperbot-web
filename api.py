@@ -2795,6 +2795,30 @@ def get_streaks(strategy: str = Query(..., pattern="^(funding_contrarian|spot_ac
     }
 
 
+@app.get("/api/stats/entry-funnel")
+def get_entry_funnel(days: int = Query(7, ge=1, le=30), email: str = Depends(require_user)):
+    """v4.330 — SUR DEMANDE EXPLICITE : entonnoir d entree du top-down, par jour
+    UTC. Chaque compte = un actif sur une fenetre de 15 min ou l etape a ete
+    atteinte au moins une fois (alimente par bot_engine._funnel_note, lecture
+    seule). Etapes : eval, tendance, zone, signal, signal_flux (zone + signal
+    M15 + flux favorable ou non mesure), h1, candidat ; et nt_* = memes
+    alignements mesures quand la tendance H4 bloquait."""
+    today = datetime.now(timezone.utc).date()
+    out = {}
+    for m in ("spot_accumulation", "accumulation"):
+        rows = []
+        for i in range(days):
+            d = (today - timedelta(days=i)).isoformat()
+            raw = db.get_meta(f"funnel:{d}:{m}")
+            try:
+                cnt = json.loads(raw) if raw else {}
+            except (TypeError, ValueError):
+                cnt = {}
+            rows.append({"day": d, "counts": cnt})
+        out[m] = rows
+    return {"days": days, "modes": out}
+
+
 @app.get("/api/stats/funding-streaks")
 def get_funding_streaks(email: str = Depends(require_user)):
     """v4.316 — CONSERVE pour compatibilite (l URL existante continue de
