@@ -1356,6 +1356,7 @@ PROFILE_SWING = {
     # ascendant / resistance descendante + objectif par mesure de
     # mouvement), pour capter une tendance qui s eloigne de toute zone H4 —
     # OU distinct du chemin "zone" classique, pas une condition en plus.
+    "MTF_ENTRY_ALLOW_PULLBACK_TREND": 1, # v4.329 : 1 = accepte aussi repli/rebond avec structure EMA50/EMA200 intacte (pas seulement prix > EMA50 > EMA200)
     "MTF_TREND_LIVE_PRICE": 1,           # v4.327 : 1 = tendance de fond calculee avec le prix live (WebSocket) ; 0 = derniere cloture H4 seule
     "MTF_TREND_PATH_ENABLED": 1,
     "MTF_TREND_ZONE_TOLERANCE_ATR": 0.25,  # tolerance (x ATR majeur) autour du support ascendant / resistance descendante
@@ -5536,6 +5537,34 @@ class BotEngine:
         if any(c[2] < low_last for c in window[i_last + 1:]):
             return None  # creux casse depuis (cloture en dessous)
         return low_last
+
+    def _mm_reason(self, state, direction):
+        """v4.329 — DIAGNOSTIC : pourquoi _measured_move_level ne renvoie rien
+        (avant, un seul message "pas de creux/sommet 1h exploitable" pour 5
+        causes differentes). Reprend les memes conditions, dans le meme ordre."""
+        k = int(self.cfg.get("SPOT_ACCUM_PIVOT_CANDLES", 2))
+        candles = list(state.candle_history_1h)
+        window = candles[-int(self.cfg.get("SPOT_ACCUM_PIVOT_LOOKBACK_CANDLES", 72)):]
+        if len(window) < 2 * k + 3:
+            return f"historique 1h insuffisant ({len(window)} bougies)"
+        long = direction == "long"
+        col = 1 if long else 0
+        name = "creux" if long else "sommet"
+        pivots = [(i, window[i][col]) for i in range(k, len(window) - k)
+                  if all((window[i][col] < window[j][col]) if long else (window[i][col] > window[j][col])
+                         for j in range(i - k, i + k + 1) if j != i)]
+        if len(pivots) < 2:
+            return f"{len(pivots)} {name} 1h sur {len(window)} bougies (2 requis)"
+        (_, prev), (i_last, last) = pivots[-2], pivots[-1]
+        if long and last <= prev:
+            return "dernier creux plus bas que le precedent (structure haussiere rompue)"
+        if (not long) and last >= prev:
+            return "dernier sommet plus haut que le precedent (structure baissiere rompue)"
+        if long and any(c[2] < last for c in window[i_last + 1:]):
+            return "dernier creux casse depuis (cloture en dessous)"
+        if (not long) and any(c[2] > last for c in window[i_last + 1:]):
+            return "dernier sommet casse depuis (cloture au-dessus)"
+        return "amplitude du swing precedent inexploitable"
 
     def _measured_move_level(self, state, direction):
         """v4.321 — SUR DEMANDE EXPLICITE : chemin d entree DISTINCT du
@@ -10146,9 +10175,28 @@ class BotEngine:
         M, L = _lbl.get(v["major_tf"], v["major_tf"]), _lbl.get(v["lower_tf"], v["lower_tf"])
         want = "haussiere" if long_side else "baissiere"
         snap["situation"] = f"tendance {M} {v['trend']}"
-        if v["trend"] != want:
-            snap["blocker"] = f"tendance {M} {v['trend']} (requis : {want})"
+        # v4.329 — SUR DEMANDE EXPLICITE (calibrage) : la tendance stricte
+        # (prix > EMA50 > EMA200) devient "neutre" pile quand le prix recule
+        # sous l EMA50 — c est-a-dire au moment exact ou Spot-Accum veut
+        # acheter (repli sur support). Constate : 9 des 10 actifs "neutres"
+        # etaient DANS leur zone de support, donc bloques par ca. "OU" justifie
+        # par l objectif (acheter les replis / vendre les rebonds) : tendance
+        # stricte OU structure intacte avec repli (EMA50 > EMA200 ET prix >
+        # EMA200 pour un long ; miroir pour un short). Le prix repassant sous
+        # l EMA200 (vraie rupture) reste bloque. Les SORTIES gardent la tendance
+        # stricte (v["trend"]) : aucun changement de ce cote.
+        _ef, _es = v.get("ema_fast"), v.get("ema_slow")
+        if long_side:
+            _pullback = _ef is not None and _es is not None and _ef > _es and price > _es
+        else:
+            _pullback = _ef is not None and _es is not None and _ef < _es and price < _es
+        _strict = v["trend"] == want
+        if not (_strict or (cfg.get("MTF_ENTRY_ALLOW_PULLBACK_TREND", 1) and _pullback)):
+            _ema_txt = (f" (prix {price:.6g} · EMA50 {_ef:.6g} · EMA200 {_es:.6g})"
+                        if _ef is not None and _es is not None else "")
+            snap["blocker"] = f"tendance {M} {v['trend']} (requis : {want}){_ema_txt}"
             return
+        trend_txt = want if _strict else (f"{want} (repli sous l EMA50)" if long_side else f"{want} (rebond sur l EMA50)")
         zone = v["support"] if long_side else v["resistance"]
         target = v["resistance"] if long_side else v["support"]
         # v4.307 — FIX BUG CONFIRME : nearest_zones() (mtf_analysis.py) peut
@@ -10204,7 +10252,7 @@ class BotEngine:
                 if not cfg.get("MTF_TREND_PATH_ENABLED", 1):
                     tp_txt = "chemin tendance desactive"
                 elif mm is None:
-                    tp_txt = "chemin tendance : pas de creux/sommet 1h exploitable"
+                    tp_txt = f"chemin tendance : {self._mm_reason(state, 'long' if long_side else 'short')}"
                 else:
                     d_atr = abs(price - mm[0]) / v["atr"] if v["atr"] else None
                     tp_txt = (f"chemin tendance : niveau 1h a {d_atr:.2f} ATR H4 (tolerance {cfg.get('MTF_TREND_ZONE_TOLERANCE_ATR', 0.25)})"
@@ -10246,11 +10294,21 @@ class BotEngine:
             h1_closes = [c["c"] for c in h1_candles]
             ema_now = mtf.ema(h1_closes, ema_period)
             ema_prev = mtf.ema(h1_closes[:-1], ema_period) if len(h1_closes) > ema_period else None
-            h1_ok = (ema_now is not None and ema_prev is not None and
-                     (ema_now > ema_prev if long_side else ema_now < ema_prev))
+            # v4.329 — SUR DEMANDE EXPLICITE (calibrage) : la pente de l EMA20 H1
+            # ne monte presque jamais AU MOMENT d un repli sur support (c est
+            # justement la que l entree a lieu) : ce filtre unique a bloque 3
+            # signaux sur 3 vus dans les releves (BTC, AAVE, OP). "OU" justifie
+            # par l objectif — le rebond est confirme si (a) l EMA20 H1 repart
+            # dans le sens du trade, OU (b) le prix a deja repris la moyenne H1
+            # (au-dessus de l EMA20 H1 pour un long, en dessous pour un short).
+            _ema_dir = (ema_now is not None and ema_prev is not None and
+                        (ema_now > ema_prev if long_side else ema_now < ema_prev))
+            _reclaimed = ema_now is not None and ((price > ema_now) if long_side else (price < ema_now))
+            h1_ok = _ema_dir or _reclaimed
             if not h1_ok:
                 snap["blocker"] = (f"signal {L} ({name}) mais structure H1 pas encore confirmee "
-                                   f"(EMA{ema_period} H1 doit {'monter' if long_side else 'baisser'})")
+                                   f"(EMA{ema_period} H1 ne {'monte' if long_side else 'baisse'} pas ET prix "
+                                   f"{'sous' if long_side else 'au-dessus de'} l EMA{ema_period} H1)")
                 return
         # v4.304 — SUR DEMANDE EXPLICITE : exige aussi que le flux reel de
         # transactions (achat/vente agressif, deja calcule ailleurs pour la
@@ -10342,7 +10400,7 @@ class BotEngine:
         score_txt = (f"score {confidence:.0f} (R:R {rr_score:.0f} · flux {flow_score:.0f} · zone {zone_score:.0f} · "
                      f"historique {hist_score:.0f}{'' if hist else ' (neutre, echantillon insuffisant)'} · marche {quality_score:.0f})")
         path_lbl = {"tendance": "top-down (tendance, mesure de mouvement)", "zone+mesure": "top-down (zone unique, objectif par mesure de mouvement)"}.get(mtf_path, "top-down")
-        path = (f"{path_lbl} : tendance {M} {want} · zone de {kind} {M} {self._zone_txt(zone)} · signal {L} : {name} · {flow_txt} · "
+        path = (f"{path_lbl} : tendance {M} {trend_txt} · zone de {kind} {M} {self._zone_txt(zone)} · signal {L} : {name} · {flow_txt} · "
                 f"SL {plan['sl']:.6g} (-{plan['risk_pct']:.2f} %) · objectif {plan['tp']:.6g} (+{plan['reward_pct']:.2f} %, R:R {plan['rr']:.1f}) · {score_txt}")
         reasons = [f"{label} — voie : {path}", f"RSI {rsi:.1f}" if rsi is not None else "RSI ?"]
         cand = {"symbol": symbol, "ticker": ticker, "state": state if long_side else pos_state,
