@@ -1356,6 +1356,7 @@ PROFILE_SWING = {
     # ascendant / resistance descendante + objectif par mesure de
     # mouvement), pour capter une tendance qui s eloigne de toute zone H4 —
     # OU distinct du chemin "zone" classique, pas une condition en plus.
+    "ENTRY_FUNNEL_TRACKING": 1,          # v4.330 : 1 = compte, par fenetre de 15 min, les etapes atteintes par le top-down (lecture seule)
     "MTF_ENTRY_ALLOW_PULLBACK_TREND": 1, # v4.329 : 1 = accepte aussi repli/rebond avec structure EMA50/EMA200 intacte (pas seulement prix > EMA50 > EMA200)
     "MTF_TREND_LIVE_PRICE": 1,           # v4.327 : 1 = tendance de fond calculee avec le prix live (WebSocket) ; 0 = derniere cloture H4 seule
     "MTF_TREND_PATH_ENABLED": 1,
@@ -5537,6 +5538,80 @@ class BotEngine:
         if any(c[2] < low_last for c in window[i_last + 1:]):
             return None  # creux casse depuis (cloture en dessous)
         return low_last
+
+    # ─────────────────────────────────────────────────────────────────────
+    #  v4.330 — ENTONNOIR D ENTREE (instrumentation en LECTURE SEULE)
+    #  Sur demande : "voir le nombre de fois dans une semaine que toutes les
+    #  conditions s alignent". Chaque compte = UN actif sur UNE fenetre de 15
+    #  min (bucket M15) ou l etape a ete atteinte au moins une fois. Ne change
+    #  AUCUNE decision de trading ; toute erreur ici est ignoree.
+    # ─────────────────────────────────────────────────────────────────────
+    def _funnel_note(self, mode, ticker, stage, shadow=False):
+        try:
+            if not self.cfg.get("ENTRY_FUNNEL_TRACKING", 1):
+                return
+            cur = getattr(self, "_funnel_cur", None)
+            if cur is None:
+                cur = self._funnel_cur = {}
+            bucket = int(time.time() // 900)
+            key = (mode, ticker)
+            prev = cur.get(key)
+            if prev and prev[0] == bucket:
+                prev[1].add(stage)
+                return
+            if prev:
+                self._funnel_flush(mode, prev[0], prev[1])
+            cur[key] = (bucket, {stage})
+        except Exception:
+            pass
+
+    def _funnel_flush(self, mode, bucket, stages):
+        try:
+            day = datetime.utcfromtimestamp(bucket * 900).strftime("%Y-%m-%d")
+            counts = getattr(self, "_funnel_counts", None)
+            if counts is None:
+                counts = self._funnel_counts = {}
+            ck = (day, mode)
+            if ck not in counts:
+                try:
+                    counts[ck] = json.loads(db.get_meta(f"funnel:{day}:{mode}") or "{}")
+                except Exception:
+                    counts[ck] = {}
+            for st in stages:
+                counts[ck][st] = counts[ck].get(st, 0) + 1
+            db.set_meta(f"funnel:{day}:{mode}", json.dumps(counts[ck]))
+        except Exception:
+            pass
+
+    def _funnel_flow_ok(self, ticker, price, long_side):
+        """(flux, ok) — ok = favorable OU non mesure (meme regle que l entree)."""
+        flow = self._compute_trade_flow_pressure(ticker, price)
+        if flow is None:
+            return None, True
+        req = self.cfg.get("MTF_MIN_FLOW_PRESSURE", 0.0)
+        return flow, ((flow >= req) if long_side else (flow <= -req))
+
+    def _funnel_shadow(self, mode, ticker, price, v, long_side):
+        """Quand la TENDANCE bloque : compte quand meme les alignements
+        zone / signal M15 / flux (etapes "nt_*") pour mesurer ce que ferait
+        une regle SANS tendance."""
+        try:
+            zone = v["support"] if long_side else v["resistance"]
+            inside = v["in_support"] if long_side else v["in_resistance"]
+            if not zone or not inside:
+                return
+            self._funnel_note(mode, ticker, "nt_zone")
+            lower = self._mtf_candles(ticker, v["lower_tf"], 60, cache_only=True)
+            nm, ex = mtf.candle_signal(lower, "long" if long_side else "short")
+            if not nm:
+                return
+            if (long_side and ex > zone["high"] + v["tolerance"]) or (not long_side and ex < zone["low"] - v["tolerance"]):
+                return
+            self._funnel_note(mode, ticker, "nt_signal")
+            if self._funnel_flow_ok(ticker, price, long_side)[1]:
+                self._funnel_note(mode, ticker, "nt_signal_flux")
+        except Exception:
+            pass
 
     def _mm_reason(self, state, direction):
         """v4.329 — DIAGNOSTIC : pourquoi _measured_move_level ne renvoie rien
@@ -10171,6 +10246,7 @@ class BotEngine:
         if not v["ok"]:
             snap["blocker"] = v["why"]
             return
+        self._funnel_note(mode, ticker, "eval")
         _lbl = {"4h": "H4", "1d": "Daily", "15m": "M15", "1h": "H1"}
         M, L = _lbl.get(v["major_tf"], v["major_tf"]), _lbl.get(v["lower_tf"], v["lower_tf"])
         want = "haussiere" if long_side else "baissiere"
@@ -10195,7 +10271,9 @@ class BotEngine:
             _ema_txt = (f" (prix {price:.6g} · EMA50 {_ef:.6g} · EMA200 {_es:.6g})"
                         if _ef is not None and _es is not None else "")
             snap["blocker"] = f"tendance {M} {v['trend']} (requis : {want}){_ema_txt}"
+            self._funnel_shadow(mode, ticker, price, v, long_side)
             return
+        self._funnel_note(mode, ticker, "tendance")
         trend_txt = want if _strict else (f"{want} (repli sous l EMA50)" if long_side else f"{want} (rebond sur l EMA50)")
         zone = v["support"] if long_side else v["resistance"]
         target = v["resistance"] if long_side else v["support"]
@@ -10274,6 +10352,7 @@ class BotEngine:
                 if (long_side and _tgt2 > price) or (not long_side and _tgt2 < price):
                     target = {"low": _tgt2, "high": _tgt2, "touches": 1}
                     mtf_path = "zone+mesure"
+        self._funnel_note(mode, ticker, "zone")
         lower = self._mtf_candles(ticker, v["lower_tf"], 60)
         name, extreme = mtf.candle_signal(lower, "long" if long_side else "short")
         if not name:
@@ -10283,6 +10362,9 @@ class BotEngine:
         if (long_side and extreme > zone["high"] + v["tolerance"]) or (not long_side and extreme < zone["low"] - v["tolerance"]):
             snap["blocker"] = f"signal {L} ({name}) hors de la zone de {kind}"
             return
+        self._funnel_note(mode, ticker, "signal")
+        if self._funnel_flow_ok(ticker, price, long_side)[1]:
+            self._funnel_note(mode, ticker, "signal_flux")
         # v4.304 — SUR DEMANDE EXPLICITE : la bougie {L} seule ne suffit plus
         # — exige aussi que la structure H1 (pente de l EMA courte) confirme
         # le retournement, au-dela d une seule bougie qui peut etre un
@@ -10310,6 +10392,7 @@ class BotEngine:
                                    f"(EMA{ema_period} H1 ne {'monte' if long_side else 'baisse'} pas ET prix "
                                    f"{'sous' if long_side else 'au-dessus de'} l EMA{ema_period} H1)")
                 return
+            self._funnel_note(mode, ticker, "h1")
         # v4.304 — SUR DEMANDE EXPLICITE : exige aussi que le flux reel de
         # transactions (achat/vente agressif, deja calcule ailleurs pour la
         # tolerance du trailing) ne soit pas hostile au sens du trade —
@@ -10370,6 +10453,7 @@ class BotEngine:
             capital = self.live_equity_real
         notional = min(capital * cfg.get("MTF_RISK_PCT", 0.5) / plan["risk_pct"], cfg.get("MTF_MAX_NOTIONAL_USD", 30.0))
         snap["blocker"] = None
+        self._funnel_note(mode, ticker, "candidat")
         label = "🌱 Spot-Accumulation" if long_side else "🎯 Accumulation (short)"
         flow_txt = f"flux {flow:+.2f}" if flow is not None else "flux indisponible"
         # v4.314 — SUR DEMANDE EXPLICITE : score composite de priorisation —
