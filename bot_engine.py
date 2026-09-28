@@ -1387,6 +1387,8 @@ PROFILE_SWING = {
     # ascendant / resistance descendante + objectif par mesure de
     # mouvement), pour capter une tendance qui s eloigne de toute zone H4 —
     # OU distinct du chemin "zone" classique, pas une condition en plus.
+    "BLOCKED_FOLLOWUP_ENABLED": 1,       # v4.338 : 1 = suit ce que devient un signal BLOQUE (lecture seule, aucun effet sur les entrees)
+    "BLOCKED_FOLLOWUP_HORIZON_MIN": 120, # duree d observation apres le blocage (minutes)
     "ENTRY_FUNNEL_TRACKING": 1,          # v4.330 : 1 = compte, par fenetre de 15 min, les etapes atteintes par le top-down (lecture seule)
     "MTF_ENTRY_ALLOW_PULLBACK_TREND": 1, # v4.329 : 1 = accepte aussi repli/rebond avec structure EMA50/EMA200 intacte (pas seulement prix > EMA50 > EMA200)
     "MTF_TREND_LIVE_PRICE": 1,           # v4.327 : 1 = tendance de fond calculee avec le prix live (WebSocket) ; 0 = derniere cloture H4 seule
@@ -5635,6 +5637,191 @@ class BotEngine:
         except Exception:
             pass
 
+    def _funnel_rr_note(self, mode, ticker, kind, plan):
+        """v4.337 — journalise (lecture seule) POURQUOI un signal complet est refuse
+        apres la structure H1 : kind = "sl_far" (SL > MTF_MAX_RISK_PCT), "sans_objectif"
+        (aucune zone/objectif reel), "rr" (R:R < minimum). Garde risque %, gain % et
+        R:R reels pour calibrer les seuils avec des chiffres. Une entree par actif,
+        type et fenetre de 15 min ; 120 dernieres conservees par jour et par mode."""
+        try:
+            if not self.cfg.get("ENTRY_FUNNEL_TRACKING", 1):
+                return
+            bucket = int(time.time() // 900)
+            seen = getattr(self, "_funnel_rr_seen", None)
+            if seen is None:
+                seen = self._funnel_rr_seen = set()
+            ident = (mode, ticker, kind, bucket)
+            if ident in seen:
+                return
+            if len(seen) > 5000:
+                seen.clear()
+            seen.add(ident)
+            day = datetime.utcfromtimestamp(bucket * 900).strftime("%Y-%m-%d")
+            store = getattr(self, "_funnel_rr", None)
+            if store is None:
+                store = self._funnel_rr = {}
+            key = (day, mode)
+            if key not in store:
+                try:
+                    store[key] = json.loads(db.get_meta(f"funnel_rr:{day}:{mode}") or "[]")
+                except Exception:
+                    store[key] = []
+            store[key].append({
+                "t": ticker, "k": kind,
+                "rr": round(plan["rr"], 2) if plan.get("rr") is not None else None,
+                "risk": round(plan["risk_pct"], 2),
+                "gain": round(plan["reward_pct"], 2) if plan.get("reward_pct") is not None else None,
+            })
+            store[key] = store[key][-120:]
+            db.set_meta(f"funnel_rr:{day}:{mode}", json.dumps(store[key]))
+        except Exception:
+            pass
+
+    # ─────────────────────────────────────────────────────────────────────
+    #  v4.338 — SUIVI DES SIGNAUX BLOQUES (lecture seule)
+    #  Pour chaque signal complet (zone + signal M15) arrete par un filtre, on
+    #  enregistre le prix, le SL et l objectif HYPOTHETIQUES (memes regles que
+    #  le vrai trade), puis on regarde 2 h plus tard ce que le prix a fait :
+    #  +1R atteint avant le SL ? SL touche d abord ? objectif ? Les trades
+    #  REELLEMENT pris ("candidat") servent de reference. Aucun effet sur les
+    #  entrees ; toute erreur est ignoree.
+    # ─────────────────────────────────────────────────────────────────────
+    def _blocked_pending_get(self):
+        pend = getattr(self, "_blocked_pending", None)
+        if pend is None:
+            try:
+                pend = json.loads(db.get_meta("blocked_pending") or "[]")
+            except Exception:
+                pend = []
+            self._blocked_pending = pend
+        return pend
+
+    def _blocked_note(self, mode, ticker, gate, long_side, price, zone, target, extreme, atr, plan=None):
+        try:
+            cfg = self.cfg
+            if not cfg.get("ENTRY_FUNNEL_TRACKING", 1) or not cfg.get("BLOCKED_FOLLOWUP_ENABLED", 1):
+                return
+            bucket = int(time.time() // 900)
+            seen = getattr(self, "_blocked_seen", None)
+            if seen is None:
+                seen = self._blocked_seen = set()
+            ident = (mode, ticker, gate, bucket)
+            if ident in seen:
+                return
+            if len(seen) > 5000:
+                seen.clear()
+            seen.add(ident)
+            if plan is None:
+                plan = mtf.plan_trade("long" if long_side else "short", price, zone, target, extreme, atr)
+            if not plan:
+                return
+            pend = self._blocked_pending_get()
+            pend.append({
+                "ts": int(time.time()), "mode": mode, "t": ticker, "g": gate,
+                "d": "long" if long_side else "short", "p": price, "sl": plan["sl"], "tp": plan.get("tp"),
+                "risk": round(plan["risk_pct"], 3),
+                "rr": round(plan["rr"], 2) if plan.get("rr") is not None else None,
+            })
+            self._blocked_pending = pend[-600:]
+            db.set_meta("blocked_pending", json.dumps(self._blocked_pending))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _blocked_eval(ev, candles, horizon_sec):
+        """Premier niveau touche apres l evenement : "sl", "r1" (+1R), "tp" ou "none",
+        plus MFE/MAE et variation finale (% du prix). Bougies M15 dont l ouverture
+        est APRES l evenement. Si SL et +1R/objectif sont touches dans la meme
+        bougie, l ordre est inconnu : compte comme SL (prudent) et marque "amb"."""
+        t0 = ev["ts"] * 1000
+        start = (t0 // 900000 + 1) * 900000
+        end = t0 + horizon_sec * 1000
+        cs = [c for c in candles if start <= c["t"] < end]
+        if len(cs) < max(4, horizon_sec // 900 - 2):
+            return None
+        p, sl, tp = ev["p"], ev["sl"], ev.get("tp")
+        long_side = ev["d"] == "long"
+        risk = (p - sl) if long_side else (sl - p)
+        if risk <= 0:
+            return None
+        r1 = p + risk if long_side else p - risk
+        outcome, amb = None, False
+        for c in cs:
+            if long_side:
+                hs, h1, ht = c["l"] <= sl, c["h"] >= r1, bool(tp) and c["h"] >= tp
+            else:
+                hs, h1, ht = c["h"] >= sl, c["l"] <= r1, bool(tp) and c["l"] <= tp
+            if outcome is None:
+                if hs and (h1 or ht):
+                    outcome, amb = "sl", True
+                elif hs:
+                    outcome = "sl"
+                elif ht:
+                    outcome = "tp"
+                elif h1:
+                    outcome = "r1"
+        if long_side:
+            mfe = (max(c["h"] for c in cs) - p) / p * 100
+            mae = (p - min(c["l"] for c in cs)) / p * 100
+            fin = (cs[-1]["c"] - p) / p * 100
+        else:
+            mfe = (p - min(c["l"] for c in cs)) / p * 100
+            mae = (max(c["h"] for c in cs) - p) / p * 100
+            fin = (p - cs[-1]["c"]) / p * 100
+        return {"o": outcome or "none", "amb": amb, "mfe": round(mfe, 3), "mae": round(mae, 3), "fin": round(fin, 3)}
+
+    def _blocked_store(self, ev, res):
+        day = datetime.utcfromtimestamp(ev["ts"]).strftime("%Y-%m-%d")
+        key = f"blocked_agg:{day}:{ev['mode']}"
+        try:
+            agg = json.loads(db.get_meta(key) or "{}")
+        except Exception:
+            agg = {}
+        g = agg.setdefault(ev["g"], {"n": 0, "sl": 0, "r1": 0, "tp": 0, "none": 0, "amb": 0,
+                                     "mfe": [], "mae": [], "fin": [], "ev": []})
+        g["n"] += 1
+        g[res["o"]] += 1
+        if res["amb"]:
+            g["amb"] += 1
+        for k in ("mfe", "mae", "fin"):
+            g[k] = (g[k] + [res[k]])[-200:]
+        g["ev"] = (g["ev"] + [{"t": ev["t"], "o": res["o"], "mfe": res["mfe"], "mae": res["mae"], "risk": ev["risk"]}])[-60:]
+        db.set_meta(key, json.dumps(agg))
+
+    def _blocked_followups_if_due(self):
+        """Evalue les signaux bloques dont le delai d observation est ecoule (toutes
+        les 5 min au plus). Les evenements de plus de 12 h non evaluables sont abandonnes."""
+        try:
+            if not self.cfg.get("BLOCKED_FOLLOWUP_ENABLED", 1):
+                return
+            now = time.time()
+            if now - getattr(self, "_blocked_last_run", 0) < 300:
+                return
+            self._blocked_last_run = now
+            pend = self._blocked_pending_get()
+            if not pend:
+                return
+            horizon = int(self.cfg.get("BLOCKED_FOLLOWUP_HORIZON_MIN", 120)) * 60
+            keep, by_ticker = [], {}
+            for ev in pend:
+                age = now - ev["ts"]
+                if age < horizon + 900:
+                    keep.append(ev)
+                elif age <= 12 * 3600:
+                    by_ticker.setdefault(ev["t"], []).append(ev)
+            for ticker, evs in by_ticker.items():
+                candles = self._mtf_candles(ticker, "15m", 60)
+                for ev in evs:
+                    res = self._blocked_eval(ev, candles, horizon) if candles else None
+                    if res is None:
+                        keep.append(ev)      # donnees insuffisantes : reessaye jusqu a expiration
+                    else:
+                        self._blocked_store(ev, res)
+            self._blocked_pending = keep[-600:]
+            db.set_meta("blocked_pending", json.dumps(self._blocked_pending))
+        except Exception as e:
+            print(f"[BLOCKED-FOLLOWUP] erreur ignoree : {e}")
+
     def _funnel_flow_ok(self, ticker, price, long_side):
         """(flux, ok) — ok = favorable OU non mesure (meme regle que l entree)."""
         flow = self._compute_trade_flow_pressure(ticker, price)
@@ -7551,6 +7738,7 @@ class BotEngine:
                 self._check_ws_health_alert()
                 self._refresh_funding_rates_if_due()  # v4.33
                 self._refresh_asset_win_rates_if_due()  # v4.314
+                self._blocked_followups_if_due()  # v4.338
                 self._decay_confidence_thresholds()
                 prices = self._get_prices_with_timeout(cfg.get("PRICE_FETCH_TIMEOUT_SEC", 10))
                 in_hours = is_trading_hours(cfg)
@@ -10566,6 +10754,7 @@ class BotEngine:
                 snap["blocker"] = (f"signal {L} ({name}) mais structure H1 pas encore confirmee "
                                    f"(EMA{ema_period} H1 ne {'monte' if long_side else 'baisse'} pas ET prix "
                                    f"{'sous' if long_side else 'au-dessus de'} l EMA{ema_period} H1)")
+                self._blocked_note(mode, ticker, "h1", long_side, price, zone, target, extreme, v["atr"])
                 return
             self._funnel_note(mode, ticker, "h1")
         # v4.304 — SUR DEMANDE EXPLICITE : exige aussi que le flux reel de
@@ -10595,6 +10784,7 @@ class BotEngine:
                 snap["blocker"] = (f"signal {L} ({name}) mais flux de transactions "
                                    f"{'indisponible' if flow is None else f'{flow:+.2f}'} "
                                    f"(requis {'>=' if long_side else '<='} {req:+.2f})")
+                self._blocked_note(mode, ticker, "flux", long_side, price, zone, target, extreme, v["atr"])
                 return
         plan = mtf.plan_trade("long" if long_side else "short", price, zone, target, extreme, v["atr"])
         if not plan:
@@ -10602,6 +10792,8 @@ class BotEngine:
             return
         if plan["risk_pct"] > cfg.get("MTF_MAX_RISK_PCT", 4.0):
             snap["blocker"] = f"SL trop eloigne ({plan['risk_pct']:.2f} % > {cfg.get('MTF_MAX_RISK_PCT', 4.0)} %)"
+            self._funnel_rr_note(mode, ticker, "sl_far", plan)
+            self._blocked_note(mode, ticker, "sl_far", long_side, price, zone, target, extreme, v["atr"], plan=plan)
             return
         min_rr = cfg.get("MTF_MIN_RR", 1.5)
         self._funnel_note(mode, ticker, "sl_ok")          # v4.332 : plan valide, SL pas trop eloigne
@@ -10618,12 +10810,16 @@ class BotEngine:
             if cfg.get("MTF_REQUIRE_REAL_TARGET_ZONE", 1):
                 snap["blocker"] = (f"aucune zone {'de resistance' if long_side else 'de support'} distincte "
                                     f"pour un objectif reel (zone unique support/resistance) — trade ignore")
+                self._funnel_rr_note(mode, ticker, "sans_objectif", plan)
+                self._blocked_note(mode, ticker, "sans_objectif", long_side, price, zone, target, extreme, v["atr"], plan=plan)
                 return
             # repli conserve si MTF_REQUIRE_REAL_TARGET_ZONE est desactive
             plan["tp"] = price * (1 + plan["risk_pct"] * min_rr / 100) if long_side else price * (1 - plan["risk_pct"] * min_rr / 100)
             plan["reward_pct"], plan["rr"] = plan["risk_pct"] * min_rr, min_rr
         elif plan["rr"] < min_rr:
             snap["blocker"] = f"rapport gain/risque {plan['rr']:.2f} < {min_rr} (objectif {kind} oppose trop proche)"
+            self._funnel_rr_note(mode, ticker, "rr", plan)
+            self._blocked_note(mode, ticker, "rr", long_side, price, zone, target, extreme, v["atr"], plan=plan)
             return
         # taille calculee sur le RISQUE : perte au SL = MTF_RISK_PCT du capital
         capital = self.cfg.get("CAPITAL_USD", 100.0)
@@ -10632,6 +10828,7 @@ class BotEngine:
         notional = min(capital * cfg.get("MTF_RISK_PCT", 0.5) / plan["risk_pct"], cfg.get("MTF_MAX_NOTIONAL_USD", 30.0))
         snap["blocker"] = None
         self._funnel_note(mode, ticker, "candidat")
+        self._blocked_note(mode, ticker, "candidat", long_side, price, zone, target, extreme, v["atr"], plan=plan)
         label = "🌱 Spot-Accumulation" if long_side else "🎯 Accumulation (short)"
         flow_txt = f"flux {flow:+.2f}" if flow is not None else "flux indisponible"
         # v4.314 — SUR DEMANDE EXPLICITE : score composite de priorisation —
