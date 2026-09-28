@@ -5573,12 +5573,12 @@ class BotEngine:
                 prev[1].add(stage)
                 return
             if prev:
-                self._funnel_flush(mode, prev[0], prev[1])
+                self._funnel_flush(mode, ticker, prev[0], prev[1])
             cur[key] = (bucket, {stage})
         except Exception:
             pass
 
-    def _funnel_flush(self, mode, bucket, stages):
+    def _funnel_flush(self, mode, ticker, bucket, stages):
         try:
             day = datetime.utcfromtimestamp(bucket * 900).strftime("%Y-%m-%d")
             counts = getattr(self, "_funnel_counts", None)
@@ -5593,6 +5593,26 @@ class BotEngine:
             for st in stages:
                 counts[ck][st] = counts[ck].get(st, 0) + 1
             db.set_meta(f"funnel:{day}:{mode}", json.dumps(counts[ck]))
+            # v4.332 — QUELS actifs (pas seulement combien de fenetres) : un meme
+            # actif peut compter dans plusieurs fenetres de 15 min consecutives.
+            keep = {"signal_flux", "h1", "objectif", "candidat", "nt_signal_flux"} & set(stages)
+            if keep:
+                assets = getattr(self, "_funnel_assets", None)
+                if assets is None:
+                    assets = self._funnel_assets = {}
+                if ck not in assets:
+                    try:
+                        assets[ck] = json.loads(db.get_meta(f"funnel_assets:{day}:{mode}") or "{}")
+                    except Exception:
+                        assets[ck] = {}
+                changed = False
+                for st in keep:
+                    lst = assets[ck].setdefault(st, [])
+                    if ticker not in lst:
+                        lst.append(ticker)
+                        changed = True
+                if changed:
+                    db.set_meta(f"funnel_assets:{day}:{mode}", json.dumps(assets[ck]))
         except Exception:
             pass
 
@@ -10468,6 +10488,9 @@ class BotEngine:
             snap["blocker"] = f"SL trop eloigne ({plan['risk_pct']:.2f} % > {cfg.get('MTF_MAX_RISK_PCT', 4.0)} %)"
             return
         min_rr = cfg.get("MTF_MIN_RR", 1.5)
+        self._funnel_note(mode, ticker, "sl_ok")          # v4.332 : plan valide, SL pas trop eloigne
+        if plan["rr"] is not None:
+            self._funnel_note(mode, ticker, "objectif")   # v4.332 : un objectif reel existe
         if plan["rr"] is None:
             # v4.308 — SUR DEMANDE EXPLICITE : auparavant, l absence de zone
             # opposee distincte (voir v4.307, "zone unique") declenchait un
