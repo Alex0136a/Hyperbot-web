@@ -2817,7 +2817,11 @@ def get_entry_funnel(days: int = Query(7, ge=1, le=30), email: str = Depends(req
                 cnt = json.loads(raw) if raw else {}
             except (TypeError, ValueError):
                 cnt = {}
-            rows.append({"day": d, "counts": cnt})
+            try:
+                ass = json.loads(db.get_meta(f"funnel_assets:{d}:{m}") or "{}")
+            except (TypeError, ValueError):
+                ass = {}
+            rows.append({"day": d, "counts": cnt, "assets": ass})
         out[m] = rows
     return {"days": days, "modes": out}
 
