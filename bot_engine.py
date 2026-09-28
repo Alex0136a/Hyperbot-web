@@ -1351,6 +1351,12 @@ PROFILE_SWING = {
     "MTF_REQUIRE_REAL_TARGET_ZONE": 1,  # v4.308 — 1 = bloque l entree quand il n y a pas de zone opposee distincte (pas d objectif synthetique)
     "MTF_CLOSE_ON_ZONE_BREAK": 1,       # v4.309 — 1 = ferme des que le prix casse la zone d entree (avant meme le SL classique)
     "MTF_CLOSE_ON_TREND_REVERSAL": 1,   # v4.311 — 1 = ferme des que la tendance H4 d origine se retourne completement
+    # v4.321 — SUR DEMANDE EXPLICITE : chemin d entree "tendance" (support
+    # ascendant / resistance descendante + objectif par mesure de
+    # mouvement), pour capter une tendance qui s eloigne de toute zone H4 —
+    # OU distinct du chemin "zone" classique, pas une condition en plus.
+    "MTF_TREND_PATH_ENABLED": 1,
+    "MTF_TREND_ZONE_TOLERANCE_ATR": 0.25,  # tolerance (x ATR majeur) autour du support ascendant / resistance descendante
     # v4.314 — SUR DEMANDE EXPLICITE : score composite de priorisation des
     # candidats top-down ("comportement plus large", pas seulement l instant
     # T) — remplace le simple min(70+5xRR, 95) par une pondération de 5
@@ -5528,6 +5534,55 @@ class BotEngine:
         if any(c[2] < low_last for c in window[i_last + 1:]):
             return None  # creux casse depuis (cloture en dessous)
         return low_last
+
+    def _measured_move_level(self, state, direction):
+        """v4.321 — SUR DEMANDE EXPLICITE : chemin d entree DISTINCT du
+        top-down zone-H4 (branche "OU" a part entiere, pas une condition de
+        plus empilee dessus) — pour une tendance qui s eloigne de toute zone
+        H4 testee (elle peut mettre des annees a y revenir pendant que le
+        prix progresse). S appuie sur le support ascendant / la resistance
+        descendante deja existants (_compute_rising_support /
+        _compute_falling_resistance, ancien moteur, jamais branches sur le
+        top-down) comme point d entree, ET calcule ici un objectif propre et
+        justifie — l amplitude du dernier mouvement (swing precedent),
+        projetee depuis ce nouveau point d appui ("mesure de mouvement" /
+        "measured move", technique standard : la jambe precedente sert de
+        gabarit pour la suivante). Retourne (niveau_entree, objectif) ou
+        None si la structure ne qualifie pas (pas assez de pivots, jambe
+        precedente trop faible)."""
+        k = int(self.cfg.get("SPOT_ACCUM_PIVOT_CANDLES", 2))
+        candles_1h = list(state.candle_history_1h)
+        window = candles_1h[-int(self.cfg.get("SPOT_ACCUM_PIVOT_LOOKBACK_CANDLES", 72)):]
+        if len(window) < 2 * k + 3:
+            return None
+        if direction == "long":
+            entry_level = self._compute_rising_support(candles_1h)
+            if entry_level is None:
+                return None
+            pivots = [(i, window[i][1]) for i in range(k, len(window) - k)
+                     if all(window[i][1] < window[j][1] for j in range(i - k, i + k + 1) if j != i)]
+            if len(pivots) < 2:
+                return None
+            i_prev, i_last = pivots[-2][0], pivots[-1][0]
+            swing_high = max((c[0] for c in window[i_prev:i_last + 1]), default=None)
+            if swing_high is None or swing_high <= pivots[-2][1]:
+                return None
+            amplitude = swing_high - pivots[-2][1]
+            return entry_level, entry_level + amplitude
+        else:
+            entry_level = self._compute_falling_resistance(candles_1h)
+            if entry_level is None:
+                return None
+            pivots = [(i, window[i][0]) for i in range(k, len(window) - k)
+                     if all(window[i][0] > window[j][0] for j in range(i - k, i + k + 1) if j != i)]
+            if len(pivots) < 2:
+                return None
+            i_prev, i_last = pivots[-2][0], pivots[-1][0]
+            swing_low = min((c[1] for c in window[i_prev:i_last + 1]), default=None)
+            if swing_low is None or swing_low >= pivots[-2][1]:
+                return None
+            amplitude = pivots[-2][1] - swing_low
+            return entry_level, entry_level - amplitude
 
     def _maybe_refresh_dynamic_trend(self, ticker, state):
         """v4.203 / v4.284 — bougies 1h. Depuis la 4.284, elles arrivent en
@@ -10074,11 +10129,40 @@ class BotEngine:
             target = None
         inside = v["in_support"] if long_side else v["in_resistance"]
         kind = "support" if long_side else "resistance"
+        # v4.321 — SUR DEMANDE EXPLICITE : chemin d entree DISTINCT ("OU"
+        # justifie, pas une condition de plus empilee sur le premier) pour
+        # une tendance qui s eloigne de toute zone H4 testee — un vrai
+        # support/resistance peut mettre des ANNEES a revenir pendant que
+        # le prix progresse (cas reel observe : SEI +15% en quelques
+        # heures, zone H4 la plus proche a 3.85% de distance, jamais
+        # atteinte). S appuie sur le support ascendant / la resistance
+        # descendante (1h, deja existants — _compute_rising_support /
+        # _compute_falling_resistance) comme point d entree, avec un
+        # objectif propre et justifie : l amplitude du swing PRECEDENT,
+        # projetee depuis ce nouveau point d appui (mesure de mouvement).
+        # Comme cet objectif est un vrai niveau (pas un repli arbitraire),
+        # il satisfait de lui-meme MTF_REQUIRE_REAL_TARGET_ZONE (v4.308) —
+        # aucun bypass necessaire, chaque chemin est cohérent sur ses
+        # propres termes.
+        mtf_path = "zone"
         if not inside:
-            dist = (abs(price - (zone["high"] if long_side else zone["low"])) / price * 100) if zone else None
-            snap["blocker"] = (f"tendance {M} {want} — attente du prix dans une zone de {kind} {M} "
-                               f"(plus proche : {self._zone_txt(zone)}" + (f", a {dist:.2f} %)" if dist is not None else ")"))
-            return
+            mm = self._measured_move_level(state, "long" if long_side else "short")
+            mm_ok = False
+            if mm is not None and cfg.get("MTF_TREND_PATH_ENABLED", 1):
+                entry_level, mm_target = mm
+                tol = v["atr"] * cfg.get("MTF_TREND_ZONE_TOLERANCE_ATR", 0.25)
+                if (abs(price - entry_level) <= tol and
+                        ((long_side and mm_target > price) or (not long_side and mm_target < price))):
+                    zone = {"low": entry_level - tol, "high": entry_level + tol, "touches": 1}
+                    target = {"low": mm_target, "high": mm_target, "touches": 1}
+                    kind = "support ascendant" if long_side else "resistance descendante"
+                    mtf_path = "tendance"
+                    mm_ok = True
+            if not mm_ok:
+                dist = (abs(price - (zone["high"] if long_side else zone["low"])) / price * 100) if zone else None
+                snap["blocker"] = (f"tendance {M} {want} — attente du prix dans une zone de {kind} {M} "
+                                   f"(plus proche : {self._zone_txt(zone)}" + (f", a {dist:.2f} %)" if dist is not None else ")"))
+                return
         lower = self._mtf_candles(ticker, v["lower_tf"], 60)
         name, extreme = mtf.candle_signal(lower, "long" if long_side else "short")
         if not name:
@@ -10182,14 +10266,16 @@ class BotEngine:
         )
         score_txt = (f"score {confidence:.0f} (R:R {rr_score:.0f} · flux {flow_score:.0f} · zone {zone_score:.0f} · "
                      f"historique {hist_score:.0f}{'' if hist else ' (neutre, echantillon insuffisant)'} · marche {quality_score:.0f})")
-        path = (f"top-down : tendance {M} {want} · zone de {kind} {M} {self._zone_txt(zone)} · signal {L} : {name} · {flow_txt} · "
+        path_lbl = "top-down (tendance, mesure de mouvement)" if mtf_path == "tendance" else "top-down"
+        path = (f"{path_lbl} : tendance {M} {want} · zone de {kind} {M} {self._zone_txt(zone)} · signal {L} : {name} · {flow_txt} · "
                 f"SL {plan['sl']:.6g} (-{plan['risk_pct']:.2f} %) · objectif {plan['tp']:.6g} (+{plan['reward_pct']:.2f} %, R:R {plan['rr']:.1f}) · {score_txt}")
         reasons = [f"{label} — voie : {path}", f"RSI {rsi:.1f}" if rsi is not None else "RSI ?"]
         cand = {"symbol": symbol, "ticker": ticker, "state": state if long_side else pos_state,
                 "signal": "long" if long_side else "short", "price": price, "confidence": confidence,
                 "rsi": rsi, "rsi_mode": mode, "reasons": reasons, "prices": prices, "conf_breakdown": {},
                 "strategy": mode, "countertrend": False, "force_paper": False, "entered_via_flirt": False,
-                "engine": "mtf", "mtf_sl": plan["sl"], "mtf_tp": plan["tp"], "mtf_notional": notional}
+                "engine": "mtf", "mtf_sl": plan["sl"], "mtf_tp": plan["tp"], "mtf_notional": notional,
+                "mtf_path": mtf_path}  # v4.321 — "zone" (H4 classique) ou "tendance" (mesure de mouvement)
         if long_side:
             cand.update({"support_at_entry": zone["low"], "resistance_at_entry": target["high"] if target else None,
                          "mtf_zone_bound": zone["low"]})  # v4.309 — borne de la zone, pour la cassure structurelle
@@ -11959,7 +12045,8 @@ class BotEngine:
         if cand.get("engine") == "mtf":              # v4.299 — gestion top-down
             state.position.update({"engine": "mtf", "sl": cand["mtf_sl"], "tp": cand["mtf_tp"],
                                    "mtf_r": abs(state.position["entry"] - cand["mtf_sl"]),
-                                   "mtf_zone_bound": cand.get("mtf_zone_bound")})  # v4.309 — cassure structurelle
+                                   "mtf_zone_bound": cand.get("mtf_zone_bound"),
+                                   "mtf_path": cand.get("mtf_path", "zone")})  # v4.321 — "zone" ou "tendance"
         # v4.24 — memorise les seuils REELLEMENT appliques a CE trade (fixes
         # ou adaptatifs a l ATR) — _manage_position_impl les relit ici en
         # priorite, avec repli sur les valeurs fixes globales si absents
