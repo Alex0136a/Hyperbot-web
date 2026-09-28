@@ -80,6 +80,34 @@ function _avgN(s, avgKey, srcKey, suffix) {
   return v + (suffix || "") + tag;
 }
 
+// v4.330 — etapes de l entonnoir d entree (ordre d affichage + libelles)
+const FUNNEL_STAGES = [
+  ["eval","Actifs évalués (1 compte = 1 actif × 15 min)"],
+  ["tendance","Tendance H4 OK"],
+  ["zone","… et prix dans une zone / niveau"],
+  ["signal","… et signal de bougie M15"],
+  ["signal_flux","… et flux favorable ou non mesuré  ← zone + signal + flux"],
+  ["h1","… et structure H1"],
+  ["candidat","Candidat généré"],
+  ["nt_zone","SANS tendance : prix dans une zone"],
+  ["nt_signal","SANS tendance : … + signal M15"],
+  ["nt_signal_flux","SANS tendance : … + flux  ← vos 3 conditions, sans tendance"],
+];
+const FUNNEL_MODES = {spot_accumulation:"🌱 Spot-Accum", accumulation:"🎯 Accumulation"};
+function funnelRows(result) {
+  const rows = [];
+  for (const [mode, label] of Object.entries(FUNNEL_MODES)) {
+    const days = ((result.modes||{})[mode]||[]).slice().reverse();
+    rows.push([label, ...days.map(d=>d.day), "Total"]);
+    for (const [key, lbl] of FUNNEL_STAGES) {
+      const vals = days.map(d=>(d.counts||{})[key]||0);
+      rows.push([lbl, ...vals, vals.reduce((a,b)=>a+b,0)]);
+    }
+    rows.push([]);
+  }
+  return rows;
+}
+
 function downloadCSV(filename, rows) {
   const esc = v => {
     const s = v === null || v === undefined ? "" : String(v);
@@ -1003,6 +1031,9 @@ function App() {
   const [orphanedResult, setOrphanedResult] = useState(null);
   const [orphanedLoading, setOrphanedLoading] = useState(false);
   // v4.316 — analyse des series de gains/pertes Funding
+  // v4.330 — entonnoir d entree (nombre d alignements des conditions sur 7 jours)
+  const [funnelResult, setFunnelResult] = useState(null);
+  const [funnelLoading, setFunnelLoading] = useState(false);
   const [streaksResult, setStreaksResult] = useState(null);
   const [streaksLoading, setStreaksLoading] = useState(null);  // v4.318 — null ou la strategy en cours de chargement
   const [wsEvents, setWsEvents] = useState(null);
@@ -1822,6 +1853,60 @@ Confirmer ?`
                 )}
               </div>
             )}
+          </div>
+          {/* v4.330 — SUR DEMANDE EXPLICITE : entonnoir d entree sur 7 jours, pour
+              compter combien de fois les conditions s alignent (lecture seule). */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+              <div style={{fontSize:11,color:"#94a3b8",maxWidth:560}}>
+                <b style={{color:"#e2e8f0"}}>🔎 Entonnoir d'entrée (7 jours)</b><br/>
+                Combien de fois chaque condition est atteinte. Un compte = un actif sur une fenêtre de 15 minutes. Les lignes « SANS tendance » mesurent ce que donnerait la règle zone + signal + flux si la tendance H4 ne bloquait pas.
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <button onClick={async()=>{
+                  setFunnelLoading(true);
+                  try{ setFunnelResult(await apiCall("/api/stats/entry-funnel?days=7","GET",null,token)); }
+                  catch(e){ alert("Erreur : "+e.message); }
+                  setFunnelLoading(false);
+                }} style={{background:"#22d3ee",border:"none",borderRadius:7,padding:"10px 16px",color:"#062b33",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer"}}>
+                  {funnelLoading?"Chargement...":"🔎 Voir l'entonnoir"}
+                </button>
+                {funnelResult && (
+                  <button onClick={()=>downloadCSV(`entonnoir_entree_${new Date().toISOString().slice(0,10)}.csv`, funnelRows(funnelResult))}
+                    style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 16px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                    📥 CSV
+                  </button>
+                )}
+              </div>
+            </div>
+            {funnelResult && Object.entries(FUNNEL_MODES).map(([mode,label])=>{
+              const days=((funnelResult.modes||{})[mode]||[]).slice().reverse();
+              return (
+                <div key={mode} style={{marginTop:12,overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                    <thead><tr style={{color:"#94a3b8",textAlign:"right"}}>
+                      <th style={{padding:"4px 8px",textAlign:"left",color:"#e2e8f0"}}>{label}</th>
+                      {days.map(d=><th key={d.day} style={{padding:"4px 8px"}}>{d.day.slice(5)}</th>)}
+                      <th style={{padding:"4px 8px",color:"#e2e8f0"}}>Total</th>
+                    </tr></thead>
+                    <tbody>
+                      {FUNNEL_STAGES.map(([key,lbl])=>{
+                        const vals=days.map(d=>(d.counts||{})[key]||0);
+                        const total=vals.reduce((a,b)=>a+b,0);
+                        const hi=key==="signal_flux"||key==="nt_signal_flux";
+                        return (
+                          <tr key={key} style={{borderTop:"1px solid #1e2d4a",background:hi?"#13203a":"transparent"}}>
+                            <td style={{padding:"4px 8px",color:hi?"#e2e8f0":"#94a3b8",textAlign:"left"}}>{lbl}</td>
+                            {vals.map((v,i)=><td key={i} style={{padding:"4px 8px",textAlign:"right"}}>{v}</td>)}
+                            <td style={{padding:"4px 8px",textAlign:"right",fontWeight:700,color:"#e2e8f0"}}>{total}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })}
           </div>
           {/* v4.316/v4.318 — SUR DEMANDE EXPLICITE : plus longue serie de
               gains vs plus longue serie de pertes, pour Funding, Spot-Accum
