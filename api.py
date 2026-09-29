@@ -856,6 +856,7 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "mtf_be_done": pos.get("mtf_be_done", False),
                 "mtf_target": pos.get("tp"),
                 # v4.336 — SL dynamique Forex : niveau courant, pic et etat (affichage)
+                "mtf_lock_fraction": cfg.get("MTF_LOCK_FRACTION", 0.5),  # v4.340
                 "dsl_on": bool(pos.get("strategy") == "forex" and cfg.get("FOREX_DYNAMIC_SL", 1)),
                 "dsl_sl": pos.get("dsl_sl"),
                 "dsl_peak": pos.get("dsl_peak"),
