@@ -241,7 +241,7 @@ CONFIG = {
     # historique REEL de l actif (tous modes confondus, hors manuel). Aucune
     # regle horaire forex ne s applique a ces cryptos (marche 24/7), marge
     # croisee comme les autres cryptos.
-    "FOREX_CRYPTO_ENABLED": 1,
+    "FOREX_CRYPTO_ENABLED": 0,           # v4.339 : DESACTIVE sur demande — le mode Forex ne trade a nouveau que ses actifs Forex (1 = reactive la fonction ci-dessous)
     "FOREX_CRYPTO_SYMBOLS": [],          # cryptos TOUJOURS eligibles (liste manuelle), en plus du score
     "FOREX_CRYPTO_MIN_TRADES": 10,       # echantillon minimal avant de fier le score
     "FOREX_CRYPTO_MIN_WIN_RATE": 55.0,   # taux de reussite minimal (%)
