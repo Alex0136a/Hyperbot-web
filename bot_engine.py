@@ -1391,6 +1391,8 @@ PROFILE_SWING = {
     "BLOCKED_FOLLOWUP_HORIZON_MIN": 120, # duree d observation apres le blocage (minutes)
     "ENTRY_FUNNEL_TRACKING": 1,          # v4.330 : 1 = compte, par fenetre de 15 min, les etapes atteintes par le top-down (lecture seule)
     "MTF_ENTRY_ALLOW_PULLBACK_TREND": 1, # v4.329 : 1 = accepte aussi repli/rebond avec structure EMA50/EMA200 intacte (pas seulement prix > EMA50 > EMA200)
+    "MTF_LOCK_FRACTION": 0.5,            # v4.340 : apres +1R, le SL garantit cette fraction du gain maximal (0 = desactive)
+    "MTF_SL_PUSH_MIN_STEP_PCT": 0.05,    # v4.340 : live — ecart minimal (% du prix d entree) avant de renvoyer le SL a Hyperliquid
     "MTF_TREND_LIVE_PRICE": 1,           # v4.327 : 1 = tendance de fond calculee avec le prix live (WebSocket) ; 0 = derniere cloture H4 seule
     "MTF_TREND_PATH_ENABLED": 1,
     "MTF_TREND_ZONE_TOLERANCE_ATR": 0.25,  # tolerance (x ATR majeur) autour du support ascendant / resistance descendante
@@ -10961,13 +10963,35 @@ class BotEngine:
             trail = best - r if long_side else best + r
             if (long_side and trail > pos["sl"]) or (not long_side and trail < pos["sl"]):
                 new_sl = trail
+        # v4.340 — SUR DEMANDE EXPLICITE (cas TIA : pic +2.93 % rendu en entier). Entre
+        # +1R et +2R, la seule protection etait l entree : avec un stop initial large
+        # (R de 1.5 a 2.9 %), le suiveur (a partir de +2R) ne s armait jamais et le
+        # gain revenait a zero. Verrou PROGRESSIF : une fois le breakeven atteint (donc
+        # jamais avant +1R), le SL monte pour garantir MTF_LOCK_FRACTION du gain maximal
+        # (0.5 = la moitie du pic). Il ne fait que MONTER (long) / DESCENDRE (short) et
+        # se combine avec le suiveur ci-dessus (le plus favorable l emporte). 0 = desactive.
+        _lock_frac = cfg.get("MTF_LOCK_FRACTION", 0.5)
+        if r > 0 and pos.get("mtf_be_done") and _lock_frac > 0:
+            _mfe = (best - pos["entry"]) if long_side else (pos["entry"] - best)
+            if _mfe >= cfg.get("MTF_BREAKEVEN_AT_R", 1.0) * r:
+                _lock = pos["entry"] + _lock_frac * _mfe if long_side else pos["entry"] - _lock_frac * _mfe
+                _cur = new_sl if new_sl is not None else pos["sl"]
+                if (long_side and _lock > _cur) or ((not long_side) and _lock < _cur):
+                    new_sl = _lock
         if new_sl is not None and new_sl != pos["sl"]:
             pos["sl"] = new_sl
-            if mode == "live" and self.exchange is not None:
+            # v4.340 : en live, ne pousse le SL natif que s il a bouge d au moins
+            # MTF_SL_PUSH_MIN_STEP_PCT depuis le dernier envoi (evite un appel API a
+            # chaque tick). En paper, pos["sl"] est mis a jour a chaque tick, sans delai.
+            _pushed = pos.get("mtf_sl_pushed")
+            _step = cfg.get("MTF_SL_PUSH_MIN_STEP_PCT", 0.05)
+            if mode == "live" and self.exchange is not None and (
+                    _pushed is None or abs(new_sl - _pushed) / pos["entry"] * 100 >= _step):
                 try:
                     update_sl_on_hyperliquid(self.exchange, self.info, self.cfg.get("WALLET_ADDRESS"), ticker,
                                              {"type": pos["type"], "entry": pos["entry"], "size": pos["size"] * pos.get("leverage", 1)},
                                              new_sl, cfg)
+                    pos["mtf_sl_pushed"] = new_sl
                 except Exception as e:
                     print(f"[MTF] Mise a jour du SL natif {ticker} impossible : {e}")
             self._save_open_positions()
