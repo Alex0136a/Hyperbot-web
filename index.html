@@ -778,6 +778,7 @@ function LiveSyncCard({ token }) {
   );
 }
 
+const TREND_LBL = {haussiere:"haussière", baissiere:"baissière", neutre:"neutre"};   // v4.343
 function ManualTradingTab({ token }) {
   const [st, setSt] = useState(null);
   const [err, setErr] = useState("");
@@ -787,6 +788,8 @@ function ManualTradingTab({ token }) {
   const [busy, setBusy] = useState(false);
   const [editId, setEditId] = useState(null);
   const [edit, setEdit] = useState({});
+  const [freeT, setFreeT] = useState("");          // v4.343 — ordre libre : actif
+  const [freeDir, setFreeDir] = useState("long");  // v4.343 — ordre libre : sens
 
   const load = useCallback(async () => {
     try { setSt(await apiCall("/api/manual/state","GET",null,token)); setErr(""); }
@@ -804,14 +807,16 @@ function ManualTradingTab({ token }) {
         trigger_price: prev?.trigger_price || "", trigger_time: prev?.trigger_time || "",
         expiry_hours: prev?.expiry_hours || 24, require_valid: prev?.require_valid ?? true,
         notional_usd: p.notional_usd, leverage: p.leverage,
-        sl_pct: p.sl_pct, tp_on: true, tp_pct: p.tp_pct,
-        ttp_on: true, ttp_arm_pct: p.ttp_arm_pct, ttp_trail_pct: p.ttp_trail_pct,
+        sl_pct: p.sl_pct, tp_on: !p.free, tp_pct: p.tp_pct,
+        ttp_on: !p.free, ttp_arm_pct: p.ttp_arm_pct, ttp_trail_pct: p.ttp_trail_pct,
+        lock_on: !!p.free, lock_arm_pct: p.lock_arm_pct ?? p.sl_pct, lock_fraction_pct: Math.round((p.lock_fraction ?? 0.5)*100),
+        trend_entry: prev?.trend_entry || "", trend_exit: prev?.trend_exit || "",
       }));
     } catch(e) { alert(e.message); setSel(null); setProp(null); setF(null); }
   };
   const choose = (opp) => { setSel(opp); setF(null); loadProposal(opp, "perp"); };
 
-  const oppStillValid = sel && st && st.opportunities.some(o => o.strategy===sel.strategy && o.ticker===sel.ticker && o.direction===sel.direction);
+  const oppStillValid = sel && ((sel.strategy==="libre") || (st && st.opportunities.some(o => o.strategy===sel.strategy && o.ticker===sel.ticker && o.direction===sel.direction)));
   const refPrice = f && prop ? ((f.execution==="price_above"||f.execution==="price_below") && Number(f.trigger_price)>0 ? Number(f.trigger_price) : prop.price) : null;
   const isLong = sel?.direction === "long";
   const pxFromPct = (pct, side) => refPrice ? refPrice * (1 + (side==="sl" ? (isLong?-1:1) : (isLong?1:-1)) * pct/100) : null;
@@ -828,6 +833,8 @@ function ManualTradingTab({ token }) {
       trigger_price: (f.execution==="price_above"||f.execution==="price_below") ? Number(f.trigger_price) : null,
       trigger_time: f.execution==="time" && f.trigger_time ? new Date(f.trigger_time).getTime()/1000 : null,
       expiry_hours: Number(f.expiry_hours) || 24, require_valid: !!f.require_valid, confirm_live: false,
+      lock_arm_pct: f.lock_on ? Number(f.lock_arm_pct) : null, lock_fraction: f.lock_on ? Number(f.lock_fraction_pct)/100 : null,
+      trend_entry: f.trend_entry || null, trend_exit: f.trend_exit || null,
     };
     if (f.mode === "live") {
       const riskUsd = body.notional_usd * body.sl_pct / 100;
@@ -837,6 +844,9 @@ function ManualTradingTab({ token }) {
         `Stop loss : -${body.sl_pct}% (perte max ≈ ${riskUsd.toFixed(2)} $ + frais)\n` +
         (body.tp_pct ? `Take profit : +${body.tp_pct}%\n` : "Sans take profit fixe\n") +
         (body.ttp_arm_pct ? `Trailing : armé à +${body.ttp_arm_pct}%, repli ${body.ttp_trail_pct}%\n` : "") +
+        (body.lock_arm_pct ? `SL dynamique : garantit ${Math.round(body.lock_fraction*100)}% du gain maximal dès +${body.lock_arm_pct}%\n` : "") +
+        (body.trend_entry ? `Condition d'entrée : tendance H4 ${TREND_LBL[body.trend_entry]}\n` : "") +
+        (body.trend_exit ? `Sortie sur tendance : ${body.trend_exit==="opposee" ? "si elle devient opposée" : "si elle n'est plus celle du sens"}\n` : "") +
         `Exécution : ${f.execution==="now" ? "IMMÉDIATE" : "programmée"}\n` +
         (f.market==="spot" ? "\nSpot : pas de SL natif sur Hyperliquid — protection assurée par le bot uniquement.\n" : "") +
         `\nConfirmez-vous l'envoi de cet ordre réel ?`);
@@ -863,6 +873,9 @@ function ManualTradingTab({ token }) {
     if (edit.tp_price === "") body.clear_tp = true; else if (edit.tp_price) body.tp_price = Number(edit.tp_price);
     if (edit.ttp_off) body.clear_ttp = true;
     else { if (edit.ttp_arm_pct) body.ttp_arm_pct = Number(edit.ttp_arm_pct); if (edit.ttp_trail_pct) body.ttp_trail_pct = Number(edit.ttp_trail_pct); }
+    if (edit.lock_off) body.clear_lock = true;
+    else { if (edit.lock_arm_pct) body.lock_arm_pct = Number(edit.lock_arm_pct); if (edit.lock_fraction_pct) body.lock_fraction = Number(edit.lock_fraction_pct)/100; }
+    if (edit.trend_exit === "") body.clear_trend_exit = true; else if (edit.trend_exit) body.trend_exit = edit.trend_exit;
     try { await apiCall(`/api/manual/positions/${p.id}`,"PUT",body,token); setEditId(null); load(); } catch(e) { alert(e.message); } };
 
   if (!st) return <div style={{padding:16,color:"#94a3b8"}}>{err || "Chargement..."}</div>;
@@ -874,6 +887,23 @@ function ManualTradingTab({ token }) {
   return (
     <div style={{padding:16,maxWidth:1100}}>
       {err && <div style={{...MT.card,borderColor:"#7f1d1d",color:"#fca5a5"}}>⚠️ {err}</div>}
+
+      {/* ORDRE LIBRE — v4.343 */}
+      <div style={MT.card}>
+        <div style={MT.title}>✏️ ORDRE LIBRE <span style={{fontWeight:400,color:"#64748b"}}>— n'importe quel actif suivi par le bot (crypto ou Forex), sans attendre une opportunité</span></div>
+        <div style={{display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end"}}>
+          <div><span style={MT.label}>ACTIF</span>
+            <input list="free-coins" style={{...MT.input,width:170}} value={freeT} placeholder="BTC, SOL, xyz:EUR…" onChange={e=>setFreeT(e.target.value)}/>
+            <datalist id="free-coins">{ALL_COINS.map(c=><option key={c} value={c}/>)}</datalist></div>
+          <div><span style={MT.label}>SENS</span>
+            <div style={{display:"flex",gap:6}}>
+              <button style={MT.seg(freeDir==="long","#22c55e")} onClick={()=>setFreeDir("long")}>LONG</button>
+              <button style={MT.seg(freeDir==="short","#ef4444")} onClick={()=>setFreeDir("short")}>SHORT</button>
+            </div></div>
+          <button style={{...MT.btn("#60a5fa"),opacity:freeT.trim()?1:0.5}} disabled={!freeT.trim()} onClick={()=>choose({strategy:"libre",ticker:freeT.trim(),direction:freeDir})}>Préparer l'ordre</button>
+        </div>
+        <div style={{fontSize:10,color:"#64748b",marginTop:8}}>Le ticket s'ouvre avec des valeurs par défaut : tout est modifiable (taille, levier, entrée, SL, TP, trailing, SL dynamique, critères de tendance, paper ou live).</div>
+      </div>
 
       {/* OPPORTUNITES */}
       <div style={MT.card}>
@@ -897,7 +927,7 @@ function ManualTradingTab({ token }) {
       {sel && f && prop && (
         <div style={{...MT.card,borderColor:f.mode==="live"?"#ef4444":"#1e2d4a"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>
-            <div style={{fontSize:15,fontWeight:800,color:"#e2e8f0"}}>{dirBadge(sel.direction)} {sel.ticker} <span style={{fontSize:11,color:"#94a3b8",fontWeight:400}}>— opportunité {prop && sel ? (st.opportunities.find(o=>o.ticker===sel.ticker&&o.strategy===sel.strategy)?.strategy_label||sel.strategy) : ""} · confiance {prop.confidence!=null?Math.round(prop.confidence)+" %":"—"} · prix {fmtP(prop.price)}</span></div>
+            <div style={{fontSize:15,fontWeight:800,color:"#e2e8f0"}}>{dirBadge(sel.direction)} {sel.ticker} <span style={{fontSize:11,color:"#94a3b8",fontWeight:400}}>{sel.strategy==="libre" ? <>— ordre libre · prix {fmtP(prop.price)}</> : <>— opportunité {prop && sel ? (st.opportunities.find(o=>o.ticker===sel.ticker&&o.strategy===sel.strategy)?.strategy_label||sel.strategy) : ""} · confiance {prop.confidence!=null?Math.round(prop.confidence)+" %":"—"} · prix {fmtP(prop.price)}</>}</span></div>
             <button style={MT.btn("#1e2d4a","#94a3b8")} onClick={()=>{setSel(null);setF(null);setProp(null);}}>Fermer</button>
           </div>
           {!oppStillValid && <div style={{background:"#7f1d1d33",border:"1px solid #7f1d1d",borderRadius:7,padding:8,color:"#fca5a5",fontSize:12,marginBottom:10}}>⛔ Le bot ne confirme plus cette opportunité : l'ordre sera refusé.</div>}
@@ -966,6 +996,32 @@ function ManualTradingTab({ token }) {
               </div>}
               <div style={{fontSize:10,color:"#64748b",marginTop:6}}>Une fois le gain atteint, sortie si le prix rend le repli indiqué depuis son meilleur niveau.</div>
             </div>
+
+            <div>
+              <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:6,alignItems:"center"}}><input type="checkbox" checked={!!f.lock_on} onChange={e=>set("lock_on",e.target.checked)}/>SL DYNAMIQUE (verrou progressif)</label>
+              {f.lock_on && <div style={{display:"flex",gap:6,marginTop:6}}>
+                <div style={{flex:1}}><span style={MT.label}>DÈS UN GAIN DE (+%)</span><input style={MT.input} type="number" step="0.05" value={f.lock_arm_pct} onChange={e=>set("lock_arm_pct",e.target.value)}/></div>
+                <div style={{flex:1}}><span style={MT.label}>PART GARANTIE (%)</span><input style={MT.input} type="number" min="5" max="95" step="5" value={f.lock_fraction_pct} onChange={e=>set("lock_fraction_pct",e.target.value)}/></div>
+              </div>}
+              {f.lock_on && Number(f.lock_arm_pct)>0 && <div style={{fontSize:11,color:"#86efac",marginTop:4}}>Exemple : à un pic de +{(Number(f.lock_arm_pct)*2).toFixed(2)} %, le SL garantit au moins +{(Number(f.lock_arm_pct)*2*Number(f.lock_fraction_pct)/100).toFixed(2)} %.</div>}
+              <div style={{fontSize:10,color:"#64748b",marginTop:6}}>Le SL ne fait que monter (long) ou descendre (short). En live perp, le SL natif Hyperliquid est mis à jour (écart minimal 0,05 %).</div>
+            </div>
+
+            <div>
+              <span style={MT.label}>TENDANCE H4 — CONDITION D'ENTRÉE</span>
+              <select style={MT.input} value={f.trend_entry} onChange={e=>set("trend_entry",e.target.value)}>
+                <option value="">Aucune</option><option value="haussiere">Haussière</option><option value="baissiere">Baissière</option><option value="neutre">Neutre</option>
+              </select>
+              <span style={{...MT.label,marginTop:8}}>TENDANCE H4 — SORTIE</span>
+              <select style={MT.input} value={f.trend_exit} onChange={e=>set("trend_exit",e.target.value)}>
+                <option value="">Aucune</option><option value="opposee">Si la tendance devient opposée au sens du trade</option><option value="perdue">Si la tendance n'est plus celle du sens du trade</option>
+              </select>
+              {prop.trend && <div style={{fontSize:11,color:prop.trend.ok&&prop.trend.data_fresh?"#94a3b8":"#fbbf24",marginTop:6}}>
+                {prop.trend.ok ? `Tendance H4 actuelle de ${sel.ticker} : ${TREND_LBL[prop.trend.trend]||prop.trend.trend}${prop.trend.data_fresh?"":" — données périmées"}`
+                               : `Tendance H4 indisponible (${prop.trend.why}) — une condition d'entrée refuserait l'ordre.`}
+              </div>}
+              <div style={{fontSize:10,color:"#64748b",marginTop:6}}>Tendance calculée comme pour le top-down (EMA50/EMA200 sur bougies H4 clôturées + prix live). Une condition d'entrée refuse l'ordre si la tendance est indisponible ou périmée.</div>
+            </div>
           </div>
 
           <div style={{display:"flex",justifyContent:"flex-end",gap:10,marginTop:16}}>
@@ -987,7 +1043,7 @@ function ManualTradingTab({ token }) {
               <td style={MT.td}>{o.market.toUpperCase()}</td><td style={{...MT.td,color:o.mode==="live"?"#ef4444":"#22c55e"}}>{o.mode.toUpperCase()}</td>
               <td style={MT.td}>{o.execution==="price_above"?`prix ≥ ${fmtP(o.trigger_price)}`:o.execution==="price_below"?`prix ≤ ${fmtP(o.trigger_price)}`:`à ${fmtTime(o.trigger_time)}`}</td>
               <td style={MT.td}>{fmtP(o.current_price)}</td>
-              <td style={{...MT.td,color:o.opportunity_valid?"#22c55e":"#fbbf24"}}>{o.opportunity_valid?"valable":"non confirmée"}</td>
+              <td style={{...MT.td,color:o.opportunity_valid?"#22c55e":"#fbbf24"}}>{o.strategy_source==="libre"?"ordre libre":(o.opportunity_valid?"valable":"non confirmée")}</td>
               <td style={MT.td}>{fmtTime(o.expires_at)}</td>
               <td style={MT.td}><button style={MT.btn("#1e2d4a","#fca5a5")} onClick={()=>cancelOrder(o.id)}>Annuler</button></td>
             </tr>)}</tbody>
@@ -1004,11 +1060,13 @@ function ManualTradingTab({ token }) {
               <span>{p.market.toUpperCase()} · <span style={{color:p.mode==="live"?"#ef4444":"#22c55e"}}>{p.mode.toUpperCase()}</span> · x{p.leverage}</span>
               <span>Entrée {fmtP(p.entry_price)} → {fmtP(p.current_price)}</span>
               <span style={{color:(p.pnl||0)>=0?"#22c55e":"#ef4444",fontWeight:800}}>{p.move_pct!=null?`${p.move_pct>=0?"+":""}${p.move_pct.toFixed(2)} %`:""} {fmtUsd(p.pnl)}</span>
-              <span style={{color:"#94a3b8"}}>SL {fmtP(p.sl_price)} · TP {p.tp_price?fmtP(p.tp_price):"—"} · TTP {p.ttp_arm_pct?`+${p.ttp_arm_pct}%/${p.ttp_trail_pct}%${p.armed?" (armé)":""}`:"—"} · pic +{(p.peak_pct||0).toFixed(2)} %</span>
+              <span style={{color:"#94a3b8"}}>SL {fmtP(p.sl_price)} · TP {p.tp_price?fmtP(p.tp_price):"—"} · TTP {p.ttp_arm_pct?`+${p.ttp_arm_pct}%/${p.ttp_trail_pct}%${p.armed?" (armé)":""}`:"—"} · pic +{(p.peak_pct||0).toFixed(2)} %
+                {p.lock_arm_pct ? ` · SL dynamique : ${Math.round(p.lock_fraction*100)}% du pic dès +${p.lock_arm_pct}%${p.lock_active?" (actif)":""}` : ""}
+                {(p.trend_entry||p.trend_exit) ? ` · tendance H4 : ${p.trend_entry?`entrée ${TREND_LBL[p.trend_entry]}`:""}${p.trend_entry&&p.trend_exit?", ":""}${p.trend_exit?`sortie ${p.trend_exit==="opposee"?"si opposée":"si perdue"}`:""}` : ""}</span>
               {p.status!=="open" && <span style={{color:"#fbbf24"}}>{p.status==="opening"?"ouverture…":"fermeture…"}</span>}
               {p.error && <span style={{color:"#fca5a5"}}>⚠️ {p.error}</span>}
               <span style={{marginLeft:"auto",display:"flex",gap:6}}>
-                <button style={MT.btn("#1e2d4a","#93c5fd")} onClick={()=>{setEditId(editId===p.id?null:p.id);setEdit({sl_price:p.sl_price,tp_price:p.tp_price||"",ttp_arm_pct:p.ttp_arm_pct||"",ttp_trail_pct:p.ttp_trail_pct||"",ttp_off:false});}}>Modifier</button>
+                <button style={MT.btn("#1e2d4a","#93c5fd")} onClick={()=>{setEditId(editId===p.id?null:p.id);setEdit({sl_price:p.sl_price,tp_price:p.tp_price||"",ttp_arm_pct:p.ttp_arm_pct||"",ttp_trail_pct:p.ttp_trail_pct||"",ttp_off:false,lock_arm_pct:p.lock_arm_pct||"",lock_fraction_pct:p.lock_fraction?Math.round(p.lock_fraction*100):"",lock_off:false,trend_exit:p.trend_exit||""});}}>Modifier</button>
                 <button style={MT.btn("#ef4444","#fff")} onClick={()=>closePos(p)}>Fermer</button>
               </span>
             </div>
@@ -1018,6 +1076,13 @@ function ManualTradingTab({ token }) {
               <div><span style={MT.label}>TTP armement %</span><input style={{...MT.input,width:100}} type="number" step="0.05" value={edit.ttp_arm_pct} disabled={edit.ttp_off} onChange={e=>setEdit({...edit,ttp_arm_pct:e.target.value})}/></div>
               <div><span style={MT.label}>TTP repli %</span><input style={{...MT.input,width:100}} type="number" step="0.05" value={edit.ttp_trail_pct} disabled={edit.ttp_off} onChange={e=>setEdit({...edit,ttp_trail_pct:e.target.value})}/></div>
               <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={edit.ttp_off} onChange={e=>setEdit({...edit,ttp_off:e.target.checked})}/>sans TTP</label>
+              <div><span style={MT.label}>VERROU dès +%</span><input style={{...MT.input,width:90}} type="number" step="0.05" value={edit.lock_arm_pct} disabled={edit.lock_off} onChange={e=>setEdit({...edit,lock_arm_pct:e.target.value})}/></div>
+              <div><span style={MT.label}>PART GARANTIE %</span><input style={{...MT.input,width:90}} type="number" min="5" max="95" step="5" value={edit.lock_fraction_pct} disabled={edit.lock_off} onChange={e=>setEdit({...edit,lock_fraction_pct:e.target.value})}/></div>
+              <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={edit.lock_off} onChange={e=>setEdit({...edit,lock_off:e.target.checked})}/>sans verrou</label>
+              <div><span style={MT.label}>SORTIE SUR TENDANCE H4</span>
+                <select style={{...MT.input,width:200}} value={edit.trend_exit} onChange={e=>setEdit({...edit,trend_exit:e.target.value})}>
+                  <option value="">Aucune</option><option value="opposee">Si la tendance devient opposée</option><option value="perdue">Si la tendance n'est plus celle du sens</option>
+                </select></div>
               <button style={MT.btn("#60a5fa")} onClick={()=>saveEdit(p)}>Enregistrer</button>
               {p.mode==="live"&&p.market==="perp" && <span style={{fontSize:10,color:"#64748b"}}>Le SL natif Hyperliquid est mis à jour aussi.</span>}
             </div>}
