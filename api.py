@@ -236,7 +236,10 @@ def _consume_events():
                 if not trade_id:
                     trade_id = db.get_open_trade_id_by_coin_action(ticker, action, data.get("strategy"))
                 if trade_id:
-                    db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"), peak_pnl=data.get("peak_pnl_usd"), peak_pnl_pct=data.get("peak_pnl_pct"), fees_paid=data.get("fees_paid"), exit_price_source=data.get("exit_price_source"), mtf_trend_intact_at_close=data.get("mtf_trend_intact_at_close"))
+                    db.close_trade(trade_id, data.get("exit"), data.get("pnl"), data.get("reason"), peak_pnl=data.get("peak_pnl_usd"), peak_pnl_pct=data.get("peak_pnl_pct"), fees_paid=data.get("fees_paid"), exit_price_source=data.get("exit_price_source"), mtf_trend_intact_at_close=data.get("mtf_trend_intact_at_close"),
+                                   pnl_min_pct=data.get("pnl_min_pct"), pnl_min_after_touch_pct=data.get("pnl_min_after_touch_pct"),
+                                   peak_at_min_after_pct=data.get("peak_at_min_after_pct"), touch_delay_sec=data.get("touch_delay_sec"),
+                                   path_complete=data.get("path_complete"))
                 else:
                     # v3.2 — diagnostic : auparavant, si aucune ligne ouverte
                     # ne correspondait (coin/action), la fermeture etait
@@ -1000,7 +1003,7 @@ ADVANCED_SETTINGS = {
     "ENTRY_FLOW_CONTRADICTION_THRESHOLD": {"label": "Flux - veto si pression contraire au-dela de", "default": 0.3},
     "TRADE_FLOW_WINDOW_SEC":   {"label": "Flux - fenetre d analyse (secondes)", "default": 180},
     # v4.268 — TTP Funding
-    "FUNDING_TTP_ARM_PCT":       {"label": "Funding - TTP armement (% de prix)", "default": 1.0},
+    "FUNDING_TTP_ARM_PCT":       {"label": "Funding - TTP armement (% de prix)", "default": 0.5},
     # v4.276 — regime de marche et plages horaires
     "MARKET_REGIME_FILTER_ENABLED": {"label": "Regime de marche - filtre actif (1 = oui, 0 = non)", "default": 0},
     "MARKET_REGIME_BREADTH_PCT": {"label": "Regime de marche - % minimal d actifs dans le meme sens", "default": 60},
@@ -2579,6 +2582,9 @@ def _export_row(t, tz=timezone.utc):
         best_60 = (t["high_60m"] - exit_p) / exit_p * 100 if sign > 0 else (exit_p - t["low_60m"]) / exit_p * 100
         if entry and move_pct is not None and move_pct < 0:  # utile pour les pertes (SL trop serre ?)
             back_to_entry = "oui" if (t["high_60m"] >= entry if sign > 0 else t["low_60m"] <= entry) else "non"
+    best_from_entry = None
+    if entry and t.get("high_60m") is not None and t.get("low_60m") is not None:
+        best_from_entry = (t["high_60m"] - entry) / entry * 100 if sign > 0 else (entry - t["low_60m"]) / entry * 100
     return [
         t.get("id"), _EXPORT_STRATEGY_LABEL.get(t.get("strategy"), t.get("strategy") or ""),
         t.get("coin", ""), t.get("action", ""), t.get("trade_mode") or "",
@@ -2599,6 +2605,10 @@ def _export_row(t, tz=timezone.utc):
         _fr(t.get("vol_ratio"), 2), _fr(t.get("activity_ratio"), 2), _fr(t.get("flow_at_entry"), 2), _fr(t.get("spread_at_entry"), 4),
         t.get("trade_uid") or "",
         {1: "oui", 0: "non"}.get(t.get("mtf_trend_intact_at_close"), ""),  # v4.310
+        # v4.342 — chemin du PnL pendant le trade + mouvement MAX depuis l ENTREE jusqu a 1 h apres la sortie
+        _fr(t.get("pnl_min_pct"), 3), _fr(t.get("pnl_min_after_touch_pct"), 3), _fr(t.get("peak_at_min_after_pct"), 3),
+        _fr(t.get("touch_delay_sec"), 0), {1: "oui", 0: "non (partiel)"}.get(t.get("path_complete"), ""),
+        _fr(best_from_entry, 3),
     ]
 
 
@@ -2617,6 +2627,9 @@ _EXPORT_HEADER = [
     "volatilite a l entree (x habitude)", "activite a l entree (x habitude)", "flux a l entree", "spread a l entree %",
     "identifiant trade",
     "tendance H4 encore intacte a la sortie (top-down)",  # v4.310
+    "PnL minimal pendant le trade %", "PnL minimal APRES avoir touche +0,5 %", "pic atteint au moment de ce minimum %",
+    "delai jusqu a +0,5 % (s)", "suivi complet du trade",
+    "mouvement max depuis l ENTREE jusqu a 1 h apres la sortie % (dans le sens du trade)",  # v4.342
 ]
 
 
@@ -3184,7 +3197,10 @@ def paper_close(body: PaperCloseBody, email: str = Depends(require_user)):
         if trade_id:
             db.close_trade(trade_id, trade["exit"], trade["pnl"], trade["reason"],
                            fees_paid=trade.get("fees_paid"), exit_price_source=exit_source,
-                           mtf_trend_intact_at_close=trade.get("mtf_trend_intact_at_close"))
+                           mtf_trend_intact_at_close=trade.get("mtf_trend_intact_at_close"),
+                           pnl_min_pct=trade.get("pnl_min_pct"), pnl_min_after_touch_pct=trade.get("pnl_min_after_touch_pct"),
+                           peak_at_min_after_pct=trade.get("peak_at_min_after_pct"), touch_delay_sec=trade.get("touch_delay_sec"),
+                           path_complete=trade.get("path_complete"))
         bot._save_open_positions()
     _push_log("warn", f"[{ticker}] Fermeture manuelle @ ${price:.2f} | PnL: {pnl:+.2f}$")
     return {"ok": True, "pnl": pnl, "real_close_confirmed": close_order_ok}
