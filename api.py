@@ -2442,6 +2442,11 @@ class ManualOrderBody(BaseModel):
     expiry_hours: Optional[float] = None
     require_valid: bool = True
     confirm_live: bool = False
+    # v4.343 — ordre libre : verrou progressif du SL + criteres de tendance (choix manuels)
+    lock_arm_pct: Optional[float] = None
+    lock_fraction: Optional[float] = None
+    trend_entry: Optional[str] = None     # None | "haussiere" | "baissiere" | "neutre"
+    trend_exit: Optional[str] = None      # None | "opposee" | "perdue"
 
 
 class ManualModifyBody(BaseModel):
@@ -2451,6 +2456,11 @@ class ManualModifyBody(BaseModel):
     ttp_arm_pct: Optional[float] = None
     ttp_trail_pct: Optional[float] = None
     clear_ttp: bool = False
+    lock_arm_pct: Optional[float] = None    # v4.343
+    lock_fraction: Optional[float] = None
+    clear_lock: bool = False
+    trend_exit: Optional[str] = None
+    clear_trend_exit: bool = False
 
 
 def _manual_call(fn, *args):
@@ -2502,7 +2512,25 @@ def manual_modify(item_id: int, body: ManualModifyBody, email: str = Depends(req
             changes["ttp_arm_pct"] = body.ttp_arm_pct
         if body.ttp_trail_pct:
             changes["ttp_trail_pct"] = body.ttp_trail_pct
+    # v4.343 — verrou progressif + regle de sortie sur la tendance
+    if body.clear_lock:
+        changes["lock_arm_pct"] = changes["lock_fraction"] = None
+    else:
+        if body.lock_arm_pct:
+            changes["lock_arm_pct"] = body.lock_arm_pct
+        if body.lock_fraction:
+            changes["lock_fraction"] = body.lock_fraction
+    if body.clear_trend_exit:
+        changes["trend_exit"] = None
+    elif body.trend_exit:
+        changes["trend_exit"] = body.trend_exit
     return _manual_call(bot.manual.modify, item_id, changes)
+
+
+@app.get("/api/manual/trend")
+def manual_trend(ticker: str, email: str = Depends(require_user)):
+    """v4.343 — tendance de fond H4 d un actif (affichee sur le ticket d ordre libre)."""
+    return bot.manual.trend_info(_norm_ticker(ticker))
 
 
 @app.post("/api/manual/positions/{item_id}/close")
