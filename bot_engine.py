@@ -1462,6 +1462,9 @@ PROFILE_SWING = {
     "MANUAL_DEFAULT_NOTIONAL_USD": 15.0,   # taille proposee (notionnel) — minimum Hyperliquid 10 $
     "MANUAL_DEFAULT_LEVERAGE": 1,
     "MANUAL_MAX_LEVERAGE": 20,
+    "MANUAL_DEFAULT_SL_PCT": 1.0,          # v4.343 : SL propose pour un ORDRE LIBRE (% du prix)
+    "MANUAL_DEFAULT_LOCK_FRACTION": 0.5,   # v4.343 : part du gain maximal garantie par le verrou progressif
+    "MANUAL_LOCK_PUSH_MIN_STEP_PCT": 0.05, # v4.343 : live — ecart minimal avant de renvoyer le SL a Hyperliquid
     "MANUAL_ORDER_EXPIRY_HOURS": 24,       # expiration par defaut d un ordre programme
     "TREND_PERSISTENCE_MIN_PRICE_MOVE_PCT": 0.1,
     # v4.246 — SUR DEMANDE EXPLICITE : confirmation IMMEDIATE (pas soutenue
@@ -10643,6 +10646,13 @@ class BotEngine:
                         continue
                     done.add(ticker)
                     self._mtf_candles(ticker, major_tf, 260 if major_tf == "4h" else 230)
+            # v4.343 — positions MANUELLES avec une regle de sortie sur la tendance H4 : memes bougies a jour
+            manual = getattr(self, "manual", None)
+            if manual is not None:
+                for it in list(manual.items.values()):
+                    if it.get("status") == "open" and it.get("trend_exit") and it.get("ticker") not in done:
+                        done.add(it["ticker"])
+                        self._mtf_candles(it["ticker"], major_tf, 260 if major_tf == "4h" else 230)
         except Exception as e:
             print(f"[MTF] Rafraichissement des actifs occupes : erreur ignoree : {e}")
 
