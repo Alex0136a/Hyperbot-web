@@ -2304,6 +2304,10 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
                     else:
                         mtf_line = (f"tendance {M} {mv['trend']} · support {M} {bot._zone_txt(mv['support'])} · "
                                     f"resistance {M} {bot._zone_txt(mv['resistance'])} · {where}")
+                    # v4.341 — SUR DEMANDE EXPLICITE : signale des bougies H4 ecartees du reel
+                    if not mv.get("data_fresh", True):
+                        mtf_line += (f" · ⚠️ DONNEES {M} PERIMEES (derniere bougie cloturee : "
+                                     f"{datetime.fromtimestamp(mv['last_closed_t'] / 1000, timezone.utc).strftime('%d/%m %H:%M')} UTC)")
                 elif mv:
                     mtf_line = mv.get("why")
             except Exception as e_m:
