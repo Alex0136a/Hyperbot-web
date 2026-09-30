@@ -477,7 +477,8 @@ CONFIG = {
     "FUNDING_SKIP_CLASSIC_TTP": True,
     # v4.258 — SUR DEMANDE EXPLICITE : TTP dedie, simple et fixe pour
     # Funding — arme a ce % de pic, tolere ce % de repli avant de fermer.
-    "FUNDING_TTP_ARM_PCT": 1.0,               # v4.268 SUR DEMANDE EXPLICITE : 1.5 -> 1.0 (des trades a +1,2/+1,3 % de pic finissaient au SL, sans protection)
+    "FUNDING_TTP_ARM_PCT": 0.5,               # v4.342 SUR DEMANDE EXPLICITE : 1.0 -> 0.5 (11 perdants sur 106 trades avaient un pic de 0.5 a <1 %, tous sans protection) ; v4.268 : 1.5 -> 1.0
+    "FUNDING_PNL_TRACK_TOUCH_PCT": 0.5,       # v4.342 : seuil "touche" du suivi du chemin du PnL (lecture seule)
     "FUNDING_TTP_TOLERANCE_PCT": 0.5,
     # v4.268 — PATIENCE DU TTP FUNDING PILOTEE PAR LE FLUX DE TRANSACTIONS :
     # au moment ou le repli atteint la tolerance, le flux decide.
@@ -3373,6 +3374,12 @@ class SymbolState:
             "peak_pnl_pct": peak_pnl_pct_at_close,  # v4.17
             "fees_paid": fees_paid,  # v4.186
             "entry_mechanism": p.get("entry_mechanism", "Non enregistré"),  # v4.243
+            # v4.342 — suivi du chemin du PnL (Funding) : voir _funding_pnl_track
+            "pnl_min_pct": p.get("pp_min"),
+            "pnl_min_after_touch_pct": p.get("pp_min_after"),
+            "peak_at_min_after_pct": p.get("pp_peak_at_min"),
+            "touch_delay_sec": (round(p["pp_touch_ts"] - p["pp_t0"]) if p.get("pp_touch_ts") and p.get("pp_t0") else None),
+            "path_complete": ((1 if p.get("pp_complete") else 0) if "pp_complete" in p else None),
         }
         self.closed_trades.append(trade)
         # v4.3 — FIX FUITE MEMOIRE : seul un historique glissant de 24h est
@@ -7300,6 +7307,37 @@ class BotEngine:
             return True
         return False
 
+    def _funding_pnl_track(self, state, pos, pnl_pct):
+        """v4.342 — SUIVI DU CHEMIN DU PNL (LECTURE SEULE, aucun effet sur une decision).
+        Sur demande : savoir, pour chaque trade Funding, par quel chemin il est passe
+        (ex. : pic +0.9 %, recul a -0.1 %, puis repart au-dessus de +1 %). Note sur la
+        position : pp_min = PnL minimal de tout le trade ; pp_touch_ts = 1re fois que
+        le PnL atteint FUNDING_PNL_TRACK_TOUCH_PCT ; pp_min_after = PnL minimal APRES ce
+        premier contact ; pp_peak_at_min = pic atteint au moment de ce minimum.
+        pp_complete = le suivi couvre tout le trade (ouverture < 3 min avant le 1er tick
+        suivi) ; faux pour un trade deja ouvert au deploiement (minimum partiel)."""
+        try:
+            now = time.time()
+            if pos.get("pp_min") is None or pnl_pct < pos["pp_min"]:
+                pos["pp_min"] = round(pnl_pct, 4)
+            if "pp_complete" not in pos:
+                try:
+                    age = (datetime.now() - datetime.strptime(pos["opened_at"], "%d/%m/%Y %H:%M:%S")).total_seconds()
+                except Exception:
+                    age = None
+                pos["pp_complete"] = bool(age is not None and age < 180)
+                pos["pp_t0"] = now - (age if age is not None and age > 0 else 0)
+            touch = self.cfg.get("FUNDING_PNL_TRACK_TOUCH_PCT", 0.5)
+            if pos.get("pp_touch_ts") is None and pnl_pct >= touch:
+                pos["pp_touch_ts"] = now
+            if pos.get("pp_touch_ts") is not None:
+                if pos.get("pp_min_after") is None or pnl_pct < pos["pp_min_after"]:
+                    pos["pp_min_after"] = round(pnl_pct, 4)
+                    cur_peak = max(getattr(state, "spot_accum_peak_pnl_pct", None) or 0.0, pnl_pct)
+                    pos["pp_peak_at_min"] = round(cur_peak, 4)
+        except Exception:
+            pass
+
     def _forex_crypto_eligible(self, ticker):
         """v4.331 — vrai si le mode Forex (Normal) peut trader cette CRYPTO :
         actif de la liste manuelle FOREX_CRYPTO_SYMBOLS, OU score suffisant
@@ -8905,7 +8943,8 @@ class BotEngine:
         # haut dans cette fonction, avant ce point), mais sans jamais
         # risquer de rendre un gain significatif dans l attente.
         if pos.get("strategy") == "funding_contrarian" and cfg.get("FUNDING_SKIP_CLASSIC_TTP", True):
-            arm_pct_funding = cfg.get("FUNDING_TTP_ARM_PCT", 1.0)
+            self._funding_pnl_track(state, pos, pnl_pct)   # v4.342 : suivi du chemin du PnL (lecture seule)
+            arm_pct_funding = cfg.get("FUNDING_TTP_ARM_PCT", 0.5)
             tolerance_pct_funding = cfg.get("FUNDING_TTP_TOLERANCE_PCT", 0.5)
             if state.spot_accum_peak_pnl_pct is None or pnl_pct > state.spot_accum_peak_pnl_pct:
                 state.spot_accum_peak_pnl_pct = pnl_pct
