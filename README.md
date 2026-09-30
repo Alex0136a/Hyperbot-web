@@ -1,10 +1,10 @@
-[README.md](https://github.com/user-attachments/files/32684983/README.md)
+[README.md](https://github.com/user-attachments/files/32880542/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
 `index.html` fournie branchée sur une vraie API FastAPI et une base SQLite.
 
-Version courante : **4.300** (visible dans `/health` et dans les logs de démarrage).
+Version courante : **4.299** (visible dans `/health` et dans les logs de démarrage).
 
 ## 1. Structure du projet
 
@@ -310,6 +310,25 @@ devises, et « non concerné » pour les cryptos.
    paramètres (SL, TP, trailing), modifiables à tout moment, avec fermeture
    manuelle. Historique dédié, strategie « Manuel » dans l'export CSV.
 
+### Ordre libre (v4.343)
+
+Carte « ✏️ Ordre libre » en haut de l'onglet : choisissez **n'importe quel actif suivi par le bot**
+(crypto ou Forex `xyz:`), le sens, puis « Préparer l'ordre ». Le ticket s'ouvre avec des valeurs
+par défaut (`MANUAL_DEFAULT_NOTIONAL_USD`, `MANUAL_DEFAULT_SL_PCT`), sans opportunité du bot, et
+**tout est modifiable** : paper ou live, perp ou spot, notionnel, levier, entrée (maintenant, prix,
+heure), SL, TP, trailing, et deux options ajoutées :
+
+- **SL dynamique (verrou progressif)** : dès que le gain maximal atteint le seuil choisi (+X %), le
+  SL monte pour garantir la part choisie (Y %) de ce gain maximal, et ne redescend jamais (miroir en
+  short). Sortie « STOP DYNAMIQUE (manuel) ». En perp live, le SL natif Hyperliquid est mis à jour
+  (écart minimal `MANUAL_LOCK_PUSH_MIN_STEP_PCT` = 0,05 %, dans un thread). Sans effet sur un SL
+  fixe : le verrou ne fait que relever le SL existant. Modifiable en cours de route.
+- **Critères de tendance H4 (choix manuels)** : *condition d'entrée* (haussière, baissière ou
+  neutre — l'ordre est refusé si la tendance diffère, est indisponible ou si les bougies sont
+  périmées ; pour un ordre programmé, il est annulé au déclenchement) et *règle de sortie* (« si la
+  tendance devient opposée » ou « si elle n'est plus celle du sens du trade », vérifiée toutes les
+  5 s au plus, uniquement sur des bougies H4 à jour). Même calcul que le top-down.
+
 **Sécurités** : Hyperliquid ne tient qu'une position perp par actif — un ordre
 manuel live est refusé si le bot (ou vous) détient déjà une position live sur
 l'actif, et le bot n'ouvre pas en live sur un actif tenu manuellement. En perp
@@ -564,18 +583,6 @@ Spot-Accum (achats) et Accumulation (ventes) utilisent désormais l'approche
 Le diagnostic affiche pour chaque actif la ligne « 📊 TOP-DOWN » (tendance,
 zones, position du prix). Tous les paramètres sont réglables (réglages
 avancés « Top-down »). Moteur précédent : `ENTRY_ENGINE_MTF` = 0.
-
-## 4duodetriginta. Nettoyage : top-down seul pour Spot-Accum et Accumulation (v4.300)
-
-Spot-Accum et Accumulation n'utilisent plus **que** la méthode top-down,
-évaluée en tête de chaque cycle, **avant** tous les anciens filtres (collecte
-d'indicateurs internes, heures creuses, blackout CPI, ATR, stabilité, régime,
-situation, anti-range, continuation…) qui ne s'appliquent plus à eux. Les
-anciens moteurs (chaîne historique, moteur simple) ne sont plus appelés, et
-l'ancien délai après perte / la limite de rafales ne s'appliquent plus à leurs
-trades (le top-down a sa propre pause de 4 h sur un actif après un SL).
-Les ~70 réglages et les lignes de diagnostic des anciennes méthodes sont
-masqués tant que le top-down est actif. Funding et Forex ne sont pas concernés.
 
 ## 5. Premier lancement
 
