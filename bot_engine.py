@@ -1393,6 +1393,10 @@ PROFILE_SWING = {
     "MTF_ENTRY_ALLOW_PULLBACK_TREND": 1, # v4.329 : 1 = accepte aussi repli/rebond avec structure EMA50/EMA200 intacte (pas seulement prix > EMA50 > EMA200)
     "MTF_LOCK_FRACTION": 0.5,            # v4.340 : apres +1R, le SL garantit cette fraction du gain maximal (0 = desactive)
     "MTF_SL_PUSH_MIN_STEP_PCT": 0.05,    # v4.340 : live — ecart minimal (% du prix d entree) avant de renvoyer le SL a Hyperliquid
+    "MTF_DATA_GRACE_SEC": 90,            # v4.341 : tolerance apres une limite de periode avant de declarer les bougies PERIMEES
+    "MTF_BLOCK_ON_STALE_DATA": 1,        # v4.341 : 1 = aucune entree top-down sur des bougies H4 perimees
+    "MTF_FETCH_RETRY_SEC": 20,           # v4.341 : delai avant de recharger des bougies en retard / en echec
+    "MTF_FETCH_MAX_TRIES": 3,            # v4.341 : essais par periode avant d accepter les donnees en l etat
     "MTF_TREND_LIVE_PRICE": 1,           # v4.327 : 1 = tendance de fond calculee avec le prix live (WebSocket) ; 0 = derniere cloture H4 seule
     "MTF_TREND_PATH_ENABLED": 1,
     "MTF_TREND_ZONE_TOLERANCE_ATR": 0.25,  # tolerance (x ATR majeur) autour du support ascendant / resistance descendante
@@ -7741,6 +7745,7 @@ class BotEngine:
                 self._refresh_funding_rates_if_due()  # v4.33
                 self._refresh_asset_win_rates_if_due()  # v4.314
                 self._blocked_followups_if_due()  # v4.338
+                self._refresh_held_mtf_data()  # v4.341
                 self._decay_confidence_thresholds()
                 prices = self._get_prices_with_timeout(cfg.get("PRICE_FETCH_TIMEOUT_SEC", 10))
                 in_hours = is_trading_hours(cfg)
@@ -7924,7 +7929,8 @@ class BotEngine:
         if pos and pos.get("engine") == "mtf":
             try:
                 mv = self.mtf_view(ticker, price, cache_only=True)
-                if mv and mv.get("ok"):
+                # v4.341 : donnees H4 perimees => None (inconnu) plutot qu une valeur fausse
+                if mv and mv.get("ok") and mv.get("data_fresh", True):
                     want = "haussiere" if pos["type"] == "long" else "baissiere"
                     trade["mtf_trend_at_close"] = mv["trend"]
                     trade["mtf_trend_intact_at_close"] = (mv["trend"] == want)
@@ -10495,31 +10501,111 @@ class BotEngine:
     # ─────────────────────────────────────────────────────────────────────
     _TF_SEC = {"15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
 
+    @staticmethod
+    def _mtf_is_complete(sec, candles, now_ms):
+        """v4.341 — la derniere bougie CLOTUREE connue est-elle bien la plus recente
+        possible ? Les bougies sont contigues : apres la bougie d ouverture t, la
+        suivante se cloture a t + 2 x duree - 1 ms. Si cet instant est deja passe
+        (le bot recharge ~10 s apres chaque limite de periode) et que la bougie
+        manque, les donnees ont du retard sur la realite. Independant de
+        l alignement exact des periodes."""
+        if not candles:
+            return False
+        return now_ms < candles[-1]["t"] + 2 * sec * 1000 - 1
+
+    @staticmethod
+    def _mtf_is_fresh(sec, candles, now_ms, grace_ms):
+        """v4.341 — meme test avec une tolerance (MTF_DATA_GRACE_SEC, 90 s par
+        defaut) : laisse au cycle le temps de recharger juste apres une limite de
+        periode, mais signale comme PERIMEE toute serie qui n a pas ete mise a jour
+        depuis. Sert a ne jamais decider sur des bougies ecartees du reel."""
+        if not candles:
+            return False
+        return now_ms < candles[-1]["t"] + 2 * sec * 1000 - 1 + grace_ms
+
     def _mtf_candles(self, ticker, tf, count, cache_only=False):
         """Bougies CLOTUREES Hyperliquid (avec prix d ouverture), rechargees
-        une seule fois par bougie (juste apres sa cloture)."""
+        une seule fois par bougie (juste apres sa cloture).
+        v4.341 — SUR DEMANDE EXPLICITE (donnees synchronisees avec la realite) :
+        si la bougie qui vient de se cloturer n est pas encore dans la reponse, la
+        periode n est PAS marquee comme chargee : nouvelle tentative 20 s plus tard
+        (3 essais au plus par periode, puis on accepte). Auparavant, une reponse en
+        retard figeait la serie jusqu a la periode suivante (jusqu a 4 h en H4).
+        Un echec reseau ou une reponse vide declenchent la meme temporisation au
+        lieu d un appel a chaque cycle."""
         sec = self._TF_SEC[tf]
         cache = getattr(self, "_mtf_cache", None)
         if cache is None:
             cache = self._mtf_cache = {}
-        bucket = int((time.time() - 10) // sec)
-        hit = cache.get((ticker, tf))
+        meta_all = getattr(self, "_mtf_meta", None)
+        if meta_all is None:
+            meta_all = self._mtf_meta = {}
+        key = (ticker, tf)
+        now = time.time()
+        bucket = int((now - 10) // sec)
+        hit = cache.get(key)
         if hit and (hit[0] == bucket or cache_only):
             return hit[1]
         out = hit[1] if hit else []
         if cache_only:
             return out
+        meta = meta_all.setdefault(key, {})
+        if meta.get("wait_bucket") == bucket and now < meta.get("retry_at", 0):
+            return out          # temporisation en cours (donnees en retard ou echec recent)
+        if meta.get("wait_bucket") != bucket:
+            meta["wait_bucket"] = bucket
+            meta["tries"] = 0
+        meta["tries"] = meta.get("tries", 0) + 1
+        retry_sec = self.cfg.get("MTF_FETCH_RETRY_SEC", 20)
         try:
-            end_ms = int(time.time() * 1000)
+            end_ms = int(now * 1000)
             raw = self.info.post("/info", {"type": "candleSnapshot", "req": {
                 "coin": ticker, "interval": tf, "startTime": end_ms - (count + 1) * sec * 1000, "endTime": end_ms}})
             if isinstance(raw, list) and raw:
                 out = [{"t": int(c["t"]), "o": float(c["o"]), "h": float(c["h"]), "l": float(c["l"]),
                         "c": float(c["c"]), "v": float(c.get("v", 0))} for c in raw if int(c.get("T", 0)) <= end_ms]
-                cache[(ticker, tf)] = (bucket, out)
+                complete = self._mtf_is_complete(sec, out, end_ms)
+                if complete or meta["tries"] >= self.cfg.get("MTF_FETCH_MAX_TRIES", 3):
+                    cache[key] = (bucket, out)
+                    meta["accepted_incomplete"] = not complete
+                    if not complete:
+                        print(f"[MTF] {ticker} {tf} : derniere bougie cloturee toujours absente apres {meta['tries']} essais — donnees acceptees en l etat")
+                else:
+                    # serie recue mais en retard : on la garde, sans marquer la periode comme chargee
+                    cache[key] = (hit[0] if hit else bucket - 1, out)
+                    meta["retry_at"] = now + retry_sec
+            else:
+                meta["retry_at"] = now + retry_sec
         except Exception as e:
+            meta["retry_at"] = now + retry_sec
             print(f"[MTF] Bougies {tf} {ticker} indisponibles : {e}")
         return out
+
+    def _refresh_held_mtf_data(self):
+        """v4.341 — SUR DEMANDE EXPLICITE : rafraichit les bougies de l unite majeure
+        (H4) des actifs qui ont une position top-down OUVERTE. Sans cela, l evaluation
+        d entree (seul endroit qui rechargeait ces bougies) s arretait avant de les
+        lire pour un actif occupe : la sortie "tendance retournee" et le diagnostic
+        "tendance intacte a la sortie" travaillaient sur un historique fige, ou vide
+        apres un redemarrage. Appele a chaque cycle depuis la boucle principale (pas
+        depuis le flux de prix) : _mtf_candles ne fait un appel reseau qu une fois
+        par periode et par actif."""
+        try:
+            cfg = self.cfg
+            major_tf = "1d" if cfg.get("MTF_USE_DAILY", 0) else cfg.get("MTF_MAJOR_TF", "4h")
+            done = set()
+            for pool in (self.states, self.accum_states):
+                for slot, st in pool.items():
+                    pos = st.position
+                    if not pos or pos.get("engine") != "mtf":
+                        continue
+                    ticker = ticker_from_slot_key(slot)
+                    if ticker in done:
+                        continue
+                    done.add(ticker)
+                    self._mtf_candles(ticker, major_tf, 260 if major_tf == "4h" else 230)
+        except Exception as e:
+            print(f"[MTF] Rafraichissement des actifs occupes : erreur ignoree : {e}")
 
     def mtf_view(self, ticker, price, cache_only=False):
         """Lecture complete pour le diagnostic et l entree."""
@@ -10542,9 +10628,13 @@ class BotEngine:
         zones = mtf.find_zones(major, lookback=cfg.get("MTF_ZONE_LOOKBACK", 120))
         sup, res = mtf.nearest_zones(zones, price)
         tol = a * cfg.get("MTF_ZONE_TOLERANCE_ATR", 0.25)
+        # v4.341 — synchronisation avec la realite : ces bougies sont-elles a jour ?
+        _fresh = self._mtf_is_fresh(self._TF_SEC[major_tf], major, int(time.time() * 1000),
+                                    int(cfg.get("MTF_DATA_GRACE_SEC", 90)) * 1000)
         return {"ok": True, "major_tf": major_tf, "lower_tf": lower_tf, "trend": tr, "ema_fast": ef, "ema_slow": es,
                 "atr": a, "support": sup, "resistance": res, "tolerance": tol,
-                "in_support": mtf.in_zone(price, sup, tol), "in_resistance": mtf.in_zone(price, res, tol)}
+                "in_support": mtf.in_zone(price, sup, tol), "in_resistance": mtf.in_zone(price, res, tol),
+                "data_fresh": _fresh, "last_closed_t": major[-1]["t"]}
 
     @staticmethod
     def _zone_txt(z):
@@ -10612,6 +10702,11 @@ class BotEngine:
             snap["blocker"] = v["why"]
             return
         self._funnel_note(mode, ticker, "eval")
+        # v4.341 — SUR DEMANDE EXPLICITE : pas d entree sur des bougies ecartees du reel.
+        if not v.get("data_fresh", True) and cfg.get("MTF_BLOCK_ON_STALE_DATA", 1):
+            snap["blocker"] = (f"donnees {v['major_tf']} perimees (derniere bougie cloturee : "
+                               f"{datetime.utcfromtimestamp(v['last_closed_t'] / 1000).strftime('%d/%m %H:%M')} UTC) — entree suspendue")
+            return
         _lbl = {"4h": "H4", "1d": "Daily", "15m": "M15", "1h": "H1"}
         M, L = _lbl.get(v["major_tf"], v["major_tf"]), _lbl.get(v["lower_tf"], v["lower_tf"])
         want = "haussiere" if long_side else "baissiere"
@@ -10920,7 +11015,8 @@ class BotEngine:
             want = "haussiere" if long_side else "baissiere"
             opposite = "baissiere" if long_side else "haussiere"
             mv = self.mtf_view(ticker, price, cache_only=True)
-            if mv and mv.get("ok") and mv["trend"] == opposite:
+            # v4.341 : uniquement si l historique H4 est a jour (voir _refresh_held_mtf_data)
+            if mv and mv.get("ok") and mv.get("data_fresh", True) and mv["trend"] == opposite:
                 reason = "TENDANCE RETOURNEE (H4)"
         # v4.309 — SUR DEMANDE EXPLICITE : cassure structurelle de la zone
         # elle-meme (support pour un long, resistance pour un short) —
