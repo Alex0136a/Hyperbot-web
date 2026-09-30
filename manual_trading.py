@@ -34,12 +34,14 @@ import db
 import bot_engine as be
 
 STRATEGY_LABELS = {
+    "libre": "Ordre libre",
     "forex": "Forex",
     "accumulation": "Accumulation",
     "spot_accumulation": "Spot-Accum",
     "funding_contrarian": "Funding",
 }
 OPEN_STATUSES = ("scheduled", "opening", "open", "closing")
+TREND_FR = {"haussiere": "haussière", "baissiere": "baissière", "neutre": "neutre"}  # v4.343
 FEE_ROUND_TRIP = be.FEE_RATE_TAKER_ESTIMATE * 2
 
 
@@ -54,6 +56,9 @@ class ManualTrading:
         self.opportunities = {}   # (strategy, ticker, direction) -> dict
         self.items = {}           # id -> dict (ordres programmes + positions ouvertes)
         self._busy = set()        # ids en cours d execution (ouverture/fermeture)
+        self._fire_busy = set()   # v4.343 : ordres programmes en cours de declenchement (controle de tendance)
+        self._push_busy = set()   # v4.343 : mises a jour du SL natif en cours (verrou progressif)
+        self._trend_last = {}     # v4.343 : id -> derniere verification de la regle de sortie sur tendance
         self._last_persist = {}
         self._load()
 
@@ -169,7 +174,89 @@ class ManualTrading:
             return None
 
     # ───────────────────────────── proposition ───────────────────────────
+    # ─────────────────────── ORDRE LIBRE (v4.343) ────────────────────────
+    def _propose_free(self, ticker, direction, market):
+        """Proposition par defaut d un ORDRE LIBRE : n importe quel actif suivi (crypto ou
+        Forex), sans opportunite du bot. Tout reste modifiable sur le ticket."""
+        if direction not in ("long", "short"):
+            raise ManualError("Sens invalide.")
+        if market == "spot" and (direction != "long" or not self.spot_pair(ticker)):
+            raise ManualError("Pas de marche spot disponible pour cet actif (le spot n autorise que l achat).")
+        price = self.price(ticker, market)
+        if not price:
+            raise ManualError(f"Prix indisponible pour {ticker} : actif inconnu ou non suivi par le bot.")
+        cfg = self.cfg
+        lev = 1 if market == "spot" else int(cfg.get("MANUAL_DEFAULT_LEVERAGE", 1))
+        sl_pct = float(cfg.get("MANUAL_DEFAULT_SL_PCT", 1.0))
+        return {
+            "strategy": "libre", "free": True, "ticker": ticker, "direction": direction, "market": market,
+            "price": price, "leverage": lev, "notional_usd": round(float(cfg.get("MANUAL_DEFAULT_NOTIONAL_USD", 15.0)), 2),
+            "margin_usd": round(float(cfg.get("MANUAL_DEFAULT_NOTIONAL_USD", 15.0)) / max(lev, 1), 2),
+            "sl_pct": round(sl_pct, 3), "sl_basis": "SL par defaut (ordre libre)",
+            "tp_pct": round(2 * sl_pct, 3), "tp_basis": "2 x le SL (a activer si souhaite)",
+            "ttp_arm_pct": 1.0, "ttp_trail_pct": 0.5,
+            "lock_arm_pct": round(sl_pct, 3), "lock_fraction": float(cfg.get("MANUAL_DEFAULT_LOCK_FRACTION", 0.5)),
+            "trend": self.trend_info(ticker),
+            "confidence": None, "reasons": [],
+            "spot_available": self.spot_pair(ticker) is not None and direction == "long",
+            "live_available": self.bot.exchange is not None and bool(self._wallet()),
+            "min_notional_usd": 10.0,
+        }
+
+    def trend_info(self, ticker, use_cache=False):
+        """Tendance de fond H4 d un actif (meme calcul que le top-down : EMA50/EMA200 sur bougies
+        H4 cloturees + prix live), avec l etat de fraicheur des donnees."""
+        price = self.price(ticker, "perp")
+        if not price:
+            return {"ok": False, "why": "prix indisponible"}
+        try:
+            mv = self.bot.mtf_view(ticker, price, cache_only=use_cache)
+        except Exception as e:
+            return {"ok": False, "why": f"{type(e).__name__}: {e}"}
+        if not mv or not mv.get("ok"):
+            return {"ok": False, "why": (mv or {}).get("why") or "historique H4 indisponible pour cet actif"}
+        return {"ok": True, "trend": mv["trend"], "data_fresh": bool(mv.get("data_fresh", True)),
+                "last_closed_t": mv.get("last_closed_t"), "major_tf": mv.get("major_tf")}
+
+    def _check_trend_entry(self, ticker, required):
+        """Condition d entree sur la tendance H4 : leve ManualError si elle n est pas remplie
+        (ou si la tendance est indisponible / perimee : on n ouvre jamais a l aveugle)."""
+        info = self.trend_info(ticker)
+        if not info["ok"]:
+            raise ManualError(f"Tendance H4 indisponible pour {ticker} ({info['why']}) — ordre non ouvert (condition d entree demandee).")
+        if not info["data_fresh"]:
+            raise ManualError(f"Donnees H4 de {ticker} perimees — ordre non ouvert (condition d entree demandee).")
+        if info["trend"] != required:
+            raise ManualError(f"Tendance H4 de {ticker} : {TREND_FR.get(info['trend'], info['trend'])} "
+                              f"(requis : {TREND_FR.get(required, required)}) — ordre non ouvert.")
+        return info["trend"]
+
+    @staticmethod
+    def _validate_lock_trend(p):
+        """Validation des options v4.343 : verrou progressif et criteres de tendance."""
+        la, lf = p.get("lock_arm_pct"), p.get("lock_fraction")
+        if (la in (None, "", 0)) != (lf in (None, "", 0)):
+            raise ManualError("Verrou progressif : renseignez a la fois le seuil de depart et la part garantie (ou aucun des deux).")
+        if la not in (None, "", 0):
+            la, lf = float(la), float(lf)
+            if not 0.05 <= la <= 500:
+                raise ManualError("Verrou progressif : seuil de depart entre 0,05 % et 500 %.")
+            if not 0.05 <= lf <= 0.95:
+                raise ManualError("Verrou progressif : part garantie entre 5 % et 95 % du gain maximal.")
+            p["lock_arm_pct"], p["lock_fraction"] = la, lf
+        else:
+            p["lock_arm_pct"] = p["lock_fraction"] = None
+        te = p.get("trend_entry") or None
+        if te not in (None, "haussiere", "baissiere", "neutre"):
+            raise ManualError("Condition d entree sur la tendance invalide.")
+        tx = p.get("trend_exit") or None
+        if tx not in (None, "opposee", "perdue"):
+            raise ManualError("Regle de sortie sur la tendance invalide.")
+        p["trend_entry"], p["trend_exit"] = te, tx
+
     def propose(self, strategy, ticker, direction, market="perp"):
+        if strategy == "libre":
+            return self._propose_free(ticker, direction, market)
         opp = self.get_opportunity(strategy, ticker, direction)
         if opp is None:
             raise ManualError("Cette opportunite n est pas (ou plus) valable dans ce sens.")
@@ -258,9 +345,17 @@ class ManualTrading:
                 raise ManualError(f"Champ manquant : {key}")
         if p["direction"] not in ("long", "short") or p["market"] not in ("perp", "spot") or p["mode"] not in ("paper", "live"):
             raise ManualError("Parametres invalides.")
-        opp = self.get_opportunity(p["strategy"], p["ticker"], p["direction"])
-        if opp is None:
-            raise ManualError("Cette opportunite n est plus valable (ou le sens ne correspond pas a celui prevu par le bot).")
+        if p["strategy"] == "libre":
+            # v4.343 — ORDRE LIBRE : aucun besoin d une opportunite du bot ; l actif doit simplement etre suivi
+            opp = {}
+            p["require_valid"] = False
+            if not self.price(p["ticker"], p["market"]):
+                raise ManualError(f"Prix indisponible pour {p['ticker']} : actif inconnu ou non suivi par le bot.")
+        else:
+            opp = self.get_opportunity(p["strategy"], p["ticker"], p["direction"])
+            if opp is None:
+                raise ManualError("Cette opportunite n est plus valable (ou le sens ne correspond pas a celui prevu par le bot).")
+        self._validate_lock_trend(p)
         if p["market"] == "spot":
             if p["direction"] != "long":
                 raise ManualError("Le spot n autorise que l achat (LONG).")
@@ -305,6 +400,8 @@ class ManualTrading:
         with self.lock:
             p = dict(params)
             opp = self._validate(p)
+            if p["execution"] == "now" and p.get("trend_entry"):
+                self._check_trend_entry(p["ticker"], p["trend_entry"])   # v4.343 : refuse avant toute creation
             now = time.time()
             item = {
                 "strategy_source": p["strategy"], "ticker": p["ticker"], "direction": p["direction"],
@@ -314,6 +411,9 @@ class ManualTrading:
                 "tp_pct": float(p["tp_pct"]) if p.get("tp_pct") not in (None, "", 0) else None,
                 "ttp_arm_pct": float(p.get("ttp_arm_pct") or 0) or None,
                 "ttp_trail_pct": float(p.get("ttp_trail_pct") or 0) or None,
+                # v4.343 — verrou progressif du SL + criteres de tendance (choix manuels)
+                "lock_arm_pct": p.get("lock_arm_pct"), "lock_fraction": p.get("lock_fraction"), "lock_active": False,
+                "trend_entry": p.get("trend_entry"), "trend_exit": p.get("trend_exit"),
                 "execution": p["execution"],
                 "trigger_price": float(p["trigger_price"]) if p.get("trigger_price") else None,
                 "trigger_time": float(p["trigger_time"]) if p.get("trigger_time") else None,
@@ -376,8 +476,13 @@ class ManualTrading:
             "notional_usd": qty * entry,
             "sl_price": entry * (1 - item["sl_pct"] / 100) if is_long else entry * (1 + item["sl_pct"] / 100),
             "tp_price": (entry * (1 + item["tp_pct"] / 100) if is_long else entry * (1 - item["tp_pct"] / 100)) if item["tp_pct"] else None,
-            "peak_pct": 0.0, "armed": False, "last_price": price,
+            "peak_pct": 0.0, "armed": False, "last_price": price, "lock_active": False,
         })
+        try:
+            ti = self.trend_info(ticker, use_cache=True)
+            item["trend_at_entry"] = ti.get("trend") if ti.get("ok") else None
+        except Exception:
+            item["trend_at_entry"] = None
         self._save(item)
         try:
             db.upsert_open_trade({
@@ -393,7 +498,9 @@ class ManualTrading:
         self._log(f"#{item['id']} OUVERT : {item['direction'].upper()} {ticker} {market.upper()} ({item['mode']}) @ {entry:.6g} | "
                   f"{item['notional_usd']:.2f} $ x{item['leverage']} | SL {item['sl_price']:.6g}"
                   + (f" | TP {item['tp_price']:.6g}" if item["tp_price"] else "")
-                  + (f" | TTP +{item['ttp_arm_pct']}%/-{item['ttp_trail_pct']}%" if item["ttp_arm_pct"] else ""), "signal")
+                  + (f" | TTP +{item['ttp_arm_pct']}%/-{item['ttp_trail_pct']}%" if item["ttp_arm_pct"] else "")
+                  + (f" | verrou {round(item['lock_fraction'] * 100)}% des +{item['lock_arm_pct']}%" if item.get("lock_arm_pct") else "")
+                  + (f" | tendance H4 a l entree : {TREND_FR.get(item.get('trend_at_entry'), '?')}" if item.get("trend_entry") or item.get("trend_exit") else ""), "signal")
 
     def _open_live_perp(self, item, price, is_long):
         ex, ticker, lev = self.bot.exchange, item["ticker"], item["leverage"]
@@ -524,9 +631,13 @@ class ManualTrading:
             if not item:
                 raise ManualError("Element introuvable.")
             if item["status"] == "scheduled":
-                for k in ("sl_pct", "tp_pct", "ttp_arm_pct", "ttp_trail_pct", "trigger_price", "notional_usd", "leverage"):
+                for k in ("sl_pct", "tp_pct", "ttp_arm_pct", "ttp_trail_pct", "trigger_price", "notional_usd", "leverage",
+                          "lock_arm_pct", "lock_fraction", "trend_entry", "trend_exit"):
                     if k in changes:
                         item[k] = changes[k]
+                probe = {k: item.get(k) for k in ("lock_arm_pct", "lock_fraction", "trend_entry", "trend_exit")}
+                self._validate_lock_trend(probe)      # v4.343 : memes regles qu a la creation
+                item.update(probe)
                 self._save(item)
                 return self.public(item)
             if item["status"] != "open":
@@ -552,6 +663,15 @@ class ManualTrading:
             for k in ("ttp_arm_pct", "ttp_trail_pct"):
                 if k in changes:
                     item[k] = float(changes[k]) if changes[k] else None
+            if "lock_arm_pct" in changes or "lock_fraction" in changes:   # v4.343
+                probe = {"lock_arm_pct": changes.get("lock_arm_pct", item.get("lock_arm_pct")),
+                         "lock_fraction": changes.get("lock_fraction", item.get("lock_fraction"))}
+                self._validate_lock_trend(probe)
+                item["lock_arm_pct"], item["lock_fraction"] = probe["lock_arm_pct"], probe["lock_fraction"]
+            if "trend_exit" in changes:
+                if changes["trend_exit"] not in (None, "", "opposee", "perdue"):
+                    raise ManualError("Regle de sortie sur la tendance invalide.")
+                item["trend_exit"] = changes["trend_exit"] or None
             self._save(item)
             self._log(f"#{item['id']} {item['ticker']} modifie : SL {item['sl_price']:.6g}"
                       + (f" | TP {item['tp_price']:.6g}" if item.get("tp_price") else " | sans TP")
@@ -598,6 +718,8 @@ class ManualTrading:
                 self._save(item)  # persiste regulierement le pic du trailing
 
     def _check_trigger(self, item):
+        if item["id"] in self._fire_busy:
+            return
         price = self.price(item["ticker"], item["market"])
         if price is None:
             return
@@ -607,11 +729,27 @@ class ManualTrading:
                 or (ex == "time" and time.time() >= item["trigger_time"]))
         if not fire:
             return
-        if item.get("require_valid", True) and not self.get_opportunity(item["strategy_source"], item["ticker"], item["direction"]):
+        if (item.get("require_valid", True) and item.get("strategy_source") != "libre"
+                and not self.get_opportunity(item["strategy_source"], item["ticker"], item["direction"])):
             self._finish_order(item, "cancelled", "declenche mais l opportunite n est plus valable — ordre annule")
             return
         self._log(f"Ordre programme #{item['id']} declenche ({self._trigger_text(item)}) — ouverture", "signal")
-        threading.Thread(target=self._open, args=(item,), daemon=True).start()
+        self._fire_busy.add(item["id"])
+        threading.Thread(target=self._fire, args=(item,), daemon=True).start()
+
+    def _fire(self, item):
+        """v4.343 — declenchement : controle de tendance H4 (si demande) puis ouverture. Execute dans un
+        thread : la lecture des bougies peut prendre une seconde, ce qui ne doit pas bloquer les prix."""
+        try:
+            if item.get("trend_entry"):
+                try:
+                    self._check_trend_entry(item["ticker"], item["trend_entry"])
+                except ManualError as e:
+                    self._finish_order(item, "cancelled", f"declenche mais condition de tendance non remplie : {e}")
+                    return
+            self._open(item)
+        finally:
+            self._fire_busy.discard(item["id"])
 
     def _manage(self, item):
         if item["id"] in self._busy:
@@ -625,8 +763,21 @@ class ManualTrading:
         if move > item.get("peak_pct", 0):
             item["peak_pct"] = move
         reason = None
+        # v4.343 — VERROU PROGRESSIF : des que le gain maximal atteint le seuil, le SL monte pour garantir
+        # une part (lock_fraction) de ce gain maximal. Il ne fait que MONTER (long) / DESCENDRE (short).
+        la, lf = item.get("lock_arm_pct"), item.get("lock_fraction")
+        if la and lf and item["peak_pct"] >= la:
+            lock_pct = lf * item["peak_pct"]
+            new_sl = item["entry_price"] * (1 + sign * lock_pct / 100)
+            if (sign > 0 and new_sl > item["sl_price"]) or (sign < 0 and new_sl < item["sl_price"]):
+                item["sl_price"] = new_sl
+                if not item.get("lock_active"):
+                    item["lock_active"] = True
+                    self._log(f"#{item['id']} {item['ticker']} : verrou du SL actif a +{item['peak_pct']:.2f}% — SL {new_sl:.6g} (garantit {lock_pct:.2f}%)", "signal")
+                    self._save(item)
+                self._maybe_push_sl(item, new_sl)
         if (sign > 0 and price <= item["sl_price"]) or (sign < 0 and price >= item["sl_price"]):
-            reason = "STOP LOSS (manuel)"
+            reason = "STOP DYNAMIQUE (manuel)" if item.get("lock_active") else "STOP LOSS (manuel)"
         elif item.get("tp_price") and ((sign > 0 and price >= item["tp_price"]) or (sign < 0 and price <= item["tp_price"])):
             reason = "TAKE PROFIT (manuel)"
         elif item.get("ttp_arm_pct"):
@@ -636,8 +787,59 @@ class ManualTrading:
                 self._save(item)
             if item.get("armed") and move <= item["peak_pct"] - (item.get("ttp_trail_pct") or 0.5):
                 reason = "TRAILING TAKE PROFIT (manuel)"
+        if not reason and item.get("trend_exit"):
+            reason = self._trend_exit_reason(item, price, sign)
         if reason:
             threading.Thread(target=self._close, args=(item, reason, price), daemon=True).start()
+
+    def _trend_exit_reason(self, item, price, sign):
+        """v4.343 — regle de sortie choisie sur la tendance H4 : "opposee" = la tendance devient l inverse
+        de celle du trade ; "perdue" = elle n est plus celle du sens du trade. Lecture du cache (jamais
+        de requete reseau ici, le bot rafraichit les bougies H4 des actifs tenus), verifiee au plus toutes
+        les 5 s, et uniquement sur des donnees a jour."""
+        now = time.time()
+        if now - self._trend_last.get(item["id"], 0) < 5:
+            return None
+        self._trend_last[item["id"]] = now
+        try:
+            mv = self.bot.mtf_view(item["ticker"], price, cache_only=True)
+        except Exception:
+            return None
+        if not mv or not mv.get("ok") or not mv.get("data_fresh", True):
+            return None
+        want = "haussiere" if sign > 0 else "baissiere"
+        opposite = "baissiere" if sign > 0 else "haussiere"
+        if item["trend_exit"] == "opposee" and mv["trend"] == opposite:
+            return "TENDANCE RETOURNEE (manuel)"
+        if item["trend_exit"] == "perdue" and mv["trend"] != want:
+            return "TENDANCE PERDUE (manuel)"
+        return None
+
+    def _maybe_push_sl(self, item, new_sl):
+        """Live perp : renvoie le SL a Hyperliquid (ordre natif) quand il a bouge d au moins
+        MANUAL_LOCK_PUSH_MIN_STEP_PCT depuis le dernier envoi — dans un thread, sans bloquer les prix."""
+        if item["mode"] != "live" or item["market"] != "perp" or self.bot.exchange is None:
+            return
+        pushed = item.get("lock_pushed")
+        step = self.cfg.get("MANUAL_LOCK_PUSH_MIN_STEP_PCT", 0.05)
+        if pushed is not None and abs(new_sl - pushed) / item["entry_price"] * 100 < step:
+            return
+        iid = item["id"]
+        if iid in self._push_busy:
+            return
+        self._push_busy.add(iid)
+
+        def run():
+            try:
+                be.update_sl_on_hyperliquid(self.bot.exchange, self.bot.info, self._wallet(), item["ticker"],
+                                            {"type": item["direction"], "entry": item["entry_price"], "size": item["notional_usd"]},
+                                            new_sl, self.cfg)
+                item["lock_pushed"] = new_sl
+            except Exception as e:
+                print(f"[MANUEL] Mise a jour du SL natif #{iid} impossible : {e}")
+            finally:
+                self._push_busy.discard(iid)
+        threading.Thread(target=run, daemon=True).start()
 
     # ─────────────────────────── reprise au demarrage ────────────────────
     def reconcile(self, exch_positions):
@@ -694,7 +896,8 @@ class ManualTrading:
                 out["pnl"] = item["qty"] * (price - item["entry_price"]) * sign
         elif item.get("status") == "scheduled":
             out["current_price"] = self.price(item["ticker"], item["market"])
-            out["opportunity_valid"] = self.get_opportunity(item["strategy_source"], item["ticker"], item["direction"]) is not None
+            out["opportunity_valid"] = (True if item.get("strategy_source") == "libre"
+                                        else self.get_opportunity(item["strategy_source"], item["ticker"], item["direction"]) is not None)
         return out
 
     def snapshot(self):
