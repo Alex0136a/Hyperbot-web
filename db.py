@@ -208,6 +208,9 @@ def init_db():
                          ("spread_at_entry", "REAL"),  # v4.282
                          # v4.290 — suivi apres SL sur 2 h
                          ("sim_sl_200", "TEXT"), ("sl_back_min", "REAL"), ("sl_mae_pct", "REAL"),
+                         # v4.342 — chemin du PnL pendant le trade (Funding)
+                         ("pnl_min_pct", "REAL"), ("pnl_min_after_touch_pct", "REAL"),
+                         ("peak_at_min_after_pct", "REAL"), ("touch_delay_sec", "REAL"), ("path_complete", "INTEGER"),
                          ("sl_mark_120_pct", "REAL"), ("sim2_status", "TEXT")):
             if col not in existing_cols:
                 conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
@@ -536,13 +539,17 @@ def insert_orphaned_closed_trade(coin, action, entry_price, exit_price, pnl, rea
 
 
 def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=None, fees_paid=None,
-                exit_price_source=None, mtf_trend_intact_at_close=None):
+                exit_price_source=None, mtf_trend_intact_at_close=None,
+                pnl_min_pct=None, pnl_min_after_touch_pct=None, peak_at_min_after_pct=None,
+                touch_delay_sec=None, path_complete=None):
     with _lock, _connect() as conn:
         conn.execute(
             "UPDATE trades SET exit_price=?, pnl=?, reason=?, closed_at=?, peak_pnl=?, peak_pnl_pct=?, fees_paid=?, "
-            "exit_price_source=?, mtf_trend_intact_at_close=?, status='closed' WHERE id=?",
+            "exit_price_source=?, mtf_trend_intact_at_close=?, pnl_min_pct=?, pnl_min_after_touch_pct=?, "
+            "peak_at_min_after_pct=?, touch_delay_sec=?, path_complete=?, status='closed' WHERE id=?",
             (exit_price, pnl, reason, now_iso(), peak_pnl, peak_pnl_pct, fees_paid, exit_price_source,
-             mtf_trend_intact_at_close, trade_id)
+             mtf_trend_intact_at_close, pnl_min_pct, pnl_min_after_touch_pct, peak_at_min_after_pct,
+             touch_delay_sec, path_complete, trade_id)
         )
         conn.commit()
 
