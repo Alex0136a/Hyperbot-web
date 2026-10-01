@@ -945,6 +945,7 @@ function ManualTradingTab({ token }) {
                 <button style={MT.seg(f.mode==="paper","#22c55e")} onClick={()=>set("mode","paper")}>🎮 Paper</button>
                 <button style={{...MT.seg(f.mode==="live","#ef4444"),opacity:st.live_available?1:0.4}} disabled={!st.live_available} onClick={()=>set("mode","live")}>🔴 Live</button>
               </div>
+              {f.mode==="live" && st.wallet_short && <div style={{fontSize:10,color:"#94a3b8",marginTop:4}}>Compte utilisé par le bot : <b style={{color:"#e2e8f0"}}>{st.wallet_short}</b> — c'est l'adresse à consulter sur Hyperliquid.</div>}
               {f.market==="spot" && <div style={{fontSize:10,color:"#fbbf24",marginTop:6}}>Spot : achat uniquement, sans levier, USDC requis côté Spot, pas de SL natif (protection par le bot).</div>}
             </div>
 
@@ -1016,6 +1017,8 @@ function ManualTradingTab({ token }) {
               <select style={MT.input} value={f.trend_exit} onChange={e=>set("trend_exit",e.target.value)}>
                 <option value="">Aucune</option><option value="opposee">Si la tendance devient opposée au sens du trade</option><option value="perdue">Si la tendance n'est plus celle du sens du trade</option>
               </select>
+              {prop.trend && prop.trend.ok && prop.trend.data_fresh && f.trend_exit && (f.trend_exit==="opposee" ? prop.trend.trend===(isLong?"baissiere":"haussiere") : prop.trend.trend!==(isLong?"haussiere":"baissiere")) &&
+                <div style={{fontSize:11,color:"#fca5a5",marginTop:6,background:"#7f1d1d33",border:"1px solid #7f1d1d",borderRadius:6,padding:6}}>⚠️ La tendance H4 de {sel.ticker} est déjà {TREND_LBL[prop.trend.trend]} : avec cette règle de sortie, la position se fermerait aussitôt après l'ouverture. L'ordre sera refusé.</div>}
               {prop.trend && <div style={{fontSize:11,color:prop.trend.ok&&prop.trend.data_fresh?"#94a3b8":"#fbbf24",marginTop:6}}>
                 {prop.trend.ok ? `Tendance H4 actuelle de ${sel.ticker} : ${TREND_LBL[prop.trend.trend]||prop.trend.trend}${prop.trend.data_fresh?"":" — données périmées"}`
                                : `Tendance H4 indisponible (${prop.trend.why}) — une condition d'entrée refuserait l'ordre.`}
@@ -1101,7 +1104,8 @@ function ManualTradingTab({ token }) {
               <td style={MT.td}>{h.strategy_label}</td><td style={MT.td}>{fmtTime(h.opened_at||h.created_at)}</td><td style={MT.td}>{fmtTime(h.closed_at)}</td>
               <td style={MT.td}>{fmtP(h.entry_price)}</td><td style={MT.td}>{fmtP(h.exit_price)}</td>
               <td style={{...MT.td,color:(h.pnl||0)>=0?"#22c55e":"#ef4444"}}>{h.pnl!=null?fmtUsd(h.pnl):"—"}</td>
-              <td style={{...MT.td,color:"#94a3b8"}}>{h.status==="closed"?h.reason:`${h.status==="cancelled"?"annulé":h.status==="expired"?"expiré":"échec"} — ${h.reason||h.error||""}`}</td>
+              <td style={{...MT.td,color:"#94a3b8"}}>{h.status==="closed"?h.reason:`${h.status==="cancelled"?"annulé":h.status==="expired"?"expiré":"échec"} — ${h.reason||h.error||""}`}
+                {h.status==="closed" && h.mode==="live" && <div style={{fontSize:10,color:h.exit_source==="hyperliquid"?"#86efac":"#fbbf24"}}>{h.entry_verified?"ouverture constatée sur Hyperliquid · ":""}sortie {h.exit_source==="hyperliquid"?"confirmée par Hyperliquid":"estimée par le bot"}</div>}</td>
             </tr>)}</tbody>
           </table></div>)}
       </div>
