@@ -231,6 +231,24 @@ class ManualTrading:
                               f"(requis : {TREND_FR.get(required, required)}) — ordre non ouvert.")
         return info["trend"]
 
+    def _check_trend_exit_not_immediate(self, ticker, direction, rule):
+        """v4.344 — COHERENCE : si la regle de sortie sur la tendance se declencherait des le premier
+        controle (ex. LONG avec "si la tendance devient opposee" alors que la tendance H4 est DEJA
+        baissiere), la position s ouvrirait puis se fermerait aussitot : deux ordres, des frais, aucun
+        sens. On refuse avec un message explicite. Sans effet si la tendance est indisponible/perimee
+        (la regle ne pourrait de toute facon pas agir)."""
+        info = self.trend_info(ticker)
+        if not info["ok"] or not info["data_fresh"]:
+            return
+        want = "haussiere" if direction == "long" else "baissiere"
+        opposite = "baissiere" if direction == "long" else "haussiere"
+        tr = info["trend"]
+        if (rule == "opposee" and tr == opposite) or (rule == "perdue" and tr != want):
+            raise ManualError(
+                f"Avec cette regle de sortie, la position se fermerait aussitot : la tendance H4 de {ticker} est "
+                f"{TREND_FR.get(tr, tr)}, {'opposee' if tr == opposite else 'differente de celle attendue'} pour un "
+                f"{direction.upper()}. Modifiez la regle de sortie sur la tendance (ou la condition d entree).")
+
     @staticmethod
     def _validate_lock_trend(p):
         """Validation des options v4.343 : verrou progressif et criteres de tendance."""
@@ -407,6 +425,8 @@ class ManualTrading:
             opp = self._validate(p)
             if p["execution"] == "now" and p.get("trend_entry"):
                 self._check_trend_entry(p["ticker"], p["trend_entry"])   # v4.343 : refuse avant toute creation
+            if p["execution"] == "now" and p.get("trend_exit"):
+                self._check_trend_exit_not_immediate(p["ticker"], p["direction"], p["trend_exit"])   # v4.344
             now = time.time()
             item = {
                 "strategy_source": p["strategy"], "ticker": p["ticker"], "direction": p["direction"],
@@ -482,6 +502,7 @@ class ManualTrading:
             "sl_price": entry * (1 - item["sl_pct"] / 100) if is_long else entry * (1 + item["sl_pct"] / 100),
             "tp_price": (entry * (1 + item["tp_pct"] / 100) if is_long else entry * (1 - item["tp_pct"] / 100)) if item["tp_pct"] else None,
             "peak_pct": 0.0, "armed": False, "last_price": price, "lock_active": False,
+            "entry_verified": bool(item["mode"] == "live" and market == "perp"),   # v4.344 : position constatee sur Hyperliquid
         })
         try:
             ti = self.trend_info(ticker, use_cache=True)
@@ -752,6 +773,12 @@ class ManualTrading:
                 except ManualError as e:
                     self._finish_order(item, "cancelled", f"declenche mais condition de tendance non remplie : {e}")
                     return
+            if item.get("trend_exit"):
+                try:
+                    self._check_trend_exit_not_immediate(item["ticker"], item["direction"], item["trend_exit"])
+                except ManualError as e:
+                    self._finish_order(item, "cancelled", f"declenche mais {e}")
+                    return
             self._open(item)
         finally:
             self._fire_busy.discard(item["id"])
@@ -914,7 +941,9 @@ class ManualTrading:
             d.update({"id": row["id"], "status": row["status"]})
             d["strategy_label"] = STRATEGY_LABELS.get(d.get("strategy_source"), d.get("strategy_source"))
             history.append(d)
+        w = self._wallet() or ""
         return {
+            "wallet_short": (w[:6] + "…" + w[-4:]) if len(w) > 12 else (w or None),   # v4.344 : a comparer a l adresse affichee sur Hyperliquid
             "opportunities": self.list_opportunities(),
             "scheduled": [i for i in items if i["status"] == "scheduled"],
             "positions": [i for i in items if i["status"] in ("open", "opening", "closing")],
