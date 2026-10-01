@@ -313,9 +313,10 @@ class ManualTrading:
         }
 
     # ───────────────────────────── validations ───────────────────────────
-    def has_live_perp(self, ticker):
+    def has_live_perp(self, ticker, exclude_id=None):
         return any(i["status"] in ("opening", "open", "closing") and i["mode"] == "live"
-                   and i["market"] == "perp" and i["ticker"] == ticker for i in self.items.values())
+                   and i["market"] == "perp" and i["ticker"] == ticker
+                   and i.get("id") != exclude_id for i in self.items.values())
 
     def live_perp_coins(self):
         return {i["ticker"] for i in self.items.values()
@@ -328,10 +329,14 @@ class ManualTrading:
                     return True
         return False
 
-    def _check_live_perp_allowed(self, ticker):
+    def _check_live_perp_allowed(self, ticker, exclude_id=None):
+        """exclude_id (v4.344) : l ordre en cours d ouverture est deja dans self.items au statut "opening" ;
+        sans l exclure, il se comptait LUI-MEME comme "position manuelle live deja ouverte" et aucun ordre
+        live perp ne pouvait jamais s ouvrir (bug present depuis v4.273 : le controle est refait dans
+        _open_impl, apres le passage au statut "opening")."""
         if self._bot_live_position_on(ticker):
             raise ManualError(f"Le bot detient deja une position LIVE sur {ticker} : Hyperliquid ne tient qu une position par actif (elles se fondraient et se fermeraient ensemble).")
-        if self.has_live_perp(ticker):
+        if self.has_live_perp(ticker, exclude_id=exclude_id):
             raise ManualError(f"Une position manuelle LIVE est deja ouverte sur {ticker}.")
         szi = be.get_exchange_position_szi(self.bot.info, self._wallet(), ticker)
         if szi is None:
@@ -464,7 +469,7 @@ class ManualTrading:
         self._save(item)
         if item["mode"] == "live":
             if market == "perp":
-                self._check_live_perp_allowed(ticker)
+                self._check_live_perp_allowed(ticker, exclude_id=item["id"])
                 entry, qty = self._open_live_perp(item, price, is_long)
             else:
                 entry, qty = self._open_live_spot(item, price)
