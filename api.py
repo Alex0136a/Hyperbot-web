@@ -2902,7 +2902,7 @@ def get_blocked_signals(days: int = Query(7, ge=1, le=30), email: str = Depends(
     Alimente par bot_engine._blocked_note / _blocked_followups_if_due (lecture seule)."""
     today = datetime.now(timezone.utc).date()
     out = {}
-    for m in ("spot_accumulation", "accumulation"):
+    for m in ("spot_accumulation", "accumulation", "funding_contrarian"):   # v4.346 : + Funding
         gates = {}
         for i in range(days):
             d = (today - timedelta(days=i)).isoformat()
