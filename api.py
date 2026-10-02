@@ -3149,9 +3149,22 @@ def get_profile(name: str = Query("actif", pattern="^(actif)$"), email: str = De
         prev = json.loads(db.get_meta(f"profile_prev:{name}") or "null")
     except (TypeError, ValueError):
         prev = None
+    # v4.348 — passage au reel : etat des deux modes et capacite reelle du compte (marge au levier x1)
+    live_equity = getattr(bot, "live_equity_real", None)
+    cap = float(cfg.get("MTF_MAX_NOTIONAL_USD", 30.0))
+    risk = float(cfg.get("MTF_RISK_PCT", 0.5))
+    typical_stop = 2.0            # % du prix : ordre de grandeur des stops top-down observes (1,9 a 2,8 %)
+    typical = min(cap, live_equity * risk / typical_stop) if live_equity else None
+    live = {"equity": live_equity, "cap": cap, "risk_pct": risk, "typical_stop_pct": typical_stop,
+            "typical_notional": round(typical, 1) if typical else None,
+            "positions_by_margin": int(live_equity // typical) if (live_equity and typical) else None,
+            "hl_configured": bool(cfg.get("WALLET_ADDRESS") and cfg.get("PRIVATE_KEY")),
+            "funding_live": bool(bot._effective_mode("funding_contrarian") == "live" and cfg.get("FUNDING_MODE_LIVE_ALLOWED"))}
+    modes = {sname: bot._effective_mode(sname) for sname in ("spot_accumulation", "accumulation")}
     return {"name": name, "label": prof["label"], "values": prof["values"], "current": _profile_current(name),
             "active": _profile_active(name), "previous": prev,
-            "labels": {k: ADVANCED_SETTINGS[k]["label"] for k in prof["values"]}}
+            "labels": {k: ADVANCED_SETTINGS[k]["label"] for k in prof["values"]},
+            "modes": modes, "live": live}
 
 
 @app.post("/api/config/profile/apply")
