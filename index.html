@@ -138,11 +138,17 @@ const BLOCKED_GATES = [
   ["sl_far","Bloqué : SL trop éloigné"],
   ["sans_objectif","Bloqué : sans objectif réel"],
   ["rr","Bloqué : R:R insuffisant"],
+  // v4.346 — Funding : entrées refusées par le filtre de qualité du marché (suivies sans être ouvertes)
+  ["quality_spread","Bloqué (Funding) : spread trop large"],
+  ["quality_too_active","Bloqué (Funding) : marché trop actif"],
+  ["quality_too_calm","Bloqué (Funding) : marché trop calme"],
+  ["quality_other","Bloqué (Funding) : autre filtre qualité"],
 ];
+const BLOCKED_MODES = {spot_accumulation:"🌱 Spot-Accum", accumulation:"🎯 Accumulation", funding_contrarian:"💰 Funding"};   // v4.346
 const _pct = (v,n) => n ? Math.round(v/n*100) : "—";
 function blockedRows(result) {
   const rows = [["Mode","Etape","Signaux","+1R avant SL (%)","Objectif (%)","SL d'abord (%)","Ni l'un ni l'autre (%)","dont ambigus","Gain max median (%)","Perte max mediane (%)","Variation a 2 h mediane (%)","Actifs"]];
-  for (const [mode, label] of Object.entries(FUNNEL_MODES)) {
+  for (const [mode, label] of Object.entries(BLOCKED_MODES)) {
     const g = (result.modes||{})[mode] || {};
     for (const [k, lbl] of BLOCKED_GATES) {
       const v = g[k]; if (!v) continue;
@@ -2163,8 +2169,8 @@ Confirmer ?`
             </div>
             {blockedResult && (
               <div style={{marginTop:10,fontSize:11}}>
-                <div style={{color:"#94a3b8",marginBottom:6}}>{blockedResult.pending} signal(aux) en attente d'évaluation (résultat visible 2 h 15 après le blocage).</div>
-                {Object.entries(FUNNEL_MODES).map(([mode,label])=>{
+                <div style={{color:"#94a3b8",marginBottom:6}}>{blockedResult.pending} signal(aux) en attente d'évaluation (résultat visible 2 h 15 après le blocage). Funding : « +1R » = +0,7 % de prix, stop hypothétique à -0,7 %.</div>
+                {Object.entries(BLOCKED_MODES).map(([mode,label])=>{
                   const g=(blockedResult.modes||{})[mode]||{};
                   const rowsG=BLOCKED_GATES.filter(([k])=>g[k]);
                   return (
