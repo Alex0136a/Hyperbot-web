@@ -158,6 +158,17 @@ function blockedRows(result) {
   return rows;
 }
 
+// v4.347 — rejeu historique des entrees (long / short selon le contexte)
+const REPLAY_FAMILIES = {all:"Tous contextes", trend:"Tendance H4", zone:"Zone H4", move:"Mouvement des 2 dernières heures", vol:"Volatilité du moment", hour:"Heure (UTC)"};
+const REPLAY_METRICS = {"0.3_2h":"±0,3 % en 2 h", "0.5_2h":"±0,5 % en 2 h", "0.5_6h":"±0,5 % en 6 h", "1.0_6h":"±1,0 % en 6 h"};
+function replayRows(result) {
+  const rows = [["Cote","Type","Famille","Contexte","Entrees","Jours","Metrique","Haut %","Bas %","Neutre %","Gain net apres frais %","IC95 % (metrique 0,5 % / 2 h)","Gain net 1re partie %","Gain net 2e partie %","Gain max median 2h %","Perte max mediane 2h %","Rendement median a 2h %","Cas ambigus %"]];
+  (result.groups||[]).forEach(g => Object.entries(g.m).forEach(([nm,m]) => rows.push([
+    g.side==="long"?"LONG":"SHORT", g.kind==="signal"?"signal":"base (temoin)", REPLAY_FAMILIES[g.family]||g.family, g.value, g.n, g.days, REPLAY_METRICS[nm]||nm,
+    m.up, m.down, m.none, m.edge, nm==="0.5_2h"?g.ci95:"", nm==="0.5_2h"?g.edge1:"", nm==="0.5_2h"?g.edge2:"", g.mfe_med, g.mae_med, g.fin_med, g.amb_pct])));
+  return rows;
+}
+
 function downloadCSV(filename, rows) {
   const esc = v => {
     const s = v === null || v === undefined ? "" : String(v);
@@ -1151,6 +1162,20 @@ function App() {
   const [orphanedLoading, setOrphanedLoading] = useState(false);
   // v4.316 — analyse des series de gains/pertes Funding
   // v4.345 — tableau de bord d objectif (positifs necessaires, decollage, part du pic gardee)
+  // v4.347 — rejeu historique
+  const [replaySt, setReplaySt] = useState(null);
+  const [replayDays, setReplayDays] = useState(30);
+  const [replaySide, setReplaySide] = useState("long");
+  const [replayFam, setReplayFam] = useState("trend");
+  const [replayMet, setReplayMet] = useState("0.5_2h");
+  const [replayBusy, setReplayBusy] = useState(false);
+  useEffect(() => {
+    if (!replaySt || replaySt.state !== "running") return;
+    const id = setInterval(async () => {
+      try { setReplaySt(await apiCall("/api/research/replay","GET",null,token)); } catch(e) {}
+    }, 5000);
+    return () => clearInterval(id);
+  }, [replaySt && replaySt.state]);
   const [objResult, setObjResult] = useState(null);
   const [objLoading, setObjLoading] = useState(false);
   const [objDays, setObjDays] = useState(7);
@@ -1982,6 +2007,104 @@ Confirmer ?`
               </div>
             )}
           </div>
+          {/* v4.347 — SUR DEMANDE EXPLICITE : rejeu historique. Mesure sur des milliers d entrees (bougies M15
+              des 29 actifs) si un signal long / short a un avantage reel selon le contexte, face a un temoin. */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+              <div style={{fontSize:11,color:"#94a3b8",maxWidth:600}}>
+                <b style={{color:"#e2e8f0"}}>🔬 Rejeu historique des entrées (long et short)</b><br/>
+                Rejoue les derniers jours sur chaque bougie de 15 minutes : le prix atteint-il d'abord +X % ou -X % ? Le résultat est comparé à un témoin (entrée sans signal) dans le même contexte. Lecture seule : aucun ordre, aucun réglage modifié. Compter environ 6 minutes pour 29 actifs (débit volontairement bridé).
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                <select value={replayDays} onChange={e=>setReplayDays(Number(e.target.value))} style={{background:"#0b1220",color:"#e2e8f0",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",fontSize:12}}>
+                  <option value={14}>14 jours</option><option value={30}>30 jours</option><option value={40}>40 jours</option>
+                </select>
+                <button disabled={replayBusy || (replaySt && replaySt.state==="running")} onClick={async()=>{
+                  setReplayBusy(true);
+                  try{ await apiCall(`/api/research/replay/start?days=${replayDays}`,"POST",null,token); setReplaySt(await apiCall("/api/research/replay","GET",null,token)); }
+                  catch(e){ alert("Erreur : "+e.message); }
+                  setReplayBusy(false);
+                }} style={{background:"#38bdf8",border:"none",borderRadius:7,padding:"10px 16px",color:"#06222f",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer",opacity:(replayBusy||(replaySt&&replaySt.state==="running"))?0.5:1}}>▶ Lancer le rejeu</button>
+                <button onClick={async()=>{ try{ setReplaySt(await apiCall("/api/research/replay","GET",null,token)); }catch(e){ alert("Erreur : "+e.message); } }}
+                  style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>Voir le dernier résultat</button>
+                {replaySt && replaySt.state==="running" && <button onClick={async()=>{ try{ await apiCall("/api/research/replay/cancel","POST",null,token); }catch(e){} }}
+                  style={{background:"#7f1d1d",border:"none",borderRadius:7,padding:"10px 14px",color:"#fecaca",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>Annuler</button>}
+                {replaySt && replaySt.result && <button onClick={()=>downloadCSV(`rejeu_entrees_${new Date().toISOString().slice(0,10)}.csv`, replayRows(replaySt.result))}
+                  style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>📥 CSV</button>}
+              </div>
+            </div>
+            {replaySt && replaySt.state==="running" && (
+              <div style={{marginTop:10,fontSize:11,color:"#94a3b8"}}>
+                En cours : {replaySt.progress.done}/{replaySt.progress.total} actifs — {replaySt.progress.current||"démarrage…"}
+                <div style={{height:6,background:"#1e2d4a",borderRadius:3,marginTop:4}}><div style={{height:6,background:"#38bdf8",borderRadius:3,width:`${replaySt.progress.total?Math.round(replaySt.progress.done/replaySt.progress.total*100):0}%`}}/></div>
+              </div>)}
+            {replaySt && replaySt.state==="error" && <div style={{marginTop:10,fontSize:11,color:"#fca5a5"}}>Erreur : {replaySt.error}</div>}
+            {replaySt && replaySt.state==="idle" && <div style={{marginTop:10,fontSize:11,color:"#94a3b8"}}>Aucun rejeu enregistré pour l'instant.</div>}
+            {replaySt && replaySt.result && (()=>{
+              const R = replaySt.result, meta = R.meta, PR = meta.primary;
+              const pc = (v,d=3)=> v==null?"—":`${v>=0?"+":""}${Number(v).toFixed(d)} %`;
+              const th = {padding:"4px 8px",textAlign:"right",whiteSpace:"nowrap"}, td = {padding:"4px 8px",textAlign:"right",whiteSpace:"nowrap"};
+              const robust = g => g.n>=100 && (g.m[PR].edge - g.ci95) > 0;
+              const winners = R.groups.filter(g=>g.family!=="all" && robust(g)).sort((a,b)=>b.m[PR].edge-a.m[PR].edge).slice(0,6);
+              const rows = R.groups.filter(g=>g.side===replaySide && g.family===replayFam);
+              const values = [...new Set(rows.map(g=>g.value))];
+              const fmtDate = ms => new Date(ms).toLocaleDateString("fr-FR");
+              return (
+                <div style={{marginTop:10,fontSize:11}}>
+                  <div style={{color:"#94a3b8",marginBottom:6}}>
+                    {meta.signals.toLocaleString("fr-FR")} signaux et {meta.base.toLocaleString("fr-FR")} entrées témoins sur {meta.assets_ok.length} actifs, du {fmtDate(meta.start_ms)} au {fmtDate(meta.end_ms)} · frais {meta.fee_pct} % · gains nets après frais · intervalle de confiance regroupé par jour.
+                    {meta.assets_skipped.length>0 && <span style={{color:"#fbbf24"}}> Actifs ignorés : {meta.assets_skipped.map(x=>x[0]).join(", ")}.</span>}
+                  </div>
+                  <div style={{background:"#13203a",border:"1px solid #1e2d4a",borderRadius:8,padding:8,marginBottom:8,color:"#cbd5e1",lineHeight:1.5}}>
+                    <b style={{color:"#e2e8f0"}}>Contextes à gain net positif ROBUSTE</b> (≥ 100 entrées, borne basse de l'intervalle &gt; 0, ±0,5 % en 2 h) :
+                    {winners.length===0 ? <span> aucun. Sur cette période, aucun contexte ne bat les frais de façon statistiquement solide.</span> :
+                      <ul style={{margin:"4px 0 0 16px",padding:0}}>{winners.map((g,i)=><li key={i}>{g.side==="long"?"LONG":"SHORT"} · {g.kind==="signal"?"signal":"témoin"} · {REPLAY_FAMILIES[g.family]} = <b>{g.value}</b> : {pc(g.m[PR].edge)} (±{g.ci95.toFixed(3)}) sur {g.n} entrées</li>)}</ul>}
+                  </div>
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:6}}>
+                    {["long","short"].map(sd=><button key={sd} onClick={()=>setReplaySide(sd)} style={{background:replaySide===sd?(sd==="long"?"#22c55e":"#ef4444"):"#1e2d4a",border:"none",borderRadius:6,padding:"6px 12px",color:replaySide===sd?"#04130a":"#cbd5e1",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>{sd==="long"?"LONG":"SHORT"}</button>)}
+                    <select value={replayFam} onChange={e=>setReplayFam(e.target.value)} style={{background:"#0b1220",color:"#e2e8f0",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",fontSize:12}}>
+                      {Object.entries(REPLAY_FAMILIES).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+                    </select>
+                    <select value={replayMet} onChange={e=>setReplayMet(e.target.value)} style={{background:"#0b1220",color:"#e2e8f0",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",fontSize:12}}>
+                      {Object.entries(REPLAY_METRICS).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+                    </select>
+                  </div>
+                  <div style={{overflowX:"auto"}}>
+                    <table style={{width:"100%",borderCollapse:"collapse"}}>
+                      <thead><tr style={{color:"#94a3b8"}}>
+                        <th style={{...th,textAlign:"left",color:"#e2e8f0"}}>Contexte</th><th style={th}>Signaux</th><th style={th}>Haut</th><th style={th}>Bas</th><th style={th}>Neutre</th>
+                        <th style={th}>Gain net signal</th><th style={th}>Témoin (n)</th><th style={th}>Gain net témoin</th><th style={th} title="Gain net du signal moins celui du témoin dans le même contexte : ce que le MOTIF de bougie apporte">Apport du signal</th>
+                        <th style={th} title="Gain net sur la 1re puis la 2e partie de la période : un avantage réel doit tenir dans les deux">1re / 2e partie</th>
+                      </tr></thead>
+                      <tbody>
+                        {values.map(v=>{
+                          const sg = rows.find(g=>g.value===v && g.kind==="signal"), bs = rows.find(g=>g.value===v && g.kind==="base");
+                          if(!sg) return null;
+                          const m = sg.m[replayMet], b = bs && bs.m[replayMet];
+                          const prim = replayMet===PR, ok = prim && robust(sg);
+                          const diff = b ? m.edge-b.edge : null;
+                          return (
+                            <tr key={v} style={{borderTop:"1px solid #1e2d4a",background:ok?"#14532d33":"transparent",opacity:sg.n<100?0.65:1}}>
+                              <td style={{...td,textAlign:"left",color:"#e2e8f0"}}>{v}{sg.n<100 && <span style={{color:"#fbbf24",marginLeft:6,fontSize:10}}>fragile (&lt;100)</span>}</td>
+                              <td style={td}>{sg.n.toLocaleString("fr-FR")}</td>
+                              <td style={td}>{m.up.toFixed(0)} %</td><td style={td}>{m.down.toFixed(0)} %</td><td style={td}>{m.none.toFixed(0)} %</td>
+                              <td style={{...td,color:m.edge>=0?"#86efac":"#fca5a5",fontWeight:700}}>{pc(m.edge)}{prim && <span style={{color:"#64748b",fontWeight:400}}> ±{sg.ci95.toFixed(3)}</span>}</td>
+                              <td style={td}>{bs?bs.n.toLocaleString("fr-FR"):"—"}</td>
+                              <td style={{...td,color:b&&b.edge>=0?"#86efac":"#fca5a5"}}>{b?pc(b.edge):"—"}</td>
+                              <td style={{...td,color:diff==null?"#94a3b8":(diff>0.02?"#86efac":(diff<-0.02?"#fca5a5":"#94a3b8"))}}>{diff==null?"—":pc(diff)}</td>
+                              <td style={td}>{prim ? `${sg.edge1==null?"—":pc(sg.edge1,2)} / ${sg.edge2==null?"—":pc(sg.edge2,2)}` : "—"}</td>
+                            </tr>);
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{marginTop:8,color:"#94a3b8",lineHeight:1.5}}>
+                    <b style={{color:"#e2e8f0"}}>Lecture.</b> Chaque ligne : combien d'entrées, la part où le prix a atteint d'abord +X % (« Haut »), d'abord -X % (« Bas ») ou ni l'un ni l'autre, et le <b>gain net après frais</b> moyen par entrée. Le <b>témoin</b> prend la même entrée sans motif de bougie : s'il fait aussi bien que le signal, c'est le <b>contexte</b> qui compte, pas le motif. L'<b>apport du signal</b> est la différence. Un avantage est crédible s'il est positif dans les deux parties de la période et si la borne basse de l'intervalle est au-dessus de 0. Lorsque les deux niveaux sont touchés dans la même bougie, l'issue est comptée comme une perte (prudence).
+                  </div>
+                </div>);
+            })()}
+          </div>
+
           {/* v4.345 — SUR DEMANDE EXPLICITE : tableau de bord d objectif. Plus de trades positifs, au sens
               du resultat NET : part observee comparee a la part necessaire (gain moyen, perte moyenne, frais). */}
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
