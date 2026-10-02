@@ -1379,6 +1379,8 @@ PROFILE_SWING = {
     "MTF_REQUIRE_H1_STRUCTURE": 1,      # 1 = exige la confirmation de structure H1
     "MTF_H1_STRUCTURE_EMA_PERIOD": 20,  # periode de l EMA H1 dont la pente est verifiee
     "MTF_REQUIRE_FLOW_CONFIRM": 1,      # 1 = exige la confirmation du flux de transactions
+    "SPOT_ACCUM_TREND_MODE": 0,          # v4.348 : tendance H4 exigee pour l ENTREE — 0 = stricte ou repli (defaut), 1 = tant que la structure n est pas OPPOSEE, 2 = aucune
+    "ACCUMULATION_TREND_MODE": 0,        # v4.348 : idem pour Accumulation (short) — 2 = vendre les hausses a une resistance H4 meme en tendance haussiere
     "MTF_FLOW_MISSING_BLOCKS": 0,       # v4.328 : 1 = bloque quand le flux est indisponible (ancien comportement) ; 0 = laisse passer (score neutre)
     "MTF_MIN_FLOW_PRESSURE": 0.0,       # seuil minimal (0 = juste "pas hostile" ; 0.15-0.3 = plus strict)
     "MTF_REQUIRE_REAL_TARGET_ZONE": 1,  # v4.308 — 1 = bloque l entree quand il n y a pas de zone opposee distincte (pas d objectif synthetique)
@@ -10778,14 +10780,37 @@ class BotEngine:
         else:
             _pullback = _ef is not None and _es is not None and _ef < _es and price < _es
         _strict = v["trend"] == want
-        if not (_strict or (cfg.get("MTF_ENTRY_ALLOW_PULLBACK_TREND", 1) and _pullback)):
+        # v4.348 — SUR DEMANDE EXPLICITE : exigence de tendance REGLABLE par mode (profil d activite).
+        # 0 = comportement d origine (stricte ou repli) ; 1 = on refuse seulement une structure H4 OPPOSEE
+        # (long : EMA50 < EMA200 ET prix < EMA200 ; short : l inverse) ; 2 = aucune exigence. Les modes 1 et 2
+        # permettent d acheter / vendre aussi dans une tendance neutre ou meme contraire, avec la meme
+        # taille calculee sur le risque et les memes sorties.
+        _tmode = int(cfg.get(f"{prefix}_TREND_MODE", 0) or 0)
+        _opp_struct = (_ef is not None and _es is not None and
+                       ((_ef < _es and price < _es) if long_side else (_ef > _es and price > _es)))
+        if _tmode >= 2:
+            _trend_ok = True
+        elif _tmode == 1:
+            _trend_ok = not _opp_struct
+        else:
+            _trend_ok = _strict or (cfg.get("MTF_ENTRY_ALLOW_PULLBACK_TREND", 1) and _pullback)
+        if not _trend_ok:
             _ema_txt = (f" (prix {price:.6g} · EMA50 {_ef:.6g} · EMA200 {_es:.6g})"
                         if _ef is not None and _es is not None else "")
             snap["blocker"] = f"tendance {M} {v['trend']} (requis : {want}){_ema_txt}"
             self._funnel_shadow(mode, ticker, price, v, long_side)
             return
         self._funnel_note(mode, ticker, "tendance")
-        trend_txt = want if _strict else (f"{want} (repli sous l EMA50)" if long_side else f"{want} (rebond sur l EMA50)")
+        _opposite_label = "baissiere" if long_side else "haussiere"
+        # une entree prise alors que la tendance stricte est DEJA opposee ne doit pas etre fermee aussitot
+        # par la sortie "tendance retournee" : elle est desactivee pour CETTE position
+        mtf_trend_exit_off = bool(_tmode >= 1 and (v["trend"] == _opposite_label or _opp_struct))
+        if _strict:
+            trend_txt = want
+        elif _trend_ok and _tmode >= 1 and not (_strict or _pullback):
+            trend_txt = f"{v['trend']} (exigence assouplie : {'aucune' if _tmode >= 2 else 'pas opposee'})"
+        else:
+            trend_txt = f"{want} (repli sous l EMA50)" if long_side else f"{want} (rebond sur l EMA50)"
         zone = v["support"] if long_side else v["resistance"]
         target = v["resistance"] if long_side else v["support"]
         # v4.307 — FIX BUG CONFIRME : nearest_zones() (mtf_analysis.py) peut
@@ -11015,7 +11040,8 @@ class BotEngine:
                 "rsi": rsi, "rsi_mode": mode, "reasons": reasons, "prices": prices, "conf_breakdown": {},
                 "strategy": mode, "countertrend": False, "force_paper": False, "entered_via_flirt": False,
                 "engine": "mtf", "mtf_sl": plan["sl"], "mtf_tp": plan["tp"], "mtf_notional": notional,
-                "mtf_path": mtf_path}  # v4.321 — "zone" (H4 classique) ou "tendance" (mesure de mouvement)
+                "mtf_path": mtf_path,  # v4.321 — "zone" (H4 classique) ou "tendance" (mesure de mouvement)
+                "mtf_trend_exit_off": mtf_trend_exit_off}  # v4.348
         if long_side:
             cand.update({"support_at_entry": zone["low"], "resistance_at_entry": target["high"] if target else None,
                          "mtf_zone_bound": zone["low"]})  # v4.309 — borne de la zone, pour la cassure structurelle
@@ -11062,7 +11088,7 @@ class BotEngine:
         # a la zone ou au SL. cache_only=True : jamais d appel reseau
         # bloquant, relit juste les bougies H4 deja en cache (rafraichies a
         # chaque cloture naturelle de bougie).
-        if cfg.get("MTF_CLOSE_ON_TREND_REVERSAL", 1):
+        if cfg.get("MTF_CLOSE_ON_TREND_REVERSAL", 1) and not pos.get("mtf_trend_exit_off"):   # v4.348
             want = "haussiere" if long_side else "baissiere"
             opposite = "baissiere" if long_side else "haussiere"
             mv = self.mtf_view(ticker, price, cache_only=True)
@@ -12870,7 +12896,8 @@ class BotEngine:
             state.position.update({"engine": "mtf", "sl": cand["mtf_sl"], "tp": cand["mtf_tp"],
                                    "mtf_r": abs(state.position["entry"] - cand["mtf_sl"]),
                                    "mtf_zone_bound": cand.get("mtf_zone_bound"),
-                                   "mtf_path": cand.get("mtf_path", "zone")})  # v4.321 — "zone" ou "tendance"
+                                   "mtf_path": cand.get("mtf_path", "zone"),  # v4.321 — "zone" ou "tendance"
+                                   "mtf_trend_exit_off": bool(cand.get("mtf_trend_exit_off"))})  # v4.348
         # v4.24 — memorise les seuils REELLEMENT appliques a CE trade (fixes
         # ou adaptatifs a l ATR) — _manage_position_impl les relit ici en
         # priorite, avec repli sur les valeurs fixes globales si absents
