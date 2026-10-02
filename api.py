@@ -2936,6 +2936,115 @@ def get_blocked_signals(days: int = Query(7, ge=1, le=30), email: str = Depends(
     return {"days": days, "modes": out, "pending": pending}
 
 
+# ───────────────── v4.345 — TABLEAU DE BORD D OBJECTIF (lecture seule) ─────────────────
+# Sur demande : l objectif est d avoir plus de trades POSITIFS, au sens du resultat net. La part de
+# trades positifs necessaire pour que la moyenne apres frais soit nulle depend de ce que gagnent les
+# gagnants, de ce que perdent les perdants et des frais : necessaires = (perte + frais) / (gain + perte).
+# Toutes les valeurs sont des mouvements de PRIX en % (sans levier), comme dans l export de suivi.
+def _objective_group_key(t):
+    strat = t.get("strategy") or ""
+    label = _EXPORT_STRATEGY_LABEL.get(strat, strat or "?")
+    if strat in ("spot_accumulation", "accumulation"):
+        r = (t.get("reason") or "").lower()
+        er = (t.get("entry_reasons") or "").lower()
+        td = ("top-down" in r) or ("zone opposee" in r) or ("top-down" in er)
+        return f"{label} ({'top-down' if td else 'ancien moteur'})"
+    return label
+
+
+def _objective_stats(trades, fee_pct, takeoff_pct):
+    import statistics as _st
+
+    def med(a):
+        return round(_st.median(a), 3) if a else None
+
+    recs = []
+    for t in trades:
+        entry, ex = t.get("entry_price"), t.get("exit_price")
+        if not entry or not ex or not t.get("closed_at"):
+            continue
+        sign = 1 if t.get("action") == "LONG" else -1
+        notional = (t.get("size_usd") or 0) * (t.get("leverage") or 1)
+        fees = t.get("fees_real") if t.get("fees_real") is not None else notional * fee_pct / 100
+        def after(p):
+            return sign * (p - ex) / ex * 100 if p else None
+        recs.append({
+            "g": _objective_group_key(t), "pct": sign * (ex - entry) / entry * 100,
+            "peak": t.get("peak_pnl_pct") or 0.0, "usd": t.get("pnl") or 0.0, "fees": fees,
+            "reason": (t.get("reason") or "?").strip(), "e30": after(t.get("price_after_30m")),
+            "e60": after(t.get("price_after_60m")),
+        })
+
+    def stats(rs, with_reasons=True):
+        n = len(rs)
+        wins = [r for r in rs if r["pct"] > 0]
+        losses = [r for r in rs if r["pct"] <= 0]
+        out = {"n": n, "wins": len(wins), "win_rate": round(len(wins) / n * 100, 1),
+               "mean_pct": round(sum(r["pct"] for r in rs) / n, 3), "small": n < 30}
+        aw = sum(r["pct"] for r in wins) / len(wins) if wins else None
+        al = -sum(r["pct"] for r in losses) / len(losses) if losses else None
+        out["avg_win"] = round(aw, 3) if aw is not None else None
+        out["avg_loss"] = round(-al, 3) if al is not None else None
+        if aw is not None and al is not None and (aw + al) > 0:
+            needed = (al + fee_pct) / (aw + al) * 100
+            out["needed"] = round(needed, 1)
+            out["unreachable"] = needed > 100     # les frais depassent le gain moyen : aucun taux de reussite ne suffit
+            out["gap"] = round(out["win_rate"] - needed, 1)
+            out["value_per_point"] = round((aw + al) / 100, 4)
+        else:
+            out["needed"] = out["gap"] = out["value_per_point"] = None
+        out["net_pct"] = round(out["mean_pct"] - fee_pct, 3)
+        out["takeoff"] = round(sum(1 for r in rs if r["peak"] >= takeoff_pct) / n * 100, 1)
+        out["dead_losers"] = (round(sum(1 for r in losses if r["peak"] < takeoff_pct) / len(losses) * 100, 1) if losses else None)
+        cap = [min(r["pct"] / r["peak"], 1.0) for r in wins if r["peak"] > 0.2]
+        out["capture"] = round(_st.median(cap) * 100, 0) if cap else None
+        e30 = [r["e30"] for r in wins if r["e30"] is not None]
+        e60 = [r["e60"] for r in wins if r["e60"] is not None]
+        out["after30"], out["after60"] = med(e30), med(e60)
+        out["after60_up"] = round(sum(1 for e in e60 if e > 0) / len(e60) * 100, 0) if e60 else None
+        out["after_n"] = len(e60)
+        out["usd_gross"] = round(sum(r["usd"] for r in rs), 3)
+        out["usd_net"] = round(sum(r["usd"] - r["fees"] for r in rs), 3)
+        if with_reasons:
+            by = {}
+            for r in rs:
+                by.setdefault(r["reason"], []).append(r)
+            rows = [{"reason": k, "n": len(v), "mean_pct": round(sum(x["pct"] for x in v) / len(v), 3),
+                     "usd": round(sum(x["usd"] for x in v), 3)} for k, v in by.items()]
+            out["reasons"] = sorted(rows, key=lambda x: -abs(x["usd"]))[:8]
+        return out
+
+    groups = {}
+    for r in recs:
+        groups.setdefault(r["g"], []).append(r)
+    res = [{"group": g, **stats(rs)} for g, rs in sorted(groups.items(), key=lambda kv: -len(kv[1]))]
+    total = {"group": "Tous modes", **stats(recs, with_reasons=False)} if recs else None
+    return res, total
+
+
+@app.get("/api/stats/objective")
+def get_objective(days: int = Query(7, ge=0, le=365), where: str = Query("all", pattern="^(all|paper|live)$"),
+                  takeoff: float = Query(0.5, ge=0.05, le=5.0), email: str = Depends(require_user)):
+    """v4.345 — tableau de bord d objectif : par mode, la part de trades positifs comparee a celle
+    necessaire pour un resultat net nul, le taux de decollage (pic >= seuil), la part du pic conservee
+    et l evolution du prix apres la sortie d un gagnant. Lecture seule, independant du point de
+    reinitialisation des statistiques (la periode est choisie explicitement). days=0 : tout."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat() if days else None
+    trades = db.get_all_closed_trades(since=since)
+    if where != "all":
+        trades = [t for t in trades if (t.get("trade_mode") or "paper") == where]
+    fee_pct, fee_src = _ROUND_TRIP_FEE_RATE * 100, "estimation (2 x 0,045 %)"
+    real = [t["fees_real"] / ((t.get("size_usd") or 0) * (t.get("leverage") or 1)) * 100
+            for t in db.get_all_closed_trades()
+            if t.get("fees_real") is not None and (t.get("size_usd") or 0) > 0 and (t.get("trade_mode") == "live")]
+    if len(real) >= 20:
+        real.sort()
+        fee_pct, fee_src = round(real[len(real) // 2], 4), f"frais reels mesures (mediane de {len(real)} trades live)"
+    groups, total = _objective_stats(trades, fee_pct, takeoff)
+    return {"days": days, "where": where, "takeoff": takeoff, "fee_pct": fee_pct, "fee_source": fee_src,
+            "groups": groups, "total": total}
+
+
 @app.get("/api/stats/funding-streaks")
 def get_funding_streaks(email: str = Depends(require_user)):
     """v4.316 — CONSERVE pour compatibilite (l URL existante continue de
