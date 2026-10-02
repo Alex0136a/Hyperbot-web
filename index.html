@@ -1144,6 +1144,12 @@ function App() {
   const [orphanedResult, setOrphanedResult] = useState(null);
   const [orphanedLoading, setOrphanedLoading] = useState(false);
   // v4.316 — analyse des series de gains/pertes Funding
+  // v4.345 — tableau de bord d objectif (positifs necessaires, decollage, part du pic gardee)
+  const [objResult, setObjResult] = useState(null);
+  const [objLoading, setObjLoading] = useState(false);
+  const [objDays, setObjDays] = useState(7);
+  const [objWhere, setObjWhere] = useState("all");
+  const [objTake, setObjTake] = useState(0.5);
   // v4.330 — entonnoir d entree (nombre d alignements des conditions sur 7 jours)
   // v4.338 — suivi des signaux bloques (que s est-il passe 2 h apres ?)
   const [blockedResult, setBlockedResult] = useState(null);
@@ -1970,6 +1976,105 @@ Confirmer ?`
               </div>
             )}
           </div>
+          {/* v4.345 — SUR DEMANDE EXPLICITE : tableau de bord d objectif. Plus de trades positifs, au sens
+              du resultat NET : part observee comparee a la part necessaire (gain moyen, perte moyenne, frais). */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+              <div style={{fontSize:11,color:"#94a3b8",maxWidth:560}}>
+                <b style={{color:"#e2e8f0"}}>🎯 Tableau de bord d'objectif</b><br/>
+                Plus de trades positifs, au sens du résultat net : pour chaque mode, la part de trades positifs observée est comparée à celle qu'il faudrait pour que la moyenne soit nulle après frais. Lecture seule.
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                <select value={objDays} onChange={e=>setObjDays(Number(e.target.value))} style={{background:"#0b1220",color:"#e2e8f0",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",fontSize:12}}>
+                  <option value={1}>24 h</option><option value={3}>3 jours</option><option value={7}>7 jours</option><option value={30}>30 jours</option><option value={0}>Tout</option>
+                </select>
+                <select value={objWhere} onChange={e=>setObjWhere(e.target.value)} style={{background:"#0b1220",color:"#e2e8f0",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",fontSize:12}}>
+                  <option value="all">Paper + live</option><option value="paper">Paper</option><option value="live">Live</option>
+                </select>
+                <select value={objTake} onChange={e=>setObjTake(Number(e.target.value))} title="Seuil de décollage : pic minimal pour considérer qu'un trade a décollé" style={{background:"#0b1220",color:"#e2e8f0",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",fontSize:12}}>
+                  <option value={0.15}>décollage 0,15 %</option><option value={0.3}>décollage 0,3 %</option><option value={0.5}>décollage 0,5 %</option><option value={1}>décollage 1 %</option>
+                </select>
+                <button onClick={async()=>{
+                  setObjLoading(true);
+                  try{ setObjResult(await apiCall(`/api/stats/objective?days=${objDays}&where=${objWhere}&takeoff=${objTake}`,"GET",null,token)); }
+                  catch(e){ alert("Erreur : "+e.message); }
+                  setObjLoading(false);
+                }} style={{background:"#f59e0b",border:"none",borderRadius:7,padding:"10px 16px",color:"#2a1a00",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer"}}>
+                  {objLoading?"Calcul...":"🎯 Calculer"}
+                </button>
+                {objResult && (
+                  <button onClick={()=>{
+                    const rows=[["Mode","Trades","Positifs %","Necessaires %","Ecart (points)","Gain moyen %","Perte moyenne %","1 point de taux vaut (% par trade)","Moyenne brute %","Net par trade apres frais %","Decollage %","Perdants sans decollage %","Part du pic gardee %","Prix +30 min apres un gain %","Prix +60 min apres un gain %","Gains avec prix +60 min en hausse %","PnL brut $","PnL net apres frais $"]];
+                    [...objResult.groups, objResult.total].filter(Boolean).forEach(x=>rows.push([x.group,x.n,x.win_rate,x.needed,x.gap,x.avg_win,x.avg_loss,x.value_per_point,x.mean_pct,x.net_pct,x.takeoff,x.dead_losers,x.capture,x.after30,x.after60,x.after60_up,x.usd_gross,x.usd_net]));
+                    downloadCSV(`tableau_objectif_${new Date().toISOString().slice(0,10)}.csv`, rows);
+                  }} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 16px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>📥 CSV</button>
+                )}
+              </div>
+            </div>
+            {objResult && (()=>{
+              const rows=[...objResult.groups, objResult.total].filter(Boolean);
+              const pc=(v,d=2)=> v==null?"—":`${v>=0?"+":""}${v.toFixed(d)} %`;
+              const th={padding:"4px 8px",textAlign:"right",whiteSpace:"nowrap"};
+              const td={padding:"4px 8px",textAlign:"right",whiteSpace:"nowrap"};
+              return (
+                <div style={{marginTop:10,fontSize:11}}>
+                  <div style={{color:"#94a3b8",marginBottom:6}}>Frais utilisés : {objResult.fee_pct} % par aller-retour ({objResult.fee_source}) · décollage = pic ≥ {objResult.takeoff} % · période indépendante du point de réinitialisation.</div>
+                  <div style={{overflowX:"auto"}}>
+                    <table style={{width:"100%",borderCollapse:"collapse"}}>
+                      <thead><tr style={{color:"#94a3b8"}}>
+                        <th style={{...th,textAlign:"left",color:"#e2e8f0"}}>Mode</th><th style={th}>Trades</th><th style={th}>Positifs</th><th style={th}>Nécessaires</th><th style={th}>Écart</th>
+                        <th style={th}>Gain moy.</th><th style={th}>Perte moy.</th><th style={th} title="Effet sur la moyenne par trade d'un point de trades positifs en plus">1 pt vaut</th>
+                        <th style={th}>Net / trade après frais</th><th style={th}>Décollage</th><th style={th} title="Médiane de (gain de sortie / pic) pour les gagnants">Pic gardé</th>
+                        <th style={th} title="Médiane de l'évolution du prix 60 min après la sortie d'un gagnant : positif = la hausse continuait">Prix +60 min après un gain</th><th style={th}>Net $</th>
+                      </tr></thead>
+                      <tbody>
+                        {rows.map((x,i)=>{
+                          const last = i===rows.length-1 && x.group==="Tous modes";
+                          const gapOk = x.gap!=null && !x.unreachable && x.gap>=0;
+                          return (
+                            <tr key={x.group} style={{borderTop:"1px solid #1e2d4a",background:last?"#13203a":"transparent",opacity:x.small?0.7:1}}>
+                              <td style={{...td,textAlign:"left",color:"#e2e8f0",fontWeight:last?700:400}}>{x.group}{x.small && <span style={{color:"#fbbf24",marginLeft:6,fontSize:10}} title="Moins de 30 trades : conclusions fragiles">échantillon faible</span>}</td>
+                              <td style={td}>{x.n}</td>
+                              <td style={td}>{x.win_rate.toFixed(0)} %</td>
+                              <td style={td}>{x.needed==null?"—":(x.unreachable?"inatteignable":x.needed.toFixed(0)+" %")}</td>
+                              <td style={{...td,color:x.gap==null||x.unreachable?"#94a3b8":(gapOk?"#86efac":"#fca5a5"),fontWeight:700}}>{x.gap==null||x.unreachable?"—":`${x.gap>=0?"+":""}${x.gap.toFixed(0)} pt`}</td>
+                              <td style={td}>{pc(x.avg_win)}</td><td style={td}>{pc(x.avg_loss)}</td>
+                              <td style={td}>{x.value_per_point==null?"—":`${x.value_per_point.toFixed(3)} %`}</td>
+                              <td style={{...td,color:x.net_pct>=0?"#86efac":"#fca5a5"}}>{pc(x.net_pct,3)}</td>
+                              <td style={td}>{x.takeoff.toFixed(0)} %</td>
+                              <td style={td}>{x.capture==null?"—":x.capture.toFixed(0)+" %"}</td>
+                              <td style={td}>{x.after60==null?"—":`${pc(x.after60)} (${x.after60_up}% en hausse, n=${x.after_n})`}</td>
+                              <td style={{...td,color:x.usd_net>=0?"#86efac":"#fca5a5"}}>{x.usd_net>=0?"+":""}{x.usd_net.toFixed(2)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{marginTop:8,color:"#94a3b8",lineHeight:1.5}}>
+                    <b style={{color:"#e2e8f0"}}>Lecture.</b> <b>Positifs</b> : part des trades gagnants. <b>Nécessaires</b> : part minimale pour que la moyenne après frais soit nulle, avec les gains et pertes moyens observés. <b>Écart</b> : positifs − nécessaires (rouge = sous le seuil). <b>1 pt vaut</b> : ce que rapporte, par trade, un point de trades positifs en plus. <b>Décollage</b> : part des trades dont le pic atteint le seuil — c'est la clé « bonne entrée ». <b>Pic gardé</b> et <b>prix +60 min</b> : la clé « bonne gestion » (garde-t-on assez du pic ? la hausse continuait-elle après la sortie ?). Les valeurs sont des mouvements de prix, sans levier.
+                  </div>
+                  <details style={{marginTop:8}}>
+                    <summary style={{cursor:"pointer",color:"#94a3b8"}}>Sorties par motif (les plus lourdes en dollars, par mode)</summary>
+                    <div style={{overflowX:"auto",marginTop:6}}>
+                      <table style={{width:"100%",borderCollapse:"collapse"}}>
+                        <thead><tr style={{color:"#94a3b8"}}><th style={{...th,textAlign:"left"}}>Mode</th><th style={{...th,textAlign:"left"}}>Motif de sortie</th><th style={th}>Trades</th><th style={th}>Moyenne</th><th style={th}>PnL brut $</th></tr></thead>
+                        <tbody>
+                          {objResult.groups.flatMap(x=>(x.reasons||[]).map(r=>(
+                            <tr key={x.group+r.reason} style={{borderTop:"1px solid #1e2d4a"}}>
+                              <td style={{...td,textAlign:"left"}}>{x.group}</td><td style={{...td,textAlign:"left",color:"#cbd5e1"}}>{r.reason}</td>
+                              <td style={td}>{r.n}</td><td style={td}>{pc(r.mean_pct)}</td>
+                              <td style={{...td,color:r.usd>=0?"#86efac":"#fca5a5"}}>{r.usd>=0?"+":""}{r.usd.toFixed(2)}</td>
+                            </tr>)))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                </div>
+              );
+            })()}
+          </div>
+
           {/* v4.330 — SUR DEMANDE EXPLICITE : entonnoir d entree sur 7 jours, pour
               compter combien de fois les conditions s alignent (lecture seule). */}
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
