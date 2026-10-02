@@ -39,6 +39,7 @@ from pydantic import BaseModel
 import db
 import auth
 import bot_engine as be
+import replay_research as rr   # v4.347 — rejeu historique des entrees (lecture seule)
 # v4.274 — FIX : importe ICI, avec les autres modules, AVANT le os.chdir()
 # vers le dossier de donnees ci-dessous. Importe apres (v4.273), Python le
 # cherchait dans le Volume -> "ModuleNotFoundError: No module named
@@ -3043,6 +3044,62 @@ def get_objective(days: int = Query(7, ge=0, le=365), where: str = Query("all", 
     groups, total = _objective_stats(trades, fee_pct, takeoff)
     return {"days": days, "where": where, "takeoff": takeoff, "fee_pct": fee_pct, "fee_source": fee_src,
             "groups": groups, "total": total}
+
+
+# ───────────────── v4.347 — REJEU HISTORIQUE DES ENTREES (lecture seule) ─────────────────
+_replay_job = rr.ReplayJob()
+
+
+def _replay_fee_pct():
+    """Frais aller-retour : mediane des frais reels des trades live si >= 20, sinon estimation."""
+    fee = _ROUND_TRIP_FEE_RATE * 100
+    try:
+        real = [t["fees_real"] / ((t.get("size_usd") or 0) * (t.get("leverage") or 1)) * 100
+                for t in db.get_all_closed_trades()
+                if t.get("fees_real") is not None and (t.get("size_usd") or 0) > 0 and t.get("trade_mode") == "live"]
+        if len(real) >= 20:
+            real.sort()
+            fee = round(real[len(real) // 2], 4)
+    except Exception:
+        pass
+    return fee
+
+
+@app.post("/api/research/replay/start")
+def replay_start(days: int = Query(30, ge=7, le=40), email: str = Depends(require_user)):
+    """Lance le rejeu historique en arriere-plan (un seul a la fois). Ne passe aucun ordre, ne modifie
+    aucun reglage. Telecharge des bougies publiques a debit bride (~6 minutes pour 29 actifs)."""
+    assets = sorted({be.ticker_from_slot_key(s) for s in bot.cfg.get("SYMBOLS", [])})
+    assets = [a for a in assets if not a.startswith("xyz:")]
+
+    def done(res):
+        try:
+            db.set_meta("replay_last", json.dumps({"saved_at": time.time(), "result": res}))
+        except Exception as e:
+            print(f"[REJEU] sauvegarde impossible : {e}")
+
+    started = _replay_job.start(bot.info, assets, days, _replay_fee_pct(), on_done=done)
+    return {"started": started, "assets": len(assets), "days": days}
+
+
+@app.post("/api/research/replay/cancel")
+def replay_cancel(email: str = Depends(require_user)):
+    _replay_job.cancel()
+    return {"ok": True}
+
+
+@app.get("/api/research/replay")
+def replay_status(email: str = Depends(require_user)):
+    """Etat du rejeu en cours, ou dernier resultat sauvegarde (survit a un redemarrage)."""
+    st = _replay_job.status(with_result=True)
+    if st["state"] == "idle":
+        try:
+            saved = json.loads(db.get_meta("replay_last") or "null")
+        except (TypeError, ValueError):
+            saved = None
+        if saved:
+            return {"state": "saved", "saved_at": saved.get("saved_at"), "result": saved.get("result"), "progress": st["progress"]}
+    return st
 
 
 @app.get("/api/stats/funding-streaks")
