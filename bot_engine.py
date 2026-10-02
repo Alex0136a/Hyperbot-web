@@ -1388,6 +1388,8 @@ PROFILE_SWING = {
     # ascendant / resistance descendante + objectif par mesure de
     # mouvement), pour capter une tendance qui s eloigne de toute zone H4 —
     # OU distinct du chemin "zone" classique, pas une condition en plus.
+    "FUNDING_SHADOW_TRACKING": 1,         # v4.346 : 1 = suit ce que deviennent les entrees Funding bloquees par le filtre qualite (lecture seule)
+    "FUNDING_SHADOW_SL_PCT": 0.7,         # v4.346 : stop hypothetique (% du prix) pour mesurer "+1R avant SL" (approximation du stop Funding)
     "BLOCKED_FOLLOWUP_ENABLED": 1,       # v4.338 : 1 = suit ce que devient un signal BLOQUE (lecture seule, aucun effet sur les entrees)
     "BLOCKED_FOLLOWUP_HORIZON_MIN": 120, # duree d observation apres le blocage (minutes)
     "ENTRY_FUNNEL_TRACKING": 1,          # v4.330 : 1 = compte, par fenetre de 15 min, les etapes atteintes par le top-down (lecture seule)
@@ -11634,7 +11636,60 @@ class BotEngine:
             "entered_via_flirt": snap.get("entered_via_flirt", False),
         })
 
+    @staticmethod
+    def _quality_gate_name(txt):
+        """v4.346 — nom court du filtre de qualite de marche qui a bloque (pour le suivi des entrees bloquees)."""
+        t = (txt or "").lower()
+        if "spread" in t:
+            return "quality_spread"
+        if "trop actif" in t:
+            return "quality_too_active"
+        if "deserte" in t or "endormi" in t:
+            return "quality_too_calm"
+        return "quality_other"
+
+    def _funding_shadow_note(self, ticker, direction, price, gate):
+        """v4.346 — SUR DEMANDE EXPLICITE (LECTURE SEULE) : enregistre une entree Funding pour le suivi
+        "signaux bloques" : gate = "candidat" (entree generee) ou le filtre qualite qui l a bloquee. Un stop
+        hypothetique FUNDING_SHADOW_SL_PCT sert a mesurer "+1R avant SL" de facon identique pour les deux
+        groupes. N a aucun effet sur les entrees."""
+        try:
+            sl_pct = float(self.cfg.get("FUNDING_SHADOW_SL_PCT", 0.7))
+            long_side = direction == "long"
+            sl = price * (1 - sl_pct / 100) if long_side else price * (1 + sl_pct / 100)
+            plan = {"sl": sl, "tp": None, "risk_pct": sl_pct, "rr": None, "reward_pct": None}
+            self._blocked_note("funding_contrarian", ticker, gate, long_side, price, None, None, None, None, plan=plan)
+        except Exception:
+            pass
+
     def _check_funding_contrarian_signal(self, symbol, ticker, price, rsi, prices, state):
+        """v4.346 — enveloppe de suivi : quand le filtre de qualite du marche bloque une entree Funding, la
+        fonction d origine est rejouee SANS ce filtre (tous les autres filtres inchanges) pour savoir si
+        l entree aurait ete prise ; si oui, elle est enregistree comme "bloquee par le filtre" et son
+        issue sera mesuree 2 h plus tard. Le diagnostic affiche reste la raison du blocage. Aucun effet sur
+        les entrees (le candidat n est JAMAIS ajoute dans ce mode)."""
+        cfg = self.cfg
+        q_text = None
+        if cfg.get("FUNDING_SHADOW_TRACKING", 1) and cfg.get("FUNDING_MODE_ENABLED", False):
+            try:
+                if not self._hours_block("funding_contrarian"):
+                    q_text = self._market_quality_block(ticker, state, "funding_contrarian")
+            except Exception:
+                q_text = None
+        if not q_text:
+            return self._check_funding_contrarian_signal_impl(symbol, ticker, price, rsi, prices, state)
+        try:
+            self._check_funding_contrarian_signal_impl(symbol, ticker, price, rsi, prices, state,
+                                                       skip_quality=self._quality_gate_name(q_text))
+        except Exception as e:
+            print(f"[FUNDING-SHADOW] erreur ignoree : {e}")
+        finally:
+            snap = getattr(state, "funding_gate_snapshot", None)
+            if isinstance(snap, dict):
+                snap["blocker"] = q_text       # le diagnostic montre toujours la vraie raison du blocage
+                snap.pop("direction", None)
+
+    def _check_funding_contrarian_signal_impl(self, symbol, ticker, price, rsi, prices, state, skip_quality=None):
         """v4.33 — Mode FUNDING CONTRARIAN : source de signal FONDAMENTALEMENT
         DIFFERENTE de RSI/MACD/EMA (deja integres dans les prix par des
         acteurs plus rapides que ce bot). Le funding rate reflete un vrai
@@ -11660,7 +11715,7 @@ class BotEngine:
         if not self._gate_active_or_auto_activate(ticker, 100, "funding_contrarian"):
             snap["blocker"] = "actif non selectionne pour ce mode"
             return  # actif desactive (Marches) ou exclu manuellement
-        _gate_f = self._hours_block("funding_contrarian") or self._market_quality_block(ticker, state, "funding_contrarian")
+        _gate_f = self._hours_block("funding_contrarian") or (None if skip_quality else self._market_quality_block(ticker, state, "funding_contrarian"))
         if _gate_f:
             snap["blocker"] = _gate_f
             return  # v4.276 — hors plage horaire du mode ; v4.281 — qualite du marche
@@ -11728,8 +11783,14 @@ class BotEngine:
             f"RSI {rsi:.1f}" if rsi is not None else "RSI ?",
         ]
 
+        if skip_quality:
+            # v4.346 — entree qui AURAIT ete prise sans le filtre qualite : enregistree pour le suivi, jamais ouverte
+            snap["shadow_entry"] = direction
+            self._funding_shadow_note(ticker, direction, price, skip_quality)
+            return
         snap["blocker"] = None
         snap["direction"] = direction
+        self._funding_shadow_note(ticker, direction, price, "candidat")   # v4.346 : groupe de reference
         self._pending_funding_candidates.append({
             "symbol": symbol, "ticker": ticker, "state": state, "signal": direction,
             "price": price, "confidence": confidence, "rsi": rsi, "rsi_mode": "funding_contrarian",
