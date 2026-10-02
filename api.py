@@ -1016,6 +1016,11 @@ ADVANCED_SETTINGS = {
     "MTF_MIN_RR":                      {"label": "Top-down - rapport gain/risque minimal", "default": 1.5},
     "MTF_MAX_NOTIONAL_USD":            {"label": "Top-down - notionnel maximal par trade ($)", "default": 30.0},
     "MTF_MAX_RISK_PCT":                {"label": "Top-down - distance maximale au SL (% du prix)", "default": 4.0},
+    # v4.348 — profil d activite (voir _PROFILES)
+    "MTF_REQUIRE_REAL_TARGET_ZONE":    {"label": "Top-down - exiger un objectif reel, une zone opposee distincte (1 = oui, 0 = entrer sans objectif fixe : sortie par breakeven, verrou et suiveur)", "default": 1},
+    "MTF_REQUIRE_H1_STRUCTURE":        {"label": "Top-down - exiger la structure H1 (EMA20 H1 qui repart ou prix repasse au-dessus / en dessous) (1/0)", "default": 1},
+    "SPOT_ACCUM_TREND_MODE":           {"label": "Spot-Accum - tendance H4 exigee a l entree (0 = stricte ou repli, 1 = tant que la structure n est pas opposee, 2 = aucune)", "default": 0},
+    "ACCUMULATION_TREND_MODE":         {"label": "Accumulation - tendance H4 exigee a l entree (0 = stricte ou repli, 1 = tant que la structure n est pas opposee, 2 = aucune)", "default": 0},
     "MTF_ZONE_TOLERANCE_ATR":          {"label": "Top-down - marge autour d une zone (x ATR majeur)", "default": 0.25},
     "MTF_ZONE_LOOKBACK":               {"label": "Top-down - bougies majeures examinees pour les zones", "default": 120},
     "ENTRY_ENGINE_SIMPLE":             {"label": "Moteur d entree simple Spot-Accum / Accumulation (1) ou ancienne chaine de conditions (0)", "default": 1},
@@ -1208,7 +1213,8 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
+_ZERO_ALLOWED_INT_KEYS = {"MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+                          "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
                           "ACCUMULATION_MAX_ENTRIES_PER_WINDOW", "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW",
@@ -1260,6 +1266,14 @@ def _coerce_advanced_value(key: str, value):
         return False, "entre 50 et 100 %"
     if key == "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND" and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
+    if key in ("MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE") and value not in (0, 1):
+        return False, "1 (oui) ou 0 (non)"
+    if key.endswith("_TREND_MODE") and value not in (0, 1, 2):
+        return False, "0, 1 ou 2"
+    if key == "MTF_MIN_RR" and not 0.5 <= value <= 5:
+        return False, "entre 0,5 et 5"
+    if key == "MTF_RISK_PCT" and not 0.05 <= value <= 2:
+        return False, "entre 0,05 % et 2 % du capital"
     if key.endswith("_SL_CAP_PCT") and not 0.2 <= value <= 5:
         return False, "doit etre entre 0,2 et 5 %"
     if _is_int_setting(key):
@@ -3100,6 +3114,77 @@ def replay_status(email: str = Depends(require_user)):
         if saved:
             return {"state": "saved", "saved_at": saved.get("saved_at"), "result": saved.get("result"), "progress": st["progress"]}
     return st
+
+
+# ───────────────── v4.348 — PROFIL D ACTIVITE (Spot-Accum / Accumulation) ─────────────────
+# Sur demande : une configuration en un clic qui fait trader ces deux modes davantage, avec une taille
+# reduite, SANS passer par de nouvelles statistiques. Les reglages precedents sont sauvegardes pour un retour
+# en un clic. Ne concerne que le top-down (Spot-Accum / Accumulation) ; Funding et Forex ne sont pas touches.
+_PROFILES = {
+    "actif": {
+        "label": "Actif prudent",
+        "values": {
+            "MTF_REQUIRE_REAL_TARGET_ZONE": 0,   # entrer meme sans zone opposee distincte : objectif synthetique a MTF_MIN_RR x le risque, + breakeven et verrou
+            "MTF_RISK_PCT": 0.3,                 # 0,5 -> 0,3 % du capital risque par trade (plus de trades, plus petits)
+            "SPOT_ACCUM_TREND_MODE": 1,          # longs aussi en tendance neutre (refus si structure H4 opposee)
+            "ACCUMULATION_TREND_MODE": 2,        # shorts sur resistance H4 meme en tendance haussiere
+        },
+    },
+}
+
+
+def _profile_current(name):
+    return {k: cfg.get(k, ADVANCED_SETTINGS[k]["default"]) for k in _PROFILES[name]["values"]}
+
+
+def _profile_active(name):
+    cur = _profile_current(name)
+    return all(abs(float(cur[k]) - float(v)) < 1e-9 for k, v in _PROFILES[name]["values"].items())
+
+
+@app.get("/api/config/profile")
+def get_profile(name: str = Query("actif", pattern="^(actif)$"), email: str = Depends(require_user)):
+    prof = _PROFILES[name]
+    try:
+        prev = json.loads(db.get_meta(f"profile_prev:{name}") or "null")
+    except (TypeError, ValueError):
+        prev = None
+    return {"name": name, "label": prof["label"], "values": prof["values"], "current": _profile_current(name),
+            "active": _profile_active(name), "previous": prev,
+            "labels": {k: ADVANCED_SETTINGS[k]["label"] for k in prof["values"]}}
+
+
+@app.post("/api/config/profile/apply")
+def apply_profile(name: str = Query("actif", pattern="^(actif)$"), email: str = Depends(require_user)):
+    prof = _PROFILES[name]
+    if not _profile_active(name):
+        db.set_meta(f"profile_prev:{name}", json.dumps({"saved_at": time.time(), "values": _profile_current(name)}))
+    applied = {}
+    for k, v in prof["values"].items():
+        ok, clean = _coerce_advanced_value(k, v)
+        if not ok:
+            raise HTTPException(status_code=400, detail=f"{k} : {clean}")
+        _apply_and_persist(k, clean)
+        applied[k] = clean
+    return {"ok": True, "applied": applied}
+
+
+@app.post("/api/config/profile/restore")
+def restore_profile(name: str = Query("actif", pattern="^(actif)$"), email: str = Depends(require_user)):
+    try:
+        prev = json.loads(db.get_meta(f"profile_prev:{name}") or "null")
+    except (TypeError, ValueError):
+        prev = None
+    vals = (prev or {}).get("values") or {k: ADVANCED_SETTINGS[k]["default"] for k in _PROFILES[name]["values"]}
+    restored = {}
+    for k, v in vals.items():
+        if k not in ADVANCED_SETTINGS:
+            continue
+        ok, clean = _coerce_advanced_value(k, v)
+        if ok:
+            _apply_and_persist(k, clean)
+            restored[k] = clean
+    return {"ok": True, "restored": restored, "from_saved": bool(prev)}
 
 
 @app.get("/api/stats/funding-streaks")
