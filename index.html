@@ -2018,7 +2018,7 @@ Confirmer ?`
               <div style={{fontSize:11,color:"#94a3b8",maxWidth:620}}>
                 <b style={{color:"#e2e8f0"}}>⚡ Profil d'activité : Spot-Accum et Accumulation</b>
                 {profile && <span style={{marginLeft:8,color:profile.active?"#86efac":"#94a3b8",fontWeight:700}}>{profile.active?"✅ appliqué":"réglages standard"}</span>}<br/>
-                Fait trader ces deux modes davantage, avec des positions plus petites, sans passer par de nouvelles statistiques. Un clic pour l'appliquer, un clic pour revenir aux réglages précédents. Funding et Forex ne sont pas touchés. À utiliser en paper.
+                Fait trader ces deux modes davantage, avec des positions plus petites, sans passer par de nouvelles statistiques. Un clic pour l'appliquer, un clic pour revenir aux réglages précédents. Funding et Forex ne sont pas touchés. Le passage au réel se fait mode par mode, juste en dessous.
               </div>
               <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                 <button disabled={profileBusy||(profile&&profile.active)} onClick={async()=>{
@@ -2048,6 +2048,44 @@ Confirmer ?`
                       <td style={{padding:"4px 8px",color:"#fbbf24"}}>{fmt(k,profile.values[k])}</td>
                     </tr>);})}</tbody>
                 </table>);
+            })()}
+            {profile && profile.modes && (()=>{
+              const L = profile.live || {};
+              const MODES = [["spot_accumulation","🌱 Spot-Accum"],["accumulation","🎯 Accumulation"]];
+              const go = async (strategy, label) => {
+                const acc = strategy==="accumulation" && profile.active && Number(profile.current.ACCUMULATION_TREND_MODE)===2;
+                if(!window.confirm(`Passer ${label} en RÉEL (argent réel sur Hyperliquid) ?\n\n• positions PAPER de ce mode fermées, historique conservé\n• capital réel synchronisé depuis Hyperliquid\n• risque par trade : ${L.risk_pct} % du capital réel, notionnel plafonné à ${L.cap} $ (levier ×1)\n• ordre au marché + stop natif posé sur Hyperliquid ; frais réels environ 0,09 % par aller-retour\n• une seule position par actif sur Hyperliquid\n${acc?"• ATTENTION : Accumulation vendra des hausses en tendance haussière (exigence de tendance : aucune)\n":""}\nVous pouvez revenir en paper à tout moment (les positions réelles ouvertes restent gérées).`)) return;
+                setProfileBusy(true);
+                try{ await apiCall("/api/config/strategy-go-live","POST",{strategy},token); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
+                setProfileBusy(false);
+              };
+              const back = async (strategy) => {
+                setProfileBusy(true);
+                try{ await apiCall("/api/config/strategy-mode","PUT",{strategy,value:"paper"},token); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
+                setProfileBusy(false);
+              };
+              return (
+                <div style={{marginTop:12,borderTop:"1px solid #1e2d4a",paddingTop:10}}>
+                  <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700,marginBottom:6}}>🔴 Passage au réel</div>
+                  <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                    {MODES.map(([k,label])=>{ const live = profile.modes[k]==="live"; return (
+                      <div key={k} style={{flex:"1 1 260px",background:"#0b1220",border:`1px solid ${live?"#7f1d1d":"#1e2d4a"}`,borderRadius:8,padding:10}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                          <span style={{color:"#e2e8f0",fontSize:12,fontWeight:700}}>{label}</span>
+                          <span style={{fontSize:11,fontWeight:800,color:live?"#fca5a5":"#94a3b8"}}>{live?"🔴 RÉEL":"PAPER"}</span>
+                        </div>
+                        {live
+                          ? <button disabled={profileBusy} onClick={()=>back(k)} style={{background:"#334155",border:"none",borderRadius:6,padding:"8px 12px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>↩ Revenir en paper</button>
+                          : <button disabled={profileBusy||!L.hl_configured} onClick={()=>go(k,label)} style={{background:"#dc2626",border:"none",borderRadius:6,padding:"8px 12px",color:"#fff",fontFamily:"inherit",fontSize:12,fontWeight:800,cursor:"pointer",opacity:(profileBusy||!L.hl_configured)?0.5:1}}>🔴 Passer en réel</button>}
+                      </div>);})}
+                  </div>
+                  <div style={{marginTop:8,fontSize:11,color:"#cbd5e1",lineHeight:1.6}}>
+                    {L.hl_configured ? null : <div style={{color:"#fbbf24"}}>⚠️ Identifiants Hyperliquid non configurés : le passage au réel est indisponible.</div>}
+                    Capital réel : <b>{L.equity!=null?`${Number(L.equity).toFixed(2)} $`:"non synchronisé (il le sera au passage en réel)"}</b> · risque {L.risk_pct} % par trade · plafond {L.cap} $ ·
+                    {L.typical_notional!=null && <> taille typique <b>≈ {L.typical_notional} $</b> (stop de {L.typical_stop_pct} %) · <b>≈ {L.positions_by_margin} positions</b> au maximum avec la marge disponible (levier ×1).</>}
+                    {L.funding_live && <div style={{color:"#fbbf24"}}>Funding est aussi en réel : toutes les positions réelles partagent le même capital, donc le nombre de positions possibles baisse d'autant.</div>}
+                  </div>
+                </div>);
             })()}
             <div style={{marginTop:8,fontSize:10,color:"#64748b",lineHeight:1.5}}>
               Un trade sans zone opposée reçoit un objectif à 1,5 fois son risque, avec breakeven à +1R puis verrou de 50 % du gain maximal. Une position ouverte contre la tendance H4 n'est pas fermée par la sortie « tendance retournée » ; la sortie sur cassure de zone et le stop restent actifs. Ce profil augmente le nombre de trades ; il ne prouve pas un avantage : jugez-le avec le tableau de bord d'objectif (trades positifs contre nécessaires, net par trade après frais).
