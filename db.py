@@ -108,6 +108,18 @@ def init_db():
                 value TEXT NOT NULL
             )
         """)
+        # v4.349 — enregistreur de flux : tranches de 5 minutes par actif + battement de coeur
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS flow_5m (
+                ticker TEXT NOT NULL, t0 INTEGER NOT NULL,
+                n_buy INTEGER, n_sell INTEGER, buy_usd REAL, sell_usd REAL,
+                big_buy_usd REAL, big_sell_usd REAL, max_trade_usd REAL,
+                px_open REAL, px_high REAL, px_low REAL, px_close REAL,
+                PRIMARY KEY (ticker, t0)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_flow_5m_t0 ON flow_5m (t0)")
+        conn.execute("CREATE TABLE IF NOT EXISTS flow_5m_alive (t0 INTEGER PRIMARY KEY)")
         # Migration : ajoute la colonne rsi si la table trades existait deja
         # (CREATE TABLE IF NOT EXISTS n ajoute pas les colonnes manquantes a
         # une table deja creee par une version anterieure du code).
@@ -1001,3 +1013,57 @@ def manual_history(limit=50):
         rows = conn.execute("SELECT id, status, data FROM manual_trades WHERE status IN ('closed','cancelled','expired','failed') "
                             "ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
         return [{"id": r["id"], "status": r["status"], "data": json.loads(r["data"])} for r in rows]
+
+
+# ── v4.349 — Enregistreur de flux (lecture seule, aucun effet sur le trading) ──────────
+def flow_insert_many(rows):
+    """rows : tuples (ticker, t0, n_buy, n_sell, buy_usd, sell_usd, big_buy_usd, big_sell_usd, max_trade_usd,
+    px_open, px_high, px_low, px_close). INSERT OR REPLACE : une tranche rejouee ne cree pas de doublon."""
+    if not rows:
+        return 0
+    with _lock, _connect() as conn:
+        conn.executemany("INSERT OR REPLACE INTO flow_5m VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        conn.commit()
+    return len(rows)
+
+
+def flow_alive_insert(t0s):
+    if not t0s:
+        return 0
+    with _lock, _connect() as conn:
+        conn.executemany("INSERT OR IGNORE INTO flow_5m_alive (t0) VALUES (?)", [(t,) for t in t0s])
+        conn.commit()
+    return len(t0s)
+
+
+def flow_prune(older_than_ms):
+    with _lock, _connect() as conn:
+        a = conn.execute("DELETE FROM flow_5m WHERE t0 < ?", (older_than_ms,)).rowcount
+        b = conn.execute("DELETE FROM flow_5m_alive WHERE t0 < ?", (older_than_ms,)).rowcount
+        conn.commit()
+    return a, b
+
+
+def flow_status(now_ms):
+    """Etat de l enregistrement : volumes, periode couverte, couverture par actif sur 24 h."""
+    with _lock, _connect() as conn:
+        tot = conn.execute("SELECT COUNT(*) AS n, MIN(t0) AS first, MAX(t0) AS last, COUNT(DISTINCT ticker) AS assets FROM flow_5m").fetchone()
+        alive = conn.execute("SELECT COUNT(*) AS n, MIN(t0) AS first, MAX(t0) AS last FROM flow_5m_alive").fetchone()
+        since = now_ms - 24 * 3600 * 1000
+        per = conn.execute("SELECT ticker, COUNT(*) AS n, SUM(n_buy + n_sell) AS trades, SUM(buy_usd + sell_usd) AS usd "
+                           "FROM flow_5m WHERE t0 >= ? GROUP BY ticker ORDER BY ticker", (since,)).fetchall()
+        alive24 = conn.execute("SELECT COUNT(*) AS n FROM flow_5m_alive WHERE t0 >= ?", (since,)).fetchone()["n"]
+        return {"rows": tot["n"], "first": tot["first"], "last": tot["last"], "assets": tot["assets"],
+                "alive_buckets": alive["n"], "alive_first": alive["first"], "alive_last": alive["last"],
+                "alive_24h": alive24, "per_asset_24h": [dict(r) for r in per]}
+
+
+def flow_export_rows(since_ms, until_ms=None):
+    q = "SELECT * FROM flow_5m WHERE t0 >= ?"
+    params = [since_ms]
+    if until_ms:
+        q += " AND t0 < ?"
+        params.append(until_ms)
+    q += " ORDER BY t0, ticker"
+    with _lock, _connect() as conn:
+        return [tuple(r) for r in conn.execute(q, params).fetchall()]
