@@ -23,6 +23,7 @@ import time
 import threading
 import json
 import db
+from flow_recorder import FlowRecorder   # v4.349 — enregistreur de flux (lecture seule)
 import mtf_analysis as mtf  # v4.299 — analyse multi-unites de temps
 from datetime import datetime
 from collections import deque
@@ -1390,6 +1391,9 @@ PROFILE_SWING = {
     # ascendant / resistance descendante + objectif par mesure de
     # mouvement), pour capter une tendance qui s eloigne de toute zone H4 —
     # OU distinct du chemin "zone" classique, pas une condition en plus.
+    "FLOW_RECORDER_ENABLED": 1,           # v4.349 : 1 = enregistre le flux acheteur/vendeur par tranche de 5 min et par actif (lecture seule)
+    "FLOW_RECORDER_BIG_TRADE_USD": 5000.0, # v4.349 : seuil d une "grosse" transaction
+    "FLOW_RECORDER_KEEP_DAYS": 120,       # v4.349 : duree de conservation
     "FUNDING_SHADOW_TRACKING": 1,         # v4.346 : 1 = suit ce que deviennent les entrees Funding bloquees par le filtre qualite (lecture seule)
     "FUNDING_SHADOW_SL_PCT": 0.7,         # v4.346 : stop hypothetique (% du prix) pour mesurer "+1R avant SL" (approximation du stop Funding)
     "BLOCKED_FOLLOWUP_ENABLED": 1,       # v4.338 : 1 = suit ce que devient un signal BLOQUE (lecture seule, aucun effet sur les entrees)
@@ -7007,6 +7011,16 @@ class BotEngine:
             keep_ms = max(self.cfg.get("TRADE_FLOW_WINDOW_SEC", 180) * 2, 600) * 1000
             if not hasattr(self, "_ws_trades_last_rx"):
                 self._ws_trades_last_rx = {}
+            # v4.349 — enregistreur de flux : meme transactions, agregees par tranche de 5 minutes. Protege : une
+            # erreur ici ne doit JAMAIS perturber le calcul de pression utilise par les entrees.
+            try:
+                if self.cfg.get("FLOW_RECORDER_ENABLED", 1):
+                    rec = getattr(self, "flow_recorder", None)
+                    if rec is None:
+                        rec = self.flow_recorder = FlowRecorder(big_usd=self.cfg.get("FLOW_RECORDER_BIG_TRADE_USD", 5000.0))
+                    rec.on_trades(data, now_ms)
+            except Exception as e:
+                print(f"[FLUX-ENREGISTREUR] erreur ignoree : {e}")
             for t in data:
                 coin = t.get("coin")
                 if not coin:
@@ -7791,6 +7805,7 @@ class BotEngine:
                 self._refresh_asset_win_rates_if_due()  # v4.314
                 self._blocked_followups_if_due()  # v4.338
                 self._refresh_held_mtf_data()  # v4.341
+                self._flow_recorder_flush_if_due()  # v4.349
                 self._decay_confidence_thresholds()
                 prices = self._get_prices_with_timeout(cfg.get("PRICE_FETCH_TIMEOUT_SEC", 10))
                 in_hours = is_trading_hours(cfg)
@@ -10626,6 +10641,30 @@ class BotEngine:
             meta["retry_at"] = now + retry_sec
             print(f"[MTF] Bougies {tf} {ticker} indisponibles : {e}")
         return out
+
+    def _flow_recorder_flush_if_due(self):
+        """v4.349 — ecrit en base les tranches de flux terminees (toutes les 60 s au plus) et purge les
+        tranches de plus de FLOW_RECORDER_KEEP_DAYS jours (une fois par jour). Hors du fil WebSocket."""
+        try:
+            rec = getattr(self, "flow_recorder", None)
+            if rec is None or not self.cfg.get("FLOW_RECORDER_ENABLED", 1):
+                return
+            now = time.time()
+            if now - getattr(self, "_flow_last_flush", 0) < 60:
+                return
+            self._flow_last_flush = now
+            alive = (now - getattr(self, "_ws_trades_last_any", 0)) < 90
+            rows, alive_t = rec.drain(int(now * 1000), stream_alive=alive)
+            if rows:
+                db.flow_insert_many(rows)
+            if alive_t:
+                db.flow_alive_insert(alive_t)
+            if now - getattr(self, "_flow_last_prune", 0) > 86400:
+                self._flow_last_prune = now
+                keep = int(self.cfg.get("FLOW_RECORDER_KEEP_DAYS", 120))
+                db.flow_prune(int((now - keep * 86400) * 1000))
+        except Exception as e:
+            print(f"[FLUX-ENREGISTREUR] ecriture ignoree : {e}")
 
     def _refresh_held_mtf_data(self):
         """v4.341 — SUR DEMANDE EXPLICITE : rafraichit les bougies de l unite majeure
