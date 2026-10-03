@@ -1425,21 +1425,21 @@ function App() {
     setPrecisionCheckLoading(false);
   }, [token]);
 
-  const loadStrategyPerformance = useCallback(async (strategy) => {
+  const loadStrategyPerformance = useCallback(async (strategy, silent) => {
     if (!token) return;
-    setStrategyPerfLoading(true);
+    if (!silent) setStrategyPerfLoading(true);
     try {
       const r = await apiCall(`/api/strategy-performance/${strategy}`, "GET", null, token);
       setStrategyPerf(p=>({...p, [strategy]: r}));
     } catch(e) {
-      setStrategyPerf(p=>({...p, [strategy]: null}));
+      if (!silent) setStrategyPerf(p=>({...p, [strategy]: null}));   // un rafraichissement automatique rate ne vide pas l affichage
     }
-    setStrategyPerfLoading(false);
+    if (!silent) setStrategyPerfLoading(false);
   }, [token]);
 
-  const loadAllStrategyPerformance = useCallback(async () => {
+  const loadAllStrategyPerformance = useCallback(async (silent) => {
     if (!token) return;
-    setStrategyPerfLoading(true);
+    if (!silent) setStrategyPerfLoading(true);
     const modes = ["forex","accumulation","funding_contrarian","spot_accumulation"];
     try {
       const results = await Promise.all(modes.map(m=>
@@ -1447,12 +1447,25 @@ function App() {
       ));
       setStrategyPerf(p=>{
         const next = {...p};
-        modes.forEach((m,i)=>{ next[m] = results[i]; });
+        modes.forEach((m,i)=>{ if (results[i] || !silent) next[m] = results[i]; });
         return next;
       });
     } catch(e) {}
-    setStrategyPerfLoading(false);
+    if (!silent) setStrategyPerfLoading(false);
   }, [token]);
+
+  // v4.350 — SUR DEMANDE EXPLICITE : le panneau Performance se chargeait uniquement au clic et gardait
+  // indefiniment le dernier resultat (aucune heure affichee) : il paraissait fige. Maintenant : chargement a
+  // l ouverture du sous-onglet, puis rafraichissement silencieux chaque minute.
+  useEffect(() => {
+    if (!token) return;
+    const modes = ["forex","accumulation","funding_contrarian","spot_accumulation"];
+    if (!(modes.includes(paperSubTab) || paperSubTab === "performance")) return;
+    const refresh = () => paperSubTab === "performance" ? loadAllStrategyPerformance(true) : loadStrategyPerformance(paperSubTab, true);
+    refresh();
+    const id = setInterval(refresh, 60000);
+    return () => clearInterval(id);
+  }, [paperSubTab, token]);
 
   const toggleModeCoin = useCallback(async (mode, ticker, active) => {
     if (!token) return;
@@ -3644,7 +3657,7 @@ Confirmer ?`
             {/* v4.44 — ONGLET PERFORMANCE : compare les 4 modes, rafraichit tout au clic */}
             {paperSubTab==="performance" && (
               <div>
-                <button onClick={loadAllStrategyPerformance} disabled={strategyPerfLoading}
+                <button onClick={()=>loadAllStrategyPerformance(false)} disabled={strategyPerfLoading}
                   style={{background:"#05301622",border:"1px solid #34d399",borderRadius:6,padding:"8px 16px",color:"#34d399",fontSize:11,cursor:"pointer",fontWeight:700,marginBottom:14}}>
                   {strategyPerfLoading?"Chargement...":"🔄 Rafraîchir les 4 modes"}
                 </button>
@@ -3665,6 +3678,7 @@ Confirmer ?`
                               <div><div style={{fontSize:15,fontWeight:700,color:"#e2e8f0"}}>{perf.open_trades}/{perf.total_trades}</div><div style={{fontSize:8,color:"#94a3b8"}}>OUVERTS/TOTAL</div></div>
                               <div><div style={{fontSize:15,fontWeight:700,color:"#fbbf24"}}>{perf.win_rate}%</div><div style={{fontSize:8,color:"#94a3b8"}}>WIN RATE</div></div>
                               <div style={{gridColumn:"span 2"}}><div style={{fontSize:15,fontWeight:700,color:perf.net_pnl>=0?"#34d399":"#f87171"}}>{perf.net_pnl>=0?"+":""}{perf.net_pnl.toFixed(2)} USDC</div><div style={{fontSize:8,color:"#94a3b8"}}>NET</div></div>
+                              {perf.refreshed_at && <div style={{gridColumn:"span 2",fontSize:8,color:"#64748b"}}>calculé à {new Date(perf.refreshed_at*1000).toLocaleTimeString("fr-FR")}{perf.since?" · depuis la réinitialisation":""}</div>}
                               {perf.total_fees_paid>0 && (
                                 <div style={{gridColumn:"span 2"}}><div style={{fontSize:12,fontWeight:700,color:"#94a3b8"}}>-{perf.total_fees_paid.toFixed(2)} USDC</div><div style={{fontSize:8,color:"#64748b"}}>FRAIS HYPERLIQUID (estimés, live uniquement)</div></div>
                               )}
@@ -3793,7 +3807,7 @@ Confirmer ?`
                     );
                   })()}
                   <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
-                    <button onClick={()=>loadStrategyPerformance(paperSubTab)} disabled={strategyPerfLoading}
+                    <button onClick={()=>loadStrategyPerformance(paperSubTab, false)} disabled={strategyPerfLoading}
                       style={{background:"#1e3a5f22",border:"1px solid #60a5fa",borderRadius:6,padding:"7px 14px",color:"#60a5fa",fontSize:11,cursor:"pointer",fontWeight:700}}>
                       {strategyPerfLoading?"Chargement...":"🔄 Performance"}
                     </button>
@@ -3818,6 +3832,18 @@ Confirmer ?`
                       ))}
                     </div>
                   )}
+
+                  {perf && perf.refreshed_at && (()=>{
+                    const dt = v => v ? new Date(v).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) : "—";
+                    return (
+                      <div style={{fontSize:10,color:"#94a3b8",marginTop:-6,marginBottom:12,lineHeight:1.6}}>
+                        Calculé à <b style={{color:"#e2e8f0"}}>{new Date(perf.refreshed_at*1000).toLocaleTimeString("fr-FR")}</b> (actualisé chaque minute) ·{" "}
+                        {perf.since ? <>trades fermés <b style={{color:"#fbbf24"}}>depuis la réinitialisation du {new Date(perf.since).toLocaleString("fr-FR")}</b> (pas depuis le début)</> : "depuis le début"} ·
+                        premier fermé le {dt(perf.first_closed_at)}, dernier le {dt(perf.last_closed_at)}.<br/>
+                        Les gains et pertes sont bruts (le paper n'a pas de frais) : frais estimés à {perf.fee_pct} % du notionnel = <b>-{(perf.fees_estimated||0).toFixed(2)} USDC</b> → net après frais estimé{" "}
+                        <b style={{color:perf.net_after_fees_est>=0?"#34d399":"#f87171"}}>{perf.net_after_fees_est>=0?"+":""}{(perf.net_after_fees_est||0).toFixed(2)} USDC</b>.
+                      </div>);
+                  })()}
 
                   {showMarketPanel && (
                     <div style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:10,marginBottom:14,display:"flex",gap:6,flexWrap:"wrap"}}>
