@@ -40,6 +40,7 @@ import db
 import auth
 import bot_engine as be
 import replay_research as rr   # v4.347 — rejeu historique des entrees (lecture seule)
+import asset_cards as ac       # v4.349 — fiche actif (lecture seule)
 # v4.274 — FIX : importe ICI, avec les autres modules, AVANT le os.chdir()
 # vers le dossier de donnees ci-dessous. Importe apres (v4.273), Python le
 # cherchait dans le Volume -> "ModuleNotFoundError: No module named
@@ -3198,6 +3199,125 @@ def restore_profile(name: str = Query("actif", pattern="^(actif)$"), email: str 
             _apply_and_persist(k, clean)
             restored[k] = clean
     return {"ok": True, "restored": restored, "from_saved": bool(prev)}
+
+
+# ───────────────── v4.349 — ENREGISTREUR DE FLUX + FICHE ACTIF (lecture seule) ─────────────────
+@app.get("/api/research/flow/status")
+def flow_status_ep(email: str = Depends(require_user)):
+    """Etat de l enregistreur de flux acheteur/vendeur (tranches de 5 minutes par actif)."""
+    now = time.time()
+    st = db.flow_status(int(now * 1000))
+    rec = getattr(bot, "flow_recorder", None)
+    live = None
+    if rec is not None:
+        live = {"trades_seen": rec.stats["trades"], "dupes": rec.stats["dupes"], "bad": rec.stats["bad"],
+                "open_buckets": len(rec.cur), "pending_rows": len(rec.closed)}
+    return {"enabled": bool(bot.cfg.get("FLOW_RECORDER_ENABLED", 1)), "ws_alive": (now - getattr(bot, "_ws_trades_last_any", 0)) < 90,
+            "keep_days": bot.cfg.get("FLOW_RECORDER_KEEP_DAYS", 120), "big_usd": bot.cfg.get("FLOW_RECORDER_BIG_TRADE_USD", 5000.0),
+            "live": live, "db": st, "now_ms": int(now * 1000)}
+
+
+@app.get("/api/research/flow/export.csv")
+def flow_export_ep(days: int = Query(7, ge=1, le=120), what: str = Query("bars", pattern="^(bars|alive)$"),
+                   email: str = Depends(require_user)):
+    """Export CSV des tranches de flux (what=bars) ou des tranches ou l enregistreur etait actif (what=alive)."""
+    import csv
+    import io
+    since = int((time.time() - days * 86400) * 1000)
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
+    fr = lambda v, d=2: "" if v is None else (str(round(v, d)).replace(".", ",") if isinstance(v, float) else v)
+    iso = lambda ms: datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M")
+    if what == "alive":
+        w.writerow(["debut tranche (UTC)", "t0 (ms)"])
+        with db._lock, db._connect() as conn:
+            for r in conn.execute("SELECT t0 FROM flow_5m_alive WHERE t0 >= ? ORDER BY t0", (since,)).fetchall():
+                w.writerow([iso(r["t0"]), r["t0"]])
+    else:
+        w.writerow(["actif", "debut tranche (UTC)", "t0 (ms)", "nb achats", "nb ventes", "achats ($)", "ventes ($)", "gros achats ($)",
+                    "gros ventes ($)", "plus grosse transaction ($)", "prix ouverture", "prix haut", "prix bas", "prix cloture",
+                    "desequilibre (achats-ventes)/(achats+ventes)"])
+        for r in db.flow_export_rows(since):
+            tot = (r[4] or 0) + (r[5] or 0)
+            w.writerow([r[0], iso(r[1]), r[1], r[2], r[3], fr(r[4]), fr(r[5]), fr(r[6]), fr(r[7]), fr(r[8]),
+                        fr(r[9], 8), fr(r[10], 8), fr(r[11], 8), fr(r[12], 8), fr(((r[4] or 0) - (r[5] or 0)) / tot, 4) if tot else ""])
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%Hh%M")
+    return Response(content="\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="flux_{what}_{stamp}.csv"'})
+
+
+_cards_job = ac.CardsJob()
+
+
+def _asset_bot_history():
+    """Resultats reels du bot par actif (tous modes, toute la base) : taille de l echantillon incluse."""
+    out = {}
+    for t in db.get_all_closed_trades():
+        coin, entry, ex = t.get("coin"), t.get("entry_price"), t.get("exit_price")
+        if not coin or not entry or not ex:
+            continue
+        sign = 1 if t.get("action") == "LONG" else -1
+        pct = sign * (ex - entry) / entry * 100
+        e = out.setdefault(coin, {"n": 0, "wins": 0, "usd": 0.0, "sum_pct": 0.0, "take": 0, "groups": {}, "last": None})
+        e["n"] += 1
+        e["wins"] += 1 if pct > 0 else 0
+        e["usd"] += t.get("pnl") or 0.0
+        e["sum_pct"] += pct
+        e["take"] += 1 if (t.get("peak_pnl_pct") or 0) >= 0.5 else 0
+        g = e["groups"].setdefault(_objective_group_key(t), {"n": 0, "wins": 0, "usd": 0.0})
+        g["n"] += 1
+        g["wins"] += 1 if pct > 0 else 0
+        g["usd"] += t.get("pnl") or 0.0
+        ca = t.get("closed_at")
+        if ca and (e["last"] is None or ca > e["last"]):
+            e["last"] = ca
+    res = {}
+    for coin, e in out.items():
+        n = e["n"]
+        res[coin] = {"n": n, "win_rate": round(e["wins"] / n * 100, 0), "usd": round(e["usd"], 2),
+                     "mean_pct": round(e["sum_pct"] / n, 3), "takeoff": round(e["take"] / n * 100, 0), "small": n < 30,
+                     "last": e["last"], "groups": sorted(({"group": g, "n": v["n"], "win_rate": round(v["wins"] / v["n"] * 100, 0),
+                                                           "usd": round(v["usd"], 2)} for g, v in e["groups"].items()),
+                                                         key=lambda x: -x["n"])[:3]}
+    return res
+
+
+@app.post("/api/research/cards/start")
+def cards_start(days: int = Query(30, ge=14, le=40), email: str = Depends(require_user)):
+    """Calcule les fiches actifs a partir des bougies (arriere-plan, ~6 minutes pour 29 actifs, debit bride)."""
+    assets = sorted({be.ticker_from_slot_key(s) for s in bot.cfg.get("SYMBOLS", [])})
+    assets = [a for a in assets if not a.startswith("xyz:")]
+
+    def done(res):
+        try:
+            db.set_meta("cards_last", json.dumps({"saved_at": time.time(), "result": res}))
+        except Exception as e:
+            print(f"[FICHES] sauvegarde impossible : {e}")
+
+    return {"started": _cards_job.start(bot.info, assets, days, on_done=done), "assets": len(assets), "days": days}
+
+
+@app.post("/api/research/cards/cancel")
+def cards_cancel(email: str = Depends(require_user)):
+    _cards_job.cancel()
+    return {"ok": True}
+
+
+@app.get("/api/research/cards")
+def cards_status(email: str = Depends(require_user)):
+    """Etat du calcul, derniere fiche enregistree, et resultats du bot par actif (toujours a jour)."""
+    st = _cards_job.status(with_result=True)
+    out = {"state": st["state"], "progress": st["progress"], "error": st["error"], "history": _asset_bot_history()}
+    if st["state"] == "done":
+        out["result"] = st["result"]
+    elif st["state"] == "idle":
+        try:
+            saved = json.loads(db.get_meta("cards_last") or "null")
+        except (TypeError, ValueError):
+            saved = None
+        if saved:
+            out.update({"state": "saved", "saved_at": saved.get("saved_at"), "result": saved.get("result")})
+    return out
 
 
 @app.get("/api/stats/funding-streaks")
