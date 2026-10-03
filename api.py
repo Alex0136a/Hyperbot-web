@@ -2093,7 +2093,19 @@ def get_strategy_performance(strategy: str, email: str = Depends(require_user)):
     # emplacement (bot.accum_states), jamais compte ci-dessus.
     if strategy == "accumulation":
         open_count += sum(1 for st in bot.accum_states.values() if st.position)
+    # v4.350 — SUR DEMANDE EXPLICITE (le panneau paraissait fige) : periode couverte, heure de calcul et net
+    # apres frais estimes. Rappel : seuls les trades fermes depuis le point de reinitialisation des
+    # statistiques sont comptes ("since"), pas "depuis le debut".
+    closed_times = [t.get("closed_at") for t in filtered if t.get("closed_at")]
+    fee_pct = _ROUND_TRIP_FEE_RATE * 100
+    fees_est = sum((t["fees_real"] if t.get("fees_real") is not None else
+                    (t.get("size_usd") or 0) * (t.get("leverage") or 1) * fee_pct / 100) for t in filtered)
     return {
+        "since": db.get_meta("stats_reset_at"),
+        "first_closed_at": min(closed_times) if closed_times else None,
+        "last_closed_at": max(closed_times) if closed_times else None,
+        "fees_estimated": round(fees_est, 4), "fee_pct": round(fee_pct, 3),
+        "net_after_fees_est": round(total_pnl - fees_est, 4),
         "strategy": strategy,
         "total_trades": len(filtered),
         "open_trades": open_count,
