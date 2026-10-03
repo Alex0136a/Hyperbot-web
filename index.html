@@ -1162,6 +1162,18 @@ function App() {
   const [orphanedLoading, setOrphanedLoading] = useState(false);
   // v4.316 — analyse des series de gains/pertes Funding
   // v4.345 — tableau de bord d objectif (positifs necessaires, decollage, part du pic gardee)
+  // v4.349 — enregistreur de flux + fiche actif
+  const [flowSt, setFlowSt] = useState(null);
+  const [cardsSt, setCardsSt] = useState(null);
+  const [cardsSort, setCardsSort] = useState("vol");
+  const loadFlow = async () => { try { setFlowSt(await apiCall("/api/research/flow/status","GET",null,token)); } catch(e) {} };
+  const loadCards = async () => { try { setCardsSt(await apiCall("/api/research/cards","GET",null,token)); } catch(e) {} };
+  useEffect(() => { loadFlow(); loadCards(); }, []);
+  useEffect(() => {
+    if (!cardsSt || cardsSt.state !== "running") return;
+    const id = setInterval(loadCards, 5000);
+    return () => clearInterval(id);
+  }, [cardsSt && cardsSt.state]);
   // v4.348 — profil d activite Spot-Accum / Accumulation
   const [profile, setProfile] = useState(null);
   const [profileBusy, setProfileBusy] = useState(false);
@@ -2012,6 +2024,129 @@ Confirmer ?`
               </div>
             )}
           </div>
+          {/* v4.349 — SUR DEMANDE EXPLICITE : enregistreur de flux acheteur/vendeur (lecture seule). */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+              <div style={{fontSize:11,color:"#94a3b8",maxWidth:620}}>
+                <b style={{color:"#e2e8f0"}}>📡 Enregistreur de flux acheteur / vendeur</b>
+                {flowSt && <span style={{marginLeft:8,fontWeight:700,color:flowSt.enabled&&flowSt.ws_alive?"#86efac":"#fbbf24"}}>{flowSt.enabled?(flowSt.ws_alive?"● enregistre":"● flux en attente"):"○ désactivé"}</span>}<br/>
+                Conserve, pour chaque actif et chaque tranche de 5 minutes, ce qui a été acheté et vendu de façon agressive (montants, nombre de transactions, gros ordres, prix). C'est la matière pour apprendre actif par actif la lecture des signaux : l'historique des transactions n'existe pas chez Hyperliquid, il faut l'enregistrer. Aucun effet sur le trading. Les premières analyses n'ont de sens qu'après environ 2 semaines.
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <button onClick={loadFlow} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>↻ Rafraîchir</button>
+                <button onClick={async()=>{
+                  try{
+                    const r = await fetch(`${API}/api/research/flow/export.csv?days=7`,{headers:{Authorization:`Bearer ${token}`}});
+                    if(!r.ok){ let d={}; try{d=await r.json();}catch(_){} throw new Error(d.detail||`Erreur ${r.status}`); }
+                    const blob = await r.blob(); const cd = r.headers.get("Content-Disposition")||""; const m = cd.match(/filename="([^"]+)"/);
+                    const url = URL.createObjectURL(blob); const a = document.createElement("a");
+                    a.href = url; a.download = m?m[1]:"flux.csv"; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000);
+                  }catch(e){ alert("Export impossible : "+e.message); }
+                }} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>📥 Exporter 7 jours</button>
+              </div>
+            </div>
+            {flowSt && flowSt.db && (()=>{
+              const d = flowSt.db, fmtD = ms => ms ? new Date(ms).toLocaleString("fr-FR") : "—";
+              const days = d.first && d.last ? ((d.last-d.first)/86400000).toFixed(1) : "0";
+              const per = d.per_asset_24h || [];
+              return (
+                <div style={{marginTop:10,fontSize:11,color:"#cbd5e1",lineHeight:1.6}}>
+                  <b>{(d.rows||0).toLocaleString("fr-FR")}</b> tranches enregistrées sur <b>{d.assets||0}</b> actifs · du {fmtD(d.first)} au {fmtD(d.last)} ({days} jour(s)) ·
+                  enregistreur actif sur <b>{d.alive_24h}</b>/288 tranches des dernières 24 h.
+                  {flowSt.live && <span style={{color:"#94a3b8"}}> Depuis le dernier démarrage : {flowSt.live.trades_seen.toLocaleString("fr-FR")} transactions lues, {flowSt.live.dupes} doublons ignorés.</span>}
+                  {per.length>0 && (
+                    <details style={{marginTop:6}}>
+                      <summary style={{cursor:"pointer",color:"#94a3b8"}}>Couverture des dernières 24 h par actif</summary>
+                      <div style={{overflowX:"auto",marginTop:6}}>
+                        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                          <thead><tr style={{color:"#94a3b8"}}><th style={{padding:"3px 8px",textAlign:"left"}}>Actif</th><th style={{padding:"3px 8px",textAlign:"right"}}>Tranches</th><th style={{padding:"3px 8px",textAlign:"right"}}>Transactions</th><th style={{padding:"3px 8px",textAlign:"right"}}>Volume ($)</th></tr></thead>
+                          <tbody>{per.map(r=><tr key={r.ticker} style={{borderTop:"1px solid #1e2d4a"}}><td style={{padding:"3px 8px"}}>{r.ticker}</td><td style={{padding:"3px 8px",textAlign:"right"}}>{r.n}</td><td style={{padding:"3px 8px",textAlign:"right"}}>{(r.trades||0).toLocaleString("fr-FR")}</td><td style={{padding:"3px 8px",textAlign:"right"}}>{Math.round(r.usd||0).toLocaleString("fr-FR")}</td></tr>)}</tbody>
+                        </table>
+                      </div>
+                    </details>)}
+                </div>);
+            })()}
+          </div>
+
+          {/* v4.349 — SUR DEMANDE EXPLICITE : fiche actif (personnalité de chaque actif + résultats du bot). */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+              <div style={{fontSize:11,color:"#94a3b8",maxWidth:620}}>
+                <b style={{color:"#e2e8f0"}}>🧬 Fiche actif</b><br/>
+                La « personnalité » de chaque actif sur 30 jours (volatilité, volume, force relative et bêta contre BTC, persistance, comportement après une hausse ou une baisse de +/-1 % en 2 h, pire mouvement, tendance H4) à côté de ce que le bot a réellement obtenu dessus. Chaque mesure est donnée avec sa taille d'échantillon. Lecture seule ; environ 6 minutes, débit volontairement bridé.
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                <select value={cardsSort} onChange={e=>setCardsSort(e.target.value)} style={{background:"#0b1220",color:"#e2e8f0",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",fontSize:12}}>
+                  <option value="vol">Trier : volume</option><option value="coin">Trier : nom</option><option value="range">Trier : amplitude</option><option value="rel">Trier : force relative 7 j</option><option value="bot">Trier : net du bot</option>
+                </select>
+                <button disabled={cardsSt&&cardsSt.state==="running"} onClick={async()=>{
+                  try{ await apiCall("/api/research/cards/start?days=30","POST",null,token); await loadCards(); }catch(e){ alert("Erreur : "+e.message); }
+                }} style={{background:"#a78bfa",border:"none",borderRadius:7,padding:"10px 16px",color:"#1e1040",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer",opacity:(cardsSt&&cardsSt.state==="running")?0.5:1}}>🧬 Calculer les fiches</button>
+                {cardsSt && cardsSt.state==="running" && <button onClick={async()=>{ try{ await apiCall("/api/research/cards/cancel","POST",null,token); }catch(e){} }}
+                  style={{background:"#7f1d1d",border:"none",borderRadius:7,padding:"10px 14px",color:"#fecaca",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>Annuler</button>}
+                {cardsSt && cardsSt.result && <button onClick={()=>{
+                  const H = cardsSt.history||{};
+                  const rows=[["Actif","Trades du bot","Positifs %","Net brut $","Moyenne %","Decollage %","Volume 24h $","Amplitude 15 min %","Mouvement quotidien %","Rendement 7j %","Force relative 7j %","Force relative 30j %","Correlation BTC","Beta BTC","Autocorr 1h","Apres hausse n","Apres hausse mediane %","Apres hausse retour %","Apres baisse n","Apres baisse mediane %","Apres baisse retour %","Pire 2h %","P99 2h %","Tendance H4"]];
+                  cardsSt.result.cards.forEach(c=>{ const h=H[c.coin]||{}; rows.push([c.coin,h.n,h.win_rate,h.usd,h.mean_pct,h.takeoff,c.vol_usd_24h,c.range15_med,c.daily_range_med,c.ret_7d,c.rel_7d,c.rel_30d,c.corr_btc,c.beta_btc,c.ac1_1h,c.after_rally.n,c.after_rally.median,c.after_rally.against,c.after_drop.n,c.after_drop.median,c.after_drop.against,c.worst_2h,c.p99_2h,c.trend_h4]); });
+                  downloadCSV(`fiches_actifs_${new Date().toISOString().slice(0,10)}.csv`, rows);
+                }} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>📥 CSV</button>}
+              </div>
+            </div>
+            {cardsSt && cardsSt.state==="running" && (
+              <div style={{marginTop:10,fontSize:11,color:"#94a3b8"}}>
+                En cours : {cardsSt.progress.done}/{cardsSt.progress.total} — {cardsSt.progress.current||"démarrage…"}
+                <div style={{height:6,background:"#1e2d4a",borderRadius:3,marginTop:4}}><div style={{height:6,background:"#a78bfa",borderRadius:3,width:`${cardsSt.progress.total?Math.round(cardsSt.progress.done/cardsSt.progress.total*100):0}%`}}/></div>
+              </div>)}
+            {cardsSt && cardsSt.state==="error" && <div style={{marginTop:10,fontSize:11,color:"#fca5a5"}}>Erreur : {cardsSt.error}</div>}
+            {cardsSt && cardsSt.result && (()=>{
+              const H = cardsSt.history||{}, R = cardsSt.result;
+              const f = (v,d=2,suf="")=> v==null?"—":`${Number(v).toFixed(d)}${suf}`;
+              const sg = (v,d=2,suf=" %")=> v==null?"—":`${v>=0?"+":""}${Number(v).toFixed(d)}${suf}`;
+              const th = {padding:"4px 8px",textAlign:"right",whiteSpace:"nowrap"}, td = {padding:"4px 8px",textAlign:"right",whiteSpace:"nowrap"};
+              const sorters = {vol:(a,b)=>(b.vol_usd_24h||0)-(a.vol_usd_24h||0), coin:(a,b)=>a.coin.localeCompare(b.coin), range:(a,b)=>(b.range15_med||0)-(a.range15_med||0),
+                rel:(a,b)=>(b.rel_7d??-999)-(a.rel_7d??-999), bot:(a,b)=>((H[b.coin]||{}).usd??-999)-((H[a.coin]||{}).usd??-999)};
+              const rows = [...R.cards].sort(sorters[cardsSort]);
+              const ev = e => (!e||e.median==null) ? <span style={{color:"#64748b"}}>n={e?e.n:0}</span> : <span>{sg(e.median)} <span style={{color:"#64748b"}}>({e.against}% retour, n={e.n})</span></span>;
+              const when = R.meta.end_ms ? new Date(R.meta.end_ms).toLocaleString("fr-FR") : "";
+              return (
+                <div style={{marginTop:10,fontSize:11}}>
+                  <div style={{color:"#94a3b8",marginBottom:6}}>{R.cards.length} actifs · calculé le {when} sur {R.meta.days} jours.{R.meta.assets_skipped.length>0 && <span style={{color:"#fbbf24"}}> Ignorés : {R.meta.assets_skipped.map(x=>x[0]).join(", ")}.</span>}</div>
+                  <div style={{overflowX:"auto"}}>
+                    <table style={{width:"100%",borderCollapse:"collapse"}}>
+                      <thead><tr style={{color:"#94a3b8"}}>
+                        <th style={{...th,textAlign:"left",color:"#e2e8f0"}}>Actif</th><th style={th} title="Résultats réels du bot sur cet actif, tous modes : trades · positifs · net brut">Bot</th>
+                        <th style={th}>Volume 24 h</th><th style={th} title="Amplitude médiane d'une bougie de 15 minutes">Amplitude 15 min</th><th style={th}>Mouvement / jour</th>
+                        <th style={th} title="Performance 7 jours moins celle de BTC">Force rel. 7 j</th><th style={th} title="Corrélation et bêta avec BTC (rendements horaires)">Corr. / bêta BTC</th>
+                        <th style={th} title="Autocorrélation des rendements horaires : positif = continuation, négatif = retour">Autocorr. 1 h</th>
+                        <th style={th} title="Rendement médian des 2 h qui suivent une hausse de +1 % en 2 h ; négatif = le prix revient">Après hausse +1 %</th><th style={th}>Après baisse -1 %</th>
+                        <th style={th}>Pire 2 h</th><th style={th}>Tendance H4</th>
+                      </tr></thead>
+                      <tbody>
+                        {rows.map(c=>{ const h=H[c.coin];
+                          return (
+                          <tr key={c.coin} style={{borderTop:"1px solid #1e2d4a"}}>
+                            <td style={{...td,textAlign:"left",color:"#e2e8f0",fontWeight:700}}>{c.coin}</td>
+                            <td style={{...td,color:h?(h.usd>=0?"#86efac":"#fca5a5"):"#64748b"}} title={h?(h.groups||[]).map(g=>`${g.group} : ${g.n} trades, ${g.win_rate} %, ${g.usd} $`).join("\n"):""}>{h?`${h.n} · ${h.win_rate}% · ${h.usd>=0?"+":""}${h.usd.toFixed(2)} $${h.small?" ⚠":""}`:"—"}</td>
+                            <td style={td}>{c.vol_usd_24h==null?"—":(c.vol_usd_24h>=1e6?`${(c.vol_usd_24h/1e6).toFixed(1)} M$`:`${Math.round(c.vol_usd_24h/1e3)} k$`)}</td>
+                            <td style={td}>{f(c.range15_med,3," %")}</td><td style={td}>{f(c.daily_range_med,1," %")}</td>
+                            <td style={{...td,color:c.rel_7d==null?"#94a3b8":(c.rel_7d>=0?"#86efac":"#fca5a5")}}>{sg(c.rel_7d,1)}</td>
+                            <td style={td}>{f(c.corr_btc,2)} / {f(c.beta_btc,2)}</td>
+                            <td style={td} title={`erreur standard ±${c.ac1_se}`}>{f(c.ac1_1h,3)}</td>
+                            <td style={td}>{ev(c.after_rally)}</td><td style={td}>{ev(c.after_drop)}</td>
+                            <td style={td}>{sg(c.worst_2h,1)}</td><td style={{...td,color:"#94a3b8"}}>{c.trend_h4||"—"}</td>
+                          </tr>);})}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{marginTop:8,color:"#94a3b8",lineHeight:1.5}}>
+                    <b style={{color:"#e2e8f0"}}>Lecture.</b> <b>Bot</b> : trades, part de positifs et net brut du bot sur cet actif depuis le début (⚠ = moins de 30 trades : à ne pas interpréter) ; survolez la cellule pour le détail par mode. <b>Après hausse</b> : médiane du rendement des 2 heures suivantes ; « retour » = part des cas où le prix est revenu en sens inverse (n = nombre de cas, espacés de 2 h). Une mesure avec n inférieur à 30 est du bruit. Aucune de ces fiches ne modifie le trading.
+                  </div>
+                </div>);
+            })()}
+            {cardsSt && !cardsSt.result && cardsSt.state!=="running" && cardsSt.history && Object.keys(cardsSt.history).length>0 &&
+              <div style={{marginTop:10,fontSize:11,color:"#94a3b8"}}>Aucune fiche calculée pour l'instant : appuyez sur « Calculer les fiches ». Les résultats du bot, eux, existent déjà pour {Object.keys(cardsSt.history).length} actifs.</div>}
+          </div>
+
           {/* v4.348 — SUR DEMANDE EXPLICITE : profil d'activité en un clic (Spot-Accum / Accumulation). */}
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
