@@ -1162,6 +1162,11 @@ function App() {
   const [orphanedLoading, setOrphanedLoading] = useState(false);
   // v4.316 — analyse des series de gains/pertes Funding
   // v4.345 — tableau de bord d objectif (positifs necessaires, decollage, part du pic gardee)
+  // v4.352 — profil Swing (tendance Daily, figures H4)
+  const [swing, setSwing] = useState(null);
+  const [swingBusy, setSwingBusy] = useState(false);
+  const loadSwing = async () => { try { setSwing(await apiCall("/api/config/profile?name=swing","GET",null,token)); } catch(e) {} };
+  useEffect(() => { loadSwing(); }, []);
   // v4.349 — enregistreur de flux + fiche actif
   const [flowSt, setFlowSt] = useState(null);
   const [cardsSt, setCardsSt] = useState(null);
@@ -2037,6 +2042,56 @@ Confirmer ?`
               </div>
             )}
           </div>
+          {/* v4.352 — SUR DEMANDE EXPLICITE : profil Swing. Recablage de Spot-Accum (longs) et Accumulation (shorts) :
+              tendance de fond et zones en JOURNALIER, figures de retournement en H4, entree a la cloture. */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+              <div style={{fontSize:11,color:"#94a3b8",maxWidth:640}}>
+                <b style={{color:"#e2e8f0"}}>🌊 Profil Swing : tendance de fond Daily, figures de retournement H4</b>
+                {swing && <span style={{marginLeft:8,color:swing.active?"#86efac":"#94a3b8",fontWeight:700}}>{swing.active?"✅ appliqué":"non appliqué"}</span>}<br/>
+                Recâble Spot-Accum (longs) et Accumulation (shorts) : la tendance et les zones se lisent sur les bougies <b>journalières</b>, le signal est un motif de retournement <b>H4</b> (avalement, marteau, étoile, double creux / double sommet) pris <b>à la clôture</b>, avec un objectif sur une vraie zone Daily (gain/risque d'au moins 2). Peu de trades, stops larges, positions plus petites. À utiliser en paper ; le tableau de bord d'objectif juge le résultat.
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <button disabled={swingBusy||(swing&&swing.active)} onClick={async()=>{
+                  if(!window.confirm("Appliquer le profil SWING à Spot-Accum et Accumulation ?\n\n• tendance et zones : bougies journalières\n• signal : figures H4 (dont double creux / sommet), entrée dans les 30 min qui suivent la clôture H4\n• objectif : vraie zone Daily opposée, gain/risque ≥ 2 ; stop jusqu'à 10 % du prix\n• risque 0,5 % du capital par trade ; 3 longs et 2 shorts au plus\n• structure H1 et flux de 3 min non exigés\n\nIl remplace les réglages du profil « Actif prudent ». Vos réglages actuels sont sauvegardés pour un retour en un clic.")) return;
+                  setSwingBusy(true);
+                  try{ await apiCall("/api/config/profile/apply?name=swing","POST",null,token); await loadSwing(); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
+                  setSwingBusy(false);
+                }} style={{background:"#38bdf8",border:"none",borderRadius:7,padding:"10px 16px",color:"#06222f",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer",opacity:(swingBusy||(swing&&swing.active))?0.5:1}}>🌊 Appliquer « Swing »</button>
+                <button disabled={swingBusy||!swing||(!swing.active&&!swing.previous)} onClick={async()=>{
+                  setSwingBusy(true);
+                  try{ await apiCall("/api/config/profile/restore?name=swing","POST",null,token); await loadSwing(); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
+                  setSwingBusy(false);
+                }} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer",opacity:(swingBusy||!swing||(!swing.active&&!swing.previous))?0.5:1}}>↩ Revenir aux réglages précédents</button>
+              </div>
+            </div>
+            {swing && (()=>{
+              const NAMES = {MTF_USE_DAILY:"Tendance et zones sur bougies Daily", MTF_USE_H4_LOWER:"Signal sur bougies H4", MTF_DOUBLE_PATTERN_ENABLED:"Double creux / double sommet", MTF_SIGNAL_MAX_AGE_SEC:"Entrée après la clôture du signal (limite)",
+                MTF_TREND_PATH_ENABLED:"Chemin « mesure de mouvement »", MTF_REQUIRE_H1_STRUCTURE:"Structure H1 exigée", MTF_REQUIRE_FLOW_CONFIRM:"Flux de transactions exigé", MTF_REQUIRE_REAL_TARGET_ZONE:"Objectif réel exigé (zone Daily opposée)",
+                MTF_MIN_RR:"Gain/risque minimal", MTF_MAX_RISK_PCT:"Distance maximale du stop", MTF_RISK_PCT:"Risque par trade", SPOT_ACCUM_MAX_TRADES:"Longs simultanés (Spot-Accum)", ACCUMULATION_MAX_TRADES:"Shorts simultanés (Accumulation)",
+                SPOT_ACCUM_TREND_MODE:"Longs : tendance exigée", ACCUMULATION_TREND_MODE:"Shorts : tendance exigée"};
+              const fmt = (k,v)=>{ v=Number(v);
+                if(["MTF_USE_DAILY","MTF_USE_H4_LOWER","MTF_DOUBLE_PATTERN_ENABLED","MTF_TREND_PATH_ENABLED","MTF_REQUIRE_H1_STRUCTURE","MTF_REQUIRE_FLOW_CONFIRM","MTF_REQUIRE_REAL_TARGET_ZONE"].includes(k)) return v?"oui":"non";
+                if(k==="MTF_SIGNAL_MAX_AGE_SEC") return v?`${Math.round(v/60)} min`:"sans limite";
+                if(k.endsWith("_TREND_MODE")) return {0:"stricte ou repli",1:"pas opposée",2:"aucune"}[v];
+                if(k==="MTF_MAX_RISK_PCT"||k==="MTF_RISK_PCT") return `${v} %`;
+                return String(v); };
+              return (
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,marginTop:10}}>
+                  <thead><tr style={{color:"#94a3b8",textAlign:"left"}}><th style={{padding:"4px 8px"}}>Réglage</th><th style={{padding:"4px 8px"}}>Actuel</th><th style={{padding:"4px 8px"}}>Profil Swing</th></tr></thead>
+                  <tbody>{Object.keys(swing.values).map(k=>{ const same = Math.abs(Number(swing.current[k])-Number(swing.values[k]))<1e-9; return (
+                    <tr key={k} style={{borderTop:"1px solid #1e2d4a"}}>
+                      <td style={{padding:"4px 8px",color:"#cbd5e1"}} title={swing.labels[k]}>{NAMES[k]||k}</td>
+                      <td style={{padding:"4px 8px",color:same?"#86efac":"#e2e8f0"}}>{fmt(k,swing.current[k])}</td>
+                      <td style={{padding:"4px 8px",color:"#38bdf8"}}>{fmt(k,swing.values[k])}</td>
+                    </tr>);})}</tbody>
+                </table>);
+            })()}
+            <div style={{marginTop:8,fontSize:10,color:"#64748b",lineHeight:1.5}}>
+              Les bougies H4 se clôturent à 00h, 04h, 08h, 12h, 16h et 20h UTC (20h, 00h, 04h, 08h, 12h et 16h à Marigot) : c'est là que les entrées sont évaluées, pendant 30 minutes. Compter quelques trades par semaine sur l'ensemble des actifs, pas par jour. Un trade ouvert est suivi par les mêmes sorties qu'avant (verrou, stop suiveur, cassure de zone Daily, retournement de la tendance Daily). Aucune validation sur historique n'a été faite : le paper en tient lieu, jugez-le au tableau de bord d'objectif après une trentaine de trades.
+            </div>
+          </div>
+
           {/* v4.349 — SUR DEMANDE EXPLICITE : enregistreur de flux acheteur/vendeur (lecture seule). */}
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
