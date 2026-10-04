@@ -1355,6 +1355,9 @@ PROFILE_SWING = {
     "MTF_LOWER_TF": "15m",             # "15m" ou "1h"
     "MTF_USE_DAILY": 0,                # 1 = unite majeure Daily au lieu de H4
     "MTF_USE_H1": 0,                   # 1 = unite inferieure H1 au lieu de M15
+    "MTF_USE_H4_LOWER": 0,             # v4.352 : 1 = signal sur bougies H4 (profil Swing, avec MTF_USE_DAILY=1)
+    "MTF_SIGNAL_MAX_AGE_SEC": 0,       # v4.352 : > 0 = entree seulement dans les N s qui suivent la cloture de la bougie du signal
+    "MTF_DOUBLE_PATTERN_ENABLED": 0,   # v4.352 : 1 = ajoute double creux / double sommet aux motifs de bougie
     "MTF_ZONE_LOOKBACK": 120,          # bougies majeures examinees pour les zones
     "MTF_ZONE_TOLERANCE_ATR": 0.25,    # marge autour d une zone (x ATR majeur)
     "MTF_MIN_RR": 1.5,                 # rapport gain/risque minimal
@@ -10703,7 +10706,9 @@ class BotEngine:
         """Lecture complete pour le diagnostic et l entree."""
         cfg = self.cfg
         major_tf = "1d" if cfg.get("MTF_USE_DAILY", 0) else cfg.get("MTF_MAJOR_TF", "4h")
-        lower_tf = "1h" if cfg.get("MTF_USE_H1", 0) else cfg.get("MTF_LOWER_TF", "15m")
+        # v4.352 — profil Swing : signal sur bougies H4 (MTF_USE_H4_LOWER=1), tendance et zones en Daily
+        lower_tf = ("4h" if cfg.get("MTF_USE_H4_LOWER", 0) else
+                    ("1h" if cfg.get("MTF_USE_H1", 0) else cfg.get("MTF_LOWER_TF", "15m")))
         major = self._mtf_candles(ticker, major_tf, 260 if major_tf == "4h" else 230, cache_only=cache_only)
         if len(major) < 60:
             return {"ok": False, "why": f"historique {major_tf} insuffisant ({len(major)} bougies)"}
@@ -10930,9 +10935,22 @@ class BotEngine:
         self._funnel_note(mode, ticker, "zone")
         lower = self._mtf_candles(ticker, v["lower_tf"], 60)
         name, extreme = mtf.candle_signal(lower, "long" if long_side else "short")
+        if not name and cfg.get("MTF_DOUBLE_PATTERN_ENABLED", 0):      # v4.352 — figures a deux points (double creux / sommet)
+            name, extreme = mtf.double_pattern(lower, "long" if long_side else "short")
         if not name:
-            snap["blocker"] = f"prix dans la zone de {kind} {M} {self._zone_txt(zone)} — attente d un signal de bougie {L}"
+            snap["blocker"] = (f"prix dans la zone de {kind} {M} {self._zone_txt(zone)} — attente d un signal de bougie "
+                               f"{'ou de figure ' if cfg.get('MTF_DOUBLE_PATTERN_ENABLED', 0) else ''}{L}")
             return
+        # v4.352 — SUR DEMANDE EXPLICITE (Swing, prise de position chirurgicale) : un signal sur bougie H4 reste
+        # "le dernier" pendant 4 heures ; sans limite on pourrait entrer 3 h 59 apres la figure, a un prix qui n a
+        # plus rien a voir. MTF_SIGNAL_MAX_AGE_SEC > 0 : entree seulement dans les N secondes qui suivent la cloture.
+        _max_age = int(cfg.get("MTF_SIGNAL_MAX_AGE_SEC", 0) or 0)
+        if _max_age > 0 and lower:
+            _age = time.time() - (lower[-1]["t"] / 1000 + self._TF_SEC.get(v["lower_tf"], 900))
+            if _age > _max_age:
+                snap["blocker"] = (f"signal {L} ({name}) trop ancien : bougie cloturee il y a {_age / 60:.0f} min "
+                                   f"(maximum {_max_age / 60:.0f} min : entree a la cloture)")
+                return
         # le motif doit avoir touche la zone
         if (long_side and extreme > zone["high"] + v["tolerance"]) or (not long_side and extreme < zone["low"] - v["tolerance"]):
             snap["blocker"] = f"signal {L} ({name}) hors de la zone de {kind}"
