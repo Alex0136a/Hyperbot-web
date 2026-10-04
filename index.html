@@ -2053,7 +2053,7 @@ Confirmer ?`
               </div>
               <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                 <button disabled={swingBusy||(swing&&swing.active)} onClick={async()=>{
-                  if(!window.confirm("Appliquer le profil SWING à Spot-Accum et Accumulation ?\n\n• tendance et zones : bougies journalières\n• signal : figures H4 (dont double creux / sommet), entrée dans les 30 min qui suivent la clôture H4\n• objectif : vraie zone Daily opposée, gain/risque ≥ 2 ; stop jusqu'à 10 % du prix\n• risque 0,5 % du capital par trade ; 3 longs et 2 shorts au plus\n• structure H1 et flux de 3 min non exigés\n\nIl remplace les réglages du profil « Actif prudent ». Vos réglages actuels sont sauvegardés pour un retour en un clic.")) return;
+                  if(!window.confirm("Appliquer le profil SWING à Spot-Accum et Accumulation ?\n\n• tendance et zones : bougies journalières\n• signal : figures H4 (dont double creux / sommet), entrée dans les 30 min qui suivent la clôture H4\n• objectif : vraie zone Daily opposée, gain/risque ≥ 2 ; stop jusqu'à 10 % du prix\n• risque 0,5 % du capital par trade ; 3 longs et 2 shorts au plus\n• structure H1 non exigée ; flux de 3 min : veto seulement s'il est nettement contraire (-0,4), donnée absente = on laisse passer\n\nIl remplace les réglages du profil « Actif prudent ». Vos réglages actuels sont sauvegardés pour un retour en un clic.")) return;
                   setSwingBusy(true);
                   try{ await apiCall("/api/config/profile/apply?name=swing","POST",null,token); await loadSwing(); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
                   setSwingBusy(false);
@@ -2067,7 +2067,7 @@ Confirmer ?`
             </div>
             {swing && (()=>{
               const NAMES = {MTF_USE_DAILY:"Tendance et zones sur bougies Daily", MTF_USE_H4_LOWER:"Signal sur bougies H4", MTF_DOUBLE_PATTERN_ENABLED:"Double creux / double sommet", MTF_SIGNAL_MAX_AGE_SEC:"Entrée après la clôture du signal (limite)",
-                MTF_TREND_PATH_ENABLED:"Chemin « mesure de mouvement »", MTF_REQUIRE_H1_STRUCTURE:"Structure H1 exigée", MTF_REQUIRE_FLOW_CONFIRM:"Flux de transactions exigé", MTF_REQUIRE_REAL_TARGET_ZONE:"Objectif réel exigé (zone Daily opposée)",
+                MTF_TREND_PATH_ENABLED:"Chemin « mesure de mouvement »", MTF_REQUIRE_H1_STRUCTURE:"Structure H1 exigée", MTF_REQUIRE_FLOW_CONFIRM:"Flux de transactions : veto (réglable)", MTF_MIN_FLOW_PRESSURE:"Seuil du veto de flux (réglable)", MTF_REQUIRE_REAL_TARGET_ZONE:"Objectif réel exigé (zone Daily opposée)",
                 MTF_MIN_RR:"Gain/risque minimal", MTF_MAX_RISK_PCT:"Distance maximale du stop", MTF_RISK_PCT:"Risque par trade", SPOT_ACCUM_MAX_TRADES:"Longs simultanés (Spot-Accum)", ACCUMULATION_MAX_TRADES:"Shorts simultanés (Accumulation)",
                 SPOT_ACCUM_TREND_MODE:"Longs : tendance exigée", ACCUMULATION_TREND_MODE:"Shorts : tendance exigée"};
               const fmt = (k,v)=>{ v=Number(v);
@@ -2075,6 +2075,7 @@ Confirmer ?`
                 if(k==="MTF_SIGNAL_MAX_AGE_SEC") return v?`${Math.round(v/60)} min`:"sans limite";
                 if(k.endsWith("_TREND_MODE")) return {0:"stricte ou repli",1:"pas opposée",2:"aucune"}[v];
                 if(k==="MTF_MAX_RISK_PCT"||k==="MTF_RISK_PCT") return `${v} %`;
+                if(k==="MTF_MIN_FLOW_PRESSURE") return v===0?"0 (ne pas être hostile)":(v<0?`${v} (refus si nettement contraire)`:`+${v} (flux favorable exigé)`);
                 return String(v); };
               return (
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,marginTop:10}}>
