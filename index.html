@@ -280,6 +280,7 @@ const PAPER_SUBTABS = [
   {key:"accumulation", label:"Accumulation", icon:"🎯", color:"#c084fc"},
   {key:"funding_contrarian", label:"Funding", icon:"💰", color:"#fbbf24"},
   {key:"spot_accumulation", label:"Spot-Accum", icon:"🌱", color:"#34d399"},
+  {key:"modes", label:"Modes : Prudence · Swing · Scalp", icon:"🎛️", color:"#facc15"},   // v4.354
 ];
 // v4.44 — modes ayant une liste d actifs dediee personnalisable (pas
 // "forex", qui reste gere via l onglet Marches existant)
@@ -1510,7 +1511,7 @@ function App() {
   }, [token]);
 
   useEffect(() => {
-    if (tab==="paper" && paperSubTab!=="all" && paperSubTab!=="performance" && token) {
+    if (tab==="paper" && paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && token) {
       loadModeHistory(paperSubTab);
       // v4.46 — les reglages dedies par mode (SL/TTP/Taille) vivent dans
       // advancedSettings — le charger ici aussi, pas seulement quand on
@@ -1688,7 +1689,7 @@ Confirmer ?`
     {id:"indicateurs",label:"📈 Indicateurs"},
     {id:"parametres",label:"⚙️ Paramètres"},
     {id:"logs",label:"📋 Logs"},
-    {id:"paper",label:config?.trading_mode==="live"?`🔴 Live Trading`:`🎮 Paper Trading`},
+    {id:"paper",label:config?.trading_mode==="live"?`🔴 TRADES P/L`:`💹 TRADES P/L`},   // v4.354 : renomme (ex Paper Trading)
     {id:"manuel",label:"✋ Trading Manuel"},
     {id:"rapport",label:"📄 Rapport"},
     {id:"stats",label:"📊 Performance"},
@@ -2057,163 +2058,6 @@ Confirmer ?`
               </div>
             )}
           </div>
-          {/* v4.353 — SUR DEMANDE EXPLICITE : scalp Forex (sous-mode du mode Forex, PAPER). Niveaux 1H, structure 15 min,
-              entree 5 min / 1 min, sortie rapide ; journal de chaque setup (pris ou filtre) pour l'ameliorer. */}
-          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
-              <div style={{fontSize:11,color:"#94a3b8",maxWidth:660}}>
-                <b style={{color:"#e2e8f0"}}>⚡ Scalp Forex (paper)</b>
-                {scalpSt && <span style={{marginLeft:8,fontWeight:700,color:scalpSt.enabled?"#86efac":"#94a3b8"}}>{scalpSt.enabled?(scalpSt.forex_open?"● actif":"● actif (marché fermé)"):"○ éteint"}</span>}<br/>
-                Cohabite avec le mode Forex <b>sans le modifier</b> : mêmes actifs (EUR, JPY, KRW, PAXG), un seul slot par actif, donc le scalp ne s'ouvre que sur un actif libre. Niveaux 1H (plus haut/bas de la veille et de la semaine, ouvertures de séance, nombres ronds), biais 15 min, rejet de niveau ou cassure + retest sur 5 min confirmé par la bougie 1 min, sortie rapide. Un setup n'est pris que si, <b>frais et spread déduits</b>, il garde un gain/risque positif. <b>Paper uniquement</b>, remplissages prudents (demi-spread + glissement).
-              </div>
-              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                <button disabled={scalpBusy||(scalpProf&&scalpProf.active)} onClick={async()=>{
-                  if(!window.confirm("Activer le SCALP Forex (paper) ?\n\n• aucun changement du mode Forex actuel\n• notionnel 30 $, 2 scalps simultanés au plus, sortie au temps à 20 min\n• frais supposés 0,089 % (ordres au marché) : un setup dont le gain net de frais est trop faible est refusé et journalisé\n• perte paper journalière limitée à 1 $\n\nVos réglages actuels sont sauvegardés pour un retour en un clic.")) return;
-                  setScalpBusy(true);
-                  try{ await apiCall("/api/config/profile/apply?name=scalp","POST",null,token); await loadScalpProf(); await loadScalpSt(); }catch(e){ alert("Erreur : "+e.message); }
-                  setScalpBusy(false);
-                }} style={{background:"#facc15",border:"none",borderRadius:7,padding:"10px 16px",color:"#2a2200",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer",opacity:(scalpBusy||(scalpProf&&scalpProf.active))?0.5:1}}>⚡ Activer le scalp</button>
-                <button disabled={scalpBusy||!scalpProf||(!scalpProf.active&&!scalpProf.previous)} onClick={async()=>{
-                  setScalpBusy(true);
-                  try{ await apiCall("/api/config/profile/restore?name=scalp","POST",null,token); await loadScalpProf(); await loadScalpSt(); }catch(e){ alert("Erreur : "+e.message); }
-                  setScalpBusy(false);
-                }} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer",opacity:(scalpBusy||!scalpProf||(!scalpProf.active&&!scalpProf.previous))?0.5:1}}>↩ Éteindre le scalp</button>
-                <button onClick={()=>{loadScalpSt();}} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>↻</button>
-              </div>
-            </div>
-            {scalpSt && (()=>{
-              const f = (v,d=2)=> v==null?"—":Number(v).toFixed(d);
-              const sg = (v,d=2)=> v==null?"—":`${v>=0?"+":""}${Number(v).toFixed(d)}`;
-              const th = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap",color:"#94a3b8"}, td = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap"};
-              const S = scalpSt.settings||{};
-              return (
-                <div style={{marginTop:10,fontSize:11,color:"#cbd5e1",lineHeight:1.6}}>
-                  <div>Aujourd'hui : <b>{scalpSt.today.n}</b> trade(s), {scalpSt.today.wins} gagnant(s), net brut <b style={{color:scalpSt.today.net>=0?"#86efac":"#fca5a5"}}>{sg(scalpSt.today.net)} $</b> · Total : <b>{scalpSt.total.n}</b> trades, {scalpSt.total.wins} gagnants, brut <b style={{color:scalpSt.total.net>=0?"#86efac":"#fca5a5"}}>{sg(scalpSt.total.net)} $</b>, frais estimés -{f(scalpSt.fees_estimated)} $, <b>net après frais {sg(scalpSt.net_after_fees_est)} $</b>.</div>
-                  <div style={{color:"#94a3b8"}}>Réglages : notionnel {S.FOREX_SCALP_NOTIONAL_USD} $ · {S.FOREX_SCALP_MAX_TRADES} scalps au plus · sortie au temps {S.FOREX_SCALP_MAX_HOLD_MIN} min · frais supposés {S.FOREX_SCALP_FEE_PCT} % · glissement {S.FOREX_SCALP_SLIPPAGE_PCT} %/jambe · gain/risque net minimal {S.FOREX_SCALP_MIN_NET_RR} · objectif minimal {S.FOREX_SCALP_MIN_TARGET_PCT} % · limite de perte du jour {S.FOREX_SCALP_DAILY_LOSS_USD} $ (modifiables dans les réglages avancés).</div>
-                  {scalpSt.open.length>0 && (
-                    <table style={{width:"100%",borderCollapse:"collapse",marginTop:6}}>
-                      <thead><tr><th style={{...th,textAlign:"left"}}>Scalp ouvert</th><th style={th}>Sens</th><th style={th}>Entrée</th><th style={th}>Prix</th><th style={th}>Gain</th><th style={th}>Stop</th><th style={th}>Objectif</th><th style={th}>Âge</th></tr></thead>
-                      <tbody>{scalpSt.open.map((o,i)=><tr key={i} style={{borderTop:"1px solid #1e2d4a"}}><td style={{...td,textAlign:"left",color:"#e2e8f0"}}>{o.asset} <span style={{color:"#64748b"}}>{o.setup}</span></td><td style={td}>{o.side==="long"?"LONG":"SHORT"}</td><td style={td}>{o.entry.toPrecision(6)}</td><td style={td}>{o.price?o.price.toPrecision(6):"—"}</td><td style={{...td,color:(o.gain_pct||0)>=0?"#86efac":"#fca5a5"}}>{sg(o.gain_pct,3)} %</td><td style={td}>{o.sl.toPrecision(6)}{o.be_done?" (BE)":""}</td><td style={td}>{o.tp.toPrecision(6)}</td><td style={td}>{o.age_min} min</td></tr>)}</tbody>
-                    </table>)}
-                  <details style={{marginTop:6}}>
-                    <summary style={{cursor:"pointer",color:"#94a3b8"}}>Derniers setups détectés (3 jours) : {scalpSt.recent.length}</summary>
-                    <div style={{overflowX:"auto",marginTop:4}}>
-                      <table style={{width:"100%",borderCollapse:"collapse"}}>
-                        <thead><tr><th style={{...th,textAlign:"left"}}>Heure</th><th style={{...th,textAlign:"left"}}>Actif</th><th style={th}>Sens</th><th style={{...th,textAlign:"left"}}>Setup / niveau</th><th style={th}>Biais</th><th style={{...th,textAlign:"left"}}>Décision</th><th style={th}>Stop</th><th style={th}>Objectif</th><th style={th}>RR net</th><th style={th}>Issue 60 min</th></tr></thead>
-                        <tbody>{scalpSt.recent.map((e,i)=><tr key={i} style={{borderTop:"1px solid #1e2d4a",opacity:e.decision==="pris"?1:0.75}}>
-                          <td style={{...td,textAlign:"left"}}>{new Date(e.ts).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}</td><td style={{...td,textAlign:"left",color:"#e2e8f0"}}>{e.asset}</td><td style={td}>{e.side==="long"?"L":"S"}</td>
-                          <td style={{...td,textAlign:"left"}}>{e.setup} · {e.level_kinds}</td><td style={td}>{e.bias}</td>
-                          <td style={{...td,textAlign:"left",color:e.decision==="pris"?"#86efac":"#fbbf24",maxWidth:340,whiteSpace:"normal"}}>{e.decision}</td>
-                          <td style={td}>{e.risk_pct==null?"—":f(e.risk_pct,3)+" %"}</td><td style={td}>{e.tp_pct==null?"—":f(e.tp_pct,3)+" %"}</td><td style={td}>{e.net_rr==null?"—":f(e.net_rr)}</td>
-                          <td style={{...td,color:e.outcome==="tp"?"#86efac":(e.outcome==="sl"?"#fca5a5":"#94a3b8")}}>{e.evaluated?({tp:"objectif",sl:"stop",none:"ni l'un ni l'autre"}[e.outcome]||e.outcome):"en attente"}</td>
-                        </tr>)}</tbody>
-                      </table>
-                    </div>
-                  </details>
-                </div>);
-            })()}
-            <div style={{marginTop:10,borderTop:"1px solid #1e2d4a",paddingTop:10}}>
-              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-                <b style={{fontSize:11,color:"#e2e8f0"}}>Outils d'amélioration du scalp</b>
-                <select value={scalpDays} onChange={e=>setScalpDays(Number(e.target.value))} style={{background:"#0b1220",color:"#e2e8f0",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",fontSize:12}}>
-                  <option value={1}>24 h</option><option value={3}>3 jours</option><option value={7}>7 jours</option><option value={30}>30 jours</option>
-                </select>
-                <button onClick={loadScalpStats} style={{background:"#facc15",border:"none",borderRadius:7,padding:"8px 14px",color:"#2a2200",fontFamily:"inherit",fontSize:12,fontWeight:800,cursor:"pointer"}}>📊 Statistiques du journal</button>
-                <button onClick={async()=>{
-                  try{
-                    const r = await fetch(`${API}/api/scalp/journal/export.csv?days=${scalpDays}`,{headers:{Authorization:`Bearer ${token}`}});
-                    if(!r.ok){ let d={}; try{d=await r.json();}catch(_){} throw new Error(d.detail||`Erreur ${r.status}`); }
-                    const blob = await r.blob(); const cd = r.headers.get("Content-Disposition")||""; const m = cd.match(/filename="([^"]+)"/);
-                    const url = URL.createObjectURL(blob); const a = document.createElement("a");
-                    a.href = url; a.download = m?m[1]:"scalp_journal.csv"; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000);
-                  }catch(e){ alert("Export impossible : "+e.message); }
-                }} style={{background:"#334155",border:"none",borderRadius:7,padding:"8px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>📥 Journal CSV</button>
-              </div>
-              {scalpStats && (()=>{
-                const f = (v,d=2)=> v==null?"—":Number(v).toFixed(d);
-                const th = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap",color:"#94a3b8"}, td = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap"};
-                const T = ({title,rows})=>(
-                  <div style={{marginTop:8}}>
-                    <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700,marginBottom:2}}>{title}</div>
-                    <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
-                      <thead><tr><th style={{...th,textAlign:"left"}}></th><th style={th}>Setups</th><th style={th}>Évalués</th><th style={th}>Objectif</th><th style={th}>Stop</th><th style={th}>Ni l'un ni l'autre</th><th style={th} title="Gain maximal médian dans les 15 min (en % du prix)">MFE 15</th><th style={th} title="Perte maximale médiane dans les 15 min">MAE 15</th><th style={th} title="Gain net estimé par setup si pris : objectif +gain, stop -risque, sinon rendement à 15 min, moins frais et spread">Net estimé / setup</th></tr></thead>
-                      <tbody>{rows.map(r=><tr key={r.key} style={{borderTop:"1px solid #1e2d4a"}}>
-                        <td style={{...td,textAlign:"left",color:"#e2e8f0",whiteSpace:"normal"}}>{r.key}</td><td style={td}>{r.n}</td><td style={td}>{r.evaluated}</td>
-                        <td style={td}>{r.tp_pct==null?"—":r.tp_pct+" %"}</td><td style={td}>{r.sl_pct==null?"—":r.sl_pct+" %"}</td><td style={td}>{r.none_pct==null?"—":r.none_pct+" %"}</td>
-                        <td style={td}>{r.mfe15==null?"—":f(r.mfe15,3)+" %"}</td><td style={td}>{r.mae15==null?"—":f(r.mae15,3)+" %"}</td>
-                        <td style={{...td,color:r.net_est==null?"#94a3b8":(r.net_est>=0?"#86efac":"#fca5a5"),fontWeight:700}}>{r.net_est==null?"—":(r.net_est>=0?"+":"")+f(r.net_est,3)+" %"}{r.net_n<30&&r.net_n>0?<span style={{color:"#fbbf24",marginLeft:4,fontSize:9}}>n={r.net_n}</span>:null}</td>
-                      </tr>)}</tbody>
-                    </table></div>
-                  </div>);
-                return (
-                  <div style={{marginTop:8}}>
-                    <div style={{fontSize:11,color:"#94a3b8"}}>Période : {scalpStats.days} jour(s) · {scalpStats.total.n} setups détectés, {scalpStats.total.evaluated} évalués. Un setup <b>filtré</b> est évalué avec un plan « pour voir » : cela montre ce que le filtre a empêché (ou évité).</div>
-                    <T title="Par décision (pris, ou raison du filtre)" rows={scalpStats.by_decision}/>
-                    <T title="Par setup" rows={scalpStats.by_setup}/>
-                    <T title="Par niveau" rows={scalpStats.by_level}/>
-                    <T title="Par biais 15 min" rows={scalpStats.by_bias}/>
-                    <T title="Par sens" rows={scalpStats.by_side}/>
-                    <T title="Par tranche horaire (UTC)" rows={scalpStats.by_hour}/>
-                    <T title="Par actif" rows={scalpStats.by_asset}/>
-                    <div style={{marginTop:8,fontSize:10,color:"#64748b",lineHeight:1.5}}>
-                      <b style={{color:"#94a3b8"}}>Comment s'en servir.</b> (1) « Par décision » : si les setups filtrés pour « frais trop lourds » avaient un net estimé nettement positif, les frais supposés ou le gain/risque net minimal sont trop sévères ; s'ils sont négatifs, le filtre fait son travail. (2) Comparez les setups, niveaux, biais et tranches horaires : gardez ce qui est positif sur au moins 30 setups évalués, retirez ce qui est négatif. (3) Le net estimé suppose des remplissages prudents mais pas la file d'attente d'un ordre limite : il reste optimiste.
-                    </div>
-                  </div>);
-              })()}
-            </div>
-          </div>
-
-          {/* v4.352 — SUR DEMANDE EXPLICITE : profil Swing. Recablage de Spot-Accum (longs) et Accumulation (shorts) :
-              tendance de fond et zones en JOURNALIER, figures de retournement en H4, entree a la cloture. */}
-          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
-              <div style={{fontSize:11,color:"#94a3b8",maxWidth:640}}>
-                <b style={{color:"#e2e8f0"}}>🌊 Profil Swing : tendance de fond Daily, figures de retournement H4</b>
-                {swing && <span style={{marginLeft:8,color:swing.active?"#86efac":"#94a3b8",fontWeight:700}}>{swing.active?"✅ appliqué":"non appliqué"}</span>}<br/>
-                Recâble Spot-Accum (longs) et Accumulation (shorts) : la tendance et les zones se lisent sur les bougies <b>journalières</b>, le signal est un motif de retournement <b>H4</b> (avalement, marteau, étoile, double creux / double sommet) pris <b>à la clôture</b>, avec un objectif sur une vraie zone Daily (gain/risque d'au moins 2). Peu de trades, stops larges, positions plus petites. À utiliser en paper ; le tableau de bord d'objectif juge le résultat.
-              </div>
-              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                <button disabled={swingBusy||(swing&&swing.active)} onClick={async()=>{
-                  if(!window.confirm("Appliquer le profil SWING à Spot-Accum et Accumulation ?\n\n• tendance et zones : bougies journalières\n• signal : figures H4 (dont double creux / sommet), entrée dans les 30 min qui suivent la clôture H4\n• objectif : vraie zone Daily opposée, gain/risque ≥ 2 ; stop jusqu'à 10 % du prix\n• risque 0,5 % du capital par trade ; 3 longs et 2 shorts au plus\n• structure H1 non exigée ; flux de 3 min : veto seulement s'il est nettement contraire (-0,4), donnée absente = on laisse passer\n\nIl remplace les réglages du profil « Actif prudent ». Vos réglages actuels sont sauvegardés pour un retour en un clic.")) return;
-                  setSwingBusy(true);
-                  try{ await apiCall("/api/config/profile/apply?name=swing","POST",null,token); await loadSwing(); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
-                  setSwingBusy(false);
-                }} style={{background:"#38bdf8",border:"none",borderRadius:7,padding:"10px 16px",color:"#06222f",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer",opacity:(swingBusy||(swing&&swing.active))?0.5:1}}>🌊 Appliquer « Swing »</button>
-                <button disabled={swingBusy||!swing||(!swing.active&&!swing.previous)} onClick={async()=>{
-                  setSwingBusy(true);
-                  try{ await apiCall("/api/config/profile/restore?name=swing","POST",null,token); await loadSwing(); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
-                  setSwingBusy(false);
-                }} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer",opacity:(swingBusy||!swing||(!swing.active&&!swing.previous))?0.5:1}}>↩ Revenir aux réglages précédents</button>
-              </div>
-            </div>
-            {swing && (()=>{
-              const NAMES = {MTF_USE_DAILY:"Tendance et zones sur bougies Daily", MTF_USE_H4_LOWER:"Signal sur bougies H4", MTF_DOUBLE_PATTERN_ENABLED:"Double creux / double sommet", MTF_SIGNAL_MAX_AGE_SEC:"Entrée après la clôture du signal (limite)",
-                MTF_TREND_PATH_ENABLED:"Chemin « mesure de mouvement »", MTF_REQUIRE_H1_STRUCTURE:"Structure H1 exigée", MTF_REQUIRE_FLOW_CONFIRM:"Flux de transactions : veto (réglable)", MTF_MIN_FLOW_PRESSURE:"Seuil du veto de flux (réglable)", MTF_REQUIRE_REAL_TARGET_ZONE:"Objectif réel exigé (zone Daily opposée)",
-                MTF_MIN_RR:"Gain/risque minimal", MTF_MAX_RISK_PCT:"Distance maximale du stop", MTF_RISK_PCT:"Risque par trade", SPOT_ACCUM_MAX_TRADES:"Longs simultanés (Spot-Accum)", ACCUMULATION_MAX_TRADES:"Shorts simultanés (Accumulation)",
-                SPOT_ACCUM_TREND_MODE:"Longs : tendance exigée", ACCUMULATION_TREND_MODE:"Shorts : tendance exigée"};
-              const fmt = (k,v)=>{ v=Number(v);
-                if(["MTF_USE_DAILY","MTF_USE_H4_LOWER","MTF_DOUBLE_PATTERN_ENABLED","MTF_TREND_PATH_ENABLED","MTF_REQUIRE_H1_STRUCTURE","MTF_REQUIRE_FLOW_CONFIRM","MTF_REQUIRE_REAL_TARGET_ZONE"].includes(k)) return v?"oui":"non";
-                if(k==="MTF_SIGNAL_MAX_AGE_SEC") return v?`${Math.round(v/60)} min`:"sans limite";
-                if(k.endsWith("_TREND_MODE")) return {0:"stricte ou repli",1:"pas opposée",2:"aucune"}[v];
-                if(k==="MTF_MAX_RISK_PCT"||k==="MTF_RISK_PCT") return `${v} %`;
-                if(k==="MTF_MIN_FLOW_PRESSURE") return v===0?"0 (ne pas être hostile)":(v<0?`${v} (refus si nettement contraire)`:`+${v} (flux favorable exigé)`);
-                return String(v); };
-              return (
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,marginTop:10}}>
-                  <thead><tr style={{color:"#94a3b8",textAlign:"left"}}><th style={{padding:"4px 8px"}}>Réglage</th><th style={{padding:"4px 8px"}}>Actuel</th><th style={{padding:"4px 8px"}}>Profil Swing</th></tr></thead>
-                  <tbody>{Object.keys(swing.values).map(k=>{ const same = Math.abs(Number(swing.current[k])-Number(swing.values[k]))<1e-9; return (
-                    <tr key={k} style={{borderTop:"1px solid #1e2d4a"}}>
-                      <td style={{padding:"4px 8px",color:"#cbd5e1"}} title={swing.labels[k]}>{NAMES[k]||k}</td>
-                      <td style={{padding:"4px 8px",color:same?"#86efac":"#e2e8f0"}}>{fmt(k,swing.current[k])}</td>
-                      <td style={{padding:"4px 8px",color:"#38bdf8"}}>{fmt(k,swing.values[k])}</td>
-                    </tr>);})}</tbody>
-                </table>);
-            })()}
-            <div style={{marginTop:8,fontSize:10,color:"#64748b",lineHeight:1.5}}>
-              Les bougies H4 se clôturent à 00h, 04h, 08h, 12h, 16h et 20h UTC (20h, 00h, 04h, 08h, 12h et 16h à Marigot) : c'est là que les entrées sont évaluées, pendant 30 minutes. Compter quelques trades par semaine sur l'ensemble des actifs, pas par jour. Un trade ouvert est suivi par les mêmes sorties qu'avant (verrou, stop suiveur, cassure de zone Daily, retournement de la tendance Daily). Aucune validation sur historique n'a été faite : le paper en tient lieu, jugez-le au tableau de bord d'objectif après une trentaine de trades.
-            </div>
-          </div>
-
           {/* v4.349 — SUR DEMANDE EXPLICITE : enregistreur de flux acheteur/vendeur (lecture seule). */}
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
@@ -2335,86 +2179,6 @@ Confirmer ?`
             })()}
             {cardsSt && !cardsSt.result && cardsSt.state!=="running" && cardsSt.history && Object.keys(cardsSt.history).length>0 &&
               <div style={{marginTop:10,fontSize:11,color:"#94a3b8"}}>Aucune fiche calculée pour l'instant : appuyez sur « Calculer les fiches ». Les résultats du bot, eux, existent déjà pour {Object.keys(cardsSt.history).length} actifs.</div>}
-          </div>
-
-          {/* v4.348 — SUR DEMANDE EXPLICITE : profil d'activité en un clic (Spot-Accum / Accumulation). */}
-          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
-              <div style={{fontSize:11,color:"#94a3b8",maxWidth:620}}>
-                <b style={{color:"#e2e8f0"}}>⚡ Profil d'activité : Spot-Accum et Accumulation</b>
-                {profile && <span style={{marginLeft:8,color:profile.active?"#86efac":"#94a3b8",fontWeight:700}}>{profile.active?"✅ appliqué":"réglages standard"}</span>}<br/>
-                Fait trader ces deux modes davantage, avec des positions plus petites, sans passer par de nouvelles statistiques. Un clic pour l'appliquer, un clic pour revenir aux réglages précédents. Funding et Forex ne sont pas touchés. Le passage au réel se fait mode par mode, juste en dessous.
-              </div>
-              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                <button disabled={profileBusy||(profile&&profile.active)} onClick={async()=>{
-                  if(!window.confirm("Appliquer le profil « Actif prudent » à Spot-Accum et Accumulation ?\n\n• objectif réel non exigé (objectif synthétique à 1,5 R)\n• risque par trade 0,3 % du capital (au lieu de 0,5 %)\n• Spot-Accum : tendance H4 « pas opposée »\n• Accumulation : tendance H4 non exigée (shorts sur résistance même en hausse)\n\nVos réglages actuels sont sauvegardés pour un retour en un clic.")) return;
-                  setProfileBusy(true);
-                  try{ await apiCall("/api/config/profile/apply?name=actif","POST",null,token); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
-                  setProfileBusy(false);
-                }} style={{background:"#f59e0b",border:"none",borderRadius:7,padding:"10px 16px",color:"#2a1a00",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer",opacity:(profileBusy||(profile&&profile.active))?0.5:1}}>⚡ Appliquer « Actif prudent »</button>
-                <button disabled={profileBusy||!profile||(!profile.active&&!profile.previous)} onClick={async()=>{
-                  setProfileBusy(true);
-                  try{ await apiCall("/api/config/profile/restore?name=actif","POST",null,token); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
-                  setProfileBusy(false);
-                }} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer",opacity:(profileBusy||!profile||(!profile.active&&!profile.previous))?0.5:1}}>↩ Revenir aux réglages précédents</button>
-              </div>
-            </div>
-            {profile && (()=>{
-              const MODE = {0:"stricte ou repli",1:"pas opposée",2:"aucune"};
-              const fmt = (k,v)=> k==="MTF_REQUIRE_REAL_TARGET_ZONE" ? (Number(v)?"oui":"non") : (k.endsWith("_TREND_MODE") ? MODE[Number(v)] : (k==="MTF_RISK_PCT" ? `${v} % du capital` : v));
-              const NAMES = {MTF_REQUIRE_REAL_TARGET_ZONE:"Objectif réel exigé", MTF_RISK_PCT:"Risque par trade", SPOT_ACCUM_TREND_MODE:"Spot-Accum : tendance H4 exigée à l'entrée", ACCUMULATION_TREND_MODE:"Accumulation : tendance H4 exigée à l'entrée"};
-              return (
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,marginTop:10}}>
-                  <thead><tr style={{color:"#94a3b8",textAlign:"left"}}><th style={{padding:"4px 8px"}}>Réglage</th><th style={{padding:"4px 8px"}}>Actuel</th><th style={{padding:"4px 8px"}}>Profil « Actif prudent »</th></tr></thead>
-                  <tbody>{Object.keys(profile.values).map(k=>{ const same = Math.abs(Number(profile.current[k])-Number(profile.values[k]))<1e-9; return (
-                    <tr key={k} style={{borderTop:"1px solid #1e2d4a"}}>
-                      <td style={{padding:"4px 8px",color:"#cbd5e1"}} title={profile.labels[k]}>{NAMES[k]||k}</td>
-                      <td style={{padding:"4px 8px",color:same?"#86efac":"#e2e8f0"}}>{fmt(k,profile.current[k])}</td>
-                      <td style={{padding:"4px 8px",color:"#fbbf24"}}>{fmt(k,profile.values[k])}</td>
-                    </tr>);})}</tbody>
-                </table>);
-            })()}
-            {profile && profile.modes && (()=>{
-              const L = profile.live || {};
-              const MODES = [["spot_accumulation","🌱 Spot-Accum"],["accumulation","🎯 Accumulation"]];
-              const go = async (strategy, label) => {
-                const acc = strategy==="accumulation" && profile.active && Number(profile.current.ACCUMULATION_TREND_MODE)===2;
-                if(!window.confirm(`Passer ${label} en RÉEL (argent réel sur Hyperliquid) ?\n\n• positions PAPER de ce mode fermées, historique conservé\n• capital réel synchronisé depuis Hyperliquid\n• risque par trade : ${L.risk_pct} % du capital réel, notionnel plafonné à ${L.cap} $ (levier ×1)\n• ordre au marché + stop natif posé sur Hyperliquid ; frais réels environ 0,09 % par aller-retour\n• une seule position par actif sur Hyperliquid\n${acc?"• ATTENTION : Accumulation vendra des hausses en tendance haussière (exigence de tendance : aucune)\n":""}\nVous pouvez revenir en paper à tout moment (les positions réelles ouvertes restent gérées).`)) return;
-                setProfileBusy(true);
-                try{ await apiCall("/api/config/strategy-go-live","POST",{strategy},token); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
-                setProfileBusy(false);
-              };
-              const back = async (strategy) => {
-                setProfileBusy(true);
-                try{ await apiCall("/api/config/strategy-mode","PUT",{strategy,value:"paper"},token); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
-                setProfileBusy(false);
-              };
-              return (
-                <div style={{marginTop:12,borderTop:"1px solid #1e2d4a",paddingTop:10}}>
-                  <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700,marginBottom:6}}>🔴 Passage au réel</div>
-                  <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
-                    {MODES.map(([k,label])=>{ const live = profile.modes[k]==="live"; return (
-                      <div key={k} style={{flex:"1 1 260px",background:"#0b1220",border:`1px solid ${live?"#7f1d1d":"#1e2d4a"}`,borderRadius:8,padding:10}}>
-                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                          <span style={{color:"#e2e8f0",fontSize:12,fontWeight:700}}>{label}</span>
-                          <span style={{fontSize:11,fontWeight:800,color:live?"#fca5a5":"#94a3b8"}}>{live?"🔴 RÉEL":"PAPER"}</span>
-                        </div>
-                        {live
-                          ? <button disabled={profileBusy} onClick={()=>back(k)} style={{background:"#334155",border:"none",borderRadius:6,padding:"8px 12px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>↩ Revenir en paper</button>
-                          : <button disabled={profileBusy||!L.hl_configured} onClick={()=>go(k,label)} style={{background:"#dc2626",border:"none",borderRadius:6,padding:"8px 12px",color:"#fff",fontFamily:"inherit",fontSize:12,fontWeight:800,cursor:"pointer",opacity:(profileBusy||!L.hl_configured)?0.5:1}}>🔴 Passer en réel</button>}
-                      </div>);})}
-                  </div>
-                  <div style={{marginTop:8,fontSize:11,color:"#cbd5e1",lineHeight:1.6}}>
-                    {L.hl_configured ? null : <div style={{color:"#fbbf24"}}>⚠️ Identifiants Hyperliquid non configurés : le passage au réel est indisponible.</div>}
-                    Capital réel : <b>{L.equity!=null?`${Number(L.equity).toFixed(2)} $`:"non synchronisé (il le sera au passage en réel)"}</b> · risque {L.risk_pct} % par trade · plafond {L.cap} $ ·
-                    {L.typical_notional!=null && <> taille typique <b>≈ {L.typical_notional} $</b> (stop de {L.typical_stop_pct} %) · <b>≈ {L.positions_by_margin} positions</b> au maximum avec la marge disponible (levier ×1).</>}
-                    {L.funding_live && <div style={{color:"#fbbf24"}}>Funding est aussi en réel : toutes les positions réelles partagent le même capital, donc le nombre de positions possibles baisse d'autant.</div>}
-                  </div>
-                </div>);
-            })()}
-            <div style={{marginTop:8,fontSize:10,color:"#64748b",lineHeight:1.5}}>
-              Un trade sans zone opposée reçoit un objectif à 1,5 fois son risque, avec breakeven à +1R puis verrou de 50 % du gain maximal. Une position ouverte contre la tendance H4 n'est pas fermée par la sortie « tendance retournée » ; la sortie sur cassure de zone et le stop restent actifs. Ce profil augmente le nombre de trades ; il ne prouve pas un avantage : jugez-le avec le tableau de bord d'objectif (trades positifs contre nécessaires, net par trade après frais).
-            </div>
           </div>
 
           {/* v4.347 — SUR DEMANDE EXPLICITE : rejeu historique. Mesure sur des milliers d entrees (bougies M15
@@ -3869,7 +3633,260 @@ Confirmer ?`
               </div>
             )}
 
-            {paperSubTab!=="all" && paperSubTab!=="performance" && (()=>{
+            {/* v4.354 — SUR DEMANDE EXPLICITE : les trois configurations (Prudence, Swing, Scalp) quittent l'onglet Historique
+                et vivent ici, dans un sous-onglet de l'onglet TRADES P/L. */}
+            {paperSubTab==="modes" && (
+              <div>
+                <div style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:10,marginBottom:14,fontSize:11,color:"#94a3b8",lineHeight:1.6}}>
+                  <b style={{color:"#e2e8f0"}}>Trois configurations.</b> <b>Prudence</b> (intraday, bougies 15 min) et <b>Swing</b> (tendance Daily, figures H4) reconfigurent les <b>mêmes</b> modes Spot-Accum (longs) et Accumulation (shorts) : appliquer l'une remplace les réglages de l'autre. Le <b>Scalp</b> est un sous-mode du Forex, indépendant des deux et en paper uniquement.
+                  <div style={{marginTop:6,display:"flex",gap:14,flexWrap:"wrap"}}>
+                    <span>🛡️ Prudence : <b style={{color:profile&&profile.active?"#86efac":"#94a3b8"}}>{profile?(profile.active?"appliqué":"non appliqué"):"…"}</b></span>
+                    <span>🌊 Swing : <b style={{color:swing&&swing.active?"#86efac":"#94a3b8"}}>{swing?(swing.active?"appliqué":"non appliqué"):"…"}</b></span>
+                    <span>⚡ Scalp : <b style={{color:scalpProf&&scalpProf.active?"#86efac":"#94a3b8"}}>{scalpProf?(scalpProf.active?"actif":"éteint"):"…"}</b></span>
+                  </div>
+                </div>
+                {/* v4.353 — SUR DEMANDE EXPLICITE : scalp Forex (sous-mode du mode Forex, PAPER). Niveaux 1H, structure 15 min,
+                    entree 5 min / 1 min, sortie rapide ; journal de chaque setup (pris ou filtre) pour l'ameliorer. */}
+                <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+                    <div style={{fontSize:11,color:"#94a3b8",maxWidth:660}}>
+                      <b style={{color:"#e2e8f0"}}>⚡ Scalp Forex (paper)</b>
+                      {scalpSt && <span style={{marginLeft:8,fontWeight:700,color:scalpSt.enabled?"#86efac":"#94a3b8"}}>{scalpSt.enabled?(scalpSt.forex_open?"● actif":"● actif (marché fermé)"):"○ éteint"}</span>}<br/>
+                      Cohabite avec le mode Forex <b>sans le modifier</b> : mêmes actifs (EUR, JPY, KRW, PAXG), un seul slot par actif, donc le scalp ne s'ouvre que sur un actif libre. Niveaux 1H (plus haut/bas de la veille et de la semaine, ouvertures de séance, nombres ronds), biais 15 min, rejet de niveau ou cassure + retest sur 5 min confirmé par la bougie 1 min, sortie rapide. Un setup n'est pris que si, <b>frais et spread déduits</b>, il garde un gain/risque positif. <b>Paper uniquement</b>, remplissages prudents (demi-spread + glissement).
+                    </div>
+                    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                      <button disabled={scalpBusy||(scalpProf&&scalpProf.active)} onClick={async()=>{
+                        if(!window.confirm("Activer le SCALP Forex (paper) ?\n\n• aucun changement du mode Forex actuel\n• notionnel 30 $, 2 scalps simultanés au plus, sortie au temps à 20 min\n• frais supposés 0,089 % (ordres au marché) : un setup dont le gain net de frais est trop faible est refusé et journalisé\n• perte paper journalière limitée à 1 $\n\nVos réglages actuels sont sauvegardés pour un retour en un clic.")) return;
+                        setScalpBusy(true);
+                        try{ await apiCall("/api/config/profile/apply?name=scalp","POST",null,token); await loadScalpProf(); await loadScalpSt(); }catch(e){ alert("Erreur : "+e.message); }
+                        setScalpBusy(false);
+                      }} style={{background:"#facc15",border:"none",borderRadius:7,padding:"10px 16px",color:"#2a2200",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer",opacity:(scalpBusy||(scalpProf&&scalpProf.active))?0.5:1}}>⚡ Activer le scalp</button>
+                      <button disabled={scalpBusy||!scalpProf||(!scalpProf.active&&!scalpProf.previous)} onClick={async()=>{
+                        setScalpBusy(true);
+                        try{ await apiCall("/api/config/profile/restore?name=scalp","POST",null,token); await loadScalpProf(); await loadScalpSt(); }catch(e){ alert("Erreur : "+e.message); }
+                        setScalpBusy(false);
+                      }} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer",opacity:(scalpBusy||!scalpProf||(!scalpProf.active&&!scalpProf.previous))?0.5:1}}>↩ Éteindre le scalp</button>
+                      <button onClick={()=>{loadScalpSt();}} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>↻</button>
+                    </div>
+                  </div>
+                  {scalpSt && (()=>{
+                    const f = (v,d=2)=> v==null?"—":Number(v).toFixed(d);
+                    const sg = (v,d=2)=> v==null?"—":`${v>=0?"+":""}${Number(v).toFixed(d)}`;
+                    const th = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap",color:"#94a3b8"}, td = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap"};
+                    const S = scalpSt.settings||{};
+                    return (
+                      <div style={{marginTop:10,fontSize:11,color:"#cbd5e1",lineHeight:1.6}}>
+                        <div>Aujourd'hui : <b>{scalpSt.today.n}</b> trade(s), {scalpSt.today.wins} gagnant(s), net brut <b style={{color:scalpSt.today.net>=0?"#86efac":"#fca5a5"}}>{sg(scalpSt.today.net)} $</b> · Total : <b>{scalpSt.total.n}</b> trades, {scalpSt.total.wins} gagnants, brut <b style={{color:scalpSt.total.net>=0?"#86efac":"#fca5a5"}}>{sg(scalpSt.total.net)} $</b>, frais estimés -{f(scalpSt.fees_estimated)} $, <b>net après frais {sg(scalpSt.net_after_fees_est)} $</b>.</div>
+                        <div style={{color:"#94a3b8"}}>Réglages : notionnel {S.FOREX_SCALP_NOTIONAL_USD} $ · {S.FOREX_SCALP_MAX_TRADES} scalps au plus · sortie au temps {S.FOREX_SCALP_MAX_HOLD_MIN} min · frais supposés {S.FOREX_SCALP_FEE_PCT} % · glissement {S.FOREX_SCALP_SLIPPAGE_PCT} %/jambe · gain/risque net minimal {S.FOREX_SCALP_MIN_NET_RR} · objectif minimal {S.FOREX_SCALP_MIN_TARGET_PCT} % · limite de perte du jour {S.FOREX_SCALP_DAILY_LOSS_USD} $ (modifiables dans les réglages avancés).</div>
+                        {scalpSt.open.length>0 && (
+                          <table style={{width:"100%",borderCollapse:"collapse",marginTop:6}}>
+                            <thead><tr><th style={{...th,textAlign:"left"}}>Scalp ouvert</th><th style={th}>Sens</th><th style={th}>Entrée</th><th style={th}>Prix</th><th style={th}>Gain</th><th style={th}>Stop</th><th style={th}>Objectif</th><th style={th}>Âge</th></tr></thead>
+                            <tbody>{scalpSt.open.map((o,i)=><tr key={i} style={{borderTop:"1px solid #1e2d4a"}}><td style={{...td,textAlign:"left",color:"#e2e8f0"}}>{o.asset} <span style={{color:"#64748b"}}>{o.setup}</span></td><td style={td}>{o.side==="long"?"LONG":"SHORT"}</td><td style={td}>{o.entry.toPrecision(6)}</td><td style={td}>{o.price?o.price.toPrecision(6):"—"}</td><td style={{...td,color:(o.gain_pct||0)>=0?"#86efac":"#fca5a5"}}>{sg(o.gain_pct,3)} %</td><td style={td}>{o.sl.toPrecision(6)}{o.be_done?" (BE)":""}</td><td style={td}>{o.tp.toPrecision(6)}</td><td style={td}>{o.age_min} min</td></tr>)}</tbody>
+                          </table>)}
+                        <details style={{marginTop:6}}>
+                          <summary style={{cursor:"pointer",color:"#94a3b8"}}>Derniers setups détectés (3 jours) : {scalpSt.recent.length}</summary>
+                          <div style={{overflowX:"auto",marginTop:4}}>
+                            <table style={{width:"100%",borderCollapse:"collapse"}}>
+                              <thead><tr><th style={{...th,textAlign:"left"}}>Heure</th><th style={{...th,textAlign:"left"}}>Actif</th><th style={th}>Sens</th><th style={{...th,textAlign:"left"}}>Setup / niveau</th><th style={th}>Biais</th><th style={{...th,textAlign:"left"}}>Décision</th><th style={th}>Stop</th><th style={th}>Objectif</th><th style={th}>RR net</th><th style={th}>Issue 60 min</th></tr></thead>
+                              <tbody>{scalpSt.recent.map((e,i)=><tr key={i} style={{borderTop:"1px solid #1e2d4a",opacity:e.decision==="pris"?1:0.75}}>
+                                <td style={{...td,textAlign:"left"}}>{new Date(e.ts).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}</td><td style={{...td,textAlign:"left",color:"#e2e8f0"}}>{e.asset}</td><td style={td}>{e.side==="long"?"L":"S"}</td>
+                                <td style={{...td,textAlign:"left"}}>{e.setup} · {e.level_kinds}</td><td style={td}>{e.bias}</td>
+                                <td style={{...td,textAlign:"left",color:e.decision==="pris"?"#86efac":"#fbbf24",maxWidth:340,whiteSpace:"normal"}}>{e.decision}</td>
+                                <td style={td}>{e.risk_pct==null?"—":f(e.risk_pct,3)+" %"}</td><td style={td}>{e.tp_pct==null?"—":f(e.tp_pct,3)+" %"}</td><td style={td}>{e.net_rr==null?"—":f(e.net_rr)}</td>
+                                <td style={{...td,color:e.outcome==="tp"?"#86efac":(e.outcome==="sl"?"#fca5a5":"#94a3b8")}}>{e.evaluated?({tp:"objectif",sl:"stop",none:"ni l'un ni l'autre"}[e.outcome]||e.outcome):"en attente"}</td>
+                              </tr>)}</tbody>
+                            </table>
+                          </div>
+                        </details>
+                      </div>);
+                  })()}
+                  <div style={{marginTop:10,borderTop:"1px solid #1e2d4a",paddingTop:10}}>
+                    <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                      <b style={{fontSize:11,color:"#e2e8f0"}}>Outils d'amélioration du scalp</b>
+                      <select value={scalpDays} onChange={e=>setScalpDays(Number(e.target.value))} style={{background:"#0b1220",color:"#e2e8f0",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",fontSize:12}}>
+                        <option value={1}>24 h</option><option value={3}>3 jours</option><option value={7}>7 jours</option><option value={30}>30 jours</option>
+                      </select>
+                      <button onClick={loadScalpStats} style={{background:"#facc15",border:"none",borderRadius:7,padding:"8px 14px",color:"#2a2200",fontFamily:"inherit",fontSize:12,fontWeight:800,cursor:"pointer"}}>📊 Statistiques du journal</button>
+                      <button onClick={async()=>{
+                        try{
+                          const r = await fetch(`${API}/api/scalp/journal/export.csv?days=${scalpDays}`,{headers:{Authorization:`Bearer ${token}`}});
+                          if(!r.ok){ let d={}; try{d=await r.json();}catch(_){} throw new Error(d.detail||`Erreur ${r.status}`); }
+                          const blob = await r.blob(); const cd = r.headers.get("Content-Disposition")||""; const m = cd.match(/filename="([^"]+)"/);
+                          const url = URL.createObjectURL(blob); const a = document.createElement("a");
+                          a.href = url; a.download = m?m[1]:"scalp_journal.csv"; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000);
+                        }catch(e){ alert("Export impossible : "+e.message); }
+                      }} style={{background:"#334155",border:"none",borderRadius:7,padding:"8px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>📥 Journal CSV</button>
+                    </div>
+                    {scalpStats && (()=>{
+                      const f = (v,d=2)=> v==null?"—":Number(v).toFixed(d);
+                      const th = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap",color:"#94a3b8"}, td = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap"};
+                      const T = ({title,rows})=>(
+                        <div style={{marginTop:8}}>
+                          <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700,marginBottom:2}}>{title}</div>
+                          <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                            <thead><tr><th style={{...th,textAlign:"left"}}></th><th style={th}>Setups</th><th style={th}>Évalués</th><th style={th}>Objectif</th><th style={th}>Stop</th><th style={th}>Ni l'un ni l'autre</th><th style={th} title="Gain maximal médian dans les 15 min (en % du prix)">MFE 15</th><th style={th} title="Perte maximale médiane dans les 15 min">MAE 15</th><th style={th} title="Gain net estimé par setup si pris : objectif +gain, stop -risque, sinon rendement à 15 min, moins frais et spread">Net estimé / setup</th></tr></thead>
+                            <tbody>{rows.map(r=><tr key={r.key} style={{borderTop:"1px solid #1e2d4a"}}>
+                              <td style={{...td,textAlign:"left",color:"#e2e8f0",whiteSpace:"normal"}}>{r.key}</td><td style={td}>{r.n}</td><td style={td}>{r.evaluated}</td>
+                              <td style={td}>{r.tp_pct==null?"—":r.tp_pct+" %"}</td><td style={td}>{r.sl_pct==null?"—":r.sl_pct+" %"}</td><td style={td}>{r.none_pct==null?"—":r.none_pct+" %"}</td>
+                              <td style={td}>{r.mfe15==null?"—":f(r.mfe15,3)+" %"}</td><td style={td}>{r.mae15==null?"—":f(r.mae15,3)+" %"}</td>
+                              <td style={{...td,color:r.net_est==null?"#94a3b8":(r.net_est>=0?"#86efac":"#fca5a5"),fontWeight:700}}>{r.net_est==null?"—":(r.net_est>=0?"+":"")+f(r.net_est,3)+" %"}{r.net_n<30&&r.net_n>0?<span style={{color:"#fbbf24",marginLeft:4,fontSize:9}}>n={r.net_n}</span>:null}</td>
+                            </tr>)}</tbody>
+                          </table></div>
+                        </div>);
+                      return (
+                        <div style={{marginTop:8}}>
+                          <div style={{fontSize:11,color:"#94a3b8"}}>Période : {scalpStats.days} jour(s) · {scalpStats.total.n} setups détectés, {scalpStats.total.evaluated} évalués. Un setup <b>filtré</b> est évalué avec un plan « pour voir » : cela montre ce que le filtre a empêché (ou évité).</div>
+                          <T title="Par décision (pris, ou raison du filtre)" rows={scalpStats.by_decision}/>
+                          <T title="Par setup" rows={scalpStats.by_setup}/>
+                          <T title="Par niveau" rows={scalpStats.by_level}/>
+                          <T title="Par biais 15 min" rows={scalpStats.by_bias}/>
+                          <T title="Par sens" rows={scalpStats.by_side}/>
+                          <T title="Par tranche horaire (UTC)" rows={scalpStats.by_hour}/>
+                          <T title="Par actif" rows={scalpStats.by_asset}/>
+                          <div style={{marginTop:8,fontSize:10,color:"#64748b",lineHeight:1.5}}>
+                            <b style={{color:"#94a3b8"}}>Comment s'en servir.</b> (1) « Par décision » : si les setups filtrés pour « frais trop lourds » avaient un net estimé nettement positif, les frais supposés ou le gain/risque net minimal sont trop sévères ; s'ils sont négatifs, le filtre fait son travail. (2) Comparez les setups, niveaux, biais et tranches horaires : gardez ce qui est positif sur au moins 30 setups évalués, retirez ce qui est négatif. (3) Le net estimé suppose des remplissages prudents mais pas la file d'attente d'un ordre limite : il reste optimiste.
+                          </div>
+                        </div>);
+                    })()}
+                  </div>
+                </div>
+
+                {/* v4.352 — SUR DEMANDE EXPLICITE : profil Swing. Recablage de Spot-Accum (longs) et Accumulation (shorts) :
+                    tendance de fond et zones en JOURNALIER, figures de retournement en H4, entree a la cloture. */}
+                <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+                    <div style={{fontSize:11,color:"#94a3b8",maxWidth:640}}>
+                      <b style={{color:"#e2e8f0"}}>🌊 Profil Swing : tendance de fond Daily, figures de retournement H4</b>
+                      {swing && <span style={{marginLeft:8,color:swing.active?"#86efac":"#94a3b8",fontWeight:700}}>{swing.active?"✅ appliqué":"non appliqué"}</span>}<br/>
+                      Recâble Spot-Accum (longs) et Accumulation (shorts) : la tendance et les zones se lisent sur les bougies <b>journalières</b>, le signal est un motif de retournement <b>H4</b> (avalement, marteau, étoile, double creux / double sommet) pris <b>à la clôture</b>, avec un objectif sur une vraie zone Daily (gain/risque d'au moins 2). Peu de trades, stops larges, positions plus petites. À utiliser en paper ; le tableau de bord d'objectif juge le résultat.
+                    </div>
+                    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                      <button disabled={swingBusy||(swing&&swing.active)} onClick={async()=>{
+                        if(!window.confirm("Appliquer le profil SWING à Spot-Accum et Accumulation ?\n\n• tendance et zones : bougies journalières\n• signal : figures H4 (dont double creux / sommet), entrée dans les 30 min qui suivent la clôture H4\n• objectif : vraie zone Daily opposée, gain/risque ≥ 2 ; stop jusqu'à 10 % du prix\n• risque 0,5 % du capital par trade ; 3 longs et 2 shorts au plus\n• structure H1 non exigée ; flux de 3 min : veto seulement s'il est nettement contraire (-0,4), donnée absente = on laisse passer\n\nIl remplace les réglages du profil « Actif prudent ». Vos réglages actuels sont sauvegardés pour un retour en un clic.")) return;
+                        setSwingBusy(true);
+                        try{ await apiCall("/api/config/profile/apply?name=swing","POST",null,token); await loadSwing(); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
+                        setSwingBusy(false);
+                      }} style={{background:"#38bdf8",border:"none",borderRadius:7,padding:"10px 16px",color:"#06222f",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer",opacity:(swingBusy||(swing&&swing.active))?0.5:1}}>🌊 Appliquer « Swing »</button>
+                      <button disabled={swingBusy||!swing||(!swing.active&&!swing.previous)} onClick={async()=>{
+                        setSwingBusy(true);
+                        try{ await apiCall("/api/config/profile/restore?name=swing","POST",null,token); await loadSwing(); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
+                        setSwingBusy(false);
+                      }} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer",opacity:(swingBusy||!swing||(!swing.active&&!swing.previous))?0.5:1}}>↩ Revenir aux réglages précédents</button>
+                    </div>
+                  </div>
+                  {swing && (()=>{
+                    const NAMES = {MTF_USE_DAILY:"Tendance et zones sur bougies Daily", MTF_USE_H4_LOWER:"Signal sur bougies H4", MTF_DOUBLE_PATTERN_ENABLED:"Double creux / double sommet", MTF_SIGNAL_MAX_AGE_SEC:"Entrée après la clôture du signal (limite)",
+                      MTF_TREND_PATH_ENABLED:"Chemin « mesure de mouvement »", MTF_REQUIRE_H1_STRUCTURE:"Structure H1 exigée", MTF_REQUIRE_FLOW_CONFIRM:"Flux de transactions : veto (réglable)", MTF_MIN_FLOW_PRESSURE:"Seuil du veto de flux (réglable)", MTF_REQUIRE_REAL_TARGET_ZONE:"Objectif réel exigé (zone Daily opposée)",
+                      MTF_MIN_RR:"Gain/risque minimal", MTF_MAX_RISK_PCT:"Distance maximale du stop", MTF_RISK_PCT:"Risque par trade", SPOT_ACCUM_MAX_TRADES:"Longs simultanés (Spot-Accum)", ACCUMULATION_MAX_TRADES:"Shorts simultanés (Accumulation)",
+                      SPOT_ACCUM_TREND_MODE:"Longs : tendance exigée", ACCUMULATION_TREND_MODE:"Shorts : tendance exigée"};
+                    const fmt = (k,v)=>{ v=Number(v);
+                      if(["MTF_USE_DAILY","MTF_USE_H4_LOWER","MTF_DOUBLE_PATTERN_ENABLED","MTF_TREND_PATH_ENABLED","MTF_REQUIRE_H1_STRUCTURE","MTF_REQUIRE_FLOW_CONFIRM","MTF_REQUIRE_REAL_TARGET_ZONE"].includes(k)) return v?"oui":"non";
+                      if(k==="MTF_SIGNAL_MAX_AGE_SEC") return v?`${Math.round(v/60)} min`:"sans limite";
+                      if(k.endsWith("_TREND_MODE")) return {0:"stricte ou repli",1:"pas opposée",2:"aucune"}[v];
+                      if(k==="MTF_MAX_RISK_PCT"||k==="MTF_RISK_PCT") return `${v} %`;
+                      if(k==="MTF_MIN_FLOW_PRESSURE") return v===0?"0 (ne pas être hostile)":(v<0?`${v} (refus si nettement contraire)`:`+${v} (flux favorable exigé)`);
+                      return String(v); };
+                    return (
+                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,marginTop:10}}>
+                        <thead><tr style={{color:"#94a3b8",textAlign:"left"}}><th style={{padding:"4px 8px"}}>Réglage</th><th style={{padding:"4px 8px"}}>Actuel</th><th style={{padding:"4px 8px"}}>Profil Swing</th></tr></thead>
+                        <tbody>{Object.keys(swing.values).map(k=>{ const same = Math.abs(Number(swing.current[k])-Number(swing.values[k]))<1e-9; return (
+                          <tr key={k} style={{borderTop:"1px solid #1e2d4a"}}>
+                            <td style={{padding:"4px 8px",color:"#cbd5e1"}} title={swing.labels[k]}>{NAMES[k]||k}</td>
+                            <td style={{padding:"4px 8px",color:same?"#86efac":"#e2e8f0"}}>{fmt(k,swing.current[k])}</td>
+                            <td style={{padding:"4px 8px",color:"#38bdf8"}}>{fmt(k,swing.values[k])}</td>
+                          </tr>);})}</tbody>
+                      </table>);
+                  })()}
+                  <div style={{marginTop:8,fontSize:10,color:"#64748b",lineHeight:1.5}}>
+                    Les bougies H4 se clôturent à 00h, 04h, 08h, 12h, 16h et 20h UTC (20h, 00h, 04h, 08h, 12h et 16h à Marigot) : c'est là que les entrées sont évaluées, pendant 30 minutes. Compter quelques trades par semaine sur l'ensemble des actifs, pas par jour. Un trade ouvert est suivi par les mêmes sorties qu'avant (verrou, stop suiveur, cassure de zone Daily, retournement de la tendance Daily). Aucune validation sur historique n'a été faite : le paper en tient lieu, jugez-le au tableau de bord d'objectif après une trentaine de trades.
+                  </div>
+                </div>
+
+                {/* v4.348 — SUR DEMANDE EXPLICITE : profil d'activité en un clic (Spot-Accum / Accumulation). */}
+                <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+                    <div style={{fontSize:11,color:"#94a3b8",maxWidth:620}}>
+                      <b style={{color:"#e2e8f0"}}>🛡️ Profil Prudence (« Actif prudent ») : Spot-Accum et Accumulation</b>
+                      {profile && <span style={{marginLeft:8,color:profile.active?"#86efac":"#94a3b8",fontWeight:700}}>{profile.active?"✅ appliqué":"réglages standard"}</span>}<br/>
+                      Fait trader ces deux modes davantage, avec des positions plus petites, sans passer par de nouvelles statistiques. Un clic pour l'appliquer, un clic pour revenir aux réglages précédents. Funding et Forex ne sont pas touchés. Le passage au réel se fait mode par mode, juste en dessous.
+                    </div>
+                    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                      <button disabled={profileBusy||(profile&&profile.active)} onClick={async()=>{
+                        if(!window.confirm("Appliquer le profil « Actif prudent » à Spot-Accum et Accumulation ?\n\n• objectif réel non exigé (objectif synthétique à 1,5 R)\n• risque par trade 0,3 % du capital (au lieu de 0,5 %)\n• Spot-Accum : tendance H4 « pas opposée »\n• Accumulation : tendance H4 non exigée (shorts sur résistance même en hausse)\n\nVos réglages actuels sont sauvegardés pour un retour en un clic.")) return;
+                        setProfileBusy(true);
+                        try{ await apiCall("/api/config/profile/apply?name=actif","POST",null,token); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
+                        setProfileBusy(false);
+                      }} style={{background:"#f59e0b",border:"none",borderRadius:7,padding:"10px 16px",color:"#2a1a00",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer",opacity:(profileBusy||(profile&&profile.active))?0.5:1}}>⚡ Appliquer « Actif prudent »</button>
+                      <button disabled={profileBusy||!profile||(!profile.active&&!profile.previous)} onClick={async()=>{
+                        setProfileBusy(true);
+                        try{ await apiCall("/api/config/profile/restore?name=actif","POST",null,token); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
+                        setProfileBusy(false);
+                      }} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer",opacity:(profileBusy||!profile||(!profile.active&&!profile.previous))?0.5:1}}>↩ Revenir aux réglages précédents</button>
+                    </div>
+                  </div>
+                  {profile && (()=>{
+                    const MODE = {0:"stricte ou repli",1:"pas opposée",2:"aucune"};
+                    const fmt = (k,v)=> k==="MTF_REQUIRE_REAL_TARGET_ZONE" ? (Number(v)?"oui":"non") : (k.endsWith("_TREND_MODE") ? MODE[Number(v)] : (k==="MTF_RISK_PCT" ? `${v} % du capital` : v));
+                    const NAMES = {MTF_REQUIRE_REAL_TARGET_ZONE:"Objectif réel exigé", MTF_RISK_PCT:"Risque par trade", SPOT_ACCUM_TREND_MODE:"Spot-Accum : tendance H4 exigée à l'entrée", ACCUMULATION_TREND_MODE:"Accumulation : tendance H4 exigée à l'entrée"};
+                    return (
+                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,marginTop:10}}>
+                        <thead><tr style={{color:"#94a3b8",textAlign:"left"}}><th style={{padding:"4px 8px"}}>Réglage</th><th style={{padding:"4px 8px"}}>Actuel</th><th style={{padding:"4px 8px"}}>Profil « Actif prudent »</th></tr></thead>
+                        <tbody>{Object.keys(profile.values).map(k=>{ const same = Math.abs(Number(profile.current[k])-Number(profile.values[k]))<1e-9; return (
+                          <tr key={k} style={{borderTop:"1px solid #1e2d4a"}}>
+                            <td style={{padding:"4px 8px",color:"#cbd5e1"}} title={profile.labels[k]}>{NAMES[k]||k}</td>
+                            <td style={{padding:"4px 8px",color:same?"#86efac":"#e2e8f0"}}>{fmt(k,profile.current[k])}</td>
+                            <td style={{padding:"4px 8px",color:"#fbbf24"}}>{fmt(k,profile.values[k])}</td>
+                          </tr>);})}</tbody>
+                      </table>);
+                  })()}
+                  {profile && profile.modes && (()=>{
+                    const L = profile.live || {};
+                    const MODES = [["spot_accumulation","🌱 Spot-Accum"],["accumulation","🎯 Accumulation"]];
+                    const go = async (strategy, label) => {
+                      const acc = strategy==="accumulation" && profile.active && Number(profile.current.ACCUMULATION_TREND_MODE)===2;
+                      if(!window.confirm(`Passer ${label} en RÉEL (argent réel sur Hyperliquid) ?\n\n• positions PAPER de ce mode fermées, historique conservé\n• capital réel synchronisé depuis Hyperliquid\n• risque par trade : ${L.risk_pct} % du capital réel, notionnel plafonné à ${L.cap} $ (levier ×1)\n• ordre au marché + stop natif posé sur Hyperliquid ; frais réels environ 0,09 % par aller-retour\n• une seule position par actif sur Hyperliquid\n${acc?"• ATTENTION : Accumulation vendra des hausses en tendance haussière (exigence de tendance : aucune)\n":""}\nVous pouvez revenir en paper à tout moment (les positions réelles ouvertes restent gérées).`)) return;
+                      setProfileBusy(true);
+                      try{ await apiCall("/api/config/strategy-go-live","POST",{strategy},token); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
+                      setProfileBusy(false);
+                    };
+                    const back = async (strategy) => {
+                      setProfileBusy(true);
+                      try{ await apiCall("/api/config/strategy-mode","PUT",{strategy,value:"paper"},token); await loadProfile(); }catch(e){ alert("Erreur : "+e.message); }
+                      setProfileBusy(false);
+                    };
+                    return (
+                      <div style={{marginTop:12,borderTop:"1px solid #1e2d4a",paddingTop:10}}>
+                        <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700,marginBottom:6}}>🔴 Passage au réel</div>
+                        <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                          {MODES.map(([k,label])=>{ const live = profile.modes[k]==="live"; return (
+                            <div key={k} style={{flex:"1 1 260px",background:"#0b1220",border:`1px solid ${live?"#7f1d1d":"#1e2d4a"}`,borderRadius:8,padding:10}}>
+                              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                                <span style={{color:"#e2e8f0",fontSize:12,fontWeight:700}}>{label}</span>
+                                <span style={{fontSize:11,fontWeight:800,color:live?"#fca5a5":"#94a3b8"}}>{live?"🔴 RÉEL":"PAPER"}</span>
+                              </div>
+                              {live
+                                ? <button disabled={profileBusy} onClick={()=>back(k)} style={{background:"#334155",border:"none",borderRadius:6,padding:"8px 12px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>↩ Revenir en paper</button>
+                                : <button disabled={profileBusy||!L.hl_configured} onClick={()=>go(k,label)} style={{background:"#dc2626",border:"none",borderRadius:6,padding:"8px 12px",color:"#fff",fontFamily:"inherit",fontSize:12,fontWeight:800,cursor:"pointer",opacity:(profileBusy||!L.hl_configured)?0.5:1}}>🔴 Passer en réel</button>}
+                            </div>);})}
+                        </div>
+                        <div style={{marginTop:8,fontSize:11,color:"#cbd5e1",lineHeight:1.6}}>
+                          {L.hl_configured ? null : <div style={{color:"#fbbf24"}}>⚠️ Identifiants Hyperliquid non configurés : le passage au réel est indisponible.</div>}
+                          Capital réel : <b>{L.equity!=null?`${Number(L.equity).toFixed(2)} $`:"non synchronisé (il le sera au passage en réel)"}</b> · risque {L.risk_pct} % par trade · plafond {L.cap} $ ·
+                          {L.typical_notional!=null && <> taille typique <b>≈ {L.typical_notional} $</b> (stop de {L.typical_stop_pct} %) · <b>≈ {L.positions_by_margin} positions</b> au maximum avec la marge disponible (levier ×1).</>}
+                          {L.funding_live && <div style={{color:"#fbbf24"}}>Funding est aussi en réel : toutes les positions réelles partagent le même capital, donc le nombre de positions possibles baisse d'autant.</div>}
+                        </div>
+                      </div>);
+                  })()}
+                  <div style={{marginTop:8,fontSize:10,color:"#64748b",lineHeight:1.5}}>
+                    Un trade sans zone opposée reçoit un objectif à 1,5 fois son risque, avec breakeven à +1R puis verrou de 50 % du gain maximal. Une position ouverte contre la tendance H4 n'est pas fermée par la sortie « tendance retournée » ; la sortie sur cassure de zone et le stop restent actifs. Ce profil augmente le nombre de trades ; il ne prouve pas un avantage : jugez-le avec le tableau de bord d'objectif (trades positifs contre nécessaires, net par trade après frais).
+                  </div>
+                </div>
+
+
+              </div>
+            )}
+
+            {paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && (()=>{
               const openFiltered = (paper?.open_trades||[]).filter(t=>(t.strategy||"forex")===paperSubTab);
               // v4.44 — FIX : utilise l historique DEDIE recupere pour ce
               // mode precis (deja filtre cote serveur, pool bien plus large
@@ -4225,7 +4242,7 @@ Confirmer ?`
                             try{
                               await apiCall("/api/spot-accum/target","PUT",{trade_id:trade.id,target_price:newTarget},token);
                               loadData();
-                              if (paperSubTab!=="all" && paperSubTab!=="performance") loadModeHistory(paperSubTab);
+                              if (paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes") loadModeHistory(paperSubTab);
                             }catch(err){ alert("Erreur : "+err.message); }
                           }} style={{background:"#052e1622",border:"1px solid #34d399",borderRadius:5,padding:"3px 8px",color:"#34d399",fontSize:9,cursor:"pointer",fontWeight:700}}>
                             ✓ Modifier
@@ -4245,7 +4262,7 @@ Confirmer ?`
                             try{
                               await apiCall("/api/spot-accum/trailing-arm","PUT",{trade_id:trade.id,trailing_arm_price:newVal},token);
                               loadData();
-                              if (paperSubTab!=="all" && paperSubTab!=="performance") loadModeHistory(paperSubTab);
+                              if (paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes") loadModeHistory(paperSubTab);
                             }catch(err){ alert("Erreur : "+err.message); }
                           }} style={{background:"#052e1622",border:"1px solid #34d399",borderRadius:5,padding:"3px 8px",color:"#34d399",fontSize:9,cursor:"pointer",fontWeight:700}}>
                             ✓ Modifier
