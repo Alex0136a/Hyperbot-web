@@ -280,6 +280,7 @@ const PAPER_SUBTABS = [
   {key:"accumulation", label:"Accumulation", icon:"🎯", color:"#c084fc"},
   {key:"funding_contrarian", label:"Funding", icon:"💰", color:"#fbbf24"},
   {key:"spot_accumulation", label:"Spot-Accum", icon:"🌱", color:"#34d399"},
+  {key:"forex_scalp", label:"Scalp Forex", icon:"⏱️", color:"#facc15"},   // v4.356 : scalps separes du Forex normal
   {key:"modes", label:"Modes : Prudence · Swing · Scalp", icon:"🎛️", color:"#facc15"},   // v4.354
 ];
 // v4.44 — modes ayant une liste d actifs dediee personnalisable (pas
@@ -1469,7 +1470,7 @@ function App() {
   const loadAllStrategyPerformance = useCallback(async (silent) => {
     if (!token) return;
     if (!silent) setStrategyPerfLoading(true);
-    const modes = ["forex","accumulation","funding_contrarian","spot_accumulation"];
+    const modes = ["forex","forex_scalp","accumulation","funding_contrarian","spot_accumulation"];
     try {
       const results = await Promise.all(modes.map(m=>
         apiCall(`/api/strategy-performance/${m}`, "GET", null, token).catch(()=>null)
@@ -1488,7 +1489,7 @@ function App() {
   // l ouverture du sous-onglet, puis rafraichissement silencieux chaque minute.
   useEffect(() => {
     if (!token) return;
-    const modes = ["forex","accumulation","funding_contrarian","spot_accumulation"];
+    const modes = ["forex","forex_scalp","accumulation","funding_contrarian","spot_accumulation"];
     if (!(modes.includes(paperSubTab) || paperSubTab === "performance")) return;
     const refresh = () => paperSubTab === "performance" ? loadAllStrategyPerformance(true) : loadStrategyPerformance(paperSubTab, true);
     refresh();
@@ -1895,7 +1896,7 @@ Confirmer ?`
                   <div style={{display:"flex",gap:8,alignItems:"center"}}>
                     <span style={{background:sig.action==="LONG"?"#052e16":"#2d0a0a",color:sig.action==="LONG"?"#34d399":"#f87171",padding:"3px 9px",borderRadius:5,fontSize:12,fontWeight:700}}>{sig.action}</span>
                     {sig.strategy==="accumulation" && <span style={{background:"#1a0a2e",color:"#c084fc",padding:"3px 9px",borderRadius:5,fontSize:11,fontWeight:700}}>🎯 ACCUMULATION</span>}
-                    {sig.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"3px 9px",borderRadius:5,fontSize:11,fontWeight:700}}>💰 FUNDING</span>}
+                    {sig.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"3px 9px",borderRadius:5,fontSize:11,fontWeight:700}}>💰 FUNDING</span>}{sig.strategy==="forex_scalp" && <span style={{background:"#3a3205",color:"#facc15",padding:"3px 9px",borderRadius:5,fontSize:11,fontWeight:700}}>⚡ SCALP</span>}
                     <span style={{fontSize:15,fontWeight:700,color:"#f1f5f9"}}>{sig.coin}/USDC</span>
                     <span style={{background:"#1e2d4a",color:"#60a5fa",padding:"1px 7px",borderRadius:4,fontSize:10}}>x{sig.leverage}</span>
                   </div>
@@ -2665,7 +2666,7 @@ Confirmer ?`
                   <div style={{display:"flex",gap:8,alignItems:"center"}}>
                     <span style={{background:sig.action==="LONG"?"#052e16":"#2d0a0a",color:sig.action==="LONG"?"#34d399":"#f87171",padding:"3px 9px",borderRadius:5,fontSize:12,fontWeight:700}}>{sig.action}</span>
                     {sig.strategy==="accumulation" && <span style={{background:"#1a0a2e",color:"#c084fc",padding:"3px 9px",borderRadius:5,fontSize:11,fontWeight:700}}>🎯 ACCUMULATION</span>}
-                    {sig.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"3px 9px",borderRadius:5,fontSize:11,fontWeight:700}}>💰 FUNDING</span>}
+                    {sig.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"3px 9px",borderRadius:5,fontSize:11,fontWeight:700}}>💰 FUNDING</span>}{sig.strategy==="forex_scalp" && <span style={{background:"#3a3205",color:"#facc15",padding:"3px 9px",borderRadius:5,fontSize:11,fontWeight:700}}>⚡ SCALP</span>}
                     <span style={{fontSize:15,fontWeight:700,color:"#f1f5f9"}}>{sig.coin}/USDC</span>
                     <span style={{background:"#1e2d4a",color:"#60a5fa",padding:"1px 7px",borderRadius:4,fontSize:10}}>x{sig.leverage}</span>
                   </div>
@@ -2722,7 +2723,7 @@ Confirmer ?`
                     <span style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>{p.coin}/USDC</span>
                     <span style={{fontSize:9,color:"#94a3b8",background:"#0a0e1a",padding:"2px 6px",borderRadius:4}}>x{p.leverage||1}</span>
                     {p.strategy==="accumulation" && <span style={{background:"#1a0a2e",color:"#c084fc",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>🎯 ACCUMULATION</span>}
-                    {p.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>💰 FUNDING</span>}
+                    {p.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>💰 FUNDING</span>}{p.strategy==="forex_scalp" && <span style={{background:"#3a3205",color:"#facc15",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>⚡ SCALP</span>}
                   </div>
                   <div style={{textAlign:"right"}}>
                     <div style={{fontSize:15,fontWeight:700,color:pnl>=0?"#34d399":"#f87171"}}>{pnl>=0?"+":""}{pnl.toFixed(2)} USDC</div>
@@ -3631,7 +3632,7 @@ Confirmer ?`
                   <div style={{fontSize:11,color:"#94a3b8"}}>Cliquez sur "Rafraîchir" pour comparer la performance des 4 modes en un coup d'œil.</div>
                 ) : (
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-                    {["forex","accumulation","funding_contrarian","spot_accumulation"].map(m=>{
+                    {["forex","forex_scalp","accumulation","funding_contrarian","spot_accumulation"].map(m=>{
                       const meta = PAPER_SUBTABS.find(s=>s.key===m);
                       const perf = strategyPerf[m];
                       return (
@@ -3657,6 +3658,54 @@ Confirmer ?`
                 )}
               </div>
             )}
+
+            {/* v4.356 — SUR DEMANDE EXPLICITE : les scalps ont leur propre volet, separes du Forex normal. */}
+            {paperSubTab==="forex_scalp" && (()=>{
+              const perf = strategyPerf["forex_scalp"];
+              const open = (paper?.open_trades||[]).filter(t=>t.strategy==="forex_scalp");
+              const hist = (modeHistory["forex_scalp"]||[]).filter(x=>x.closed_at);
+              return (
+                <div>
+                  <div style={{background:"#0a0e1a",border:"1px solid #facc15",borderRadius:8,padding:10,marginBottom:14,fontSize:11,color:"#94a3b8",lineHeight:1.6}}>
+                    <b style={{color:"#facc15"}}>⚡ Scalp Forex</b> : sous-mode du Forex, <b>paper uniquement</b> (pas de bascule en réel). Ses trades sont <b>séparés du Forex normal</b> : ils portent le badge ⚡ SCALP, un motif de sortie qui commence par « SCALP », et n'apparaissent pas dans le volet Forex. Réglages, journal et statistiques : volet « 🎛️ Modes ».
+                  </div>
+                  {perf && (
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:12}}>
+                      {[{l:"TRADES (ouverts/total)",v:`${perf.open_trades}/${perf.total_trades}`,c:"#94a3b8"},
+                        {l:perf.fees_on?"WIN RATE (après frais)":"WIN RATE",v:`${perf.win_rate}%`,c:"#fbbf24"},
+                        {l:perf.fees_on?"NET (après frais)":"NET",v:`${perf.net_pnl>=0?"+":""}${perf.net_pnl.toFixed(2)} USDC`,c:perf.net_pnl>=0?"#34d399":"#f87171"},
+                        {l:"GAINS / PERTES",v:`+${perf.win_pnl.toFixed(2)} / ${perf.loss_pnl.toFixed(2)}`,c:"#94a3b8"}].map((t,i)=>(
+                        <div key={i} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:8,textAlign:"center"}}>
+                          <div style={{fontSize:14,fontWeight:700,color:t.c}}>{t.v}</div><div style={{fontSize:8,color:"#94a3b8"}}>{t.l}</div></div>))}
+                    </div>)}
+                  <div style={{display:"flex",gap:8,marginBottom:12}}>
+                    <button onClick={()=>{ loadStrategyPerformance("forex_scalp",false); loadModeHistory("forex_scalp"); }} style={{background:"#334155",border:"none",borderRadius:6,padding:"6px 12px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer"}}>🔄 Actualiser</button>
+                  </div>
+                  <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700,marginBottom:6}}>Scalps ouverts ({open.length})</div>
+                  {open.length===0 ? <div style={{fontSize:11,color:"#94a3b8",marginBottom:12}}>Aucun scalp ouvert.</div> : open.map((t,i)=>(
+                    <div key={i} style={{background:"#0a0e1a",border:"1px solid #3a3205",borderRadius:8,padding:8,marginBottom:5,fontSize:11,color:"#cbd5e1",display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6}}>
+                      <span><span style={{background:"#3a3205",color:"#facc15",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700,marginRight:6}}>⚡ SCALP</span>
+                        <b style={{color:t.action==="LONG"||t.type==="long"?"#34d399":"#f87171"}}>{(t.action||t.type||"").toString().toUpperCase()}</b> {t.coin}/USDC</span>
+                      <span>entrée {t.entry!=null?Number(t.entry).toPrecision(6):"—"} · stop {t.sl!=null?Number(t.sl).toPrecision(6):"—"} · objectif {t.tp!=null?Number(t.tp).toPrecision(6):"—"}</span>
+                      <span style={{color:(t.pnl||0)>=0?"#86efac":"#fca5a5"}}>PnL ouvert {(t.pnl||0)>=0?"+":""}{(t.pnl||0).toFixed(3)} $</span>
+                    </div>))}
+                  <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700,margin:"12px 0 6px"}}>Scalps fermés ({hist.length})</div>
+                  {modeHistoryLoading && hist.length===0 ? <div style={{fontSize:11,color:"#94a3b8"}}>Chargement…</div>
+                   : hist.length===0 ? <div style={{fontSize:11,color:"#94a3b8"}}>Aucun scalp fermé pour l'instant.</div>
+                   : <div style={{maxHeight:500,overflowY:"auto"}}>{hist.map(x=>(
+                      <div key={x.id} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:8,marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
+                        <div>
+                          <span style={{background:"#3a3205",color:"#facc15",padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>⚡ SCALP</span>
+                          <span style={{background:x.action==="LONG"?"#052e16":"#2d0a0a",color:x.action==="LONG"?"#34d399":"#f87171",padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700,marginLeft:6}}>{x.action}</span>
+                          <span style={{marginLeft:6,color:"#e2e8f0",fontSize:11}}>{x.coin}/USDC</span>
+                          <span style={{marginLeft:6,color:"#94a3b8",fontSize:9}}>{x.reason}</span>
+                          {x.peak_pnl_pct!=null && <span style={{marginLeft:6,color:"#c084fc",fontSize:9}}>🏔️ pic +{x.peak_pnl_pct.toFixed(2)}%</span>}
+                          <span style={{marginLeft:6,color:"#64748b",fontSize:9}}>{x.created_at?`ouvert ${new Date(x.created_at).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}`:""}{x.closed_at&&x.created_at?` · durée ${Math.max(1,Math.round((new Date(x.closed_at)-new Date(x.created_at))/60000))} min`:""}</span>
+                        </div>
+                        <div style={{fontSize:11,fontWeight:700,color:(x.pnl||0)>=0?"#34d399":"#f87171"}}>{x.pnl!=null?`${x.pnl>=0?"+":""}${x.pnl.toFixed(3)} $`:"—"}{x.exit_pnl_pct!=null?<span style={{color:"#94a3b8",fontWeight:400,marginLeft:6}}>({x.exit_pnl_pct>=0?"+":""}{x.exit_pnl_pct}%)</span>:null}</div>
+                      </div>))}</div>}
+                </div>);
+            })()}
 
             {/* v4.354 — SUR DEMANDE EXPLICITE : les trois configurations (Prudence, Swing, Scalp) quittent l'onglet Historique
                 et vivent ici, dans un sous-onglet de l'onglet TRADES P/L. */}
@@ -3911,7 +3960,7 @@ Confirmer ?`
               </div>
             )}
 
-            {paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && (()=>{
+            {paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && paperSubTab!=="forex_scalp" && (()=>{
               const openFiltered = (paper?.open_trades||[]).filter(t=>(t.strategy||"forex")===paperSubTab);
               // v4.44 — FIX : utilise l historique DEDIE recupere pour ce
               // mode precis (deja filtre cote serveur, pool bien plus large
