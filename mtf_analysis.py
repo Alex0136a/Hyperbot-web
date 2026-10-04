@@ -101,6 +101,78 @@ def _body(c):
     return abs(c["c"] - c["o"])
 
 
+def _pivots(candles, kind, left=2, right=1):
+    """v4.352 — indices des pivots : creux (kind "low") ou sommets (kind "high") locaux, strictement plus
+    bas / plus haut que `left` bougies avant et au plus egal a `right` bougies apres (confirme 1 bougie plus tard)."""
+    out = []
+    for i in range(left, len(candles) - right):
+        if kind == "low":
+            v = candles[i]["l"]
+            ok = all(v < candles[i - k]["l"] for k in range(1, left + 1)) and all(v <= candles[i + k]["l"] for k in range(1, right + 1))
+        else:
+            v = candles[i]["h"]
+            ok = all(v > candles[i - k]["h"] for k in range(1, left + 1)) and all(v >= candles[i + k]["h"] for k in range(1, right + 1))
+        if ok:
+            out.append(i)
+    return out
+
+
+def double_pattern(candles, direction, tol_atr=0.35, min_gap=8, max_gap=45, lookback=70, max_age=3, min_depth_atr=1.5, min_body_atr=0.5):
+    """v4.352 — SUR DEMANDE EXPLICITE (Swing) : figure de retournement a DEUX POINTS, sur la DERNIERE bougie cloturee.
+      "long"  : double creux — deux creux au meme niveau (ecart <= tol_atr x ATR), separes de min_gap a max_gap bougies,
+                avec une ligne de cou au moins min_depth_atr x ATR AU-DESSUS des creux (figure reelle, pas du bruit),
+                le second recent (<= max_age bougies) ; confirme quand la derniere bougie est haussiere, cloture
+                au-dessus du plus haut de la bougie du second creux, et reste SOUS la ligne de cou (le plus haut entre les
+                deux creux : il reste de la place jusqu a la cible).
+      "short" : double sommet, symetrique.
+    Retourne (nom, extreme de la figure) ou (None, None). Aucune information du futur."""
+    if len(candles) < 20:
+        return None, None
+    c = candles[-lookback:]
+    a = atr(c) or 0
+    if a <= 0:
+        return None, None
+    n, last = len(c), c[-1]
+    kind = "low" if direction == "long" else "high"
+    key = "l" if direction == "long" else "h"
+    piv = _pivots(c, kind)
+    if len(piv) < 2:
+        return None, None
+    i2 = piv[-1]
+    if n - 1 - i2 > max_age or i2 >= n - 1:      # le second point doit etre recent ET deja confirme
+        return None, None
+    for i1 in reversed(piv[:-1]):
+        gap = i2 - i1
+        if gap < min_gap:
+            continue
+        if gap > max_gap:
+            break
+        v1, v2 = c[i1][key], c[i2][key]
+        if abs(v1 - v2) > tol_atr * a:
+            continue
+        seg = c[i1:i2 + 1]
+        if direction == "long":
+            neck = max(x["h"] for x in seg)
+            if neck - max(v1, v2) < min_depth_atr * a:
+                continue
+            rng = last["h"] - last["l"]
+            strong = (last["c"] - last["o"]) >= min_body_atr * a and rng > 0 and (last["c"] - last["l"]) / rng >= 0.6
+            confirmed = strong and last["c"] > c[i2]["h"] and last["c"] < neck
+            extreme, label = min(v1, v2), "double creux"
+        else:
+            neck = min(x["l"] for x in seg)
+            if min(v1, v2) - neck < min_depth_atr * a:
+                continue
+            rng = last["h"] - last["l"]
+            strong = (last["o"] - last["c"]) >= min_body_atr * a and rng > 0 and (last["h"] - last["c"]) / rng >= 0.6
+            confirmed = strong and last["c"] < c[i2]["l"] and last["c"] > neck
+            extreme, label = max(v1, v2), "double sommet"
+        if confirmed:
+            return f"{label} ({v1:.6g} / {v2:.6g}, ecart {abs(v1 - v2) / a:.2f} ATR, {gap} bougies)", extreme
+        return None, None                            # la paire la plus proche n est pas confirmee
+    return None, None
+
+
 def candle_signal(candles, direction):
     """Signal de retournement sur la DERNIERE bougie cloturee.
     direction \"long\" : avalement haussier, marteau, etoile du matin.
