@@ -1027,6 +1027,7 @@ ADVANCED_SETTINGS = {
     "MTF_DOUBLE_PATTERN_ENABLED":      {"label": "Top-down - ajouter double creux / double sommet aux motifs de retournement (1/0)", "default": 0},
     "MTF_TREND_PATH_ENABLED":          {"label": "Top-down - chemin d entree 'tendance' par mesure de mouvement (1/0)", "default": 1},
     "MTF_REQUIRE_FLOW_CONFIRM":        {"label": "Top-down - exiger que le flux de transactions ne soit pas hostile (1/0)", "default": 1},
+    "MTF_MIN_FLOW_PRESSURE":           {"label": "Top-down - seuil du flux de transactions (de -1 a +1, mesure sur 3 min). 0 = le flux doit simplement ne pas etre hostile ; -0,4 = refus seulement si le flux est NETTEMENT contraire (veto) ; +0,2 = flux favorable exige", "default": 0.0},
     "MTF_REQUIRE_REAL_TARGET_ZONE":    {"label": "Top-down - exiger un objectif reel, une zone opposee distincte (1 = oui, 0 = entrer sans objectif fixe : sortie par breakeven, verrou et suiveur)", "default": 1},
     "MTF_REQUIRE_H1_STRUCTURE":        {"label": "Top-down - exiger la structure H1 (EMA20 H1 qui repart ou prix repasse au-dessus / en dessous) (1/0)", "default": 1},
     "SPOT_ACCUM_TREND_MODE":           {"label": "Spot-Accum - tendance H4 exigee a l entree (0 = stricte ou repli, 1 = tant que la structure n est pas opposee, 2 = aucune)", "default": 0},
@@ -1279,6 +1280,8 @@ def _coerce_advanced_value(key: str, value):
     if key in ("MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "MTF_USE_H4_LOWER", "MTF_DOUBLE_PATTERN_ENABLED",
                "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
+    if key == "MTF_MIN_FLOW_PRESSURE" and not -1 <= value <= 1:
+        return False, "entre -1 et +1"
     if key == "MTF_SIGNAL_MAX_AGE_SEC" and not 0 <= value <= 86400:
         return False, "entre 0 (sans limite) et 86 400 secondes"
     if key == "MTF_MAX_RISK_PCT" and not 0.5 <= value <= 20:
@@ -3166,6 +3169,7 @@ _PROFILES = {
 
 _PROFILES["swing"] = {
     "label": "Swing (tendance Daily, figures H4)",
+    "free": ["MTF_REQUIRE_FLOW_CONFIRM", "MTF_MIN_FLOW_PRESSURE"],   # reglables a la main sans que le profil passe a "non applique"
     "values": {
         "MTF_USE_DAILY": 1,                    # tendance de fond ET zones sur bougies JOURNALIERES
         "MTF_USE_H4_LOWER": 1,                 # signal de retournement sur bougies H4
@@ -3173,7 +3177,8 @@ _PROFILES["swing"] = {
         "MTF_SIGNAL_MAX_AGE_SEC": 1800,        # entree dans les 30 min qui suivent la cloture H4 (prise de position chirurgicale)
         "MTF_TREND_PATH_ENABLED": 0,           # pas de chemin "mesure de mouvement" 1h
         "MTF_REQUIRE_H1_STRUCTURE": 0,         # la structure H1 n a plus de sens a cette echelle
-        "MTF_REQUIRE_FLOW_CONFIRM": 0,         # le flux de 3 minutes non plus
+        "MTF_REQUIRE_FLOW_CONFIRM": 1,         # flux de 3 min : VETO doux seulement (voir MTF_MIN_FLOW_PRESSURE)
+        "MTF_MIN_FLOW_PRESSURE": -0.4,         # refus seulement si le flux est nettement contraire ; donnee absente = on laisse passer
         "MTF_REQUIRE_REAL_TARGET_ZONE": 1,     # objectif = vraie zone Daily opposee, sinon pas de trade
         "MTF_MIN_RR": 2.0,                     # gain/risque d au moins 2
         "MTF_MAX_RISK_PCT": 10.0,              # stop jusqu a 10 % du prix (stops larges, positions petites)
@@ -3192,7 +3197,8 @@ def _profile_current(name):
 
 def _profile_active(name):
     cur = _profile_current(name)
-    return all(abs(float(cur[k]) - float(v)) < 1e-9 for k, v in _PROFILES[name]["values"].items())
+    free = set(_PROFILES[name].get("free", []))
+    return all(abs(float(cur[k]) - float(v)) < 1e-9 for k, v in _PROFILES[name]["values"].items() if k not in free)
 
 
 @app.get("/api/config/profile")
