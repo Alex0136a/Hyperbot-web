@@ -1022,6 +1022,22 @@ ADVANCED_SETTINGS = {
     "MTF_MAX_RISK_PCT":                {"label": "Top-down - distance maximale au SL (% du prix)", "default": 4.0},
     # v4.348 — profil d activite (voir _PROFILES)
     # v4.352 — profil Swing (tendance Daily, signal sur figures H4, entree a la cloture)
+    # v4.353 — scalp Forex (sous-mode du Forex, PAPER uniquement)
+    "FOREX_SCALP_ENABLED":         {"label": "Scalp Forex - active (1) ou eteint (0). PAPER uniquement ; le mode Forex n est pas modifie", "default": 0},
+    "FOREX_SCALP_NOTIONAL_USD":    {"label": "Scalp Forex - notionnel par trade ($, paper)", "default": 30.0},
+    "FOREX_SCALP_LEVERAGE":        {"label": "Scalp Forex - levier simule", "default": 3},
+    "FOREX_SCALP_MAX_TRADES":      {"label": "Scalp Forex - scalps simultanes au plus", "default": 2},
+    "FOREX_SCALP_MAX_HOLD_MIN":    {"label": "Scalp Forex - sortie au temps (minutes)", "default": 20},
+    "FOREX_SCALP_COOLDOWN_SEC":    {"label": "Scalp Forex - pause sur un actif apres une perte (secondes)", "default": 300},
+    "FOREX_SCALP_DAILY_LOSS_USD":  {"label": "Scalp Forex - perte paper journaliere au-dela de laquelle le scalp s arrete ($)", "default": 1.0},
+    "FOREX_SCALP_FEE_PCT":         {"label": "Scalp Forex - frais aller-retour supposes (% du notionnel ; 0,089 = ordres au marche, ~0,03 = ordres limite)", "default": 0.089},
+    "FOREX_SCALP_SLIPPAGE_PCT":    {"label": "Scalp Forex - glissement defavorable par jambe (% du prix, en plus du demi-spread)", "default": 0.005},
+    "FOREX_SCALP_MIN_NET_RR":      {"label": "Scalp Forex - gain/risque NET de frais et spread minimal pour prendre un setup", "default": 0.3},
+    "FOREX_SCALP_MIN_TARGET_PCT":  {"label": "Scalp Forex - objectif minimal (% du prix)", "default": 0.15},
+    "FOREX_SCALP_MIN_RISK_PCT":    {"label": "Scalp Forex - stop minimal (% du prix)", "default": 0.06},
+    "FOREX_SCALP_MAX_RISK_PCT":    {"label": "Scalp Forex - stop maximal (% du prix)", "default": 0.30},
+    "FOREX_SCALP_MAX_SIGNAL_AGE_SEC": {"label": "Scalp Forex - le rejet 5 min doit dater de moins de N secondes", "default": 150},
+    "FOREX_SCALP_REQUIRE_1M":      {"label": "Scalp Forex - exiger la confirmation de la bougie 1 min (1/0)", "default": 1},
     "MTF_USE_H4_LOWER":                {"label": "Top-down - signal sur bougies H4 (1) ou selon M15/H1 (0). Profil Swing : 1 avec la tendance Daily", "default": 0},
     "MTF_SIGNAL_MAX_AGE_SEC":          {"label": "Top-down - entree seulement dans les N secondes qui suivent la cloture de la bougie du signal (0 = sans limite)", "default": 0},
     "MTF_DOUBLE_PATTERN_ENABLED":      {"label": "Top-down - ajouter double creux / double sommet aux motifs de retournement (1/0)", "default": 0},
@@ -1224,7 +1240,7 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+_ZERO_ALLOWED_INT_KEYS = {"FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
                           "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
@@ -1280,6 +1296,16 @@ def _coerce_advanced_value(key: str, value):
     if key in ("MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "MTF_USE_H4_LOWER", "MTF_DOUBLE_PATTERN_ENABLED",
                "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
+    if key in ("FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M") and value not in (0, 1):
+        return False, "1 (oui) ou 0 (non)"
+    if key == "FOREX_SCALP_FEE_PCT" and not 0 <= value <= 1:
+        return False, "entre 0 et 1 % du notionnel"
+    if key == "FOREX_SCALP_NOTIONAL_USD" and not 5 <= value <= 200:
+        return False, "entre 5 $ et 200 $"
+    if key == "FOREX_SCALP_LEVERAGE" and not 1 <= value <= 10:
+        return False, "entre 1 et 10"
+    if key == "FOREX_SCALP_MAX_TRADES" and not 1 <= value <= 5:
+        return False, "entre 1 et 5"
     if key == "MTF_MIN_FLOW_PRESSURE" and not -1 <= value <= 1:
         return False, "entre -1 et +1"
     if key == "MTF_SIGNAL_MAX_AGE_SEC" and not 0 <= value <= 86400:
@@ -2376,6 +2402,7 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             "snapshot_age_sec": round(time.time() - snap["ts"], 1) if snap.get("ts") else None,
             "blocker_long": blocker_long,
             "blocker_short": blocker_short,
+            "scalp": _scalp_diag_line(ticker, state),   # v4.353
             "blocker_spot_accum": blocker_spot_accum,
             "spot_accum_detail": spot_snap if spot_snap else None,
             "blocker_accumulation": blocker_accumulation,
@@ -2590,7 +2617,7 @@ def manual_close(item_id: int, email: str = Depends(require_user)):
 # ─────────────────────────────────────────────────────────────────────────
 #  v4.265 — EXPORT CSV DU SUIVI DES TRADES SPOT-ACCUM / ACCUMULATION
 # ─────────────────────────────────────────────────────────────────────────
-_EXPORT_STRATEGY_LABEL = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation", "funding_contrarian": "Funding", "manual": "Manuel"}
+_EXPORT_STRATEGY_LABEL = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation", "funding_contrarian": "Funding", "manual": "Manuel", "forex_scalp": "Forex scalp"}
 _ROUND_TRIP_FEE_RATE = 0.0009  # 2 x 0,045 % (taker) — estimation quand les frais reels manquent
 
 
@@ -3167,6 +3194,21 @@ _PROFILES = {
 }
 
 
+_PROFILES["scalp"] = {
+    "label": "Scalp Forex (paper)",
+    "free": ["FOREX_SCALP_FEE_PCT", "FOREX_SCALP_MIN_NET_RR", "FOREX_SCALP_NOTIONAL_USD", "FOREX_SCALP_MAX_TRADES"],
+    "values": {
+        "FOREX_SCALP_ENABLED": 1,
+        "FOREX_SCALP_NOTIONAL_USD": 30.0,
+        "FOREX_SCALP_MAX_TRADES": 2,
+        "FOREX_SCALP_MAX_HOLD_MIN": 20,
+        "FOREX_SCALP_FEE_PCT": 0.089,
+        "FOREX_SCALP_SLIPPAGE_PCT": 0.005,
+        "FOREX_SCALP_MIN_NET_RR": 0.3,
+        "FOREX_SCALP_MIN_TARGET_PCT": 0.15,
+        "FOREX_SCALP_DAILY_LOSS_USD": 1.0,
+    },
+}
 _PROFILES["swing"] = {
     "label": "Swing (tendance Daily, figures H4)",
     "free": ["MTF_REQUIRE_FLOW_CONFIRM", "MTF_MIN_FLOW_PRESSURE"],   # reglables a la main sans que le profil passe a "non applique"
@@ -3202,7 +3244,7 @@ def _profile_active(name):
 
 
 @app.get("/api/config/profile")
-def get_profile(name: str = Query("actif", pattern="^(actif|swing)$"), email: str = Depends(require_user)):
+def get_profile(name: str = Query("actif", pattern="^(actif|swing|scalp)$"), email: str = Depends(require_user)):
     prof = _PROFILES[name]
     try:
         prev = json.loads(db.get_meta(f"profile_prev:{name}") or "null")
@@ -3227,7 +3269,7 @@ def get_profile(name: str = Query("actif", pattern="^(actif|swing)$"), email: st
 
 
 @app.post("/api/config/profile/apply")
-def apply_profile(name: str = Query("actif", pattern="^(actif|swing)$"), email: str = Depends(require_user)):
+def apply_profile(name: str = Query("actif", pattern="^(actif|swing|scalp)$"), email: str = Depends(require_user)):
     prof = _PROFILES[name]
     if not _profile_active(name):
         db.set_meta(f"profile_prev:{name}", json.dumps({"saved_at": time.time(), "values": _profile_current(name)}))
@@ -3242,7 +3284,7 @@ def apply_profile(name: str = Query("actif", pattern="^(actif|swing)$"), email: 
 
 
 @app.post("/api/config/profile/restore")
-def restore_profile(name: str = Query("actif", pattern="^(actif|swing)$"), email: str = Depends(require_user)):
+def restore_profile(name: str = Query("actif", pattern="^(actif|swing|scalp)$"), email: str = Depends(require_user)):
     try:
         prev = json.loads(db.get_meta(f"profile_prev:{name}") or "null")
     except (TypeError, ValueError):
@@ -3376,6 +3418,136 @@ def cards_status(email: str = Depends(require_user)):
         if saved:
             out.update({"state": "saved", "saved_at": saved.get("saved_at"), "result": saved.get("result")})
     return out
+
+
+# ───────────────── v4.353 — SCALP FOREX : diagnostic, etat, statistiques du journal, export ─────────────────
+def _scalp_diag_line(ticker, state):
+    """Ligne du diagnostic par actif (None si le scalp n est pas concerne)."""
+    try:
+        if not cfg.get("FOREX_SCALP_ENABLED", 0) or ticker not in cfg.get("FOREX_SCALP_SYMBOLS", ["xyz:EUR", "xyz:JPY", "xyz:KRW", "PAXG"]):
+            return None
+        sn = getattr(state, "scalp_snapshot", None)
+        if not sn:
+            return "pas encore evalue"
+        parts = [sn.get("blocker") or "setup valide ce cycle (voir le journal)"]
+        if sn.get("bias"):
+            parts.append(f"biais 15 min {sn['bias']}")
+        if sn.get("levels"):
+            parts.append("niveaux proches : " + " ; ".join(f"{p:g} {k} (w{w})" for p, k, w in sn["levels"]))
+        return " · ".join(parts)
+    except Exception as e:
+        return f"indisponible ({e})"
+
+
+def _scalp_stats(events, fee_default=0.089):
+    """Agregats du journal : par decision / setup / type de niveau / biais / heure, avec l issue mesuree 60 min plus tard
+    et le gain net ESTIME (frais et spread deduits) si le setup avait ete pris."""
+    import statistics as _st
+
+    def est(e):
+        """gain net estime (en % du prix) d un setup evalue : objectif -> +gain, stop -> -risque, sinon rendement a 15 min."""
+        if not e.get("evaluated") or e.get("outcome") is None or e.get("risk_pct") is None:
+            return None
+        cost = e.get("cost_pct") if e.get("cost_pct") is not None else fee_default
+        if e["outcome"] == "tp":
+            g = e.get("tp_pct") or 0.0
+        elif e["outcome"] == "sl":
+            g = -(e.get("risk_pct") or 0.0)
+        else:
+            g = e.get("fin15") if e.get("fin15") is not None else 0.0
+        return g - cost
+
+    def agg(rows):
+        ev = [r for r in rows if r.get("evaluated") and r.get("outcome")]
+        n_ev = len(ev)
+        ests = [x for x in (est(r) for r in ev) if x is not None]
+        return {"n": len(rows), "evaluated": n_ev,
+                "tp_pct": round(sum(1 for r in ev if r["outcome"] == "tp") / n_ev * 100, 1) if n_ev else None,
+                "sl_pct": round(sum(1 for r in ev if r["outcome"] == "sl") / n_ev * 100, 1) if n_ev else None,
+                "none_pct": round(sum(1 for r in ev if r["outcome"] == "none") / n_ev * 100, 1) if n_ev else None,
+                "mfe15": round(_st.median([r["mfe15"] for r in ev if r.get("mfe15") is not None]), 3) if ev and any(r.get("mfe15") is not None for r in ev) else None,
+                "mae15": round(_st.median([r["mae15"] for r in ev if r.get("mae15") is not None]), 3) if ev and any(r.get("mae15") is not None for r in ev) else None,
+                "net_est": round(sum(ests) / len(ests), 4) if ests else None, "net_n": len(ests)}
+
+    def group(keyfn):
+        d = {}
+        for r in events:
+            d.setdefault(keyfn(r), []).append(r)
+        return sorted(({"key": k, **agg(v)} for k, v in d.items()), key=lambda x: -x["n"])
+
+    def dec(r):
+        d = r.get("decision") or "?"
+        return "pris" if d == "pris" else (d.replace("filtre : ", "")[:46])
+    return {"total": agg(events),
+            "by_decision": group(dec),
+            "by_setup": group(lambda r: r.get("setup") or "?"),
+            "by_level": group(lambda r: (r.get("level_kinds") or "?").split("+")[0].replace(" x", " x")[:18]),
+            "by_bias": group(lambda r: r.get("bias") or "?"),
+            "by_side": group(lambda r: r.get("side") or "?"),
+            "by_hour": group(lambda r: f"{(r.get('hour_utc') or 0) // 6 * 6:02d}-{(r.get('hour_utc') or 0) // 6 * 6 + 6:02d} h UTC"),
+            "by_asset": group(lambda r: r.get("asset") or "?")}
+
+
+@app.get("/api/scalp/status")
+def scalp_status(email: str = Depends(require_user)):
+    """Etat du scalp : reglages, positions ouvertes, resultats du jour et du total, derniers setups."""
+    open_pos = []
+    for sk, st in list(bot.states.items()):
+        pos = st.position
+        if pos and pos.get("strategy") == "forex_scalp":
+            tk = be.ticker_from_slot_key(sk)
+            px = float((bot.all_mids or {}).get(tk) or 0)
+            sc = pos.get("scalp") or {}
+            gain = ((px - pos["entry"]) if pos["type"] == "long" else (pos["entry"] - px)) / pos["entry"] * 100 if px else None
+            open_pos.append({"asset": tk, "side": pos["type"], "entry": pos["entry"], "sl": pos["sl"], "tp": pos["tp"], "price": px,
+                             "gain_pct": round(gain, 3) if gain is not None else None, "setup": sc.get("setup"),
+                             "age_min": round((time.time() - sc.get("opened_ts", time.time())) / 60, 1), "be_done": bool(sc.get("be_done"))})
+    trades = [t for t in db.get_all_closed_trades() if t.get("strategy") == "forex_scalp"]
+    day0 = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    def summ(ts):
+        w = [t for t in ts if (t.get("pnl") or 0) > 0]
+        return {"n": len(ts), "wins": len(w), "net": round(sum((t.get("pnl") or 0) for t in ts), 3)}
+    fee_pct = cfg.get("FOREX_SCALP_FEE_PCT", 0.089)
+    fees = sum((t.get("size_usd") or 0) * (t.get("leverage") or 1) * fee_pct / 100 for t in trades)
+    since = int((time.time() - 3 * 86400) * 1000)
+    recent = db.scalp_events_since(since, limit=60)
+    keys = ("FOREX_SCALP_ENABLED", "FOREX_SCALP_NOTIONAL_USD", "FOREX_SCALP_MAX_TRADES", "FOREX_SCALP_MAX_HOLD_MIN", "FOREX_SCALP_FEE_PCT",
+            "FOREX_SCALP_SLIPPAGE_PCT", "FOREX_SCALP_MIN_NET_RR", "FOREX_SCALP_MIN_TARGET_PCT", "FOREX_SCALP_DAILY_LOSS_USD")
+    return {"enabled": bool(cfg.get("FOREX_SCALP_ENABLED", 0)), "forex_open": be.is_forex_open(),
+            "symbols": cfg.get("FOREX_SCALP_SYMBOLS", ["xyz:EUR", "xyz:JPY", "xyz:KRW", "PAXG"]),
+            "settings": {k: cfg.get(k, ADVANCED_SETTINGS[k]["default"]) for k in keys},
+            "open": open_pos, "today": summ([t for t in trades if (t.get("closed_at") or "") >= day0]), "total": summ(trades),
+            "fees_estimated": round(fees, 3), "net_after_fees_est": round(sum((t.get("pnl") or 0) for t in trades) - fees, 3),
+            "recent": [{k: e.get(k) for k in ("ts", "asset", "side", "setup", "level_kinds", "bias", "decision", "risk_pct", "tp_pct", "net_rr", "outcome", "evaluated")} for e in recent]}
+
+
+@app.get("/api/scalp/stats")
+def scalp_stats_ep(days: int = Query(7, ge=1, le=60), email: str = Depends(require_user)):
+    """Statistiques du journal : ce que valent les setups pris ET filtres, par decision, setup, niveau, biais, heure, actif."""
+    ev = db.scalp_events_since(int((time.time() - days * 86400) * 1000), limit=20000)
+    return {"days": days, **_scalp_stats(ev, cfg.get("FOREX_SCALP_FEE_PCT", 0.089))}
+
+
+@app.get("/api/scalp/journal/export.csv")
+def scalp_export(days: int = Query(7, ge=1, le=60), email: str = Depends(require_user)):
+    import csv
+    import io
+    ev = list(reversed(db.scalp_events_since(int((time.time() - days * 86400) * 1000), limit=50000)))
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
+    cols = ["ts", "asset", "side", "setup", "level_kinds", "level_price", "level_w", "price", "spread_pct", "atr5_pct", "bias", "flow", "hour_utc",
+            "decision", "sl", "tp", "risk_pct", "tp_pct", "rr", "net_rr", "cost_pct", "hypothetical", "trade_uid", "evaluated", "outcome",
+            "hit_min", "mfe5", "mae5", "mfe15", "mae15", "mfe60", "mae60", "fin15", "fin60"]
+    w.writerow(["heure (UTC)"] + cols[1:])
+    for e in ev:
+        row = [datetime.fromtimestamp(e["ts"] / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")]
+        for c in cols[1:]:
+            v = e.get(c)
+            row.append("" if v is None else (str(round(v, 6)).replace(".", ",") if isinstance(v, float) else v))
+        w.writerow(row)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%Hh%M")
+    return Response(content="\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="scalp_journal_{stamp}.csv"'})
 
 
 @app.get("/api/stats/funding-streaks")
