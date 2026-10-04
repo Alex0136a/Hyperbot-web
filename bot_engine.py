@@ -24,6 +24,7 @@ import threading
 import json
 import db
 from flow_recorder import FlowRecorder   # v4.349 — enregistreur de flux (lecture seule)
+import scalp_forex as scalp               # v4.353 — scalp Forex (sous-mode du Forex, paper)
 import mtf_analysis as mtf  # v4.299 — analyse multi-unites de temps
 from datetime import datetime
 from collections import deque
@@ -1394,6 +1395,30 @@ PROFILE_SWING = {
     # ascendant / resistance descendante + objectif par mesure de
     # mouvement), pour capter une tendance qui s eloigne de toute zone H4 —
     # OU distinct du chemin "zone" classique, pas une condition en plus.
+    # ── v4.353 — SCALP FOREX (sous-mode du Forex, PAPER uniquement ; le mode Forex actuel n est pas modifie) ──
+    "FOREX_SCALP_ENABLED": 0,             # 1 = active le scalp (eteint par defaut)
+    "FOREX_SCALP_SYMBOLS": ["xyz:EUR", "xyz:JPY", "xyz:KRW", "PAXG"],
+    "FOREX_SCALP_NOTIONAL_USD": 30.0,     # notionnel par trade (paper)
+    "FOREX_SCALP_LEVERAGE": 3,            # levier simule (marge = notionnel / levier)
+    "FOREX_SCALP_MAX_TRADES": 2,          # scalps simultanes au plus
+    "FOREX_SCALP_MAX_HOLD_MIN": 20,       # sortie au temps
+    "FOREX_SCALP_COOLDOWN_SEC": 300,      # pause sur un actif apres une perte
+    "FOREX_SCALP_DAILY_LOSS_USD": 1.0,    # perte paper journaliere au-dela de laquelle le scalp s arrete pour la journee
+    "FOREX_SCALP_FEE_PCT": 0.089,         # frais aller-retour supposes (mettre ~0.03 pour modeliser des ordres limite)
+    "FOREX_SCALP_SLIPPAGE_PCT": 0.005,    # glissement defavorable par jambe (en plus du demi-spread)
+    "FOREX_SCALP_MIN_NET_RR": 0.3,        # gain/risque NET de frais et spread minimal
+    "FOREX_SCALP_MIN_TARGET_PCT": 0.15,   # objectif minimal (% du prix)
+    "FOREX_SCALP_MIN_RISK_PCT": 0.06,     # stop minimal (% du prix)
+    "FOREX_SCALP_MAX_RISK_PCT": 0.30,     # stop maximal (% du prix)
+    "FOREX_SCALP_RR": 1.2,                # gain/risque de l objectif synthetique
+    "FOREX_SCALP_SL_ATR": 0.5,            # marge du stop au-dela du niveau (x ATR 5 min)
+    "FOREX_SCALP_TOUCH_ATR": 0.6,         # tolerance de contact avec un niveau (x ATR 5 min)
+    "FOREX_SCALP_MAX_SIGNAL_AGE_SEC": 150,   # le rejet 5 min doit dater de moins de N secondes
+    "FOREX_SCALP_REQUIRE_1M": 1,          # exige la confirmation de la bougie 1 min
+    "FOREX_SCALP_COUNTER_BIAS_MIN_W": 2,  # rejet contre le biais 15 min : niveau de confluence >= N
+    "FOREX_SCALP_BE_R": 0.6,              # breakeven net de frais apres N x R
+    "FOREX_SCALP_FLOW_EXIT": 0.5,         # sortie si le flux se retourne au-dela de +/- N
+    "FOREX_SCALP_FLOW_EXIT_MIN_GAIN_R": 0.3,
     "FLOW_RECORDER_ENABLED": 1,           # v4.349 : 1 = enregistre le flux acheteur/vendeur par tranche de 5 min et par actif (lecture seule)
     "FLOW_RECORDER_BIG_TRADE_USD": 5000.0, # v4.349 : seuil d une "grosse" transaction
     "FLOW_RECORDER_KEEP_DAYS": 120,       # v4.349 : duree de conservation
@@ -2111,7 +2136,7 @@ def _order_first_status(result):
 # d entree — permet de retrouver le MODE SOURCE d une position directement
 # depuis l historique Hyperliquid, meme si la base locale etait perdue.
 TRADE_UID_MAGIC = "4842"  # "HB"
-STRATEGY_CODES = {"forex": "01", "accumulation": "02", "spot_accumulation": "03", "funding_contrarian": "04", "manual": "05"}
+STRATEGY_CODES = {"forex": "01", "accumulation": "02", "spot_accumulation": "03", "funding_contrarian": "04", "manual": "05", "forex_scalp": "06"}
 STRATEGY_FROM_CODE = {v: k for k, v in STRATEGY_CODES.items()}
 
 
@@ -5119,6 +5144,8 @@ class BotEngine:
         """v4.264 — mode REEL (paper/live) d une position : celui memorise a
         son ouverture. Repli sur le reglage courant de sa strategie pour les
         positions anciennes sans cette information."""
+        if (pos or {}).get("strategy") == "forex_scalp":      # v4.353 : le scalp est PAPER par construction
+            return "paper"
         recorded = (pos or {}).get("effective_mode")
         if recorded in ("paper", "live"):
             return recorded
@@ -5137,6 +5164,8 @@ class BotEngine:
         (FUNDING_MODE_LIVE_ALLOWED) s applique TOUJOURS en plus, meme si
         cette fonction renvoie "live" pour funding_contrarian — double
         protection, pas de retrait de securite existante."""
+        if strategy == "forex_scalp":                          # v4.353 : le scalp est PAPER par construction
+            return "paper"
         override = self.cfg.get("STRATEGY_MODE_OVERRIDE", {}).get(strategy)
         if override in ("paper", "live"):
             return override
@@ -7809,6 +7838,11 @@ class BotEngine:
                 self._blocked_followups_if_due()  # v4.338
                 self._refresh_held_mtf_data()  # v4.341
                 self._flow_recorder_flush_if_due()  # v4.349
+                try:                                  # v4.353 — scalp Forex : jamais bloquant pour le reste du cycle
+                    self._scalp_cycle()
+                    self._scalp_journal_eval_if_due()
+                except Exception as _e_sc:
+                    print(f"[SCALP] cycle ignore : {type(_e_sc).__name__}: {_e_sc}")
                 self._decay_confidence_thresholds()
                 prices = self._get_prices_with_timeout(cfg.get("PRICE_FETCH_TIMEOUT_SEC", 10))
                 in_hours = is_trading_hours(cfg)
@@ -8045,6 +8079,8 @@ class BotEngine:
         mode = self._position_mode(pos)  # v4.264 — mode fige a l ouverture
         if pos.get("engine") == "mtf":   # v4.299 — position top-down : gestion dediee
             return self._manage_mtf(symbol, price, state, pos, ticker_from_slot_key(symbol), mode)
+        if pos.get("engine") == "scalp":   # v4.353 — position de scalp Forex : gestion dediee (paper)
+            return self._manage_scalp(symbol, price, state, pos, ticker)
         # v4.33 — SECURITE EXPLICITE : un trade "funding_contrarian" reste
         # simule (paper) meme si le bot tourne globalement en mode live, tant
         # que FUNDING_MODE_LIVE_ALLOWED n est pas active manuellement — ce
@@ -10563,7 +10599,7 @@ class BotEngine:
     # ─────────────────────────────────────────────────────────────────────
     #  v4.299 — MOTEUR "TOP-DOWN" MULTI-UNITES DE TEMPS
     # ─────────────────────────────────────────────────────────────────────
-    _TF_SEC = {"15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
+    _TF_SEC = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}   # v4.353 : + 1m / 5m (scalp)
 
     @staticmethod
     def _mtf_is_complete(sec, candles, now_ms):
@@ -10644,6 +10680,259 @@ class BotEngine:
             meta["retry_at"] = now + retry_sec
             print(f"[MTF] Bougies {tf} {ticker} indisponibles : {e}")
         return out
+
+    # ───────────────────────── v4.353 — SCALP FOREX (paper) ─────────────────────────
+    def _scalp_state_for(self, ticker):
+        for sk, st in self.states.items():
+            if ticker_from_slot_key(sk) == ticker:
+                return sk, st
+        return None, None
+
+    def _scalp_open_count(self):
+        return sum(1 for st in list(self.states.values()) if st.position and st.position.get("strategy") == "forex_scalp")
+
+    def _scalp_today_pnl(self):
+        """Perte/gain paper du scalp aujourd hui (UTC), relu en base toutes les 5 minutes."""
+        now = time.time()
+        c = getattr(self, "_scalp_pnl_cache", None)
+        if c and now - c[0] < 300:
+            return c[1]
+        try:
+            day0 = datetime.utcfromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            tot = sum((t.get("pnl") or 0.0) for t in db.get_all_closed_trades(since=day0) if t.get("strategy") == "forex_scalp")
+        except Exception:
+            tot = 0.0
+        self._scalp_pnl_cache = (now, tot)
+        return tot
+
+    def _scalp_log_event(self, ticker, info, decision, price, spread_pct, flow, plan=None, trade_uid=None):
+        """Journalise un setup DETECTE (pris ou filtre), au plus une fois par (actif, sens, setup, niveau) toutes les 10 min."""
+        try:
+            lv = info.get("level") or {}
+            key = (ticker, info.get("side"), info.get("setup"), round(lv.get("p", 0), 5), decision.split(":")[0])
+            cache = getattr(self, "_scalp_log_seen", None)
+            if cache is None:
+                cache = self._scalp_log_seen = {}
+            now = time.time()
+            if now - cache.get(key, 0) < 600:
+                return
+            cache[key] = now
+            for k in [k for k, v in cache.items() if now - v > 3600]:
+                cache.pop(k, None)
+            real = plan is not None
+            pl = plan or info.get("hyp") or {}
+            atr5 = info.get("atr5") or 0.0
+            db.scalp_event_insert({
+                "ts": int(now * 1000), "asset": ticker, "side": info.get("side"), "setup": info.get("setup"),
+                "level_kinds": "+".join(lv.get("kinds", [])), "level_price": lv.get("p"), "level_w": lv.get("w"),
+                "price": price, "spread_pct": spread_pct, "atr5_pct": (atr5 / price * 100) if price else None,
+                "bias": info.get("bias"), "flow": flow, "hour_utc": datetime.utcfromtimestamp(now).hour,
+                "decision": decision, "sl": pl.get("sl"), "tp": pl.get("tp"), "risk_pct": pl.get("risk_pct"),
+                "tp_pct": pl.get("tp_pct"), "rr": pl.get("rr"), "net_rr": pl.get("net_rr"),
+                "cost_pct": self.cfg.get("FOREX_SCALP_FEE_PCT", 0.089) + (spread_pct or 0.0),
+                "hypothetical": 0 if real else 1, "trade_uid": trade_uid})
+        except Exception as e:
+            print(f"[SCALP-JOURNAL] ecriture ignoree : {e}")
+
+    def _scalp_cycle(self):
+        """Evalue chaque actif Forex configure et ouvre un scalp paper si un setup passe tous les filtres.
+        N interfere PAS avec le mode Forex : un seul slot par actif, donc le scalp ne s ouvre que sur un actif libre."""
+        cfg = self.cfg
+        if not cfg.get("FOREX_SCALP_ENABLED", 0) or self.info is None:
+            return
+        now = time.time()
+        if now - getattr(self, "_scalp_last_cycle", 0) < 8:
+            return
+        self._scalp_last_cycle = now
+        if not is_forex_open():
+            return
+        enabled_open = self.trading_enabled and cfg.get("STRATEGY_TRADING_ENABLED", {}).get("forex_scalp", True)
+        for ticker in cfg.get("FOREX_SCALP_SYMBOLS", ["xyz:EUR", "xyz:JPY", "xyz:KRW", "PAXG"]):
+            try:
+                self._scalp_eval_ticker(ticker, now, enabled_open)
+            except Exception as e:
+                print(f"[SCALP] {ticker} : evaluation ignoree : {type(e).__name__}: {e}")
+
+    def _scalp_eval_ticker(self, ticker, now, enabled_open):
+        cfg = self.cfg
+        symbol, state = self._scalp_state_for(ticker)
+        if state is None:
+            return
+        snap = {"ts": now, "blocker": None}
+        state.scalp_snapshot = snap
+        if state.position and state.position.get("strategy") == "forex_scalp":
+            snap["blocker"] = "scalp deja ouvert sur cet actif"      # gere par _manage_scalp ; pas de journal en double
+            return
+        price = float((self.all_mids or {}).get(ticker) or 0)
+        if price <= 0:
+            snap["blocker"] = "prix indisponible"
+            return
+        h1 = self._mtf_candles(ticker, "1h", 200)
+        m15 = self._mtf_candles(ticker, "15m", 60)
+        m5 = self._mtf_candles(ticker, "5m", 60)
+        m1 = self._mtf_candles(ticker, "1m", 40)
+        if len(h1) < 60 or len(m5) < 25:
+            snap["blocker"] = f"historique insuffisant (1H {len(h1)}, 5 min {len(m5)})"
+            return
+        try:
+            q = self.market_quality(ticker, state)
+            spread_pct = q.get("spread_pct") if q else None
+        except Exception:
+            spread_pct = None
+        spread_pct = spread_pct if spread_pct is not None else 0.02
+        flow = self._compute_trade_flow_pressure(ticker, price)
+        levels = scalp.build_levels(h1, int(now * 1000), price, scalp.round_step_for(ticker, price))
+        bias, binfo = scalp.bias_15m(m15, price)
+        snap.update({"bias": bias, "levels": [(round(l["p"], 6), "+".join(l["kinds"]), l["w"]) for l in levels
+                     if abs(l["p"] - price) / price < 0.0030][:4], "spread_pct": spread_pct})
+        ctx = {"price": price, "spread_pct": spread_pct, "m5": m5, "m1": m1, "levels": levels, "bias": bias, "now": now, "cfg": cfg}
+        cand, why, detected, info = scalp.find_setup(ctx)
+        if not detected:
+            snap["blocker"] = why
+            return
+        # un setup existe : on le journalise quoi qu il arrive, avec sa decision
+        blocker = None
+        if cand is None:
+            blocker = why
+        elif not enabled_open:
+            blocker = "filtre : scalp arrete (bouton Marche/Arret ou trading global)"
+        elif state.position:
+            blocker = f"filtre : slot occupe par {state.position.get('strategy', '?')}"
+        elif self._scalp_open_count() >= cfg.get("FOREX_SCALP_MAX_TRADES", 2):
+            blocker = "filtre : nombre maximal de scalps simultanes atteint"
+        elif time.time() - getattr(state, "scalp_last_loss_ts", 0) < cfg.get("FOREX_SCALP_COOLDOWN_SEC", 300):
+            blocker = "filtre : pause apres une perte sur cet actif"
+        elif self._scalp_today_pnl() <= -abs(cfg.get("FOREX_SCALP_DAILY_LOSS_USD", 1.0)):
+            blocker = "filtre : limite de perte journaliere du scalp atteinte"
+        else:
+            for _p in (self.states, self.accum_states):          # un actif ouvert ailleurs (autre pool) est indisponible
+                for sk2, st2 in _p.items():
+                    if ticker_from_slot_key(sk2) == ticker and st2.position:
+                        blocker = f"filtre : actif deja ouvert ({st2.position.get('strategy', '?')})"
+        if blocker:
+            snap["blocker"] = blocker
+            self._scalp_log_event(ticker, info, blocker, price, spread_pct, flow)
+            return
+        self._scalp_open(symbol, ticker, state, cand, price, spread_pct, flow)
+
+    def _scalp_open(self, symbol, ticker, state, cand, price, spread_pct, flow):
+        cfg = self.cfg
+        side = cand["side"]
+        fill = scalp.fill_price(side, price, spread_pct, cfg.get("FOREX_SCALP_SLIPPAGE_PCT", 0.005), "entry")
+        lev = max(int(cfg.get("FOREX_SCALP_LEVERAGE", 3)), 1)
+        size = round(float(cfg.get("FOREX_SCALP_NOTIONAL_USD", 30.0)) / lev, 4)
+        trade_uid = make_trade_uid("forex_scalp")
+        state.open_position(side, fill, cand["sl"], cand["tp"], size, confidence=round(cand["net_rr"] * 10, 1), leverage=lev, strategy="forex_scalp")
+        pos = state.position
+        pos["effective_mode"] = "paper"
+        pos["trade_uid"] = trade_uid
+        pos["slot_key"] = symbol
+        pos["engine"] = "scalp"
+        pos["scalp"] = {"r": abs(fill - cand["sl"]), "level": cand["level"]["p"], "opened_ts": time.time(), "cost_pct": cand["cost_pct"],
+                        "best": fill, "setup": cand["setup"]}
+        lv = cand["level"]
+        reasons = [f"SCALP : {cand['setup']} sur {'+'.join(lv['kinds'])} (confluence {lv['w']}) a {lv['p']:.6g}",
+                   f"biais 15 min {cand['bias']}", f"rejet 5 min + confirmation 1 min", f"stop {cand['risk_pct']:.3f} %",
+                   f"objectif {cand['tp_kind']} {cand['tp_pct']:.3f} % (gain/risque {cand['rr']:.2f}, net de frais {cand['net_rr']:.2f})",
+                   f"spread {spread_pct:.3f} % · frais supposes {cfg.get('FOREX_SCALP_FEE_PCT', 0.089)} %"]
+        label = "LONG" if side == "long" else "SHORT"
+        try:
+            quality = self.market_quality(ticker, state)
+        except Exception:
+            quality = {"vol_ratio": None, "activity_ratio": None, "flow": None, "spread_pct": None}
+        opened_event = {
+            "vol_ratio": quality.get("vol_ratio"), "activity_ratio": quality.get("activity_ratio"), "flow_at_entry": flow,
+            "spread_at_entry": spread_pct, "trade_uid": trade_uid, "slot_key": symbol, "is_accum_slot": False, "coin": ticker,
+            "action": label, "confidence": pos.get("confidence"), "leverage": lev, "position_size_pct": None,
+            "size_usd": round(size, 4), "sl_pct_used": None, "ttp_arm1_pct_used": None, "adaptive_sl_ttp": None,
+            "strategy": "forex_scalp", "trade_mode": "paper", "risk_reward": round(cand["rr"], 2), "timeframe": "scalp",
+            "entry": fill, "stop_loss": cand["sl"], "take_profit1": cand["tp"], "take_profit2": cand["tp"], "rsi": None,
+            "entry_reasons": " | ".join(reasons), "confidence_breakdown": json.dumps({"net_rr": round(cand["net_rr"], 3), "w": lv["w"]}),
+        }
+        try:
+            db.upsert_open_trade(opened_event)
+            opened_event["persisted"] = True
+        except Exception as e:
+            print(f"[SCALP] ecriture synchrone {trade_uid} impossible ({e}) — repli sur la file d evenements.")
+        self.emit("trade_opened", opened_event)
+        self.emit("log", {"msg": f"[{ticker}] ⚡ SCALP {label} {cand['setup']} @ {fill:.6g} | SL {cand['sl']:.6g} ({cand['risk_pct']:.3f} %) | "
+                                 f"TP {cand['tp']:.6g} ({cand['tp_pct']:.3f} %, net RR {cand['net_rr']:.2f})", "level": "signal"})
+        self._recent_entries.setdefault("forex_scalp", []).append(time.time())
+        self._scalp_log_event(ticker, {"side": side, "setup": cand["setup"], "level": lv, "bias": cand["bias"], "atr5": cand["atr5"]},
+                              "pris", price, spread_pct, flow, plan=cand, trade_uid=trade_uid)
+        self._save_open_positions()
+
+    def _manage_scalp(self, symbol, price, state, pos, ticker):
+        cfg = self.cfg
+        sc = pos.get("scalp")
+        if not sc:
+            return
+        long_side = pos["type"] == "long"
+        gain = (price - pos["entry"]) if long_side else (pos["entry"] - price)
+        pnl_usd_now = pos["size"] * pos.get("leverage", 1) * gain / pos["entry"]
+        if pnl_usd_now > 0 and (state.peak_pnl_usd is None or pnl_usd_now > state.peak_pnl_usd):
+            state.peak_pnl_usd = pnl_usd_now
+            state.absolute_peak_pnl_usd = pnl_usd_now
+        m5 = self._mtf_candles(ticker, "5m", 30, cache_only=True)
+        flow = self._compute_trade_flow_pressure(ticker, price)
+        dec = scalp.manage(pos, price, time.time(), m5, flow, cfg)
+        if dec["new_sl"] is not None:
+            pos["sl"] = dec["new_sl"]
+        if not dec["exit"]:
+            return
+        try:
+            q = self.market_quality(ticker, state)
+            spread_pct = (q.get("spread_pct") if q else None) or 0.02
+        except Exception:
+            spread_pct = 0.02
+        exit_px = scalp.fill_price(pos["type"], price, spread_pct, cfg.get("FOREX_SCALP_SLIPPAGE_PCT", 0.005), "exit")
+        _result = self._safe_close_position(state, exit_px, dec["exit"], ticker, pos, symbol, "paper")
+        if _result is None:
+            return
+        pnl, _, trade = _result
+        trade["entry_mechanism"] = f"SCALP {sc.get('setup', '')}"
+        if pnl < 0:
+            state.scalp_last_loss_ts = time.time()
+        self._scalp_pnl_cache = None
+        self.emit("trade", trade)
+        self.emit("log", {"msg": f"[{ticker}] ⚡ {dec['exit']} @ ${exit_px:.6g} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+        self._save_open_positions()
+
+    def _scalp_journal_eval_if_due(self):
+        """Mesure ce que chaque setup journalise serait devenu (60 min plus tard) : 3 actifs au plus par passage, 1 requete chacun."""
+        cfg = self.cfg
+        if not cfg.get("FOREX_SCALP_ENABLED", 0) or self.info is None:
+            return
+        now = time.time()
+        if now - getattr(self, "_scalp_eval_last", 0) < 120:
+            return
+        self._scalp_eval_last = now
+        try:
+            pend = db.scalp_events_pending(int((now - 65 * 60) * 1000), limit=80)
+            if not pend:
+                return
+            by = {}
+            for ev in pend:
+                by.setdefault(ev["asset"], []).append(ev)
+            for asset, evs in list(by.items())[:3]:
+                t0 = min(e["ts"] for e in evs)
+                t1 = max(e["ts"] for e in evs) + 61 * 60_000
+                raw = self.info.post("/info", {"type": "candleSnapshot", "req": {"coin": asset, "interval": "1m", "startTime": t0 - 60_000, "endTime": t1}})
+                time.sleep(0.3)
+                if not isinstance(raw, list) or not raw:
+                    continue
+                cs = [{"t": int(c["t"]), "o": float(c["o"]), "h": float(c["h"]), "l": float(c["l"]), "c": float(c["c"])} for c in raw]
+                for e in evs:
+                    entry = scalp.fill_price(e["side"], e["price"], e.get("spread_pct") or 0.02, cfg.get("FOREX_SCALP_SLIPPAGE_PCT", 0.005), "entry")
+                    out = scalp.evaluate_outcome(e["side"], entry, e["sl"], e["tp"], cs, e["ts"], 60)
+                    if out is None:
+                        continue
+                    db.scalp_event_update(e["id"], {**out, "evaluated": 1})
+            if now - getattr(self, "_scalp_prune_last", 0) > 86400:
+                self._scalp_prune_last = now
+                db.scalp_events_prune(int((now - 60 * 86400) * 1000))
+        except Exception as e:
+            print(f"[SCALP-JOURNAL] evaluation ignoree : {type(e).__name__}: {e}")
 
     def _flow_recorder_flush_if_due(self):
         """v4.349 — ecrit en base les tranches de flux terminees (toutes les 60 s au plus) et purge les
