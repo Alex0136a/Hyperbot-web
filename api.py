@@ -478,6 +478,8 @@ def _public_config() -> Dict[str, Any]:
     last_times = [s.last_price_time for s in bot.states.values() if s.last_price_time]
     return {
         "trading_mode": cfg.get("MODE", "paper"),
+        "fees_in_stats": bool(cfg.get("FEES_IN_STATS", 1)),                       # v4.355
+        "fee_round_trip_pct": float(cfg.get("FEE_ROUND_TRIP_PCT", 0.09)),
         "profile": cfg.get("PROFILE", "swing"),
         "position_pct": cfg.get("POSITION_SIZE_PCT"),
         # v4.10 — moteur ASYMETRIQUE : SL en % de E (perte $ plafonnee,
@@ -1022,6 +1024,9 @@ ADVANCED_SETTINGS = {
     "MTF_MAX_RISK_PCT":                {"label": "Top-down - distance maximale au SL (% du prix)", "default": 4.0},
     # v4.348 — profil d activite (voir _PROFILES)
     # v4.352 — profil Swing (tendance Daily, signal sur figures H4, entree a la cloture)
+    # v4.355 — frais integres aux statistiques et a la performance
+    "FEES_IN_STATS":               {"label": "Frais dans les statistiques : 1 = performance NETTE de frais (bilan, onglet P/L, performance par mode, win rate) ; 0 = brute. La base garde toujours le PnL brut", "default": 1},
+    "FEE_ROUND_TRIP_PCT":          {"label": "Frais aller-retour estimes (% du notionnel) pour les trades sans frais reels. 0,09 = 2 x 0,045 % (ordres au marche)", "default": 0.09},
     # v4.353 — scalp Forex (sous-mode du Forex, PAPER uniquement)
     "FOREX_SCALP_ENABLED":         {"label": "Scalp Forex - active (1) ou eteint (0). PAPER uniquement ; le mode Forex n est pas modifie", "default": 0},
     "FOREX_SCALP_NOTIONAL_USD":    {"label": "Scalp Forex - notionnel par trade ($, paper)", "default": 30.0},
@@ -1240,7 +1245,7 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+_ZERO_ALLOWED_INT_KEYS = {"FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
                           "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
@@ -1296,6 +1301,10 @@ def _coerce_advanced_value(key: str, value):
     if key in ("MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "MTF_USE_H4_LOWER", "MTF_DOUBLE_PATTERN_ENABLED",
                "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
+    if key == "FEES_IN_STATS" and value not in (0, 1):
+        return False, "1 (frais inclus) ou 0 (brut)"
+    if key == "FEE_ROUND_TRIP_PCT" and not 0 <= value <= 1:
+        return False, "entre 0 et 1 % du notionnel"
     if key in ("FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
     if key == "FOREX_SCALP_FEE_PCT" and not 0 <= value <= 1:
@@ -2126,11 +2135,14 @@ def get_strategy_performance(strategy: str, email: str = Depends(require_user)):
     "Performance" de chaque sous-onglet de l onglet Paper Trading."""
     all_closed = db.get_all_closed_trades(since=db.get_meta("stats_reset_at"))  # v4.306 — point de reinitialisation
     filtered = [t for t in all_closed if (t.get("strategy") or "forex") == strategy]
-    wins = [t for t in filtered if (t.get("pnl") or 0) > 0]
-    losses = [t for t in filtered if (t.get("pnl") or 0) <= 0]
-    total_pnl = sum((t.get("pnl") or 0) for t in filtered)
-    win_pnl = sum((t.get("pnl") or 0) for t in wins)
-    loss_pnl = sum((t.get("pnl") or 0) for t in losses)
+    # v4.355 — net de frais si FEES_IN_STATS : gagnant / perdant jugees APRES frais (un +0,02 $ qui coute 0,03 $ de
+    # frais est une perte), sommes nettes ; le brut reste disponible (net_pnl_gross).
+    wins = [t for t in filtered if _row_pnl(t) > 0]
+    losses = [t for t in filtered if _row_pnl(t) <= 0]
+    total_pnl = sum(_row_pnl(t) for t in filtered)
+    win_pnl = sum(_row_pnl(t) for t in wins)
+    loss_pnl = sum(_row_pnl(t) for t in losses)
+    gross_total = sum((t.get("pnl") or 0) for t in filtered)
     # v4.186 — SUR DEMANDE EXPLICITE : total des frais REELS estimes payes
     # a Hyperliquid pour ce mode — uniquement les trades LIVE ont un frais
     # non-None (voir bot_engine.py close_position), le paper n en a jamais.
@@ -2144,15 +2156,15 @@ def get_strategy_performance(strategy: str, email: str = Depends(require_user)):
     # apres frais estimes. Rappel : seuls les trades fermes depuis le point de reinitialisation des
     # statistiques sont comptes ("since"), pas "depuis le debut".
     closed_times = [t.get("closed_at") for t in filtered if t.get("closed_at")]
-    fee_pct = _ROUND_TRIP_FEE_RATE * 100
-    fees_est = sum((t["fees_real"] if t.get("fees_real") is not None else
-                    (t.get("size_usd") or 0) * (t.get("leverage") or 1) * fee_pct / 100) for t in filtered)
+    fee_pct = float(cfg.get("FEE_ROUND_TRIP_PCT", _ROUND_TRIP_FEE_RATE * 100))
+    fees_est = sum(_trade_fee_usd(t) for t in filtered)
     return {
+        "fees_on": _fees_on(), "net_pnl_gross": round(gross_total, 4),
         "since": db.get_meta("stats_reset_at"),
         "first_closed_at": min(closed_times) if closed_times else None,
         "last_closed_at": max(closed_times) if closed_times else None,
         "fees_estimated": round(fees_est, 4), "fee_pct": round(fee_pct, 3),
-        "net_after_fees_est": round(total_pnl - fees_est, 4),
+        "net_after_fees_est": round(gross_total - fees_est, 4),
         "strategy": strategy,
         "total_trades": len(filtered),
         "open_trades": open_count,
@@ -2467,8 +2479,7 @@ def stats_by_hour(days: int = Query(14, ge=1, le=90), email: str = Depends(requi
             continue
         mode = labels.get(t.get("strategy") or "forex", t.get("strategy"))
         block = f"{h // 4 * 4:02d}-{h // 4 * 4 + 4:02d}"
-        notional = (t.get("size_usd") or 0) * (t.get("leverage") or 1)
-        fees = t.get("fees_paid") if t.get("trade_mode") == "live" and t.get("fees_paid") else notional * 0.0009
+        fees = _trade_fee_usd(t)                       # v4.355 : meme calcul des frais partout
         b = out.setdefault(mode, {}).setdefault(block, {"n": 0, "wins": 0, "pnl": 0.0, "net": 0.0})
         b["n"] += 1
         b["wins"] += 1 if t["pnl"] > 0 else 0
@@ -2619,6 +2630,47 @@ def manual_close(item_id: int, email: str = Depends(require_user)):
 # ─────────────────────────────────────────────────────────────────────────
 _EXPORT_STRATEGY_LABEL = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation", "funding_contrarian": "Funding", "manual": "Manuel", "forex_scalp": "Forex scalp"}
 _ROUND_TRIP_FEE_RATE = 0.0009  # 2 x 0,045 % (taker) — estimation quand les frais reels manquent
+
+
+# ───────────────── v4.355 — FRAIS INTEGRES AUX STATISTIQUES (calcul unique, partout pareil) ─────────────────
+# La base garde le PnL BRUT de chaque trade (piste d audit, exports). Les frais sont retires a l AGREGATION :
+#   * trade LIVE avec frais reels connus (fees_real, issus des fills Hyperliquid) -> ces frais ;
+#   * sinon frais estimes du bot a la fermeture (fees_paid, live) ;
+#   * sinon (paper) notionnel x frais aller-retour : FEE_ROUND_TRIP_PCT (0,09 %), ou FOREX_SCALP_FEE_PCT
+#     pour le scalp (qui modelise ses propres frais) ;
+#   notionnel = marge x levier. Un seul interrupteur : FEES_IN_STATS.
+def _fees_on():
+    return bool(cfg.get("FEES_IN_STATS", 1))
+
+
+def _fee_pct_for(t):
+    if (t.get("strategy") or "") == "forex_scalp":
+        return float(cfg.get("FOREX_SCALP_FEE_PCT", 0.089))
+    return float(cfg.get("FEE_ROUND_TRIP_PCT", _ROUND_TRIP_FEE_RATE * 100))
+
+
+def _trade_fee_usd(t):
+    if t.get("fees_real") is not None:
+        return float(t["fees_real"])
+    if t.get("fees_paid") is not None:
+        return float(t["fees_paid"])
+    notional = (t.get("size_usd") or 0) * (t.get("leverage") or 1)
+    return notional * _fee_pct_for(t) / 100
+
+
+def _row_pnl(t):
+    """PnL utilise par les statistiques : net de frais si FEES_IN_STATS, sinon brut."""
+    g = t.get("pnl") or 0.0
+    return g - _trade_fee_usd(t) if _fees_on() else g
+
+
+def _fees_all_closed():
+    """Frais cumules de TOUS les trades fermes (pour ajuster capital et solde affiches)."""
+    try:
+        return sum(_trade_fee_usd(t) for t in db.get_all_closed_trades())
+    except Exception:
+        return 0.0
+
 
 
 def _resolve_tz(tz_name):
@@ -2862,7 +2914,7 @@ def get_streaks(strategy: str = Query(..., pattern="^(funding_contrarian|spot_ac
     streaks = []
     current = None
     for t in trades:
-        is_win = (t["pnl"] or 0) > 0
+        is_win = _row_pnl(t) > 0          # v4.355 : gagnant = gagnant APRES frais (si FEES_IN_STATS)
         if current and current["is_win"] == is_win:
             current["trades"].append(t)
         else:
@@ -2910,7 +2962,7 @@ def get_streaks(strategy: str = Query(..., pattern="^(funding_contrarian|spot_ac
             "length": len(rows),
             "start": rows[0].get("created_at"),
             "end": rows[-1].get("closed_at"),
-            "total_pnl": round(sum(r.get("pnl") or 0 for r in rows), 4),
+            "total_pnl": round(sum(_row_pnl(r) for r in rows), 4),
             "avg_confidence": avg("confidence"),
             "avg_flow_at_entry": avg("flow_at_entry"),
             "avg_vol_ratio": avg("vol_ratio"),
@@ -2921,7 +2973,7 @@ def get_streaks(strategy: str = Query(..., pattern="^(funding_contrarian|spot_ac
             "hour_distribution_utc": dict(sorted(hour_counts.items())),
             "coin_distribution": dict(sorted(coin_counts.items(), key=lambda x: -x[1])),
             "reason_distribution": reason_counts,
-            "trades": [{"id": r.get("id"), "coin": r.get("coin"), "action": r.get("action"), "pnl": r.get("pnl"),
+            "trades": [{"id": r.get("id"), "coin": r.get("coin"), "action": r.get("action"), "pnl": r.get("pnl"), "pnl_net": round(_row_pnl(r), 4),
                        "reason": r.get("reason"), "created_at": r.get("created_at"), "closed_at": r.get("closed_at")}
                       for r in rows],
         }
@@ -3041,7 +3093,7 @@ def _objective_stats(trades, fee_pct, takeoff_pct):
             continue
         sign = 1 if t.get("action") == "LONG" else -1
         notional = (t.get("size_usd") or 0) * (t.get("leverage") or 1)
-        fees = t.get("fees_real") if t.get("fees_real") is not None else notional * fee_pct / 100
+        fees = _trade_fee_usd(t)
         def after(p):
             return sign * (p - ex) / ex * 100 if p else None
         recs.append({
@@ -3109,13 +3161,8 @@ def get_objective(days: int = Query(7, ge=0, le=365), where: str = Query("all", 
     trades = db.get_all_closed_trades(since=since)
     if where != "all":
         trades = [t for t in trades if (t.get("trade_mode") or "paper") == where]
-    fee_pct, fee_src = _ROUND_TRIP_FEE_RATE * 100, "estimation (2 x 0,045 %)"
-    real = [t["fees_real"] / ((t.get("size_usd") or 0) * (t.get("leverage") or 1)) * 100
-            for t in db.get_all_closed_trades()
-            if t.get("fees_real") is not None and (t.get("size_usd") or 0) > 0 and (t.get("trade_mode") == "live")]
-    if len(real) >= 20:
-        real.sort()
-        fee_pct, fee_src = round(real[len(real) // 2], 4), f"frais reels mesures (mediane de {len(real)} trades live)"
+    fee_pct = float(cfg.get("FEE_ROUND_TRIP_PCT", _ROUND_TRIP_FEE_RATE * 100))      # v4.355 : un seul reglage de frais
+    fee_src = f"reglage Frais aller-retour ({fee_pct} %) ; frais reels des trades live quand ils sont connus"
     groups, total = _objective_stats(trades, fee_pct, takeoff)
     return {"days": days, "where": where, "takeoff": takeoff, "fee_pct": fee_pct, "fee_source": fee_src,
             "groups": groups, "total": total}
@@ -3362,6 +3409,7 @@ def _asset_bot_history():
         e["n"] += 1
         e["wins"] += 1 if pct > 0 else 0
         e["usd"] += t.get("pnl") or 0.0
+        e["fees"] = e.get("fees", 0.0) + _trade_fee_usd(t)          # v4.355
         e["sum_pct"] += pct
         e["take"] += 1 if (t.get("peak_pnl_pct") or 0) >= 0.5 else 0
         g = e["groups"].setdefault(_objective_group_key(t), {"n": 0, "wins": 0, "usd": 0.0})
@@ -3375,6 +3423,7 @@ def _asset_bot_history():
     for coin, e in out.items():
         n = e["n"]
         res[coin] = {"n": n, "win_rate": round(e["wins"] / n * 100, 0), "usd": round(e["usd"], 2),
+                     "usd_net": round(e["usd"] - e["fees"], 2), "fees": round(e["fees"], 2), "fees_on": _fees_on(),
                      "mean_pct": round(e["sum_pct"] / n, 3), "takeoff": round(e["take"] / n * 100, 0), "small": n < 30,
                      "last": e["last"], "groups": sorted(({"group": g, "n": v["n"], "win_rate": round(v["wins"] / v["n"] * 100, 0),
                                                            "usd": round(v["usd"], 2)} for g, v in e["groups"].items()),
@@ -3507,8 +3556,7 @@ def scalp_status(email: str = Depends(require_user)):
     def summ(ts):
         w = [t for t in ts if (t.get("pnl") or 0) > 0]
         return {"n": len(ts), "wins": len(w), "net": round(sum((t.get("pnl") or 0) for t in ts), 3)}
-    fee_pct = cfg.get("FOREX_SCALP_FEE_PCT", 0.089)
-    fees = sum((t.get("size_usd") or 0) * (t.get("leverage") or 1) * fee_pct / 100 for t in trades)
+    fees = sum(_trade_fee_usd(t) for t in trades)          # v4.355 : memes frais que partout (scalp : FOREX_SCALP_FEE_PCT)
     since = int((time.time() - 3 * 86400) * 1000)
     recent = db.scalp_events_since(since, limit=60)
     keys = ("FOREX_SCALP_ENABLED", "FOREX_SCALP_NOTIONAL_USD", "FOREX_SCALP_MAX_TRADES", "FOREX_SCALP_MAX_HOLD_MIN", "FOREX_SCALP_FEE_PCT",
@@ -3675,8 +3723,9 @@ def paper_portfolio(email: str = Depends(require_user)):
     initial_balance = float(db.get_meta("initial_balance", cfg["CAPITAL_USD"])) or 1.0
 
     closed = db.get_all_closed_trades(since=db.get_meta("stats_reset_at"))  # v4.306 — point de reinitialisation
-    wins = sum(1 for r in closed if (r["pnl"] or 0) > 0)
+    wins = sum(1 for r in closed if _row_pnl(r) > 0)          # v4.355 : win rate APRES frais si FEES_IN_STATS
     win_rate = round(wins / len(closed) * 100, 1) if closed else 0
+    fees_adj = _fees_all_closed() if _fees_on() else 0.0
 
     # v3.2 — FIX : "balance" (affiche "SOLDE VIRTUEL") ne deduisait pas les
     # montants deja engages dans les positions ouvertes — il affichait donc
@@ -3684,7 +3733,8 @@ def paper_portfolio(email: str = Depends(require_user)):
     # nouveaux trades.
     engaged = sum(p["size"] for p in open_positions)
     return {
-        "balance": round(bot.capital + realized_pnl - engaged, 2),
+        "balance": round(bot.capital + realized_pnl - fees_adj - engaged, 2),
+        "fees_on": _fees_on(), "fees_total": round(fees_adj, 2), "fee_pct": float(cfg.get("FEE_ROUND_TRIP_PCT", 0.09)),   # v4.355
         "open_trades": open_positions,
         "total_pnl": unrealized_pnl,
         "total_pnl_pct": round(unrealized_pnl / initial_balance * 100, 3),
@@ -3910,20 +3960,22 @@ def _day_key(iso_str: str) -> str:
 
 def _aggregate(rows: List[Dict[str, Any]], base: float = None) -> Dict[str, Any]:
     total = len(rows)
-    wins = [r for r in rows if (r["pnl"] or 0) > 0]
-    losses = [r for r in rows if (r["pnl"] or 0) <= 0]
-    gains = round(sum(r["pnl"] for r in wins), 2)
-    pertes = round(sum(r["pnl"] for r in losses), 2)
+    pn = [(r, _row_pnl(r)) for r in rows]          # v4.355 : net de frais si FEES_IN_STATS
+    wins = [r for r, p in pn if p > 0]
+    losses = [r for r, p in pn if p <= 0]
+    gains = round(sum(p for r, p in pn if p > 0), 2)
+    pertes = round(sum(p for r, p in pn if p <= 0), 2)
     net = round(gains + pertes, 2)
     win_rate = round(len(wins) / total * 100, 1) if total else 0
     # v4.2 — % du net par rapport au capital initial (base), quand fourni.
-    # Permet d afficher la performance en % en plus du montant $, pour le
-    # jour courant, le total et chaque jour de l historique (onglet Bilan).
     net_pct = round(net / base * 100, 2) if base else None
+    fees = sum(_trade_fee_usd(r) for r in rows)
+    gross = sum((r.get("pnl") or 0.0) for r in rows)
     return {
         "total": total, "wins": len(wins), "losses": len(losses),
         "gains": gains, "pertes": pertes, "net": net, "win_rate": win_rate,
         "net_pct": net_pct,
+        "fees": round(fees, 2), "net_gross": round(gross, 2), "fees_on": _fees_on(),   # v4.355
     }
 
 
@@ -3962,10 +4014,10 @@ def _compute_by_coin(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out = []
     for coin, coin_rows in by_coin.items():
         agg = _aggregate(coin_rows)
-        wins = [r for r in coin_rows if (r["pnl"] or 0) > 0]
-        losses = [r for r in coin_rows if (r["pnl"] or 0) <= 0]
-        avg_gain = round(sum(r["pnl"] for r in wins) / len(wins), 2) if wins else 0
-        avg_loss = round(sum(r["pnl"] for r in losses) / len(losses), 2) if losses else 0
+        wins = [r for r in coin_rows if _row_pnl(r) > 0]
+        losses = [r for r in coin_rows if _row_pnl(r) <= 0]
+        avg_gain = round(sum(_row_pnl(r) for r in wins) / len(wins), 2) if wins else 0
+        avg_loss = round(sum(_row_pnl(r) for r in losses) / len(losses), 2) if losses else 0
         total_minutes = 0
         for r in coin_rows:
             try:
@@ -4026,7 +4078,9 @@ def get_bilan(email: str = Depends(require_user)):
     # avec des positions ouvertes clairement en profit/perte. On inclut
     # desormais aussi le PnL LATENT (mark-to-market), comme pour Paper
     # Trading — Capital total = valeur reelle actuelle du portefeuille.
-    total_capital = bot.capital + total_pnl_realized + open_pnl
+    fees_all = _fees_all_closed()                       # v4.355 : frais cumules (reels si connus, sinon estimes)
+    fees_adj = fees_all if _fees_on() else 0.0
+    total_capital = bot.capital + total_pnl_realized + open_pnl - fees_adj
     performance_pct = round((total_capital - initial_balance) / initial_balance * 100, 2) if initial_balance else 0
 
     today_str = datetime.now(timezone.utc).strftime("%d/%m")
@@ -4036,7 +4090,8 @@ def get_bilan(email: str = Depends(require_user)):
     today_rows = [r for r in closed if r["created_at"] and _day_key(r["created_at"]) == today_str]
 
     return {
-        "balance": round(bot.capital + total_pnl_realized - sum(p["size"] for p in open_positions), 2),
+        "balance": round(bot.capital + total_pnl_realized - fees_adj - sum(p["size"] for p in open_positions), 2),
+        "fees_total": round(fees_all, 2), "fees_on": _fees_on(), "fee_pct": float(cfg.get("FEE_ROUND_TRIP_PCT", 0.09)),   # v4.355
         "total_capital": round(total_capital, 2),
         "initial_balance": round(initial_balance, 2),
         "performance_pct": performance_pct,
@@ -4215,10 +4270,10 @@ def get_stats_daily(email: str = Depends(require_user)):
     # ce que renvoyait cette route auparavant (une simple liste avec les
     # noms de _aggregate) — d ou la page blanche sans aucune donnee.
     closed = db.get_all_closed_trades(since=db.get_meta("stats_reset_at"))  # v4.306 — point de reinitialisation
-    wins_rows   = [r for r in closed if (r["pnl"] or 0) > 0]
-    losses_rows = [r for r in closed if (r["pnl"] or 0) <= 0]
-    total_wins_usdc = round(sum(r["pnl"] for r in wins_rows), 2)
-    total_losses_usdc = round(sum(r["pnl"] for r in losses_rows), 2)
+    wins_rows   = [r for r in closed if _row_pnl(r) > 0]          # v4.355 : net de frais si FEES_IN_STATS
+    losses_rows = [r for r in closed if _row_pnl(r) <= 0]
+    total_wins_usdc = round(sum(_row_pnl(r) for r in wins_rows), 2)
+    total_losses_usdc = round(sum(_row_pnl(r) for r in losses_rows), 2)
     win_rate = round(len(wins_rows) / len(closed) * 100, 1) if closed else 0
 
     today = datetime.now(timezone.utc).date()
@@ -4238,22 +4293,23 @@ def get_stats_daily(email: str = Depends(require_user)):
 
     daily = []
     for day, day_rows in buckets.items():
-        dw = [r for r in day_rows if (r["pnl"] or 0) > 0]
-        dl = [r for r in day_rows if (r["pnl"] or 0) <= 0]
+        dw = [r for r in day_rows if _row_pnl(r) > 0]
+        dl = [r for r in day_rows if _row_pnl(r) <= 0]
         daily.append({
             "day": day,
             "wins": len(dw),
-            "total_wins_usdc": round(sum(r["pnl"] for r in dw), 2),
+            "total_wins_usdc": round(sum(_row_pnl(r) for r in dw), 2),
             "losses": len(dl),
-            "total_losses_usdc": round(sum(r["pnl"] for r in dl), 2),
-            "net_pnl": round(sum(r["pnl"] or 0 for r in day_rows), 2),
+            "total_losses_usdc": round(sum(_row_pnl(r) for r in dl), 2),
+            "net_pnl": round(sum(_row_pnl(r) for r in day_rows), 2),
+            "fees": round(sum(_trade_fee_usd(r) for r in day_rows), 2),
         })
 
     def _fmt(r):
         return {
             "action": r["action"], "coin": r["coin"],
             "close_reason": r["reason"] or "?",
-            "pnl": r["pnl"], "closed_at": r["closed_at"],
+            "pnl": r["pnl"], "pnl_net": round(_row_pnl(r), 4), "closed_at": r["closed_at"],
         }
 
     return {
