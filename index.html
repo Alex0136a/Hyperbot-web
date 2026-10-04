@@ -1162,6 +1162,21 @@ function App() {
   const [orphanedLoading, setOrphanedLoading] = useState(false);
   // v4.316 — analyse des series de gains/pertes Funding
   // v4.345 — tableau de bord d objectif (positifs necessaires, decollage, part du pic gardee)
+  // v4.353 — scalp Forex (paper) : profil, etat, statistiques du journal
+  const [scalpProf, setScalpProf] = useState(null);
+  const [scalpSt, setScalpSt] = useState(null);
+  const [scalpStats, setScalpStats] = useState(null);
+  const [scalpDays, setScalpDays] = useState(7);
+  const [scalpBusy, setScalpBusy] = useState(false);
+  const loadScalpProf = async () => { try { setScalpProf(await apiCall("/api/config/profile?name=scalp","GET",null,token)); } catch(e) {} };
+  const loadScalpSt = async () => { try { setScalpSt(await apiCall("/api/scalp/status","GET",null,token)); } catch(e) {} };
+  const loadScalpStats = async () => { try { setScalpStats(await apiCall(`/api/scalp/stats?days=${scalpDays}`,"GET",null,token)); } catch(e) { alert("Erreur : "+e.message); } };
+  useEffect(() => { loadScalpProf(); loadScalpSt(); }, []);
+  useEffect(() => {
+    if (!scalpSt || !scalpSt.enabled) return;
+    const id = setInterval(loadScalpSt, 30000);
+    return () => clearInterval(id);
+  }, [scalpSt && scalpSt.enabled]);
   // v4.352 — profil Swing (tendance Daily, figures H4)
   const [swing, setSwing] = useState(null);
   const [swingBusy, setSwingBusy] = useState(false);
@@ -2042,6 +2057,112 @@ Confirmer ?`
               </div>
             )}
           </div>
+          {/* v4.353 — SUR DEMANDE EXPLICITE : scalp Forex (sous-mode du mode Forex, PAPER). Niveaux 1H, structure 15 min,
+              entree 5 min / 1 min, sortie rapide ; journal de chaque setup (pris ou filtre) pour l'ameliorer. */}
+          <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+              <div style={{fontSize:11,color:"#94a3b8",maxWidth:660}}>
+                <b style={{color:"#e2e8f0"}}>⚡ Scalp Forex (paper)</b>
+                {scalpSt && <span style={{marginLeft:8,fontWeight:700,color:scalpSt.enabled?"#86efac":"#94a3b8"}}>{scalpSt.enabled?(scalpSt.forex_open?"● actif":"● actif (marché fermé)"):"○ éteint"}</span>}<br/>
+                Cohabite avec le mode Forex <b>sans le modifier</b> : mêmes actifs (EUR, JPY, KRW, PAXG), un seul slot par actif, donc le scalp ne s'ouvre que sur un actif libre. Niveaux 1H (plus haut/bas de la veille et de la semaine, ouvertures de séance, nombres ronds), biais 15 min, rejet de niveau ou cassure + retest sur 5 min confirmé par la bougie 1 min, sortie rapide. Un setup n'est pris que si, <b>frais et spread déduits</b>, il garde un gain/risque positif. <b>Paper uniquement</b>, remplissages prudents (demi-spread + glissement).
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <button disabled={scalpBusy||(scalpProf&&scalpProf.active)} onClick={async()=>{
+                  if(!window.confirm("Activer le SCALP Forex (paper) ?\n\n• aucun changement du mode Forex actuel\n• notionnel 30 $, 2 scalps simultanés au plus, sortie au temps à 20 min\n• frais supposés 0,089 % (ordres au marché) : un setup dont le gain net de frais est trop faible est refusé et journalisé\n• perte paper journalière limitée à 1 $\n\nVos réglages actuels sont sauvegardés pour un retour en un clic.")) return;
+                  setScalpBusy(true);
+                  try{ await apiCall("/api/config/profile/apply?name=scalp","POST",null,token); await loadScalpProf(); await loadScalpSt(); }catch(e){ alert("Erreur : "+e.message); }
+                  setScalpBusy(false);
+                }} style={{background:"#facc15",border:"none",borderRadius:7,padding:"10px 16px",color:"#2a2200",fontFamily:"inherit",fontSize:13,fontWeight:800,cursor:"pointer",opacity:(scalpBusy||(scalpProf&&scalpProf.active))?0.5:1}}>⚡ Activer le scalp</button>
+                <button disabled={scalpBusy||!scalpProf||(!scalpProf.active&&!scalpProf.previous)} onClick={async()=>{
+                  setScalpBusy(true);
+                  try{ await apiCall("/api/config/profile/restore?name=scalp","POST",null,token); await loadScalpProf(); await loadScalpSt(); }catch(e){ alert("Erreur : "+e.message); }
+                  setScalpBusy(false);
+                }} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer",opacity:(scalpBusy||!scalpProf||(!scalpProf.active&&!scalpProf.previous))?0.5:1}}>↩ Éteindre le scalp</button>
+                <button onClick={()=>{loadScalpSt();}} style={{background:"#334155",border:"none",borderRadius:7,padding:"10px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>↻</button>
+              </div>
+            </div>
+            {scalpSt && (()=>{
+              const f = (v,d=2)=> v==null?"—":Number(v).toFixed(d);
+              const sg = (v,d=2)=> v==null?"—":`${v>=0?"+":""}${Number(v).toFixed(d)}`;
+              const th = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap",color:"#94a3b8"}, td = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap"};
+              const S = scalpSt.settings||{};
+              return (
+                <div style={{marginTop:10,fontSize:11,color:"#cbd5e1",lineHeight:1.6}}>
+                  <div>Aujourd'hui : <b>{scalpSt.today.n}</b> trade(s), {scalpSt.today.wins} gagnant(s), net brut <b style={{color:scalpSt.today.net>=0?"#86efac":"#fca5a5"}}>{sg(scalpSt.today.net)} $</b> · Total : <b>{scalpSt.total.n}</b> trades, {scalpSt.total.wins} gagnants, brut <b style={{color:scalpSt.total.net>=0?"#86efac":"#fca5a5"}}>{sg(scalpSt.total.net)} $</b>, frais estimés -{f(scalpSt.fees_estimated)} $, <b>net après frais {sg(scalpSt.net_after_fees_est)} $</b>.</div>
+                  <div style={{color:"#94a3b8"}}>Réglages : notionnel {S.FOREX_SCALP_NOTIONAL_USD} $ · {S.FOREX_SCALP_MAX_TRADES} scalps au plus · sortie au temps {S.FOREX_SCALP_MAX_HOLD_MIN} min · frais supposés {S.FOREX_SCALP_FEE_PCT} % · glissement {S.FOREX_SCALP_SLIPPAGE_PCT} %/jambe · gain/risque net minimal {S.FOREX_SCALP_MIN_NET_RR} · objectif minimal {S.FOREX_SCALP_MIN_TARGET_PCT} % · limite de perte du jour {S.FOREX_SCALP_DAILY_LOSS_USD} $ (modifiables dans les réglages avancés).</div>
+                  {scalpSt.open.length>0 && (
+                    <table style={{width:"100%",borderCollapse:"collapse",marginTop:6}}>
+                      <thead><tr><th style={{...th,textAlign:"left"}}>Scalp ouvert</th><th style={th}>Sens</th><th style={th}>Entrée</th><th style={th}>Prix</th><th style={th}>Gain</th><th style={th}>Stop</th><th style={th}>Objectif</th><th style={th}>Âge</th></tr></thead>
+                      <tbody>{scalpSt.open.map((o,i)=><tr key={i} style={{borderTop:"1px solid #1e2d4a"}}><td style={{...td,textAlign:"left",color:"#e2e8f0"}}>{o.asset} <span style={{color:"#64748b"}}>{o.setup}</span></td><td style={td}>{o.side==="long"?"LONG":"SHORT"}</td><td style={td}>{o.entry.toPrecision(6)}</td><td style={td}>{o.price?o.price.toPrecision(6):"—"}</td><td style={{...td,color:(o.gain_pct||0)>=0?"#86efac":"#fca5a5"}}>{sg(o.gain_pct,3)} %</td><td style={td}>{o.sl.toPrecision(6)}{o.be_done?" (BE)":""}</td><td style={td}>{o.tp.toPrecision(6)}</td><td style={td}>{o.age_min} min</td></tr>)}</tbody>
+                    </table>)}
+                  <details style={{marginTop:6}}>
+                    <summary style={{cursor:"pointer",color:"#94a3b8"}}>Derniers setups détectés (3 jours) : {scalpSt.recent.length}</summary>
+                    <div style={{overflowX:"auto",marginTop:4}}>
+                      <table style={{width:"100%",borderCollapse:"collapse"}}>
+                        <thead><tr><th style={{...th,textAlign:"left"}}>Heure</th><th style={{...th,textAlign:"left"}}>Actif</th><th style={th}>Sens</th><th style={{...th,textAlign:"left"}}>Setup / niveau</th><th style={th}>Biais</th><th style={{...th,textAlign:"left"}}>Décision</th><th style={th}>Stop</th><th style={th}>Objectif</th><th style={th}>RR net</th><th style={th}>Issue 60 min</th></tr></thead>
+                        <tbody>{scalpSt.recent.map((e,i)=><tr key={i} style={{borderTop:"1px solid #1e2d4a",opacity:e.decision==="pris"?1:0.75}}>
+                          <td style={{...td,textAlign:"left"}}>{new Date(e.ts).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}</td><td style={{...td,textAlign:"left",color:"#e2e8f0"}}>{e.asset}</td><td style={td}>{e.side==="long"?"L":"S"}</td>
+                          <td style={{...td,textAlign:"left"}}>{e.setup} · {e.level_kinds}</td><td style={td}>{e.bias}</td>
+                          <td style={{...td,textAlign:"left",color:e.decision==="pris"?"#86efac":"#fbbf24",maxWidth:340,whiteSpace:"normal"}}>{e.decision}</td>
+                          <td style={td}>{e.risk_pct==null?"—":f(e.risk_pct,3)+" %"}</td><td style={td}>{e.tp_pct==null?"—":f(e.tp_pct,3)+" %"}</td><td style={td}>{e.net_rr==null?"—":f(e.net_rr)}</td>
+                          <td style={{...td,color:e.outcome==="tp"?"#86efac":(e.outcome==="sl"?"#fca5a5":"#94a3b8")}}>{e.evaluated?({tp:"objectif",sl:"stop",none:"ni l'un ni l'autre"}[e.outcome]||e.outcome):"en attente"}</td>
+                        </tr>)}</tbody>
+                      </table>
+                    </div>
+                  </details>
+                </div>);
+            })()}
+            <div style={{marginTop:10,borderTop:"1px solid #1e2d4a",paddingTop:10}}>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                <b style={{fontSize:11,color:"#e2e8f0"}}>Outils d'amélioration du scalp</b>
+                <select value={scalpDays} onChange={e=>setScalpDays(Number(e.target.value))} style={{background:"#0b1220",color:"#e2e8f0",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",fontSize:12}}>
+                  <option value={1}>24 h</option><option value={3}>3 jours</option><option value={7}>7 jours</option><option value={30}>30 jours</option>
+                </select>
+                <button onClick={loadScalpStats} style={{background:"#facc15",border:"none",borderRadius:7,padding:"8px 14px",color:"#2a2200",fontFamily:"inherit",fontSize:12,fontWeight:800,cursor:"pointer"}}>📊 Statistiques du journal</button>
+                <button onClick={async()=>{
+                  try{
+                    const r = await fetch(`${API}/api/scalp/journal/export.csv?days=${scalpDays}`,{headers:{Authorization:`Bearer ${token}`}});
+                    if(!r.ok){ let d={}; try{d=await r.json();}catch(_){} throw new Error(d.detail||`Erreur ${r.status}`); }
+                    const blob = await r.blob(); const cd = r.headers.get("Content-Disposition")||""; const m = cd.match(/filename="([^"]+)"/);
+                    const url = URL.createObjectURL(blob); const a = document.createElement("a");
+                    a.href = url; a.download = m?m[1]:"scalp_journal.csv"; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000);
+                  }catch(e){ alert("Export impossible : "+e.message); }
+                }} style={{background:"#334155",border:"none",borderRadius:7,padding:"8px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>📥 Journal CSV</button>
+              </div>
+              {scalpStats && (()=>{
+                const f = (v,d=2)=> v==null?"—":Number(v).toFixed(d);
+                const th = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap",color:"#94a3b8"}, td = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap"};
+                const T = ({title,rows})=>(
+                  <div style={{marginTop:8}}>
+                    <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700,marginBottom:2}}>{title}</div>
+                    <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                      <thead><tr><th style={{...th,textAlign:"left"}}></th><th style={th}>Setups</th><th style={th}>Évalués</th><th style={th}>Objectif</th><th style={th}>Stop</th><th style={th}>Ni l'un ni l'autre</th><th style={th} title="Gain maximal médian dans les 15 min (en % du prix)">MFE 15</th><th style={th} title="Perte maximale médiane dans les 15 min">MAE 15</th><th style={th} title="Gain net estimé par setup si pris : objectif +gain, stop -risque, sinon rendement à 15 min, moins frais et spread">Net estimé / setup</th></tr></thead>
+                      <tbody>{rows.map(r=><tr key={r.key} style={{borderTop:"1px solid #1e2d4a"}}>
+                        <td style={{...td,textAlign:"left",color:"#e2e8f0",whiteSpace:"normal"}}>{r.key}</td><td style={td}>{r.n}</td><td style={td}>{r.evaluated}</td>
+                        <td style={td}>{r.tp_pct==null?"—":r.tp_pct+" %"}</td><td style={td}>{r.sl_pct==null?"—":r.sl_pct+" %"}</td><td style={td}>{r.none_pct==null?"—":r.none_pct+" %"}</td>
+                        <td style={td}>{r.mfe15==null?"—":f(r.mfe15,3)+" %"}</td><td style={td}>{r.mae15==null?"—":f(r.mae15,3)+" %"}</td>
+                        <td style={{...td,color:r.net_est==null?"#94a3b8":(r.net_est>=0?"#86efac":"#fca5a5"),fontWeight:700}}>{r.net_est==null?"—":(r.net_est>=0?"+":"")+f(r.net_est,3)+" %"}{r.net_n<30&&r.net_n>0?<span style={{color:"#fbbf24",marginLeft:4,fontSize:9}}>n={r.net_n}</span>:null}</td>
+                      </tr>)}</tbody>
+                    </table></div>
+                  </div>);
+                return (
+                  <div style={{marginTop:8}}>
+                    <div style={{fontSize:11,color:"#94a3b8"}}>Période : {scalpStats.days} jour(s) · {scalpStats.total.n} setups détectés, {scalpStats.total.evaluated} évalués. Un setup <b>filtré</b> est évalué avec un plan « pour voir » : cela montre ce que le filtre a empêché (ou évité).</div>
+                    <T title="Par décision (pris, ou raison du filtre)" rows={scalpStats.by_decision}/>
+                    <T title="Par setup" rows={scalpStats.by_setup}/>
+                    <T title="Par niveau" rows={scalpStats.by_level}/>
+                    <T title="Par biais 15 min" rows={scalpStats.by_bias}/>
+                    <T title="Par sens" rows={scalpStats.by_side}/>
+                    <T title="Par tranche horaire (UTC)" rows={scalpStats.by_hour}/>
+                    <T title="Par actif" rows={scalpStats.by_asset}/>
+                    <div style={{marginTop:8,fontSize:10,color:"#64748b",lineHeight:1.5}}>
+                      <b style={{color:"#94a3b8"}}>Comment s'en servir.</b> (1) « Par décision » : si les setups filtrés pour « frais trop lourds » avaient un net estimé nettement positif, les frais supposés ou le gain/risque net minimal sont trop sévères ; s'ils sont négatifs, le filtre fait son travail. (2) Comparez les setups, niveaux, biais et tranches horaires : gardez ce qui est positif sur au moins 30 setups évalués, retirez ce qui est négatif. (3) Le net estimé suppose des remplissages prudents mais pas la file d'attente d'un ordre limite : il reste optimiste.
+                    </div>
+                  </div>);
+              })()}
+            </div>
+          </div>
+
           {/* v4.352 — SUR DEMANDE EXPLICITE : profil Swing. Recablage de Spot-Accum (longs) et Accumulation (shorts) :
               tendance de fond et zones en JOURNALIER, figures de retournement en H4, entree a la cloture. */}
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16}}>
@@ -2975,7 +3096,7 @@ Confirmer ?`
               <>
                 <div style={{fontSize:10,color:"#94a3b8",marginBottom:8}}>Instantané au moment du clic — "aucun obstacle" veut dire que le signal de base n'est simplement pas encore réuni (RSI/EMA/tendance), pas qu'un trade est imminent.</div>
                 <textarea readOnly value={(entryDiag.market_regime?`🧭 RÉGIME DE MARCHÉ : ${(entryDiag.market_regime.regime||"?").toUpperCase()} — ${entryDiag.market_regime.detail||""}${entryDiag.market_regime.filter_enabled?" (filtre legacy actif : sans effet sur le top-down)":" (aucun blocage global : chaque mode juge la tendance de son actif)"}\n\n`:"")+entryDiag.results.map(r=>
-                  `${r.ticker}${r.has_position?" [position ouverte]":""} (il y a ${r.snapshot_age_sec!=null?r.snapshot_age_sec.toFixed(0)+"s":"?"})\n  💱 FOREX LONG  : ${r.blocker_long||"aucun obstacle particulier"}\n  💱 FOREX SHORT : ${r.blocker_short||"aucun obstacle particulier"}\n  🎯 ACCUMULATION : ${r.blocker_accumulation||"aucun obstacle particulier"}\n  🌱 SPOT-ACCUM : ${r.blocker_spot_accum||"aucun obstacle particulier"}${r.mtf?`\n  📊 TOP-DOWN : ${r.mtf}`:""}${r.blocker_funding?`\n  💰 FUNDING : ${r.blocker_funding}`:""}${r.situation?`\n  🧭 Situation : fond ${r.situation.fond} (1h) · court terme ${r.situation.court||"?"} (5 min) → ${r.situation.name.toUpperCase()}`:""}\n  📐 Niveaux : ${r.levels&&r.levels.trend_ema!=null?`${(r.levels.trend_ema_source||"EMA")} = ${Number(r.levels.trend_ema).toPrecision(6)} (prix ${r.levels.price!=null?(r.levels.price>r.levels.trend_ema?"au-dessus":"en dessous"):"?"})`:"EMA ?"} · support ${r.levels&&r.levels.support!=null?Number(r.levels.support).toPrecision(6):"?"} · résistance ${r.levels&&r.levels.resistance!=null?Number(r.levels.resistance).toPrecision(6):"?"}${r.levels&&r.levels.sr_source?` (${r.levels.sr_source})`:""}${r.levels&&(r.levels.support_1h||r.levels.resistance_1h)?` · structure 1h : support ${r.levels.support_1h!=null?Number(r.levels.support_1h).toPrecision(6):"?"} / résistance ${r.levels.resistance_1h!=null?Number(r.levels.resistance_1h).toPrecision(6):"?"}`:""}\n  📉 Qualité du marché : volatilité ${r.quality&&r.quality.vol_ratio!=null?r.quality.vol_ratio.toFixed(2)+"x":"?"} · activité ${r.quality&&r.quality.activity_ratio!=null?r.quality.activity_ratio.toFixed(2)+"x":"?"} son habitude · spread ${r.quality&&r.quality.spread_pct!=null?r.quality.spread_pct.toFixed(3)+" %":"?"}\n  📊 Flux transactions : ${r.trade_flow_pressure!=null?r.trade_flow_pressure.toFixed(2):"pas encore de donnees"}${r.trend_persistence_confirmed?" · pression soutenue CONFIRMEE":""}`
+                  `${r.ticker}${r.has_position?" [position ouverte]":""} (il y a ${r.snapshot_age_sec!=null?r.snapshot_age_sec.toFixed(0)+"s":"?"})\n  💱 FOREX LONG  : ${r.blocker_long||"aucun obstacle particulier"}\n  💱 FOREX SHORT : ${r.blocker_short||"aucun obstacle particulier"}${r.scalp?`\n  ⚡ SCALP : ${r.scalp}`:""}\n  🎯 ACCUMULATION : ${r.blocker_accumulation||"aucun obstacle particulier"}\n  🌱 SPOT-ACCUM : ${r.blocker_spot_accum||"aucun obstacle particulier"}${r.mtf?`\n  📊 TOP-DOWN : ${r.mtf}`:""}${r.blocker_funding?`\n  💰 FUNDING : ${r.blocker_funding}`:""}${r.situation?`\n  🧭 Situation : fond ${r.situation.fond} (1h) · court terme ${r.situation.court||"?"} (5 min) → ${r.situation.name.toUpperCase()}`:""}\n  📐 Niveaux : ${r.levels&&r.levels.trend_ema!=null?`${(r.levels.trend_ema_source||"EMA")} = ${Number(r.levels.trend_ema).toPrecision(6)} (prix ${r.levels.price!=null?(r.levels.price>r.levels.trend_ema?"au-dessus":"en dessous"):"?"})`:"EMA ?"} · support ${r.levels&&r.levels.support!=null?Number(r.levels.support).toPrecision(6):"?"} · résistance ${r.levels&&r.levels.resistance!=null?Number(r.levels.resistance).toPrecision(6):"?"}${r.levels&&r.levels.sr_source?` (${r.levels.sr_source})`:""}${r.levels&&(r.levels.support_1h||r.levels.resistance_1h)?` · structure 1h : support ${r.levels.support_1h!=null?Number(r.levels.support_1h).toPrecision(6):"?"} / résistance ${r.levels.resistance_1h!=null?Number(r.levels.resistance_1h).toPrecision(6):"?"}`:""}\n  📉 Qualité du marché : volatilité ${r.quality&&r.quality.vol_ratio!=null?r.quality.vol_ratio.toFixed(2)+"x":"?"} · activité ${r.quality&&r.quality.activity_ratio!=null?r.quality.activity_ratio.toFixed(2)+"x":"?"} son habitude · spread ${r.quality&&r.quality.spread_pct!=null?r.quality.spread_pct.toFixed(3)+" %":"?"}\n  📊 Flux transactions : ${r.trade_flow_pressure!=null?r.trade_flow_pressure.toFixed(2):"pas encore de donnees"}${r.trend_persistence_confirmed?" · pression soutenue CONFIRMEE":""}`
                 ).join("\n\n")}
                   style={{width:"100%",height:320,background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:10,color:"#e2e8f0",fontFamily:"monospace",fontSize:11,resize:"vertical"}}
                   onClick={e=>e.target.select()}
