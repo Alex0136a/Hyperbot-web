@@ -1006,6 +1006,9 @@ ADVANCED_SETTINGS = {
     "TRADE_FLOW_WINDOW_SEC":   {"label": "Flux - fenetre d analyse (secondes)", "default": 180},
     # v4.268 — TTP Funding
     "FUNDING_TTP_ARM_PCT":       {"label": "Funding - TTP armement (% de prix)", "default": 0.5},
+    # v4.351 — filtre de qualite du marche de Funding (pose en v4.317, jusqu ici modifiable seulement dans le code)
+    "FUNDING_MAX_ACTIVITY_RATIO": {"label": "Funding - plafond d activite du marche (x l habitude ; 0 = AUCUN plafond). Au-dela, l entree est refusee ('marche trop actif')", "default": 1.1},
+    "FUNDING_MAX_SPREAD_PCT":     {"label": "Funding - plafond de spread (% du prix ; 0 = AUCUN plafond). Au-dela, l entree est refusee ('spread trop large')", "default": 0.02},
     # v4.276 — regime de marche et plages horaires
     "MARKET_REGIME_FILTER_ENABLED": {"label": "Regime de marche - filtre actif (1 = oui, 0 = non)", "default": 0},
     "MARKET_REGIME_BREADTH_PCT": {"label": "Regime de marche - % minimal d actifs dans le meme sens", "default": 60},
@@ -1271,6 +1274,10 @@ def _coerce_advanced_value(key: str, value):
         return False, "1 (oui) ou 0 (non)"
     if key.endswith("_TREND_MODE") and value not in (0, 1, 2):
         return False, "0, 1 ou 2"
+    if key == "FUNDING_MAX_ACTIVITY_RATIO" and not 0 <= value <= 20:
+        return False, "entre 0 (aucun plafond) et 20"
+    if key == "FUNDING_MAX_SPREAD_PCT" and not 0 <= value <= 5:
+        return False, "entre 0 (aucun plafond) et 5 %"
     if key == "MTF_MIN_RR" and not 0.5 <= value <= 5:
         return False, "entre 0,5 et 5"
     if key == "MTF_RISK_PCT" and not 0.05 <= value <= 2:
