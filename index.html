@@ -335,11 +335,15 @@ function generateBilan(bilan, paper) {
   t += `  Date     : ${now.toLocaleDateString("fr-FR")} à ${now.toLocaleTimeString("fr-FR")}\n`;
   t += `${sep}\n\n`;
   
+  t += bilan.fees_on
+    ? `  MONTANTS NETS DE FRAIS (${bilan.fee_pct} % du notionnel ; frais réels quand ils sont connus). Interrupteur : onglet TRADES P/L.\n\n`
+    : `  MONTANTS BRUTS (sans frais). Interrupteur : onglet TRADES P/L.\n\n`;
   t += `[ CAPITAL ]\n${thin}\n`;
   t += `  Balance disponible : ${bilan.balance} USDC\n`;
   t += `  Capital total      : ${bilan.total_capital} USDC\n`;
   t += `  Capital initial    : ${bilan.initial_balance} USDC\n`;
   t += `  Performance        : ${bilan.performance_pct>=0?"+":""}${bilan.performance_pct}%\n`;
+  if(bilan.fees_on && bilan.fees_total!=null) t += `  Frais cumulés      : -${bilan.fees_total} USDC (déjà déduits du capital et du solde)\n`;
   t += `  PnL ouvert         : ${bilan.open_pnl>=0?"+":""}${bilan.open_pnl} USDC (${bilan.open_count} trades)\n`;
   if(bilan.running_seconds != null) {
     const diff = Math.floor(bilan.running_seconds);
@@ -362,16 +366,20 @@ function generateBilan(bilan, paper) {
   t += `  Gains        : ${bilan.today.wins} trades | +${bilan.today.gains} USDC\n`;
   t += `  Pertes       : ${bilan.today.losses} trades | ${bilan.today.pertes} USDC\n`;
   t += `  Win rate     : ${bilan.today.win_rate}%\n`;
-  t += `  NET DU JOUR  : ${bilan.today.net>=0?"+":""}${bilan.today.net} USDC${bilan.today.net_pct!=null?` (${bilan.today.net_pct>=0?"+":""}${bilan.today.net_pct}%)`:""}\n\n`;
+  t += `  NET DU JOUR  : ${bilan.today.net>=0?"+":""}${bilan.today.net} USDC${bilan.today.net_pct!=null?` (${bilan.today.net_pct>=0?"+":""}${bilan.today.net_pct}%)`:""}${bilan.today.fees_on?" après frais":""}\n`;
+  if(bilan.today.fees_on) t += `  (avant frais : ${bilan.today.net_gross>=0?"+":""}${bilan.today.net_gross} USDC | frais : -${bilan.today.fees} USDC)\n`;
+  t += `\n`;
   
   t += `[ TOTAL DEPUIS LE DÉBUT ]\n${thin}\n`;
   t += `  Trades total : ${bilan.total.total}\n`;
   t += `  Gains        : ${bilan.total.wins} trades | +${bilan.total.gains} USDC\n`;
   t += `  Pertes       : ${bilan.total.losses} trades | ${bilan.total.pertes} USDC\n`;
   t += `  Win rate     : ${bilan.total.win_rate}%\n`;
-  t += `  NET TOTAL    : ${bilan.total.net>=0?"+":""}${bilan.total.net} USDC${bilan.total.net_pct!=null?` (${bilan.total.net_pct>=0?"+":""}${bilan.total.net_pct}%)`:""}\n\n`;
+  t += `  NET TOTAL    : ${bilan.total.net>=0?"+":""}${bilan.total.net} USDC${bilan.total.net_pct!=null?` (${bilan.total.net_pct>=0?"+":""}${bilan.total.net_pct}%)`:""}${bilan.total.fees_on?" après frais":""}\n`;
+  if(bilan.total.fees_on) t += `  (avant frais : ${bilan.total.net_gross>=0?"+":""}${bilan.total.net_gross} USDC | frais : -${bilan.total.fees} USDC)\n`;
+  t += `\n`;
   
-  t += `[ 7 DERNIERS JOURS ]\n${thin}\n`;
+  t += `[ 7 DERNIERS JOURS ]${bilan.fees_on?" (nets de frais)":" (bruts)"}\n${thin}\n`;
   (bilan.daily||[]).forEach(d=>{
     t += `  ${d.day} | ✅${d.wins} ❌${d.losses} | ${d.net>=0?"+":""}${Math.round(d.net*100)/100} USDC${d.net_pct!=null?` (${d.net_pct>=0?"+":""}${d.net_pct}%)`:""}\n`;
   });
@@ -2160,7 +2168,7 @@ Confirmer ?`
                           return (
                           <tr key={c.coin} style={{borderTop:"1px solid #1e2d4a"}}>
                             <td style={{...td,textAlign:"left",color:"#e2e8f0",fontWeight:700}}>{c.coin}</td>
-                            <td style={{...td,color:h?(h.usd>=0?"#86efac":"#fca5a5"):"#64748b"}} title={h?(h.groups||[]).map(g=>`${g.group} : ${g.n} trades, ${g.win_rate} %, ${g.usd} $`).join("\n"):""}>{h?`${h.n} · ${h.win_rate}% · ${h.usd>=0?"+":""}${h.usd.toFixed(2)} $${h.small?" ⚠":""}`:"—"}</td>
+                            <td style={{...td,color:h?(((h.fees_on?h.usd_net:h.usd)>=0)?"#86efac":"#fca5a5"):"#64748b"}} title={h?(h.groups||[]).map(g=>`${g.group} : ${g.n} trades, ${g.win_rate} %, ${g.usd} $`).join("\n"):""}>{h?(()=>{ const u = h.fees_on?h.usd_net:h.usd; return `${h.n} · ${h.win_rate}% · ${u>=0?"+":""}${u.toFixed(2)} $${h.fees_on?" net":""}${h.small?" ⚠":""}`; })():"—"}</td>
                             <td style={td}>{c.vol_usd_24h==null?"—":(c.vol_usd_24h>=1e6?`${(c.vol_usd_24h/1e6).toFixed(1)} M$`:`${Math.round(c.vol_usd_24h/1e3)} k$`)}</td>
                             <td style={td}>{f(c.range15_med,3," %")}</td><td style={td}>{f(c.daily_range_med,1," %")}</td>
                             <td style={{...td,color:c.rel_7d==null?"#94a3b8":(c.rel_7d>=0?"#86efac":"#fca5a5")}}>{sg(c.rel_7d,1)}</td>
@@ -3568,6 +3576,23 @@ Confirmer ?`
         <div style={{padding:16,maxWidth:900}}>
           <LiveSyncCard token={token}/>
 
+          {/* v4.355 — SUR DEMANDE EXPLICITE : frais integres aux calculs de performance et de statistique (interrupteur). */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:11,color:"#94a3b8"}}>
+            <span>💸 <b style={{color:"#e2e8f0"}}>Frais {config?.fee_round_trip_pct ?? 0.09} % aller-retour</b> : {config?.fees_in_stats!==false
+              ? <span style={{color:"#86efac"}}>inclus dans la performance et les statistiques (gains, pertes, win rate, net, bilan). Frais réels des trades live utilisés quand ils sont connus ; la base garde le PnL brut.</span>
+              : <span style={{color:"#fbbf24"}}>exclus : tout est affiché en brut, sans frais.</span>}</span>
+            <button onClick={async()=>{
+              try{
+                await apiCall("/api/config/advanced","PUT",{values:{FEES_IN_STATS: config?.fees_in_stats!==false ? 0 : 1}},token);
+                await loadData();
+                loadAllStrategyPerformance(false);
+                if(paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes") loadStrategyPerformance(paperSubTab,false);
+              }catch(e){ alert("Erreur : "+e.message); }
+            }} style={{background:"#334155",border:"none",borderRadius:6,padding:"6px 12px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+              {config?.fees_in_stats!==false ? "Afficher en brut" : "Inclure les frais"}
+            </button>
+          </div>
+
           {/* STATS PORTEFEUILLE */}
           <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,marginBottom:16}}>
             {[
@@ -3575,7 +3600,7 @@ Confirmer ?`
               {l:"PNL OUVERT",v:`${paper?.total_pnl>=0?"+":""}${paper?.total_pnl?.toFixed(2)||"0.00"} USDC`,c:paper?.total_pnl>=0?"#34d399":"#f87171"},
               {l:"PERFORMANCE",v:`${paper?.total_pnl_pct>=0?"+":""}${paper?.total_pnl_pct?.toFixed(2)||"0.00"}%`,c:paper?.total_pnl_pct>=0?"#34d399":"#f87171"},
               {l:"TRADES OUVERTS",v:paper?.open_trades?.length||0,c:"#c084fc"},
-              {l:"WIN RATE",v:`${paper?.win_rate??0}%`,c:"#fbbf24"},
+              {l:`WIN RATE${paper?.fees_on?" (après frais)":""}`,v:`${paper?.win_rate??0}%`,c:"#fbbf24"},
             ].map((s,i)=>(
               <div key={i} style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:8,padding:"12px",textAlign:"center"}}>
                 <div style={{fontSize:16,fontWeight:700,color:s.c}}>{s.v}</div>
@@ -3618,7 +3643,7 @@ Confirmer ?`
                             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
                               <div><div style={{fontSize:15,fontWeight:700,color:"#e2e8f0"}}>{perf.open_trades}/{perf.total_trades}</div><div style={{fontSize:8,color:"#94a3b8"}}>OUVERTS/TOTAL</div></div>
                               <div><div style={{fontSize:15,fontWeight:700,color:"#fbbf24"}}>{perf.win_rate}%</div><div style={{fontSize:8,color:"#94a3b8"}}>WIN RATE</div></div>
-                              <div style={{gridColumn:"span 2"}}><div style={{fontSize:15,fontWeight:700,color:perf.net_pnl>=0?"#34d399":"#f87171"}}>{perf.net_pnl>=0?"+":""}{perf.net_pnl.toFixed(2)} USDC</div><div style={{fontSize:8,color:"#94a3b8"}}>NET</div></div>
+                              <div style={{gridColumn:"span 2"}}><div style={{fontSize:15,fontWeight:700,color:perf.net_pnl>=0?"#34d399":"#f87171"}}>{perf.net_pnl>=0?"+":""}{perf.net_pnl.toFixed(2)} USDC</div><div style={{fontSize:8,color:"#94a3b8"}}>{perf.fees_on?"NET (après frais)":"NET"}</div></div>
                               {perf.refreshed_at && <div style={{gridColumn:"span 2",fontSize:8,color:"#64748b"}}>calculé à {new Date(perf.refreshed_at*1000).toLocaleTimeString("fr-FR")}{perf.since?" · depuis la réinitialisation":""}</div>}
                               {perf.total_fees_paid>0 && (
                                 <div style={{gridColumn:"span 2"}}><div style={{fontSize:12,fontWeight:700,color:"#94a3b8"}}>-{perf.total_fees_paid.toFixed(2)} USDC</div><div style={{fontSize:8,color:"#64748b"}}>FRAIS HYPERLIQUID (estimés, live uniquement)</div></div>
@@ -4016,7 +4041,7 @@ Confirmer ?`
                       {[
                         {l:"TRADES (ouverts/total)",v:`${perf.open_trades}/${perf.total_trades}`,c:"#94a3b8"},
                         {l:"WIN RATE",v:`${perf.win_rate}%`,c:"#fbbf24"},
-                        {l:"NET",v:`${perf.net_pnl>=0?"+":""}${perf.net_pnl.toFixed(2)} USDC`,c:perf.net_pnl>=0?"#34d399":"#f87171"},
+                        {l:perf.fees_on?"NET (après frais)":"NET",v:`${perf.net_pnl>=0?"+":""}${perf.net_pnl.toFixed(2)} USDC`,c:perf.net_pnl>=0?"#34d399":"#f87171"},
                         {l:"GAINS / PERTES",v:`+${perf.win_pnl.toFixed(2)} / ${perf.loss_pnl.toFixed(2)}`,c:"#94a3b8"},
                       ].map((s,i)=>(
                         <div key={i} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:10,textAlign:"center"}}>
@@ -4034,8 +4059,9 @@ Confirmer ?`
                         Calculé à <b style={{color:"#e2e8f0"}}>{new Date(perf.refreshed_at*1000).toLocaleTimeString("fr-FR")}</b> (actualisé chaque minute) ·{" "}
                         {perf.since ? <>trades fermés <b style={{color:"#fbbf24"}}>depuis la réinitialisation du {new Date(perf.since).toLocaleString("fr-FR")}</b> (pas depuis le début)</> : "depuis le début"} ·
                         premier fermé le {dt(perf.first_closed_at)}, dernier le {dt(perf.last_closed_at)}.<br/>
-                        Les gains et pertes sont bruts (le paper n'a pas de frais) : frais estimés à {perf.fee_pct} % du notionnel = <b>-{(perf.fees_estimated||0).toFixed(2)} USDC</b> → net après frais estimé{" "}
-                        <b style={{color:perf.net_after_fees_est>=0?"#34d399":"#f87171"}}>{perf.net_after_fees_est>=0?"+":""}{(perf.net_after_fees_est||0).toFixed(2)} USDC</b>.
+                        {perf.fees_on
+                          ? <>Gains, pertes, win rate et net sont <b>après frais</b> : brut <b>{perf.net_pnl_gross>=0?"+":""}{(perf.net_pnl_gross||0).toFixed(2)}</b> − frais <b>{(perf.fees_estimated||0).toFixed(2)}</b> ({perf.fee_pct} % du notionnel ; frais réels si connus) = <b style={{color:perf.net_pnl>=0?"#34d399":"#f87171"}}>{perf.net_pnl>=0?"+":""}{perf.net_pnl.toFixed(2)} USDC</b>.</>
+                          : <>Gains et pertes <b>bruts</b> (frais exclus) : frais estimés à {perf.fee_pct} % du notionnel = <b>-{(perf.fees_estimated||0).toFixed(2)} USDC</b> → net après frais estimé{" "}<b style={{color:perf.net_after_fees_est>=0?"#34d399":"#f87171"}}>{perf.net_after_fees_est>=0?"+":""}{(perf.net_after_fees_est||0).toFixed(2)} USDC</b>.</>}
                       </div>);
                   })()}
 
