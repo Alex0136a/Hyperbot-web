@@ -120,6 +120,18 @@ def init_db():
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_flow_5m_t0 ON flow_5m (t0)")
         conn.execute("CREATE TABLE IF NOT EXISTS flow_5m_alive (t0 INTEGER PRIMARY KEY)")
+        # v4.353 — journal du SCALP Forex : chaque setup detecte (pris OU filtre) + son issue 60 min plus tard
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scalp_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, asset TEXT, side TEXT, setup TEXT,
+                level_kinds TEXT, level_price REAL, level_w INTEGER, price REAL, spread_pct REAL, atr5_pct REAL,
+                bias TEXT, flow REAL, hour_utc INTEGER, decision TEXT, sl REAL, tp REAL, risk_pct REAL, tp_pct REAL,
+                rr REAL, net_rr REAL, cost_pct REAL, hypothetical INTEGER DEFAULT 0, trade_uid TEXT,
+                evaluated INTEGER DEFAULT 0, outcome TEXT, hit_min REAL, mfe5 REAL, mae5 REAL, mfe15 REAL, mae15 REAL,
+                mfe60 REAL, mae60 REAL, fin15 REAL, fin60 REAL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_scalp_events_ts ON scalp_events (ts)")
         # Migration : ajoute la colonne rsi si la table trades existait deja
         # (CREATE TABLE IF NOT EXISTS n ajoute pas les colonnes manquantes a
         # une table deja creee par une version anterieure du code).
@@ -567,7 +579,7 @@ def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=N
 
 
 # ── v4.265 — Suivi apres sortie + export ─────────────────────────────────
-FOLLOWUP_STRATEGIES = ("spot_accumulation", "accumulation", "funding_contrarian", "forex", "manual")  # v4.269 : + Funding ; v4.273 : + Manuel ; v4.323 : + Forex (export CSV et suivi +30/+60 min)
+FOLLOWUP_STRATEGIES = ("spot_accumulation", "accumulation", "funding_contrarian", "forex", "manual", "forex_scalp")  # v4.269 : + Funding ; v4.273 : + Manuel ; v4.323 : + Forex (export CSV et suivi +30/+60 min)
 
 
 def list_trades_needing_followup(min_age_minutes=62, max_age_days=16, limit=5):
@@ -1067,3 +1079,46 @@ def flow_export_rows(since_ms, until_ms=None):
     q += " ORDER BY t0, ticker"
     with _lock, _connect() as conn:
         return [tuple(r) for r in conn.execute(q, params).fetchall()]
+
+
+# ── v4.353 — Journal du scalp Forex (lecture seule pour le trading : sert a AMELIORER le scalp) ──────────
+_SCALP_EVENT_FIELDS = ("ts", "asset", "side", "setup", "level_kinds", "level_price", "level_w", "price", "spread_pct", "atr5_pct",
+                       "bias", "flow", "hour_utc", "decision", "sl", "tp", "risk_pct", "tp_pct", "rr", "net_rr", "cost_pct",
+                       "hypothetical", "trade_uid")
+
+
+def scalp_event_insert(ev):
+    vals = [ev.get(k) for k in _SCALP_EVENT_FIELDS]
+    with _lock, _connect() as conn:
+        cur = conn.execute(f"INSERT INTO scalp_events ({', '.join(_SCALP_EVENT_FIELDS)}) VALUES ({', '.join('?' * len(_SCALP_EVENT_FIELDS))})", vals)
+        conn.commit()
+        return cur.lastrowid
+
+
+def scalp_events_pending(max_ts_ms, limit=60):
+    with _lock, _connect() as conn:
+        rows = conn.execute("SELECT * FROM scalp_events WHERE evaluated = 0 AND ts <= ? AND sl IS NOT NULL AND tp IS NOT NULL "
+                            "ORDER BY ts LIMIT ?", (max_ts_ms, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def scalp_event_update(event_id, fields):
+    if not fields:
+        return
+    keys = list(fields)
+    with _lock, _connect() as conn:
+        conn.execute(f"UPDATE scalp_events SET {', '.join(k + '=?' for k in keys)} WHERE id=?", [fields[k] for k in keys] + [event_id])
+        conn.commit()
+
+
+def scalp_events_since(since_ms, limit=5000):
+    with _lock, _connect() as conn:
+        rows = conn.execute("SELECT * FROM scalp_events WHERE ts >= ? ORDER BY ts DESC LIMIT ?", (since_ms, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def scalp_events_prune(older_than_ms):
+    with _lock, _connect() as conn:
+        n = conn.execute("DELETE FROM scalp_events WHERE ts < ?", (older_than_ms,)).rowcount
+        conn.commit()
+    return n
