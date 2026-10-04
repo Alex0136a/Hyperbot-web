@@ -1021,6 +1021,12 @@ ADVANCED_SETTINGS = {
     "MTF_MAX_NOTIONAL_USD":            {"label": "Top-down - notionnel maximal par trade ($)", "default": 30.0},
     "MTF_MAX_RISK_PCT":                {"label": "Top-down - distance maximale au SL (% du prix)", "default": 4.0},
     # v4.348 — profil d activite (voir _PROFILES)
+    # v4.352 — profil Swing (tendance Daily, signal sur figures H4, entree a la cloture)
+    "MTF_USE_H4_LOWER":                {"label": "Top-down - signal sur bougies H4 (1) ou selon M15/H1 (0). Profil Swing : 1 avec la tendance Daily", "default": 0},
+    "MTF_SIGNAL_MAX_AGE_SEC":          {"label": "Top-down - entree seulement dans les N secondes qui suivent la cloture de la bougie du signal (0 = sans limite)", "default": 0},
+    "MTF_DOUBLE_PATTERN_ENABLED":      {"label": "Top-down - ajouter double creux / double sommet aux motifs de retournement (1/0)", "default": 0},
+    "MTF_TREND_PATH_ENABLED":          {"label": "Top-down - chemin d entree 'tendance' par mesure de mouvement (1/0)", "default": 1},
+    "MTF_REQUIRE_FLOW_CONFIRM":        {"label": "Top-down - exiger que le flux de transactions ne soit pas hostile (1/0)", "default": 1},
     "MTF_REQUIRE_REAL_TARGET_ZONE":    {"label": "Top-down - exiger un objectif reel, une zone opposee distincte (1 = oui, 0 = entrer sans objectif fixe : sortie par breakeven, verrou et suiveur)", "default": 1},
     "MTF_REQUIRE_H1_STRUCTURE":        {"label": "Top-down - exiger la structure H1 (EMA20 H1 qui repart ou prix repasse au-dessus / en dessous) (1/0)", "default": 1},
     "SPOT_ACCUM_TREND_MODE":           {"label": "Spot-Accum - tendance H4 exigee a l entree (0 = stricte ou repli, 1 = tant que la structure n est pas opposee, 2 = aucune)", "default": 0},
@@ -1217,7 +1223,7 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+_ZERO_ALLOWED_INT_KEYS = {"MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
                           "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
@@ -1270,8 +1276,13 @@ def _coerce_advanced_value(key: str, value):
         return False, "entre 50 et 100 %"
     if key == "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND" and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
-    if key in ("MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE") and value not in (0, 1):
+    if key in ("MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "MTF_USE_H4_LOWER", "MTF_DOUBLE_PATTERN_ENABLED",
+               "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
+    if key == "MTF_SIGNAL_MAX_AGE_SEC" and not 0 <= value <= 86400:
+        return False, "entre 0 (sans limite) et 86 400 secondes"
+    if key == "MTF_MAX_RISK_PCT" and not 0.5 <= value <= 20:
+        return False, "entre 0,5 % et 20 %"
     if key.endswith("_TREND_MODE") and value not in (0, 1, 2):
         return False, "0, 1 ou 2"
     if key == "FUNDING_MAX_ACTIVITY_RATIO" and not 0 <= value <= 20:
@@ -3153,6 +3164,28 @@ _PROFILES = {
 }
 
 
+_PROFILES["swing"] = {
+    "label": "Swing (tendance Daily, figures H4)",
+    "values": {
+        "MTF_USE_DAILY": 1,                    # tendance de fond ET zones sur bougies JOURNALIERES
+        "MTF_USE_H4_LOWER": 1,                 # signal de retournement sur bougies H4
+        "MTF_DOUBLE_PATTERN_ENABLED": 1,       # + double creux / double sommet
+        "MTF_SIGNAL_MAX_AGE_SEC": 1800,        # entree dans les 30 min qui suivent la cloture H4 (prise de position chirurgicale)
+        "MTF_TREND_PATH_ENABLED": 0,           # pas de chemin "mesure de mouvement" 1h
+        "MTF_REQUIRE_H1_STRUCTURE": 0,         # la structure H1 n a plus de sens a cette echelle
+        "MTF_REQUIRE_FLOW_CONFIRM": 0,         # le flux de 3 minutes non plus
+        "MTF_REQUIRE_REAL_TARGET_ZONE": 1,     # objectif = vraie zone Daily opposee, sinon pas de trade
+        "MTF_MIN_RR": 2.0,                     # gain/risque d au moins 2
+        "MTF_MAX_RISK_PCT": 10.0,              # stop jusqu a 10 % du prix (stops larges, positions petites)
+        "MTF_RISK_PCT": 0.5,                   # 0,5 % du capital risque par trade
+        "SPOT_ACCUM_MAX_TRADES": 3,
+        "ACCUMULATION_MAX_TRADES": 2,
+        "SPOT_ACCUM_TREND_MODE": 0,            # long : tendance Daily haussiere ou repli
+        "ACCUMULATION_TREND_MODE": 0,          # short : tendance Daily baissiere ou rebond
+    },
+}
+
+
 def _profile_current(name):
     return {k: cfg.get(k, ADVANCED_SETTINGS[k]["default"]) for k in _PROFILES[name]["values"]}
 
@@ -3163,7 +3196,7 @@ def _profile_active(name):
 
 
 @app.get("/api/config/profile")
-def get_profile(name: str = Query("actif", pattern="^(actif)$"), email: str = Depends(require_user)):
+def get_profile(name: str = Query("actif", pattern="^(actif|swing)$"), email: str = Depends(require_user)):
     prof = _PROFILES[name]
     try:
         prev = json.loads(db.get_meta(f"profile_prev:{name}") or "null")
@@ -3188,7 +3221,7 @@ def get_profile(name: str = Query("actif", pattern="^(actif)$"), email: str = De
 
 
 @app.post("/api/config/profile/apply")
-def apply_profile(name: str = Query("actif", pattern="^(actif)$"), email: str = Depends(require_user)):
+def apply_profile(name: str = Query("actif", pattern="^(actif|swing)$"), email: str = Depends(require_user)):
     prof = _PROFILES[name]
     if not _profile_active(name):
         db.set_meta(f"profile_prev:{name}", json.dumps({"saved_at": time.time(), "values": _profile_current(name)}))
@@ -3203,7 +3236,7 @@ def apply_profile(name: str = Query("actif", pattern="^(actif)$"), email: str = 
 
 
 @app.post("/api/config/profile/restore")
-def restore_profile(name: str = Query("actif", pattern="^(actif)$"), email: str = Depends(require_user)):
+def restore_profile(name: str = Query("actif", pattern="^(actif|swing)$"), email: str = Depends(require_user)):
     try:
         prev = json.loads(db.get_meta(f"profile_prev:{name}") or "null")
     except (TypeError, ValueError):
