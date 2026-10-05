@@ -1043,6 +1043,7 @@ ADVANCED_SETTINGS = {
     "FOREX_SCALP_MAX_RISK_PCT":    {"label": "Scalp Forex - stop maximal (% du prix)", "default": 0.30},
     "FOREX_SCALP_MAX_SIGNAL_AGE_SEC": {"label": "Scalp Forex - le rejet 5 min doit dater de moins de N secondes", "default": 150},
     "FOREX_SCALP_REQUIRE_1M":      {"label": "Scalp Forex - exiger la confirmation de la bougie 1 min (1/0)", "default": 1},
+    "MTF_ZONE_MAX_WIDTH_ATR":          {"label": "Top-down - largeur maximale d une zone support/resistance (en ATR de l unite majeure ; 0 = sans limite). Evite les zones de 40-50 % du prix sur les longues consolidations ; 1,5 conseille en Swing", "default": 0.0},
     "MTF_USE_H4_LOWER":                {"label": "Top-down - signal sur bougies H4 (1) ou selon M15/H1 (0). Profil Swing : 1 avec la tendance Daily", "default": 0},
     "MTF_SIGNAL_MAX_AGE_SEC":          {"label": "Top-down - entree seulement dans les N secondes qui suivent la cloture de la bougie du signal (0 = sans limite)", "default": 0},
     "MTF_DOUBLE_PATTERN_ENABLED":      {"label": "Top-down - ajouter double creux / double sommet aux motifs de retournement (1/0)", "default": 0},
@@ -1315,6 +1316,8 @@ def _coerce_advanced_value(key: str, value):
         return False, "entre 1 et 10"
     if key == "FOREX_SCALP_MAX_TRADES" and not 1 <= value <= 5:
         return False, "entre 1 et 5"
+    if key == "MTF_ZONE_MAX_WIDTH_ATR" and not 0 <= value <= 10:
+        return False, "entre 0 (sans limite) et 10 ATR"
     if key == "MTF_MIN_FLOW_PRESSURE" and not -1 <= value <= 1:
         return False, "entre -1 et +1"
     if key == "MTF_SIGNAL_MAX_AGE_SEC" and not 0 <= value <= 86400:
@@ -3258,7 +3261,7 @@ _PROFILES["scalp"] = {
 }
 _PROFILES["swing"] = {
     "label": "Swing (tendance Daily, figures H4)",
-    "free": ["MTF_REQUIRE_FLOW_CONFIRM", "MTF_MIN_FLOW_PRESSURE"],   # reglables a la main sans que le profil passe a "non applique"
+    "free": ["MTF_REQUIRE_FLOW_CONFIRM", "MTF_MIN_FLOW_PRESSURE", "MTF_ZONE_MAX_WIDTH_ATR"],   # reglables a la main sans que le profil passe a "non applique"
     "values": {
         "MTF_USE_DAILY": 1,                    # tendance de fond ET zones sur bougies JOURNALIERES
         "MTF_USE_H4_LOWER": 1,                 # signal de retournement sur bougies H4
