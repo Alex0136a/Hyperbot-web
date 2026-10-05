@@ -49,11 +49,16 @@ def trend(candles, fast=50, slow=200):
     return "neutre", ef, es
 
 
-def find_zones(candles, pivot=2, lookback=120, merge_atr=0.6, min_touches=1):
+def find_zones(candles, pivot=2, lookback=120, merge_atr=0.6, min_touches=1, max_width_atr=None):
     """Zones cles : sommets et creux de marche (pivots) regroupes quand ils
     sont proches (a moins de merge_atr x ATR). Chaque zone : bornes basse et
     haute, nombre de contacts. Le role support / resistance depend ensuite de
-    la position du prix (un ancien plafond casse devient un plancher)."""
+    la position du prix (un ancien plafond casse devient un plancher).
+    v4.357 — max_width_atr (optionnel) : largeur MAXIMALE d une zone, en ATR. Le regroupement se fait de proche en
+    proche : sur une longue consolidation, des dizaines de pivots s enchainent et forment UNE zone de 40 a 50 % du
+    prix ("zone unique", "prix DANS le support" quasi permanent, aucune zone opposee). Avec la limite, une zone
+    n absorbe plus un pivot qui la ferait depasser cette largeur : il ouvre une nouvelle zone. None = comportement
+    d origine, inchange (intraday)."""
     window = candles[-lookback:]
     a = atr(window) or 0
     levels = []
@@ -68,9 +73,10 @@ def find_zones(candles, pivot=2, lookback=120, merge_atr=0.6, min_touches=1):
         return []
     levels.sort()
     zones = [{"low": levels[0], "high": levels[0], "touches": 1}]
+    max_w = (max_width_atr * a) if max_width_atr else None
     for lv in levels[1:]:
         z = zones[-1]
-        if lv - z["high"] <= merge_atr * a:
+        if lv - z["high"] <= merge_atr * a and (max_w is None or lv - z["low"] <= max_w):
             z["high"] = lv
             z["touches"] += 1
         else:
