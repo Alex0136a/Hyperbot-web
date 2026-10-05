@@ -1172,6 +1172,15 @@ function App() {
   const [orphanedLoading, setOrphanedLoading] = useState(false);
   // v4.316 — analyse des series de gains/pertes Funding
   // v4.345 — tableau de bord d objectif (positifs necessaires, decollage, part du pic gardee)
+  // v4.358 — trades MANUELS dans les volets Accumulation (shorts) et Spot-Accum (longs) de TRADES P/L
+  const [manualPL, setManualPL] = useState(null);
+  const loadManualPL = useCallback(async () => { try { setManualPL(await apiCall("/api/manual/state","GET",null,token)); } catch(e) {} }, [token]);
+  useEffect(() => {
+    if (!token || tab!=="paper" || !(paperSubTab==="accumulation" || paperSubTab==="spot_accumulation")) return;
+    loadManualPL();
+    const id = setInterval(loadManualPL, 15000);
+    return () => clearInterval(id);
+  }, [token, tab, paperSubTab]);
   // v4.353 — scalp Forex (paper) : profil, etat, statistiques du journal
   const [scalpProf, setScalpProf] = useState(null);
   const [scalpSt, setScalpSt] = useState(null);
@@ -1511,7 +1520,8 @@ function App() {
     if (!token) return;
     setModeHistoryLoading(true);
     try {
-      const r = await apiCall(`/api/signals?strategy=${strategy}&limit=200`, "GET", null, token);
+      const withManual = (strategy==="accumulation" || strategy==="spot_accumulation") ? "&include_manual=1" : "";   // v4.358
+      const r = await apiCall(`/api/signals?strategy=${strategy}&limit=200${withManual}`, "GET", null, token);
       setModeHistory(p=>({...p, [strategy]: r?.signals||[]}));
     } catch(e) {
       setModeHistory(p=>({...p, [strategy]: []}));
@@ -4114,6 +4124,14 @@ Confirmer ?`
                       </div>);
                   })()}
 
+                  {perf && perf.manual && (perf.manual.n>0 || perf.manual.open>0) && (
+                    <div style={{fontSize:10,color:"#7dd3fc",marginTop:-6,marginBottom:12,lineHeight:1.6,background:"#0a1a24",border:"1px solid #1e3a4a",borderRadius:6,padding:6}}>
+                      ✋ <b>Manuels ({perf.manual.direction==="SHORT"?"shorts":"longs"})</b> : {perf.manual.n} trade(s) fermé(s), {perf.manual.wins} gagnant(s),{" "}
+                      <b style={{color:perf.manual.net>=0?"#86efac":"#fca5a5"}}>{perf.manual.net>=0?"+":""}{perf.manual.net.toFixed(2)} USDC {perf.fees_on?"après frais":"bruts"}</b>
+                      {perf.fees_on && <span style={{color:"#94a3b8"}}> (brut {perf.manual.gross>=0?"+":""}{perf.manual.gross.toFixed(2)} − frais {perf.manual.fees.toFixed(2)})</span>} · {perf.manual.open} ouvert(s).
+                      <span style={{color:"#64748b"}}> Séparés des tuiles ci-dessus, qui ne concernent que le mode automatique.</span>
+                    </div>)}
+
                   {showMarketPanel && (
                     <div style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:10,marginBottom:14,display:"flex",gap:6,flexWrap:"wrap"}}>
                       {coinsSeen.length===0
@@ -4348,6 +4366,27 @@ Confirmer ?`
                     </div>
                   );})}
 
+                  {/* v4.358 — SUR DEMANDE EXPLICITE : trades manuels ouverts, dans le volet de leur sens (short -> Accumulation, long -> Spot-Accum). */}
+                  {(paperSubTab==="accumulation" || paperSubTab==="spot_accumulation") && (()=>{
+                    const dir = paperSubTab==="accumulation" ? "short" : "long";
+                    const mo = (manualPL?.positions||[]).filter(x=>x.direction===dir && ["open","opening","closing"].includes(x.status));
+                    return (
+                      <div style={{marginBottom:14}}>
+                        <div style={{fontSize:10,color:"#7dd3fc",marginBottom:8,fontWeight:700}}>✋ TRADES MANUELS OUVERTS ({mo.length}) — {dir==="short"?"shorts":"longs"}</div>
+                        {mo.length===0 ? <div style={{fontSize:11,color:"#94a3b8"}}>Aucun trade manuel {dir==="short"?"short":"long"} ouvert.</div> : mo.map(x=>(
+                          <div key={x.id} style={{background:"#0a0e1a",border:"1px solid #1e3a4a",borderRadius:8,padding:8,marginBottom:5,fontSize:11,color:"#cbd5e1",display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6}}>
+                            <span>
+                              <span style={{background:"#1e293b",color:"#7dd3fc",border:"1px solid #38bdf8",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700,marginRight:6}}>✋ MANUEL{x.mode==="live"?" · LIVE":" · PAPER"}</span>
+                              <b style={{color:dir==="long"?"#34d399":"#f87171"}}>{dir.toUpperCase()}</b> {x.ticker}{x.market==="spot"?" (spot)":""}
+                              {x.status!=="open" && <span style={{color:"#fbbf24",marginLeft:6}}>{x.status==="opening"?"ouverture…":"fermeture…"}</span>}
+                            </span>
+                            <span>entrée {x.entry_price!=null?Number(x.entry_price).toPrecision(6):"—"} · stop {x.sl_price!=null?Number(x.sl_price).toPrecision(6):"—"}{x.tp_price?` · objectif ${Number(x.tp_price).toPrecision(6)}`:""} · {x.notional_usd!=null?`${Number(x.notional_usd).toFixed(1)} $`:""} x{x.leverage||1}</span>
+                            <span style={{color:(x.pnl||0)>=0?"#86efac":"#fca5a5"}}>{x.move_pct!=null?`${x.move_pct>=0?"+":""}${x.move_pct.toFixed(2)} % · `:""}PnL ouvert {(x.pnl||0)>=0?"+":""}{(x.pnl||0).toFixed(3)} $</span>
+                          </div>))}
+                        <div style={{fontSize:9,color:"#64748b",marginTop:2}}>Ils se gèrent dans l'onglet « Trading manuel » ; leurs résultats fermés apparaissent dans l'historique ci-dessous avec le badge ✋ MANUEL et ne sont pas comptés dans les tuiles du mode.</div>
+                      </div>);
+                  })()}
+
                   {/* v4.44 — historique COMPLET, propre a ce mode (plus de troncature a 20) */}
                   <div style={{fontSize:10,color:"#94a3b8",margin:"14px 0 8px",fontWeight:700}}>HISTORIQUE COMPLET DE CE MODE ({historyFiltered.length}){modeHistoryLoading?" · chargement...":""}</div>
                   {historyFiltered.length===0 ? (
@@ -4358,6 +4397,7 @@ Confirmer ?`
                         <div key={s.id} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:8,marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                           <div>
                             <span style={{background:s.action==="LONG"?"#052e16":"#2d0a0a",color:s.action==="LONG"?"#34d399":"#f87171",padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>{s.action}</span>
+                            {s.strategy==="manual" && <span style={{background:"#1e293b",color:"#7dd3fc",border:"1px solid #38bdf8",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700,marginLeft:4}}>✋ MANUEL{s.trade_mode==="live"?" · LIVE":""}</span>}
                             <span style={{marginLeft:6,color:"#e2e8f0",fontSize:11}}>{s.coin}/USDC</span>
                             <span style={{marginLeft:6,color:"#94a3b8",fontSize:9}}>{s.reason}</span>
                             {s.peak_pnl_pct!=null ? (
