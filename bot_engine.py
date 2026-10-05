@@ -1356,6 +1356,7 @@ PROFILE_SWING = {
     "MTF_LOWER_TF": "15m",             # "15m" ou "1h"
     "MTF_USE_DAILY": 0,                # 1 = unite majeure Daily au lieu de H4
     "MTF_USE_H1": 0,                   # 1 = unite inferieure H1 au lieu de M15
+    "MTF_ZONE_MAX_WIDTH_ATR": 0,       # v4.357 : largeur maximale d une zone en ATR de l unite majeure (0 = sans limite, comportement d origine)
     "MTF_USE_H4_LOWER": 0,             # v4.352 : 1 = signal sur bougies H4 (profil Swing, avec MTF_USE_DAILY=1)
     "MTF_SIGNAL_MAX_AGE_SEC": 0,       # v4.352 : > 0 = entree seulement dans les N s qui suivent la cloture de la bougie du signal
     "MTF_DOUBLE_PATTERN_ENABLED": 0,   # v4.352 : 1 = ajoute double creux / double sommet aux motifs de bougie
@@ -11011,7 +11012,8 @@ class BotEngine:
             trend_candles = major + [{**major[-1], "c": float(price)}]
         tr, ef, es = mtf.trend(trend_candles)
         a = mtf.atr(major) or 0
-        zones = mtf.find_zones(major, lookback=cfg.get("MTF_ZONE_LOOKBACK", 120))
+        zones = mtf.find_zones(major, lookback=cfg.get("MTF_ZONE_LOOKBACK", 120),
+                               max_width_atr=(cfg.get("MTF_ZONE_MAX_WIDTH_ATR", 0) or None))   # v4.357
         sup, res = mtf.nearest_zones(zones, price)
         tol = a * cfg.get("MTF_ZONE_TOLERANCE_ATR", 0.25)
         # v4.341 — synchronisation avec la realite : ces bougies sont-elles a jour ?
