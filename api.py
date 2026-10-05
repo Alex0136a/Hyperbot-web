@@ -955,6 +955,8 @@ def _trade_row_to_signal(row: Dict[str, Any]) -> Dict[str, Any]:
         "roe_pct": (round(exit_pnl_pct * (row["leverage"] or 1), 3) if exit_pnl_pct is not None else None),  # v4.324 : % de marge, affichage seul
         "reason": row["reason"],
         "strategy": row["strategy"] if "strategy" in row.keys() else "forex",
+        "pnl_net": (round(_row_pnl(dict(row)), 4) if row["pnl"] is not None else None),       # v4.358 : net de frais (si FEES_IN_STATS)
+        "fee_est": (round(_trade_fee_usd(dict(row)), 4) if row["pnl"] is not None else None),
         "peak_pnl": row["peak_pnl"] if "peak_pnl" in row.keys() else None,
         "peak_pnl_pct": row["peak_pnl_pct"] if "peak_pnl_pct" in row.keys() else None,
         "size_usd": row["size_usd"] if "size_usd" in row.keys() else None,
@@ -2161,7 +2163,22 @@ def get_strategy_performance(strategy: str, email: str = Depends(require_user)):
     closed_times = [t.get("closed_at") for t in filtered if t.get("closed_at")]
     fee_pct = float(cfg.get("FEE_ROUND_TRIP_PCT", _ROUND_TRIP_FEE_RATE * 100))
     fees_est = sum(_trade_fee_usd(t) for t in filtered)
+    manual_summary = None
+    if strategy in _MANUAL_DIR_BY_MODE:
+        want = _MANUAL_DIR_BY_MODE[strategy]
+        mt = [t for t in all_closed if (t.get("strategy") or "") == "manual" and t.get("action") == want]
+        mnet = [_row_pnl(t) for t in mt]
+        mopen = 0
+        try:
+            mopen = sum(1 for it in bot.manual.items.values()
+                        if it.get("status") in ("open", "opening", "closing") and it.get("direction") == want.lower())
+        except Exception:
+            pass
+        manual_summary = {"direction": want, "n": len(mt), "wins": sum(1 for x in mnet if x > 0), "net": round(sum(mnet), 4),
+                          "gross": round(sum((t.get("pnl") or 0) for t in mt), 4), "fees": round(sum(_trade_fee_usd(t) for t in mt), 4),
+                          "open": mopen}
     return {
+        "manual": manual_summary,
         "fees_on": _fees_on(), "net_pnl_gross": round(gross_total, 4),
         "since": db.get_meta("stats_reset_at"),
         "first_closed_at": min(closed_times) if closed_times else None,
@@ -3671,8 +3688,12 @@ def get_entry_diagnostics_one(ticker: str, email: str = Depends(require_user)):
     }
 
 
+# v4.358 — sens des trades manuels affiches dans chaque volet (Accumulation = shorts, Spot-Accum = longs)
+_MANUAL_DIR_BY_MODE = {"accumulation": "SHORT", "spot_accumulation": "LONG"}
+
+
 @app.get("/api/signals")
-def get_signals(limit: int = Query(50), strategy: str = Query(None), email: str = Depends(require_user)):
+def get_signals(limit: int = Query(50), strategy: str = Query(None), include_manual: int = Query(0), email: str = Depends(require_user)):
     """v4.44 — SUR DEMANDE EXPLICITE : parametre 'strategy' optionnel pour
     filtrer l historique PAR MODE. Sans ce filtre, la limite de 50 est
     partagee entre TOUS les modes confondus — insuffisant pour un historique
@@ -3688,6 +3709,12 @@ def get_signals(limit: int = Query(50), strategy: str = Query(None), email: str 
     if strategy:
         raw = db.get_trades(limit=max(limit * 20, 2000), order_by_close=True)
         filtered = [r for r in raw if (r.get("strategy") or "forex") == strategy]
+        # v4.358 — SUR DEMANDE EXPLICITE : les trades MANUELS apparaissent dans le volet du mode correspondant a
+        # leur SENS : shorts -> Accumulation, longs -> Spot-Accum (strategie "manual", reconnaissables a leur badge).
+        if include_manual and strategy in _MANUAL_DIR_BY_MODE:
+            want = _MANUAL_DIR_BY_MODE[strategy]
+            filtered = filtered + [r for r in raw if (r.get("strategy") or "") == "manual" and r.get("action") == want]
+            filtered.sort(key=lambda r: (r.get("closed_at") or r.get("created_at") or ""), reverse=True)
         return {"signals": [_trade_row_to_signal(r) for r in filtered[:limit]]}
     return {"signals": [_trade_row_to_signal(r) for r in db.get_trades(limit=limit, order_by_close=True)]}
 
