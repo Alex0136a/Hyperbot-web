@@ -842,6 +842,7 @@ def _open_positions() -> List[Dict[str, Any]]:
                 "pnl_pct": round(pnl_pct, 3),
                 "roe_pct": round(pnl_pct * (leverage_for_pnl or 1), 3),  # v4.324 : % de MARGE (mouvement de prix x levier), affichage seul
                 # v4.293 — rapprochement avec Hyperliquid (positions live)
+                "swing": bool(pos.get("mtf_swing")),     # v4.359 : position du profil Swing
                 "pnl_hyperliquid": pos.get("hl_unrealized_pnl"),
                 "hl_sync_age_sec": round(time.time() - pos["hl_sync_ts"]) if pos.get("hl_sync_ts") else None,
                 "fees_est": round(pos["size"] * pos.get("leverage", 1) * 0.0009, 4),
@@ -3093,6 +3094,8 @@ def _objective_group_key(t):
     strat = t.get("strategy") or ""
     label = _EXPORT_STRATEGY_LABEL.get(strat, strat or "?")
     if strat in ("spot_accumulation", "accumulation"):
+        if (t.get("timeframe") or "") == "SWING_D1H4":          # v4.359 : trades du profil Swing, a part
+            return f"{label} (swing)"
         r = (t.get("reason") or "").lower()
         er = (t.get("entry_reasons") or "").lower()
         td = ("top-down" in r) or ("zone opposee" in r) or ("top-down" in er)
@@ -3616,6 +3619,142 @@ def scalp_export(days: int = Query(7, ge=1, le=60), email: str = Depends(require
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%Hh%M")
     return Response(content="\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="scalp_journal_{stamp}.csv"'})
+
+
+# ───────────────── v4.359 — SUIVI DU SWING : positions, trades fermes, journal des signaux ─────────────────
+_SWING_TAG = "SWING_D1H4"
+
+
+def _swing_is_active():
+    return bool(cfg.get("MTF_USE_DAILY", 0) and cfg.get("MTF_USE_H4_LOWER", 0))
+
+
+@app.get("/api/swing/status")
+def swing_status(email: str = Depends(require_user)):
+    """Etat du Swing : reglages, positions ouvertes (en R), trades fermes (net de frais, en R), signaux recents."""
+    open_pos = []
+    for pool in (bot.states, bot.accum_states):
+        for sk, st in list(pool.items()):
+            pos = st.position
+            if not (pos and pos.get("mtf_swing")):
+                continue
+            tk = be.ticker_from_slot_key(sk)
+            px = float((bot.all_mids or {}).get(tk) or 0) or pos["entry"]
+            sgn = 1 if pos["type"] == "long" else -1
+            r_units = pos.get("mtf_r") or 0
+            gain = sgn * (px - pos["entry"])
+            info = pos.get("swing_info") or {}
+            opened_ts = None
+            try:        # opened_at est ecrit en heure LOCALE du serveur au format jj/mm/aaaa hh:mm:ss
+                opened_ts = datetime.strptime(pos.get("opened_at", ""), "%d/%m/%Y %H:%M:%S").timestamp()
+            except Exception:
+                pass
+            open_pos.append({
+                "asset": tk, "side": pos["type"], "mode": "Spot-Accum" if pos["type"] == "long" else "Accumulation",
+                "entry": pos["entry"], "price": px, "sl": pos["sl"], "tp": pos.get("tp"),
+                "gain_pct": round(gain / pos["entry"] * 100, 3), "r_now": round(gain / r_units, 2) if r_units else None,
+                "risk_pct": info.get("risk_pct"), "rr": info.get("rr"), "pattern": info.get("pattern"),
+                "zone": info.get("zone"), "touches": info.get("touches"), "trend": info.get("trend"),
+                "be_done": bool(pos.get("mtf_be_done")), "sl_pushed": bool(pos.get("mtf_sl_pushed")), "effective_mode": pos.get("effective_mode"),
+                "age_h": round((time.time() - opened_ts) / 3600, 1) if opened_ts else None})
+    rows = [t for t in db.get_all_closed_trades() if (t.get("timeframe") or "") == _SWING_TAG]
+    closed = []
+    for t in rows:
+        entry, ex = t.get("entry_price"), t.get("exit_price")
+        sgn = 1 if t.get("action") == "LONG" else -1
+        mv = sgn * (ex - entry) / entry * 100 if entry and ex else None
+        risk = t.get("sl_pct_used")
+        hours = None
+        try:
+            hours = round((datetime.fromisoformat(t["closed_at"]) - datetime.fromisoformat(t["created_at"])).total_seconds() / 3600, 1)
+        except Exception:
+            pass
+        closed.append({"id": t["id"], "asset": t.get("coin"), "side": (t.get("action") or "").lower(), "reason": t.get("reason"),
+                       "opened": t.get("created_at"), "closed": t.get("closed_at"), "hours": hours, "pnl": t.get("pnl"),
+                       "pnl_net": round(_row_pnl(t), 4), "fees": round(_trade_fee_usd(t), 4), "move_pct": round(mv, 3) if mv is not None else None,
+                       "risk_pct": risk, "r": round(mv / risk, 2) if (mv is not None and risk) else None,
+                       "peak_pct": t.get("peak_pnl_pct"), "mode": t.get("trade_mode")})
+    closed.sort(key=lambda x: x["closed"] or "", reverse=True)
+
+    def perf(ts):
+        n = len(ts)
+        wins = [x for x in ts if (x["pnl_net"] or 0) > 0]
+        rs = [x["r"] for x in ts if x["r"] is not None]
+        return {"n": n, "wins": len(wins), "win_rate": round(len(wins) / n * 100, 1) if n else None,
+                "net": round(sum(x["pnl_net"] or 0 for x in ts), 3), "gross": round(sum(x["pnl"] or 0 for x in ts), 3),
+                "fees": round(sum(x["fees"] or 0 for x in ts), 3), "avg_r": round(sum(rs) / len(rs), 2) if rs else None,
+                "gains": round(sum(x["pnl_net"] for x in wins), 3),
+                "losses": round(sum((x["pnl_net"] or 0) for x in ts if (x["pnl_net"] or 0) <= 0), 3)}
+    recent = db.swing_events_since(int((time.time() - 5 * 86400) * 1000), limit=80)
+    keys = ("MTF_USE_DAILY", "MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_MIN_RR", "MTF_MAX_RISK_PCT", "MTF_RISK_PCT",
+            "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_MIN_FLOW_PRESSURE", "MTF_ZONE_MAX_WIDTH_ATR",
+            "SPOT_ACCUM_MAX_TRADES", "ACCUMULATION_MAX_TRADES", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE")
+    return {"active": _swing_is_active(), "fees_on": _fees_on(), "fee_pct": float(cfg.get("FEE_ROUND_TRIP_PCT", 0.09)),
+            "settings": {k: cfg.get(k, ADVANCED_SETTINGS[k]["default"]) for k in keys if k in ADVANCED_SETTINGS},
+            "open": open_pos, "closed": closed[:100], "perf": perf(closed),
+            "perf_long": perf([x for x in closed if x["side"] == "long"]), "perf_short": perf([x for x in closed if x["side"] == "short"]),
+            "recent": [{k: e.get(k) for k in ("ts", "signal_t", "asset", "side", "pattern", "trend", "zone_low", "zone_high", "decision", "rr",
+                                               "risk_pct", "reward_pct", "outcome", "evaluated", "r_est", "age_min", "hypothetical")} for e in recent]}
+
+
+def _swing_stats(events, fee_pct):
+    import statistics as _st
+
+    def agg(rows):
+        ev = [r for r in rows if r.get("evaluated") and r.get("outcome")]
+        n_ev = len(ev)
+        rs = [r["r_est"] for r in ev if r.get("r_est") is not None]
+        rn = [r["r_est"] - (fee_pct / r["risk_pct"]) for r in ev if r.get("r_est") is not None and r.get("risk_pct")]
+        med = lambda k: round(_st.median([r[k] for r in ev if r.get(k) is not None]), 2) if any(r.get(k) is not None for r in ev) else None
+        return {"n": len(rows), "evaluated": n_ev,
+                "tp_pct": round(sum(1 for r in ev if r["outcome"] == "tp") / n_ev * 100, 0) if n_ev else None,
+                "sl_pct": round(sum(1 for r in ev if r["outcome"] == "sl") / n_ev * 100, 0) if n_ev else None,
+                "none_pct": round(sum(1 for r in ev if r["outcome"] == "none") / n_ev * 100, 0) if n_ev else None,
+                "mfe72": med("mfe72"), "mae72": med("mae72"),
+                "r_gross": round(sum(rs) / len(rs), 2) if rs else None, "r_net": round(sum(rn) / len(rn), 2) if rn else None, "r_n": len(rn)}
+
+    def group(keyfn):
+        d = {}
+        for r in events:
+            d.setdefault(keyfn(r), []).append(r)
+        return sorted(({"key": k, **agg(v)} for k, v in d.items()), key=lambda x: -x["n"])
+
+    def dec(r):
+        d = r.get("decision") or "?"
+        return d if d in ("pris", "candidat (non ouvert)") else d.replace("filtre : ", "")[:52]
+    return {"total": agg(events), "by_decision": group(dec), "by_pattern": group(lambda r: (r.get("pattern") or "?").split(" (")[0][:30]),
+            "by_side": group(lambda r: r.get("side") or "?"), "by_asset": group(lambda r: r.get("asset") or "?"),
+            "by_trend": group(lambda r: r.get("trend") or "?"),
+            "by_close": group(lambda r: f"cloture {((r.get('signal_t') or 0) // 3600000) % 24:02d}h UTC")}
+
+
+@app.get("/api/swing/stats")
+def swing_stats_ep(days: int = Query(14, ge=1, le=120), email: str = Depends(require_user)):
+    """Ce que valent les signaux du Swing, pris ET filtres, mesures a 24 h / 72 h : issue, MFE/MAE et resultat en R net de frais."""
+    ev = db.swing_events_since(int((time.time() - days * 86400) * 1000), limit=20000)
+    return {"days": days, "fee_pct": float(cfg.get("FEE_ROUND_TRIP_PCT", 0.09)), **_swing_stats(ev, float(cfg.get("FEE_ROUND_TRIP_PCT", 0.09)))}
+
+
+@app.get("/api/swing/journal/export.csv")
+def swing_export(days: int = Query(30, ge=1, le=120), email: str = Depends(require_user)):
+    import csv
+    import io
+    ev = list(reversed(db.swing_events_since(int((time.time() - days * 86400) * 1000), limit=50000)))
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
+    cols = ["asset", "side", "mode", "pattern", "trend", "zone_low", "zone_high", "zone_touches", "price", "entry_ref", "atr_pct", "flow",
+            "hour_utc", "age_min", "decision", "sl", "tp", "risk_pct", "reward_pct", "rr", "hypothetical", "trade_uid", "evaluated",
+            "outcome", "hit_h", "mfe24", "mae24", "mfe72", "mae72", "fin24", "fin72", "covered_h", "r_est"]
+    w.writerow(["cloture du signal (UTC)"] + cols)
+    for e in ev:
+        row = [datetime.fromtimestamp(e["signal_t"] / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M")]
+        for c in cols:
+            v = e.get(c)
+            row.append("" if v is None else (str(round(v, 6)).replace(".", ",") if isinstance(v, float) else v))
+        w.writerow(row)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%Hh%M")
+    return Response(content="\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="swing_journal_{stamp}.csv"'})
 
 
 @app.get("/api/stats/funding-streaks")

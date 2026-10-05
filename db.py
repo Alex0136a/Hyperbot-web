@@ -132,6 +132,20 @@ def init_db():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_scalp_events_ts ON scalp_events (ts)")
+        # v4.359 — journal du SWING : chaque signal H4 en zone Daily (pris ou filtre) + son issue 24 h / 72 h plus tard
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS swing_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, signal_t INTEGER NOT NULL,
+                asset TEXT, side TEXT, mode TEXT, pattern TEXT, trend TEXT,
+                zone_low REAL, zone_high REAL, zone_touches INTEGER, price REAL, entry_ref REAL, atr_pct REAL,
+                flow REAL, hour_utc INTEGER, age_min REAL, decision TEXT, prio INTEGER DEFAULT 1,
+                sl REAL, tp REAL, risk_pct REAL, reward_pct REAL, rr REAL, hypothetical INTEGER DEFAULT 0, trade_uid TEXT,
+                evaluated INTEGER DEFAULT 0, outcome TEXT, hit_h REAL, mfe24 REAL, mae24 REAL, mfe72 REAL, mae72 REAL,
+                fin24 REAL, fin72 REAL, covered_h REAL, r_est REAL,
+                UNIQUE (asset, side, signal_t)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_swing_events_ts ON swing_events (ts)")
         # Migration : ajoute la colonne rsi si la table trades existait deja
         # (CREATE TABLE IF NOT EXISTS n ajoute pas les colonnes manquantes a
         # une table deja creee par une version anterieure du code).
@@ -1120,5 +1134,67 @@ def scalp_events_since(since_ms, limit=5000):
 def scalp_events_prune(older_than_ms):
     with _lock, _connect() as conn:
         n = conn.execute("DELETE FROM scalp_events WHERE ts < ?", (older_than_ms,)).rowcount
+        conn.commit()
+    return n
+
+
+# ── v4.359 — Journal du Swing ──────────────────────────────────────────────────────────────
+_SWING_FIELDS = ("ts", "signal_t", "asset", "side", "mode", "pattern", "trend", "zone_low", "zone_high", "zone_touches", "price",
+                 "entry_ref", "atr_pct", "flow", "hour_utc", "age_min", "decision", "prio", "sl", "tp", "risk_pct", "reward_pct",
+                 "rr", "hypothetical", "trade_uid")
+
+
+def swing_event_upsert(ev):
+    """Une ligne par (actif, sens, bougie du signal). Une decision de rang superieur (pris 3 > candidat 2 > filtre 1)
+    remplace la precedente ; sinon la PREMIERE raison est conservee. Retourne l id."""
+    with _lock, _connect() as conn:
+        row = conn.execute("SELECT id, prio, evaluated FROM swing_events WHERE asset=? AND side=? AND signal_t=?",
+                           (ev["asset"], ev["side"], ev["signal_t"])).fetchone()
+        if row is None:
+            cur = conn.execute(f"INSERT INTO swing_events ({', '.join(_SWING_FIELDS)}) VALUES ({', '.join('?' * len(_SWING_FIELDS))})",
+                               [ev.get(k) for k in _SWING_FIELDS])
+            conn.commit()
+            return cur.lastrowid
+        if (ev.get("prio") or 1) > (row["prio"] or 1) and not row["evaluated"]:
+            keys = [k for k in _SWING_FIELDS if k not in ("ts", "signal_t", "asset", "side")]
+            conn.execute(f"UPDATE swing_events SET {', '.join(k + '=?' for k in keys)} WHERE id=?", [ev.get(k) for k in keys] + [row["id"]])
+            conn.commit()
+        return row["id"]
+
+
+def swing_event_mark_taken(asset, side, signal_t, trade_uid):
+    with _lock, _connect() as conn:
+        conn.execute("UPDATE swing_events SET decision='pris', prio=3, trade_uid=? WHERE asset=? AND side=? AND signal_t=?",
+                     (trade_uid, asset, side, signal_t))
+        conn.commit()
+
+
+def swing_events_pending(now_ms, limit=40):
+    """Evenements a mesurer : 24 h apres le signal (evaluated=0), puis 72 h (evaluated=1)."""
+    with _lock, _connect() as conn:
+        rows = conn.execute("SELECT * FROM swing_events WHERE sl IS NOT NULL AND tp IS NOT NULL AND ("
+                            "(evaluated=0 AND signal_t <= ?) OR (evaluated=1 AND signal_t <= ?)) ORDER BY signal_t LIMIT ?",
+                            (now_ms - 25 * 3_600_000, now_ms - 73 * 3_600_000, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def swing_event_update(event_id, fields):
+    if not fields:
+        return
+    keys = list(fields)
+    with _lock, _connect() as conn:
+        conn.execute(f"UPDATE swing_events SET {', '.join(k + '=?' for k in keys)} WHERE id=?", [fields[k] for k in keys] + [event_id])
+        conn.commit()
+
+
+def swing_events_since(since_ms, limit=5000):
+    with _lock, _connect() as conn:
+        rows = conn.execute("SELECT * FROM swing_events WHERE ts >= ? ORDER BY ts DESC LIMIT ?", (since_ms, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def swing_events_prune(older_than_ms):
+    with _lock, _connect() as conn:
+        n = conn.execute("DELETE FROM swing_events WHERE ts < ?", (older_than_ms,)).rowcount
         conn.commit()
     return n

@@ -25,6 +25,7 @@ import json
 import db
 from flow_recorder import FlowRecorder   # v4.349 — enregistreur de flux (lecture seule)
 import scalp_forex as scalp               # v4.353 — scalp Forex (sous-mode du Forex, paper)
+import swing_journal as swj               # v4.359 — journal du Swing (lecture seule)
 import mtf_analysis as mtf  # v4.299 — analyse multi-unites de temps
 from datetime import datetime
 from collections import deque
@@ -7842,6 +7843,7 @@ class BotEngine:
                 try:                                  # v4.353 — scalp Forex : jamais bloquant pour le reste du cycle
                     self._scalp_cycle()
                     self._scalp_journal_eval_if_due()
+                    self._swing_journal_eval_if_due()   # v4.359
                 except Exception as _e_sc:
                     print(f"[SCALP] cycle ignore : {type(_e_sc).__name__}: {_e_sc}")
                 self._decay_confidence_thresholds()
@@ -10682,6 +10684,91 @@ class BotEngine:
             print(f"[MTF] Bougies {tf} {ticker} indisponibles : {e}")
         return out
 
+    # ───────────────────────── v4.359 — JOURNAL DU SWING (lecture seule) ─────────────────────────
+    def _swing_active(self):
+        return bool(self.cfg.get("MTF_USE_DAILY", 0) and self.cfg.get("MTF_USE_H4_LOWER", 0))
+
+    def _swing_log(self, mode, ticker, long_side, price, zone, target, extreme, v, name, lower, decision, prio=1,
+                   plan=None, flow=None, age=None):
+        """Journalise UN signal H4 en zone Daily et la decision prise. Une ligne par (actif, sens, bougie du signal) ;
+        une decision de rang superieur (candidat, pris) remplace un refus. Retourne la cle de l evenement ou None."""
+        try:
+            if not self._swing_active() or not lower:
+                return None
+            side = "long" if long_side else "short"
+            tf_sec = self._TF_SEC.get(v["lower_tf"], 14400)
+            signal_t = int(lower[-1]["t"] + tf_sec * 1000)                 # cloture de la bougie du signal
+            key = (ticker, side, signal_t)
+            seen = getattr(self, "_swing_seen", None)
+            if seen is None:
+                seen = self._swing_seen = {}
+            if seen.get(key, 0) >= prio:
+                return key
+            seen[key] = prio
+            now = time.time()
+            for k in [k for k, _ in list(seen.items()) if k[2] < (now - 8 * 3600) * 1000]:
+                seen.pop(k, None)
+            entry_ref = float(lower[-1]["c"])                              # prix de reference : cloture du signal
+            hyp = plan
+            if hyp is None:
+                try:
+                    hyp = mtf.plan_trade(side, entry_ref, zone, target, extreme, v["atr"])
+                except Exception:
+                    hyp = None
+            hyp = hyp or {}
+            tp = hyp.get("tp")
+            db.swing_event_upsert({
+                "ts": int(now * 1000), "signal_t": signal_t, "asset": ticker, "side": side, "mode": mode, "pattern": name,
+                "trend": v.get("trend"), "zone_low": zone.get("low"), "zone_high": zone.get("high"), "zone_touches": zone.get("touches"),
+                "price": price, "entry_ref": entry_ref, "atr_pct": (v["atr"] / price * 100) if price else None, "flow": flow,
+                "hour_utc": datetime.utcfromtimestamp(now).hour,
+                "age_min": round(age / 60, 1) if age is not None else round((now - signal_t / 1000) / 60, 1),
+                "decision": decision, "prio": prio, "sl": hyp.get("sl"), "tp": tp, "risk_pct": hyp.get("risk_pct"),
+                "reward_pct": hyp.get("reward_pct"), "rr": hyp.get("rr"), "hypothetical": 0 if plan is not None else 1})
+            return key
+        except Exception as e:
+            print(f"[SWING-JOURNAL] ecriture ignoree : {type(e).__name__}: {e}")
+            return None
+
+    def _swing_journal_eval_if_due(self):
+        """Mesure l issue des setups journalises sur bougies 1H : a 24 h puis a 72 h. 3 actifs au plus par passage."""
+        if self.info is None or not self._swing_active():
+            return
+        now = time.time()
+        if now - getattr(self, "_swing_eval_last", 0) < 600:
+            return
+        self._swing_eval_last = now
+        try:
+            pend = db.swing_events_pending(int(now * 1000), limit=60)
+            if not pend:
+                return
+            by = {}
+            for ev in pend:
+                by.setdefault(ev["asset"], []).append(ev)
+            fee = float(self.cfg.get("FEE_ROUND_TRIP_PCT", 0.09))
+            for asset, evs in list(by.items())[:3]:
+                t0 = min(e["signal_t"] for e in evs)
+                raw = self.info.post("/info", {"type": "candleSnapshot", "req": {"coin": asset, "interval": "1h",
+                                                                                 "startTime": t0 - 3_600_000, "endTime": int(now * 1000)}})
+                time.sleep(0.3)
+                if not isinstance(raw, list) or not raw:
+                    continue
+                cs = [{"t": int(c["t"]), "o": float(c["o"]), "h": float(c["h"]), "l": float(c["l"]), "c": float(c["c"])} for c in raw]
+                for e in evs:
+                    horizon = 24 if e["evaluated"] == 0 else 72
+                    out = swj.evaluate_outcome(e["side"], e["entry_ref"], e["sl"], e["tp"], cs, e["signal_t"], horizon)
+                    if out is None:
+                        continue
+                    fin = out["fin72"] if (horizon == 72 and out["fin72"] is not None) else out["fin24"]
+                    r = swj.r_multiple(out["outcome"], e.get("risk_pct"), e.get("reward_pct"), fin)
+                    db.swing_event_update(e["id"], {**out, "evaluated": 1 if horizon == 24 else 2,
+                                                    "r_est": None if r is None else round(r, 3)})
+            if now - getattr(self, "_swing_prune_last", 0) > 86400:
+                self._swing_prune_last = now
+                db.swing_events_prune(int((now - 120 * 86400) * 1000))
+        except Exception as e:
+            print(f"[SWING-JOURNAL] evaluation ignoree : {type(e).__name__}: {e}")
+
     # ───────────────────────── v4.353 — SCALP FOREX (paper) ─────────────────────────
     def _scalp_state_for(self, ticker):
         for sk, st in self.states.items():
@@ -11241,6 +11328,9 @@ class BotEngine:
             if _age > _max_age:
                 snap["blocker"] = (f"signal {L} ({name}) trop ancien : bougie cloturee il y a {_age / 60:.0f} min "
                                    f"(maximum {_max_age / 60:.0f} min : entree a la cloture)")
+                if (long_side and extreme <= zone["high"] + v["tolerance"]) or (not long_side and extreme >= zone["low"] - v["tolerance"]):
+                    self._swing_log(mode, ticker, long_side, price, zone, target, extreme, v, name, lower,
+                                    "filtre : signal hors fenetre d entree (trop ancien)", age=_age)   # v4.359
                 return
         # le motif doit avoir touche la zone
         if (long_side and extreme > zone["high"] + v["tolerance"]) or (not long_side and extreme < zone["low"] - v["tolerance"]):
@@ -11306,15 +11396,20 @@ class BotEngine:
                                    f"{'indisponible' if flow is None else f'{flow:+.2f}'} "
                                    f"(requis {'>=' if long_side else '<='} {req:+.2f})")
                 self._blocked_note(mode, ticker, "flux", long_side, price, zone, target, extreme, v["atr"])
+                self._swing_log(mode, ticker, long_side, price, zone, target, extreme, v, name, lower,
+                                "filtre : flux de transactions hostile", flow=flow)   # v4.359
                 return
         plan = mtf.plan_trade("long" if long_side else "short", price, zone, target, extreme, v["atr"])
         if not plan:
             snap["blocker"] = "plan de trade invalide"
+            self._swing_log(mode, ticker, long_side, price, zone, target, extreme, v, name, lower, "filtre : plan de trade invalide", flow=flow)
             return
         if plan["risk_pct"] > cfg.get("MTF_MAX_RISK_PCT", 4.0):
             snap["blocker"] = f"SL trop eloigne ({plan['risk_pct']:.2f} % > {cfg.get('MTF_MAX_RISK_PCT', 4.0)} %)"
             self._funnel_rr_note(mode, ticker, "sl_far", plan)
             self._blocked_note(mode, ticker, "sl_far", long_side, price, zone, target, extreme, v["atr"], plan=plan)
+            self._swing_log(mode, ticker, long_side, price, zone, target, extreme, v, name, lower,
+                            "filtre : stop trop eloigne", plan=plan, flow=flow)   # v4.359
             return
         min_rr = cfg.get("MTF_MIN_RR", 1.5)
         self._funnel_note(mode, ticker, "sl_ok")          # v4.332 : plan valide, SL pas trop eloigne
@@ -11333,6 +11428,8 @@ class BotEngine:
                                     f"pour un objectif reel (zone unique support/resistance) — trade ignore")
                 self._funnel_rr_note(mode, ticker, "sans_objectif", plan)
                 self._blocked_note(mode, ticker, "sans_objectif", long_side, price, zone, target, extreme, v["atr"], plan=plan)
+                self._swing_log(mode, ticker, long_side, price, zone, target, extreme, v, name, lower,
+                                "filtre : aucun objectif reel (zone opposee)", plan=plan, flow=flow)   # v4.359
                 return
             # repli conserve si MTF_REQUIRE_REAL_TARGET_ZONE est desactive
             plan["tp"] = price * (1 + plan["risk_pct"] * min_rr / 100) if long_side else price * (1 - plan["risk_pct"] * min_rr / 100)
@@ -11341,6 +11438,8 @@ class BotEngine:
             snap["blocker"] = f"rapport gain/risque {plan['rr']:.2f} < {min_rr} (objectif {kind} oppose trop proche)"
             self._funnel_rr_note(mode, ticker, "rr", plan)
             self._blocked_note(mode, ticker, "rr", long_side, price, zone, target, extreme, v["atr"], plan=plan)
+            self._swing_log(mode, ticker, long_side, price, zone, target, extreme, v, name, lower,
+                            "filtre : gain/risque insuffisant", plan=plan, flow=flow)   # v4.359
             return
         # taille calculee sur le RISQUE : perte au SL = MTF_RISK_PCT du capital
         capital = self.cfg.get("CAPITAL_USD", 100.0)
@@ -11350,7 +11449,10 @@ class BotEngine:
         snap["blocker"] = None
         self._funnel_note(mode, ticker, "candidat")
         self._blocked_note(mode, ticker, "candidat", long_side, price, zone, target, extreme, v["atr"], plan=plan)
-        label = "🌱 Spot-Accumulation" if long_side else "🎯 Accumulation (short)"
+        _swing_key = self._swing_log(mode, ticker, long_side, price, zone, target, extreme, v, name, lower,
+                                     "candidat (non ouvert)", prio=2, plan=plan, flow=flow)    # v4.359
+        label = ("🌊 Swing long" if long_side else "🌊 Swing short") if _swing_key else \
+                ("🌱 Spot-Accumulation" if long_side else "🎯 Accumulation (short)")
         flow_txt = f"flux {flow:+.2f}" if flow is not None else "flux indisponible"
         # v4.314 — SUR DEMANDE EXPLICITE : score composite de priorisation —
         # "comportement plus large" de l actif, pas seulement les donnees de
@@ -11389,7 +11491,11 @@ class BotEngine:
                 "strategy": mode, "countertrend": False, "force_paper": False, "entered_via_flirt": False,
                 "engine": "mtf", "mtf_sl": plan["sl"], "mtf_tp": plan["tp"], "mtf_notional": notional,
                 "mtf_path": mtf_path,  # v4.321 — "zone" (H4 classique) ou "tendance" (mesure de mouvement)
-                "mtf_trend_exit_off": mtf_trend_exit_off}  # v4.348
+                "mtf_trend_exit_off": mtf_trend_exit_off,  # v4.348
+                "mtf_swing": bool(_swing_key), "swing_key": _swing_key,   # v4.359 : trade du profil Swing
+                "swing_info": ({"pattern": name, "trend": v.get("trend"), "zone": [zone.get("low"), zone.get("high")],
+                                "touches": zone.get("touches"), "risk_pct": plan["risk_pct"], "rr": plan.get("rr"),
+                                "reward_pct": plan.get("reward_pct")} if _swing_key else None)}
         if long_side:
             cand.update({"support_at_entry": zone["low"], "resistance_at_entry": target["high"] if target else None,
                          "mtf_zone_bound": zone["low"]})  # v4.309 — borne de la zone, pour la cassure structurelle
@@ -13245,7 +13351,8 @@ class BotEngine:
                                    "mtf_r": abs(state.position["entry"] - cand["mtf_sl"]),
                                    "mtf_zone_bound": cand.get("mtf_zone_bound"),
                                    "mtf_path": cand.get("mtf_path", "zone"),  # v4.321 — "zone" ou "tendance"
-                                   "mtf_trend_exit_off": bool(cand.get("mtf_trend_exit_off"))})  # v4.348
+                                   "mtf_trend_exit_off": bool(cand.get("mtf_trend_exit_off")),  # v4.348
+                                   "mtf_swing": bool(cand.get("mtf_swing")), "swing_info": cand.get("swing_info")})   # v4.359
         # v4.24 — memorise les seuils REELLEMENT appliques a CE trade (fixes
         # ou adaptatifs a l ATR) — _manage_position_impl les relit ici en
         # priorite, avec repli sur les valeurs fixes globales si absents
@@ -13362,7 +13469,7 @@ class BotEngine:
             "position_size_pct": cfg["POSITION_SIZE_PCT"],
             "size_usd": round(size, 4),  # v4.28 — taille reelle en $ de CE trade (E)
             # v4.30 — seuils SL/TTP REELLEMENT appliques (fixes ou adaptatifs a l ATR)
-            "sl_pct_used": sl_pct_of_e,
+            "sl_pct_used": ((cand.get("swing_info") or {}).get("risk_pct") if cand.get("mtf_swing") else sl_pct_of_e),   # v4.359 : risque (% du prix) = 1 R
             "ttp_arm1_pct_used": ttp_arm1_pct,
             "adaptive_sl_ttp": adaptive_used,
             "strategy": strategy,  # v4.8 — "forex" ou "accumulation"
@@ -13374,7 +13481,7 @@ class BotEngine:
             # donc le vrai ratio $ reel des que le levier depasse x1 (le
             # ratio reel s ameliore avec le levier, puisque seul le gain grossit).
             "risk_reward": round(arm1_price_pct * max(leverage, 1) / sl_pct_of_e, 2) if sl_pct_of_e else None,  # v4.324 : x levier (le SL est en % de E, le TTP en % de prix)
-            "timeframe": cfg.get("PROFILE", "swing"),
+            "timeframe": "SWING_D1H4" if cand.get("mtf_swing") else cfg.get("PROFILE", "swing"),   # v4.359 : etiquette du profil Swing
             "entry": price,
             "stop_loss": sl_p,
             "take_profit1": tp1_price,
@@ -13391,6 +13498,11 @@ class BotEngine:
         except Exception as e_up:
             print(f"[TRADE-INDEX] Ecriture synchrone {trade_uid} impossible ({e_up}) — repli sur la file d evenements.")
         self.emit("trade_opened", opened_event)
+        if cand.get("mtf_swing") and cand.get("swing_key"):          # v4.359 : le signal journalise devient pris
+            try:
+                db.swing_event_mark_taken(cand["swing_key"][0], cand["swing_key"][1], cand["swing_key"][2], trade_uid)
+            except Exception as _e_sw:
+                print(f"[SWING-JOURNAL] marquage pris ignore : {_e_sw}")
 
     def _finalize_pending_candidates(self):
         """v3.2 — Appelee une fois par cycle, APRES avoir evalue tous les

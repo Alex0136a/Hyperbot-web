@@ -281,6 +281,7 @@ const PAPER_SUBTABS = [
   {key:"funding_contrarian", label:"Funding", icon:"💰", color:"#fbbf24"},
   {key:"spot_accumulation", label:"Spot-Accum", icon:"🌱", color:"#34d399"},
   {key:"forex_scalp", label:"Scalp Forex", icon:"⏱️", color:"#facc15"},   // v4.356 : scalps separes du Forex normal
+  {key:"swing_tab", label:"Swing", icon:"🌊", color:"#38bdf8"},   // v4.359 : suivi du profil Swing
   {key:"modes", label:"Modes : Prudence · Swing · Scalp", icon:"🎛️", color:"#facc15"},   // v4.354
 ];
 // v4.44 — modes ayant une liste d actifs dediee personnalisable (pas
@@ -1172,6 +1173,18 @@ function App() {
   const [orphanedLoading, setOrphanedLoading] = useState(false);
   // v4.316 — analyse des series de gains/pertes Funding
   // v4.345 — tableau de bord d objectif (positifs necessaires, decollage, part du pic gardee)
+  // v4.359 — suivi du Swing (positions en R, trades fermes, journal des signaux)
+  const [swingSt, setSwingSt] = useState(null);
+  const [swingStats, setSwingStats] = useState(null);
+  const [swingDays, setSwingDays] = useState(14);
+  const loadSwingSt = useCallback(async () => { try { setSwingSt(await apiCall("/api/swing/status","GET",null,token)); } catch(e) {} }, [token]);
+  const loadSwingStats = async () => { try { setSwingStats(await apiCall(`/api/swing/stats?days=${swingDays}`,"GET",null,token)); } catch(e) { alert("Erreur : "+e.message); } };
+  useEffect(() => {
+    if (!token || tab!=="paper" || paperSubTab!=="swing_tab") return;
+    loadSwingSt();
+    const id = setInterval(loadSwingSt, 30000);
+    return () => clearInterval(id);
+  }, [token, tab, paperSubTab]);
   // v4.358 — trades MANUELS dans les volets Accumulation (shorts) et Spot-Accum (longs) de TRADES P/L
   const [manualPL, setManualPL] = useState(null);
   const loadManualPL = useCallback(async () => { try { setManualPL(await apiCall("/api/manual/state","GET",null,token)); } catch(e) {} }, [token]);
@@ -1530,7 +1543,7 @@ function App() {
   }, [token]);
 
   useEffect(() => {
-    if (tab==="paper" && paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && token) {
+    if (tab==="paper" && paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && paperSubTab!=="forex_scalp" && paperSubTab!=="swing_tab" && token) {
       loadModeHistory(paperSubTab);
       // v4.46 — les reglages dedies par mode (SL/TTP/Taille) vivent dans
       // advancedSettings — le charger ici aussi, pas seulement quand on
@@ -2733,7 +2746,7 @@ Confirmer ?`
                     <span style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>{p.coin}/USDC</span>
                     <span style={{fontSize:9,color:"#94a3b8",background:"#0a0e1a",padding:"2px 6px",borderRadius:4}}>x{p.leverage||1}</span>
                     {p.strategy==="accumulation" && <span style={{background:"#1a0a2e",color:"#c084fc",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>🎯 ACCUMULATION</span>}
-                    {p.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>💰 FUNDING</span>}{p.strategy==="forex_scalp" && <span style={{background:"#3a3205",color:"#facc15",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>⚡ SCALP</span>}
+                    {p.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>💰 FUNDING</span>}{p.strategy==="forex_scalp" && <span style={{background:"#3a3205",color:"#facc15",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>⚡ SCALP</span>}{p.swing && <span style={{background:"#0c2a3a",color:"#38bdf8",border:"1px solid #38bdf8",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>🌊 SWING</span>}
                   </div>
                   <div style={{textAlign:"right"}}>
                     <div style={{fontSize:15,fontWeight:700,color:pnl>=0?"#34d399":"#f87171"}}>{pnl>=0?"+":""}{pnl.toFixed(2)} USDC</div>
@@ -3597,7 +3610,7 @@ Confirmer ?`
                 await apiCall("/api/config/advanced","PUT",{values:{FEES_IN_STATS: config?.fees_in_stats!==false ? 0 : 1}},token);
                 await loadData();
                 loadAllStrategyPerformance(false);
-                if(paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes") loadStrategyPerformance(paperSubTab,false);
+                if(paperSubTab==="swing_tab") loadSwingSt(); else if(paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes") loadStrategyPerformance(paperSubTab,false);
               }catch(e){ alert("Erreur : "+e.message); }
             }} style={{background:"#334155",border:"none",borderRadius:6,padding:"6px 12px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer"}}>
               {config?.fees_in_stats!==false ? "Afficher en brut" : "Inclure les frais"}
@@ -3668,6 +3681,129 @@ Confirmer ?`
                 )}
               </div>
             )}
+
+            {/* v4.359 — SUR DEMANDE EXPLICITE : onglet de suivi du Swing (comme le scalp) : positions en R, trades fermes,
+                journal de chaque signal H4 (pris ou filtre) mesure 24 h / 72 h plus tard. */}
+            {paperSubTab==="swing_tab" && (()=>{
+              const S = swingSt;
+              const f = (v,d=2)=> v==null?"—":Number(v).toFixed(d);
+              const sg = (v,d=2)=> v==null?"—":`${v>=0?"+":""}${Number(v).toFixed(d)}`;
+              const th = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap",color:"#94a3b8"}, td = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap"};
+              // prochaine fenetre d'entree : cloture H4 (00, 04, 08, 12, 16, 20 h UTC) + 30 min
+              const now = new Date(); const h4 = 4*3600000; const lastClose = Math.floor(now.getTime()/h4)*h4;
+              const inWin = now.getTime() - lastClose < 30*60000; const nextClose = inWin ? lastClose : lastClose + h4;
+              const hm = ms => new Date(ms).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit",timeZone:"America/Marigot"});
+              const winTxt = inWin ? `fenêtre OUVERTE jusqu'à ${hm(lastClose+30*60000)} (Marigot)` : `prochaine fenêtre : ${hm(nextClose)} à ${hm(nextClose+30*60000)} (Marigot)`;
+              const Tile = ({l,v,c})=>(<div style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:8,textAlign:"center"}}><div style={{fontSize:14,fontWeight:700,color:c||"#e2e8f0"}}>{v}</div><div style={{fontSize:8,color:"#94a3b8"}}>{l}</div></div>);
+              const GT = ({title,rows})=>(
+                <div style={{marginTop:8}}>
+                  <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700,marginBottom:2}}>{title}</div>
+                  <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                    <thead><tr><th style={{...th,textAlign:"left"}}></th><th style={th}>Signaux</th><th style={th}>Mesurés</th><th style={th}>Objectif</th><th style={th}>Stop</th><th style={th}>Ni l'un ni l'autre</th><th style={th} title="Gain maximal médian sur 72 h (% du prix)">MFE 72 h</th><th style={th} title="Perte maximale médiane sur 72 h">MAE 72 h</th><th style={th} title="Résultat moyen en multiple du risque, avant frais">R brut</th><th style={th} title="Résultat moyen en multiple du risque, frais déduits (frais / risque du trade)">R net</th></tr></thead>
+                    <tbody>{rows.map(r=><tr key={r.key} style={{borderTop:"1px solid #1e2d4a"}}>
+                      <td style={{...td,textAlign:"left",color:"#e2e8f0",whiteSpace:"normal"}}>{r.key}</td><td style={td}>{r.n}</td><td style={td}>{r.evaluated}</td>
+                      <td style={td}>{r.tp_pct==null?"—":r.tp_pct+" %"}</td><td style={td}>{r.sl_pct==null?"—":r.sl_pct+" %"}</td><td style={td}>{r.none_pct==null?"—":r.none_pct+" %"}</td>
+                      <td style={td}>{r.mfe72==null?"—":f(r.mfe72)+" %"}</td><td style={td}>{r.mae72==null?"—":f(r.mae72)+" %"}</td>
+                      <td style={td}>{sg(r.r_gross)}</td>
+                      <td style={{...td,color:r.r_net==null?"#94a3b8":(r.r_net>=0?"#86efac":"#fca5a5"),fontWeight:700}}>{sg(r.r_net)}{r.r_n>0&&r.r_n<20?<span style={{color:"#fbbf24",marginLeft:4,fontSize:9}}>n={r.r_n}</span>:null}</td>
+                    </tr>)}</tbody></table></div>
+                </div>);
+              return (
+                <div>
+                  <div style={{background:"#0a0e1a",border:"1px solid #38bdf8",borderRadius:8,padding:10,marginBottom:14,fontSize:11,color:"#94a3b8",lineHeight:1.6}}>
+                    <b style={{color:"#38bdf8"}}>🌊 Swing</b>
+                    {S && <span style={{marginLeft:8,fontWeight:700,color:S.active?"#86efac":"#fbbf24"}}>{S.active?"● profil appliqué":"○ profil non appliqué"}</span>}
+                    <span style={{marginLeft:10,color:"#e2e8f0"}}>{winTxt}</span><br/>
+                    Les trades du profil Swing sont des trades de Spot-Accum (longs) et d'Accumulation (shorts) : ils apparaissent aussi dans ces volets, avec le badge 🌊 SWING. Ici, ils sont isolés, comptés <b>en multiple du risque (R)</b> et <b>nets de frais</b>, et chaque signal H4 est journalisé avec la raison de sa décision. Réglages : volet « 🎛️ Modes ».
+                  </div>
+                  {!S ? <div style={{fontSize:11,color:"#94a3b8"}}>Chargement…</div> : (
+                    <div>
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,marginBottom:12}}>
+                        <Tile l="TRADES (ouverts / fermés)" v={`${S.open.length} / ${S.perf.n}`} c="#94a3b8"/>
+                        <Tile l={S.fees_on?"WIN RATE (après frais)":"WIN RATE"} v={S.perf.win_rate==null?"—":`${S.perf.win_rate}%`} c="#fbbf24"/>
+                        <Tile l={S.fees_on?"NET (après frais)":"NET"} v={`${sg(S.fees_on?S.perf.net:S.perf.gross)} USDC`} c={(S.fees_on?S.perf.net:S.perf.gross)>=0?"#34d399":"#f87171"}/>
+                        <Tile l="R MOYEN / TRADE" v={S.perf.avg_r==null?"—":`${sg(S.perf.avg_r)} R`} c={(S.perf.avg_r||0)>=0?"#34d399":"#f87171"}/>
+                        <Tile l="LONGS / SHORTS (fermés)" v={`${S.perf_long.n} / ${S.perf_short.n}`} c="#94a3b8"/>
+                      </div>
+                      <div style={{fontSize:10,color:"#94a3b8",marginBottom:12,lineHeight:1.6}}>
+                        Brut {sg(S.perf.gross)} − frais {f(S.perf.fees)} ({S.fee_pct} % du notionnel) = <b>{sg(S.perf.net)} USDC</b>.
+                        {S.perf_long.n>0 && <> Longs : {S.perf_long.win_rate}% · {sg(S.perf_long.net)} $ · {sg(S.perf_long.avg_r)} R.</>}
+                        {S.perf_short.n>0 && <> Shorts : {S.perf_short.win_rate}% · {sg(S.perf_short.net)} $ · {sg(S.perf_short.avg_r)} R.</>}
+                        {S.perf.n<30 && <span style={{color:"#fbbf24"}}> Moins de 30 trades : à ne pas interpréter.</span>}
+                      </div>
+                      <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700,marginBottom:6}}>Positions Swing ouvertes ({S.open.length})</div>
+                      {S.open.length===0 ? <div style={{fontSize:11,color:"#94a3b8",marginBottom:12}}>Aucune position Swing ouverte.</div> : S.open.map((o,i)=>(
+                        <div key={i} style={{background:"#0a0e1a",border:"1px solid #1e3a4a",borderRadius:8,padding:8,marginBottom:5,fontSize:11,color:"#cbd5e1",display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6}}>
+                          <span><span style={{background:"#0c2a3a",color:"#38bdf8",border:"1px solid #38bdf8",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700,marginRight:6}}>🌊 SWING</span>
+                            <b style={{color:o.side==="long"?"#34d399":"#f87171"}}>{o.side==="long"?"LONG":"SHORT"}</b> {o.asset} <span style={{color:"#64748b"}}>{o.pattern||""}{o.touches?` · zone ${o.touches} contacts`:""}</span></span>
+                          <span>entrée {Number(o.entry).toPrecision(6)} · prix {Number(o.price).toPrecision(6)} · stop {Number(o.sl).toPrecision(6)}{o.be_done?" (breakeven)":""} · objectif {o.tp?Number(o.tp).toPrecision(6):"—"}</span>
+                          <span style={{color:(o.r_now||0)>=0?"#86efac":"#fca5a5",fontWeight:700}}>{sg(o.r_now)} R · {sg(o.gain_pct,3)} % · {o.age_h==null?"":(o.age_h>=48?`${(o.age_h/24).toFixed(1)} j`:`${o.age_h} h`)}</span>
+                        </div>))}
+                      <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700,margin:"12px 0 6px"}}>Trades Swing fermés ({S.closed.length})</div>
+                      {S.closed.length===0 ? <div style={{fontSize:11,color:"#94a3b8"}}>Aucun trade Swing fermé pour l'instant.</div> : (
+                        <div style={{maxHeight:420,overflowY:"auto"}}>{S.closed.map(x=>(
+                          <div key={x.id} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:8,marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
+                            <div>
+                              <span style={{background:"#0c2a3a",color:"#38bdf8",border:"1px solid #38bdf8",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>🌊 SWING</span>
+                              <span style={{background:x.side==="long"?"#052e16":"#2d0a0a",color:x.side==="long"?"#34d399":"#f87171",padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700,marginLeft:6}}>{x.side.toUpperCase()}</span>
+                              <span style={{marginLeft:6,color:"#e2e8f0",fontSize:11}}>{x.asset}/USDC</span>
+                              <span style={{marginLeft:6,color:"#94a3b8",fontSize:9}}>{x.reason}</span>
+                              {x.peak_pct!=null && <span style={{marginLeft:6,color:"#c084fc",fontSize:9}}>🏔️ pic +{Number(x.peak_pct).toFixed(2)}%</span>}
+                              <span style={{marginLeft:6,color:"#64748b",fontSize:9}}>{x.closed?new Date(x.closed).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}):""}{x.hours!=null?` · durée ${x.hours>=48?(x.hours/24).toFixed(1)+" j":x.hours+" h"}`:""}</span>
+                            </div>
+                            <div style={{fontSize:11,fontWeight:700,color:(x.pnl_net||0)>=0?"#34d399":"#f87171"}}>{sg(x.pnl_net,3)} $ net{x.r!=null?<span style={{marginLeft:8,color:x.r>=0?"#86efac":"#fca5a5"}}>{sg(x.r)} R</span>:null}<span style={{color:"#64748b",fontWeight:400,marginLeft:6}}>(brut {sg(x.pnl,3)} · frais {f(x.fees,3)})</span></div>
+                          </div>))}</div>)}
+                      <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700,margin:"14px 0 6px"}}>Signaux H4 récents (5 jours) : {S.recent.length}</div>
+                      {S.recent.length===0 ? <div style={{fontSize:11,color:"#94a3b8"}}>Aucun signal journalisé pour l'instant : un signal est enregistré quand un motif H4 touche une zone Daily pendant une fenêtre d'entrée.</div> : (
+                        <details>
+                          <summary style={{cursor:"pointer",color:"#94a3b8",fontSize:11}}>Afficher la liste</summary>
+                          <div style={{overflowX:"auto",marginTop:4}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                            <thead><tr><th style={{...th,textAlign:"left"}}>Clôture H4</th><th style={{...th,textAlign:"left"}}>Actif</th><th style={th}>Sens</th><th style={{...th,textAlign:"left"}}>Figure</th><th style={{...th,textAlign:"left"}}>Décision</th><th style={th}>R:R</th><th style={th}>Risque</th><th style={th}>Issue</th><th style={th}>R</th></tr></thead>
+                            <tbody>{S.recent.map((e,i)=><tr key={i} style={{borderTop:"1px solid #1e2d4a",opacity:e.decision==="pris"?1:0.78}}>
+                              <td style={{...td,textAlign:"left"}}>{new Date(e.signal_t).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",timeZone:"America/Marigot"})}</td>
+                              <td style={{...td,textAlign:"left",color:"#e2e8f0"}}>{e.asset}</td><td style={td}>{e.side==="long"?"L":"S"}</td>
+                              <td style={{...td,textAlign:"left",whiteSpace:"normal",maxWidth:200}}>{(e.pattern||"").split(" (")[0]}</td>
+                              <td style={{...td,textAlign:"left",color:e.decision==="pris"?"#86efac":(String(e.decision).startsWith("candidat")?"#38bdf8":"#fbbf24"),whiteSpace:"normal",maxWidth:300}}>{e.decision}</td>
+                              <td style={td}>{e.rr==null?"—":f(e.rr)}</td><td style={td}>{e.risk_pct==null?"—":f(e.risk_pct)+" %"}</td>
+                              <td style={{...td,color:e.outcome==="tp"?"#86efac":(e.outcome==="sl"?"#fca5a5":"#94a3b8")}}>{e.evaluated?({tp:"objectif",sl:"stop",none:"ni l'un ni l'autre"}[e.outcome]||e.outcome)+(e.evaluated===1?" (24 h)":""):"en attente"}</td>
+                              <td style={{...td,color:(e.r_est||0)>=0?"#86efac":"#fca5a5"}}>{e.r_est==null?"—":sg(e.r_est)}</td>
+                            </tr>)}</tbody></table></div>
+                        </details>)}
+                      <div style={{marginTop:12,borderTop:"1px solid #1e2d4a",paddingTop:10}}>
+                        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                          <b style={{fontSize:11,color:"#e2e8f0"}}>Outils d'amélioration du Swing</b>
+                          <select value={swingDays} onChange={e=>setSwingDays(Number(e.target.value))} style={{background:"#0b1220",color:"#e2e8f0",border:"1px solid #1e2d4a",borderRadius:6,padding:"6px 8px",fontSize:12}}>
+                            <option value={7}>7 jours</option><option value={14}>14 jours</option><option value={30}>30 jours</option><option value={90}>90 jours</option>
+                          </select>
+                          <button onClick={loadSwingStats} style={{background:"#38bdf8",border:"none",borderRadius:7,padding:"8px 14px",color:"#06222f",fontFamily:"inherit",fontSize:12,fontWeight:800,cursor:"pointer"}}>📊 Statistiques du journal</button>
+                          <button onClick={async()=>{
+                            try{
+                              const r = await fetch(`${API}/api/swing/journal/export.csv?days=${swingDays}`,{headers:{Authorization:`Bearer ${token}`}});
+                              if(!r.ok){ let d={}; try{d=await r.json();}catch(_){} throw new Error(d.detail||`Erreur ${r.status}`); }
+                              const blob = await r.blob(); const cd = r.headers.get("Content-Disposition")||""; const m = cd.match(/filename="([^"]+)"/);
+                              const url = URL.createObjectURL(blob); const a = document.createElement("a");
+                              a.href = url; a.download = m?m[1]:"swing_journal.csv"; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000);
+                            }catch(e){ alert("Export impossible : "+e.message); }
+                          }} style={{background:"#334155",border:"none",borderRadius:7,padding:"8px 14px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>📥 Journal CSV</button>
+                          <button onClick={loadSwingSt} style={{background:"#334155",border:"none",borderRadius:7,padding:"8px 12px",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,fontWeight:700,cursor:"pointer"}}>↻</button>
+                        </div>
+                        {swingStats && (
+                          <div style={{marginTop:8}}>
+                            <div style={{fontSize:11,color:"#94a3b8"}}>Période : {swingStats.days} jours · {swingStats.total.n} signaux, {swingStats.total.evaluated} mesurés (à 24 h puis 72 h). Un signal <b>filtré</b> est mesuré avec un plan « pour voir » à partir de la clôture de sa bougie H4 : cela montre ce que chaque filtre a empêché ou évité.</div>
+                            <GT title="Par décision (pris, candidat, ou raison du filtre)" rows={swingStats.by_decision}/>
+                            <GT title="Par figure" rows={swingStats.by_pattern}/>
+                            <GT title="Par sens" rows={swingStats.by_side}/>
+                            <GT title="Par tendance Daily" rows={swingStats.by_trend}/>
+                            <GT title="Par clôture H4" rows={swingStats.by_close}/>
+                            <GT title="Par actif" rows={swingStats.by_asset}/>
+                            <div style={{marginTop:8,fontSize:10,color:"#64748b",lineHeight:1.5}}>
+                              <b style={{color:"#94a3b8"}}>Comment s'en servir.</b> (1) « Par décision » : si les signaux filtrés pour « aucun objectif réel » ou « gain/risque insuffisant » avaient un <b>R net positif</b> sur au moins 20 mesures, le filtre coûte de bons trades ; s'il est négatif, il fait son travail. (2) « signal hors fenêtre » compte ce que la limite de 30 minutes fait manquer. (3) Gardez les figures, sens et tendances positifs sur 20 mesures ou plus, retirez les négatifs. (4) Le R se lit : +2 = l'objectif a été touché, -1 = le stop ; le R net déduit les frais ({S.fee_pct} % du notionnel, rapportés au risque du trade).
+                            </div>
+                          </div>)}
+                      </div>
+                    </div>)}
+                </div>);
+            })()}
 
             {/* v4.356 — SUR DEMANDE EXPLICITE : les scalps ont leur propre volet, separes du Forex normal. */}
             {paperSubTab==="forex_scalp" && (()=>{
@@ -3970,7 +4106,7 @@ Confirmer ?`
               </div>
             )}
 
-            {paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && paperSubTab!=="forex_scalp" && (()=>{
+            {paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && paperSubTab!=="forex_scalp" && paperSubTab!=="swing_tab" && (()=>{
               const openFiltered = (paper?.open_trades||[]).filter(t=>(t.strategy||"forex")===paperSubTab);
               // v4.44 — FIX : utilise l historique DEDIE recupere pour ce
               // mode precis (deja filtre cote serveur, pool bien plus large
@@ -4335,7 +4471,7 @@ Confirmer ?`
                             try{
                               await apiCall("/api/spot-accum/target","PUT",{trade_id:trade.id,target_price:newTarget},token);
                               loadData();
-                              if (paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes") loadModeHistory(paperSubTab);
+                              if (paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && paperSubTab!=="forex_scalp" && paperSubTab!=="swing_tab") loadModeHistory(paperSubTab);
                             }catch(err){ alert("Erreur : "+err.message); }
                           }} style={{background:"#052e1622",border:"1px solid #34d399",borderRadius:5,padding:"3px 8px",color:"#34d399",fontSize:9,cursor:"pointer",fontWeight:700}}>
                             ✓ Modifier
@@ -4355,7 +4491,7 @@ Confirmer ?`
                             try{
                               await apiCall("/api/spot-accum/trailing-arm","PUT",{trade_id:trade.id,trailing_arm_price:newVal},token);
                               loadData();
-                              if (paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes") loadModeHistory(paperSubTab);
+                              if (paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && paperSubTab!=="forex_scalp" && paperSubTab!=="swing_tab") loadModeHistory(paperSubTab);
                             }catch(err){ alert("Erreur : "+err.message); }
                           }} style={{background:"#052e1622",border:"1px solid #34d399",borderRadius:5,padding:"3px 8px",color:"#34d399",fontSize:9,cursor:"pointer",fontWeight:700}}>
                             ✓ Modifier
@@ -4398,6 +4534,7 @@ Confirmer ?`
                           <div>
                             <span style={{background:s.action==="LONG"?"#052e16":"#2d0a0a",color:s.action==="LONG"?"#34d399":"#f87171",padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>{s.action}</span>
                             {s.strategy==="manual" && <span style={{background:"#1e293b",color:"#7dd3fc",border:"1px solid #38bdf8",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700,marginLeft:4}}>✋ MANUEL{s.trade_mode==="live"?" · LIVE":""}</span>}
+                            {s.timeframe==="SWING_D1H4" && <span style={{background:"#0c2a3a",color:"#38bdf8",border:"1px solid #38bdf8",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700,marginLeft:4}}>🌊 SWING</span>}
                             <span style={{marginLeft:6,color:"#e2e8f0",fontSize:11}}>{s.coin}/USDC</span>
                             <span style={{marginLeft:6,color:"#94a3b8",fontSize:9}}>{s.reason}</span>
                             {s.peak_pnl_pct!=null ? (
