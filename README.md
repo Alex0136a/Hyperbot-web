@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/32880542/README.md)
+[README (2).md](https://github.com/user-attachments/files/33131577/README.2.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
@@ -636,3 +636,14 @@ Voici comment chaque champ est réellement branché :
 - Le changement de wallet/clé API ne prend effet qu'au **prochain démarrage**
   du bot (arrêt puis démarrage) — reconnecter l'exchange à chaud n'est pas
   géré.
+
+## v4.362 — Swing Support (crypto, paper)
+
+Sous-mode PAPER, éteint par défaut (`SUPSW_ENABLED`). Actifs : BTC, ETH, HYPE, TAO, SUI (`SUPSW_SYMBOLS`).
+- **Entrée** : tendance Daily haussière + prix dans un support Daily + (retest du support tenu sur les `SUPSW_WINDOW` dernières bougies 1 h, ou balayage de liquidité puis reprise), dans les `SUPSW_SIGNAL_MAX_AGE_SEC` qui suivent la clôture de la bougie 1 h.
+- **Sortie** : objectif `SUPSW_TP_PCT` (2 %), stop de sécurité `SUPSW_SL_PCT` (5 %), durée max, et **sortie anticipée** si une bougie 1 h clôture sous (bas de zone − tampon) ET flux < `SUPSW_EXIT_FLOW`. `SUPSW_EXIT_REQUIRE_H4_END=1` exige en plus la tendance H4 finie. Aucun breakeven.
+- **Contexte enregistré sans filtrer** : tendance de BTC, tendance Weekly, funding annualisé, flux.
+- **Journal** (`supsw_events`) : chaque signal (pris ou refusé) mesuré à 24 h / 72 h ; chaque sortie anticipée suivie à 1 h / 4 h / 24 h, avec « l'objectif ou le stop aurait-il été touché ensuite ? » (`too_early`).
+- **API** : `/api/supsw/status`, `/api/supsw/stats?days=`, `/api/supsw/journal/export.csv`. **UI** : carte « Swing Support » dans TRADES P/L › Swing ; ligne « 🧱 SWING SUPPORT » dans le diagnostic.
+- Fichiers : `swing_support.py` (nouveau), `bot_engine.py`, `db.py`, `api.py`, `index.html`.
+- Le trade occupe le slot de l'actif tant qu'il est ouvert (les autres modes ne peuvent pas trader cet actif).
