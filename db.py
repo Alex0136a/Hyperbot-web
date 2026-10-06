@@ -146,6 +146,25 @@ def init_db():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_swing_events_ts ON swing_events (ts)")
+        # v4.362 — journal du SWING SUPPORT (paper) : une ligne par signal 1 h (pris ou non) ; si pris, la sortie et ce qui s est
+        # passe ensuite (1 h / 4 h / 24 h, et l objectif ou le stop aurait-il ete touche : la sortie anticipee etait-elle trop tot ?)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS supsw_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, signal_t INTEGER NOT NULL,
+                asset TEXT, side TEXT, setup TEXT, setup_kind TEXT, trend TEXT, weekly_trend TEXT, btc_trend TEXT,
+                funding_ann REAL, flow REAL, atr_pct REAL, hour_utc INTEGER, zone_low REAL, zone_high REAL, zone_touches INTEGER,
+                held INTEGER, pierce_pct REAL, price REAL, entry_ref REAL, sl REAL, tp REAL, risk_pct REAL, reward_pct REAL,
+                decision TEXT, prio INTEGER DEFAULT 1, trade_uid TEXT,
+                evaluated INTEGER DEFAULT 0, outcome TEXT, hit_h REAL, mfe24 REAL, mae24 REAL, mfe72 REAL, mae72 REAL,
+                fin24 REAL, fin72 REAL, covered_h REAL,
+                exit_ts INTEGER, exit_price REAL, exit_reason TEXT, early_exit INTEGER, pnl_pct REAL, hold_h REAL,
+                flow_exit REAL, h4_intact_exit TEXT, d1_trend_exit TEXT,
+                post_eval INTEGER DEFAULT 0, fin1h REAL, fin4h REAL, fin24h REAL, after_outcome TEXT, after_hit_h REAL,
+                after_mfe REAL, after_mae REAL, too_early INTEGER,
+                UNIQUE (asset, signal_t)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_supsw_events_ts ON supsw_events (ts)")
         # Migration : ajoute la colonne rsi si la table trades existait deja
         # (CREATE TABLE IF NOT EXISTS n ajoute pas les colonnes manquantes a
         # une table deja creee par une version anterieure du code).
@@ -593,7 +612,7 @@ def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=N
 
 
 # ── v4.265 — Suivi apres sortie + export ─────────────────────────────────
-FOLLOWUP_STRATEGIES = ("spot_accumulation", "accumulation", "funding_contrarian", "forex", "manual", "forex_scalp", "forex_swing")  # v4.269 : + Funding ; v4.273 : + Manuel ; v4.323 : + Forex (export CSV et suivi +30/+60 min)
+FOLLOWUP_STRATEGIES = ("spot_accumulation", "accumulation", "funding_contrarian", "forex", "manual", "forex_scalp", "forex_swing", "swing_support")  # v4.269 : + Funding ; v4.273 : + Manuel ; v4.323 : + Forex (export CSV et suivi +30/+60 min)
 
 
 def list_trades_needing_followup(min_age_minutes=62, max_age_days=16, limit=5):
@@ -1196,5 +1215,86 @@ def swing_events_since(since_ms, limit=5000):
 def swing_events_prune(older_than_ms):
     with _lock, _connect() as conn:
         n = conn.execute("DELETE FROM swing_events WHERE ts < ?", (older_than_ms,)).rowcount
+        conn.commit()
+    return n
+
+
+# ── v4.362 — Journal du SWING SUPPORT ───────────────────────────────────────────────────────
+_SUPSW_FIELDS = ("ts", "signal_t", "asset", "side", "setup", "setup_kind", "trend", "weekly_trend", "btc_trend", "funding_ann", "flow",
+                 "atr_pct", "hour_utc", "zone_low", "zone_high", "zone_touches", "held", "pierce_pct", "price", "entry_ref", "sl", "tp",
+                 "risk_pct", "reward_pct", "decision", "prio", "trade_uid")
+
+
+def supsw_upsert(ev):
+    """Une ligne par (actif, bougie 1 h du signal). Une decision de rang superieur (pris 3 > candidat 2 > refus 1) remplace
+    la precedente tant que rien n est mesure ; sinon la PREMIERE raison est conservee. Retourne l id."""
+    with _lock, _connect() as conn:
+        row = conn.execute("SELECT id, prio, evaluated FROM supsw_events WHERE asset=? AND signal_t=?",
+                           (ev["asset"], ev["signal_t"])).fetchone()
+        if row is None:
+            cur = conn.execute(f"INSERT INTO supsw_events ({', '.join(_SUPSW_FIELDS)}) VALUES ({', '.join('?' * len(_SUPSW_FIELDS))})",
+                               [ev.get(k) for k in _SUPSW_FIELDS])
+            conn.commit()
+            return cur.lastrowid
+        if (ev.get("prio") or 1) > (row["prio"] or 1) and not row["evaluated"]:
+            keys = [k for k in _SUPSW_FIELDS if k not in ("ts", "signal_t", "asset")]
+            conn.execute(f"UPDATE supsw_events SET {', '.join(k + '=?' for k in keys)} WHERE id=?", [ev.get(k) for k in keys] + [row["id"]])
+            conn.commit()
+        return row["id"]
+
+
+def supsw_mark_taken(asset, signal_t, trade_uid):
+    with _lock, _connect() as conn:
+        conn.execute("UPDATE supsw_events SET decision='pris', prio=3, trade_uid=? WHERE asset=? AND signal_t=?",
+                     (trade_uid, asset, signal_t))
+        conn.commit()
+
+
+def supsw_record_exit(trade_uid, fields):
+    """Ecrit la sortie d un trade pris (raison, prix, contexte a la sortie)."""
+    if not trade_uid or not fields:
+        return
+    keys = list(fields)
+    with _lock, _connect() as conn:
+        conn.execute(f"UPDATE supsw_events SET {', '.join(k + '=?' for k in keys)} WHERE trade_uid=?", [fields[k] for k in keys] + [trade_uid])
+        conn.commit()
+
+
+def supsw_pending_signals(now_ms, limit=40):
+    """Signaux a mesurer sur bougies 1 h : 24 h apres (evaluated=0) puis 72 h (evaluated=1)."""
+    with _lock, _connect() as conn:
+        rows = conn.execute("SELECT * FROM supsw_events WHERE sl IS NOT NULL AND tp IS NOT NULL AND ("
+                            "(evaluated=0 AND signal_t <= ?) OR (evaluated=1 AND signal_t <= ?)) ORDER BY signal_t LIMIT ?",
+                            (now_ms - 25 * 3_600_000, now_ms - 73 * 3_600_000, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def supsw_pending_exits(now_ms, limit=40):
+    """Trades pris et sortis, a mesurer apres la sortie : 25 h plus tard (post_eval=0) puis 73 h (post_eval=1)."""
+    with _lock, _connect() as conn:
+        rows = conn.execute("SELECT * FROM supsw_events WHERE exit_ts IS NOT NULL AND ("
+                            "(post_eval=0 AND exit_ts <= ?) OR (post_eval=1 AND exit_ts <= ?)) ORDER BY exit_ts LIMIT ?",
+                            (now_ms - 25 * 3_600_000, now_ms - 73 * 3_600_000, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def supsw_update(event_id, fields):
+    if not fields:
+        return
+    keys = list(fields)
+    with _lock, _connect() as conn:
+        conn.execute(f"UPDATE supsw_events SET {', '.join(k + '=?' for k in keys)} WHERE id=?", [fields[k] for k in keys] + [event_id])
+        conn.commit()
+
+
+def supsw_events_since(since_ms, limit=5000):
+    with _lock, _connect() as conn:
+        rows = conn.execute("SELECT * FROM supsw_events WHERE ts >= ? ORDER BY ts DESC LIMIT ?", (since_ms, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def supsw_events_prune(older_than_ms):
+    with _lock, _connect() as conn:
+        n = conn.execute("DELETE FROM supsw_events WHERE ts < ?", (older_than_ms,)).rowcount
         conn.commit()
     return n
