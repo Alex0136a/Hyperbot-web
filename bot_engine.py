@@ -1421,6 +1421,23 @@ PROFILE_SWING = {
     "FOREX_SCALP_BE_R": 0.6,              # breakeven net de frais apres N x R
     "FOREX_SCALP_FLOW_EXIT": 0.5,         # sortie si le flux se retourne au-dela de +/- N
     "FOREX_SCALP_FLOW_EXIT_MIN_GAIN_R": 0.3,
+    # ── v4.361 — SWING FOREX (sous-mode, PAPER uniquement ; eteint par defaut) ──
+    "FXSWING_ENABLED": 0,
+    "FXSWING_SYMBOLS": ["xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY", "PAXG"],
+    "FXSWING_RISK_PCT": 0.5,              # perte au stop = N % du capital
+    "FXSWING_MAX_NOTIONAL_USD": 60.0,     # notionnel maximal par trade (paper)
+    "FXSWING_LEVERAGE": 3,
+    "FXSWING_MAX_TRADES": 2,
+    "FXSWING_MIN_RISK_PCT": 0.25,         # stop minimal (% du prix) : en dessous, frais et spread le mangent
+    "FXSWING_MAX_RISK_PCT": 2.0,
+    "FXSWING_MIN_RR": 2.0,                # gain/risque brut minimal
+    "FXSWING_MIN_NET_RR": 1.2,            # gain/risque NET de frais et spread minimal
+    "FXSWING_SIGNAL_MAX_AGE_SEC": 1800,   # entree dans les N secondes qui suivent la cloture H4
+    "FXSWING_MAX_SPREAD_PCT": 0.05,
+    "FXSWING_MAX_HOLD_DAYS": 10,
+    "FXSWING_COOLDOWN_SEC": 14400,
+    "FXSWING_DOUBLE_PATTERN": 1,
+    "FXSWING_FLOW_VETO": 1,
     "FLOW_RECORDER_ENABLED": 1,           # v4.349 : 1 = enregistre le flux acheteur/vendeur par tranche de 5 min et par actif (lecture seule)
     "FLOW_RECORDER_BIG_TRADE_USD": 5000.0, # v4.349 : seuil d une "grosse" transaction
     "FLOW_RECORDER_KEEP_DAYS": 120,       # v4.349 : duree de conservation
@@ -2138,7 +2155,7 @@ def _order_first_status(result):
 # d entree — permet de retrouver le MODE SOURCE d une position directement
 # depuis l historique Hyperliquid, meme si la base locale etait perdue.
 TRADE_UID_MAGIC = "4842"  # "HB"
-STRATEGY_CODES = {"forex": "01", "accumulation": "02", "spot_accumulation": "03", "funding_contrarian": "04", "manual": "05", "forex_scalp": "06"}
+STRATEGY_CODES = {"forex": "01", "accumulation": "02", "spot_accumulation": "03", "funding_contrarian": "04", "manual": "05", "forex_scalp": "06", "forex_swing": "07"}
 STRATEGY_FROM_CODE = {v: k for k, v in STRATEGY_CODES.items()}
 
 
@@ -5146,7 +5163,7 @@ class BotEngine:
         """v4.264 — mode REEL (paper/live) d une position : celui memorise a
         son ouverture. Repli sur le reglage courant de sa strategie pour les
         positions anciennes sans cette information."""
-        if (pos or {}).get("strategy") == "forex_scalp":      # v4.353 : le scalp est PAPER par construction
+        if (pos or {}).get("strategy") in ("forex_scalp", "forex_swing"):      # v4.353 / v4.361 : PAPER par construction
             return "paper"
         recorded = (pos or {}).get("effective_mode")
         if recorded in ("paper", "live"):
@@ -5166,7 +5183,7 @@ class BotEngine:
         (FUNDING_MODE_LIVE_ALLOWED) s applique TOUJOURS en plus, meme si
         cette fonction renvoie "live" pour funding_contrarian — double
         protection, pas de retrait de securite existante."""
-        if strategy == "forex_scalp":                          # v4.353 : le scalp est PAPER par construction
+        if strategy in ("forex_scalp", "forex_swing"):         # v4.353 / v4.361 : PAPER par construction
             return "paper"
         override = self.cfg.get("STRATEGY_MODE_OVERRIDE", {}).get(strategy)
         if override in ("paper", "live"):
@@ -7843,6 +7860,7 @@ class BotEngine:
                 try:                                  # v4.353 — scalp Forex : jamais bloquant pour le reste du cycle
                     self._scalp_cycle()
                     self._scalp_journal_eval_if_due()
+                    self._fxswing_cycle()               # v4.361
                     self._swing_journal_eval_if_due()   # v4.359
                 except Exception as _e_sc:
                     print(f"[SCALP] cycle ignore : {type(_e_sc).__name__}: {_e_sc}")
@@ -8084,6 +8102,8 @@ class BotEngine:
             return self._manage_mtf(symbol, price, state, pos, ticker_from_slot_key(symbol), mode)
         if pos.get("engine") == "scalp":   # v4.353 — position de scalp Forex : gestion dediee (paper)
             return self._manage_scalp(symbol, price, state, pos, ticker)
+        if pos.get("engine") == "fxswing":   # v4.361 — position de Swing Forex : gestion dediee (paper)
+            return self._manage_fxswing(symbol, price, state, pos, ticker)
         # v4.33 — SECURITE EXPLICITE : un trade "funding_contrarian" reste
         # simule (paper) meme si le bot tourne globalement en mode live, tant
         # que FUNDING_MODE_LIVE_ALLOWED n est pas active manuellement — ce
@@ -10684,16 +10704,309 @@ class BotEngine:
             print(f"[MTF] Bougies {tf} {ticker} indisponibles : {e}")
         return out
 
+    # ───────────────────────── v4.361 — SWING FOREX (sous-mode, PAPER) ─────────────────────────
+    # Meme logique que le Swing crypto (tendance et zones Daily, signal de retournement H4 a la cloture, objectif sur la
+    # zone opposee, gain/risque minimal), appliquee aux actifs Forex (EUR, JPY, KRW, DXY, PAXG). Sous-mode SEPARE : les
+    # marches HIP-3 restent isoles des modes Spot-Accum / Accumulation (isolation v4.163). Un slot par actif, partage avec
+    # le Forex normal et le Scalp. PAPER par construction. Frais et spread comptes dans le plan.
+    def _fxswing_state_cfg(self):
+        c = self.cfg
+        return {
+            "syms": c.get("FXSWING_SYMBOLS", ["xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY", "PAXG"]),
+            "risk_pct": float(c.get("FXSWING_RISK_PCT", 0.5)), "max_notional": float(c.get("FXSWING_MAX_NOTIONAL_USD", 60.0)),
+            "lev": max(int(c.get("FXSWING_LEVERAGE", 3)), 1), "max_trades": int(c.get("FXSWING_MAX_TRADES", 2)),
+            "min_risk": float(c.get("FXSWING_MIN_RISK_PCT", 0.25)), "max_risk": float(c.get("FXSWING_MAX_RISK_PCT", 2.0)),
+            "min_rr": float(c.get("FXSWING_MIN_RR", 2.0)), "min_net_rr": float(c.get("FXSWING_MIN_NET_RR", 1.2)),
+            "max_age": int(c.get("FXSWING_SIGNAL_MAX_AGE_SEC", 1800)), "max_spread": float(c.get("FXSWING_MAX_SPREAD_PCT", 0.05)),
+            "hold_days": float(c.get("FXSWING_MAX_HOLD_DAYS", 10)), "cooldown": int(c.get("FXSWING_COOLDOWN_SEC", 14400)),
+            "slip": float(c.get("FOREX_SCALP_SLIPPAGE_PCT", 0.005)), "fee": float(c.get("FEE_ROUND_TRIP_PCT", 0.09)),
+        }
+
+    def _fxswing_open_count(self):
+        return sum(1 for st in list(self.states.values()) if st.position and st.position.get("strategy") == "forex_swing")
+
+    def _fxswing_cycle(self):
+        cfg = self.cfg
+        if not cfg.get("FXSWING_ENABLED", 0) or self.info is None:
+            return
+        now = time.time()
+        if now - getattr(self, "_fxswing_last_cycle", 0) < 30:
+            return
+        self._fxswing_last_cycle = now
+        enabled_open = self.trading_enabled and cfg.get("STRATEGY_TRADING_ENABLED", {}).get("forex_swing", True)
+        for ticker in self._fxswing_state_cfg()["syms"]:
+            try:
+                self._fxswing_eval_ticker(ticker, now, enabled_open)
+            except Exception as e:
+                print(f"[SWING-FX] {ticker} : evaluation ignoree : {type(e).__name__}: {e}")
+
+    def _fxswing_side(self, ticker, v, long_side, price, spread_pct, lower, now, K):
+        """Evalue UN sens. Retourne (candidat | None, motif, signal_detecte)."""
+        cfg = self.cfg
+        side = "long" if long_side else "short"
+        ef, es = v.get("ema_fast"), v.get("ema_slow")
+        want = "haussiere" if long_side else "baissiere"
+        if long_side:
+            pullback = ef is not None and es is not None and ef > es and price > es
+        else:
+            pullback = ef is not None and es is not None and ef < es and price < es
+        if not (v["trend"] == want or pullback):
+            return None, f"tendance Daily {v['trend']} (requis : {want})", False
+        zone = v["support"] if long_side else v["resistance"]
+        target = v["resistance"] if long_side else v["support"]
+        if target is zone:
+            target = None
+        inside = v["in_support"] if long_side else v["in_resistance"]
+        kind = "support" if long_side else "resistance"
+        if not inside or zone is None:
+            return None, f"prix hors d une zone de {kind} Daily (plus proche : {self._zone_txt(zone)})", False
+        name, extreme = mtf.candle_signal(lower, side)
+        if not name and cfg.get("FXSWING_DOUBLE_PATTERN", 1):
+            name, extreme = mtf.double_pattern(lower, side)
+        if not name:
+            return None, f"prix dans la zone de {kind} Daily {self._zone_txt(zone)} — attente d un signal de bougie ou de figure H4", False
+        age = now - (lower[-1]["t"] / 1000 + self._TF_SEC.get(v["lower_tf"], 14400))
+        info = (zone, target, extreme, name, age)
+        if age > K["max_age"]:
+            if (long_side and extreme <= zone["high"] + v["tolerance"]) or (not long_side and extreme >= zone["low"] - v["tolerance"]):
+                self._swing_log("forex_swing", ticker, long_side, price, zone, target, extreme, v, name, lower,
+                                "filtre : signal hors fenetre d entree (trop ancien)", age=age, force=True)
+            return None, f"signal H4 ({name}) trop ancien : cloture il y a {age / 60:.0f} min (maximum {K['max_age'] / 60:.0f})", True
+        if (long_side and extreme > zone["high"] + v["tolerance"]) or (not long_side and extreme < zone["low"] - v["tolerance"]):
+            return None, f"signal H4 ({name}) hors de la zone de {kind}", False
+        flow = None
+        try:
+            flow = self._compute_trade_flow_pressure(ticker, price)
+        except Exception:
+            flow = None
+        if flow is not None and cfg.get("FXSWING_FLOW_VETO", 1):
+            thr = float(cfg.get("FXSWING_MIN_FLOW_PRESSURE", -0.4))
+            req = thr if long_side else -thr
+            if (long_side and flow < req) or ((not long_side) and flow > req):
+                self._swing_log("forex_swing", ticker, long_side, price, zone, target, extreme, v, name, lower,
+                                "filtre : flux de transactions hostile", flow=flow, age=age, force=True)
+                return None, f"flux de transactions hostile ({flow:+.2f})", True
+        plan = mtf.plan_trade(side, price, zone, target, extreme, v["atr"])
+        if not plan:
+            self._swing_log("forex_swing", ticker, long_side, price, zone, target, extreme, v, name, lower,
+                            "filtre : plan de trade invalide", flow=flow, age=age, force=True)
+            return None, "plan de trade invalide", True
+        rp = plan["risk_pct"]
+        if rp < K["min_risk"] or rp > K["max_risk"]:
+            self._swing_log("forex_swing", ticker, long_side, price, zone, target, extreme, v, name, lower,
+                            "filtre : stop trop serre" if rp < K["min_risk"] else "filtre : stop trop eloigne", plan=plan, flow=flow, age=age, force=True)
+            return None, (f"stop {rp:.3f} % hors limites ({K['min_risk']}-{K['max_risk']} %)"), True
+        if plan.get("tp") is None or plan.get("rr") is None:
+            self._swing_log("forex_swing", ticker, long_side, price, zone, target, extreme, v, name, lower,
+                            "filtre : aucun objectif reel (zone opposee)", plan=plan, flow=flow, age=age, force=True)
+            return None, f"aucune zone {'de resistance' if long_side else 'de support'} Daily distincte au-dela (pas d objectif reel)", True
+        cost = K["fee"] + spread_pct
+        net_rr = (plan["reward_pct"] - cost) / (rp + cost)
+        if plan["rr"] < K["min_rr"] or net_rr < K["min_net_rr"]:
+            self._swing_log("forex_swing", ticker, long_side, price, zone, target, extreme, v, name, lower,
+                            "filtre : gain/risque insuffisant", plan=plan, flow=flow, age=age, force=True)
+            return None, (f"gain/risque {plan['rr']:.2f} (net de frais {net_rr:.2f}) sous le minimum "
+                          f"({K['min_rr']} brut, {K['min_net_rr']} net)"), True
+        key = self._swing_log("forex_swing", ticker, long_side, price, zone, target, extreme, v, name, lower,
+                              "candidat (non ouvert)", prio=2, plan=plan, flow=flow, age=age, force=True)
+        return {"side": side, "zone": zone, "target": target, "extreme": extreme, "name": name, "plan": plan, "flow": flow,
+                "net_rr": net_rr, "key": key, "trend": v["trend"], "age": age}, None, True
+
+    def _fxswing_eval_ticker(self, ticker, now, enabled_open):
+        cfg = self.cfg
+        K = self._fxswing_state_cfg()
+        symbol, state = self._scalp_state_for(ticker)
+        if state is None:
+            return
+        snap = {"ts": now, "blocker": None}
+        state.fxswing_snapshot = snap
+        if state.position:
+            sp = state.position.get("strategy") or "?"
+            snap["blocker"] = "swing FX deja ouvert sur cet actif" if sp == "forex_swing" else f"slot occupe par {sp}"
+            return
+        if not is_forex_open():
+            snap["blocker"] = "marche Forex ferme"
+            return
+        price = float((self.all_mids or {}).get(ticker) or 0)
+        if price <= 0:
+            snap["blocker"] = "prix indisponible"
+            return
+        v = self.mtf_view(ticker, price, force_tf=("1d", "4h"))
+        if not v["ok"]:
+            snap["blocker"] = v["why"]
+            return
+        if not v.get("data_fresh", True):
+            snap["blocker"] = "donnees Daily perimees — entree suspendue"
+            return
+        lower = self._mtf_candles(ticker, "4h", 60)
+        if len(lower) < 10:
+            snap["blocker"] = f"historique 4h insuffisant ({len(lower)} bougies)"
+            return
+        try:
+            q = self.market_quality(ticker, state)
+            spread_pct = q.get("spread_pct") if q else None
+        except Exception:
+            spread_pct = None
+        spread_pct = spread_pct if spread_pct is not None else 0.02
+        snap.update({"trend": v["trend"], "spread_pct": spread_pct,
+                     "support": self._zone_txt(v["support"]) if v.get("support") else None,
+                     "resistance": self._zone_txt(v["resistance"]) if v.get("resistance") else None})
+        if spread_pct > K["max_spread"]:
+            snap["blocker"] = f"spread trop large ({spread_pct:.3f} % > {K['max_spread']} %)"
+            return
+        reasons, best = [], None
+        for long_side in (True, False):
+            cand, why, detected = self._fxswing_side(ticker, v, long_side, price, spread_pct, lower, now, K)
+            if cand is not None and (best is None or cand["plan"]["rr"] > best["plan"]["rr"]):
+                best = cand
+            elif why:
+                reasons.append(("LONG" if long_side else "SHORT", why, detected))
+        if best is None:
+            det = [r for r in reasons if r[2]]
+            pick = det[0] if det else (reasons[0] if reasons else ("", "aucun setup", False))
+            snap["blocker"] = (pick[0] + " : " if pick[0] else "") + pick[1]
+            return
+        # un candidat : controles de portefeuille avant ouverture
+        blocker = None
+        if not enabled_open:
+            blocker = "swing FX arrete (bouton Marche/Arret ou trading global)"
+        elif self._fxswing_open_count() >= K["max_trades"]:
+            blocker = "nombre maximal de swings FX simultanes atteint"
+        elif now - getattr(state, "fx_last_loss_ts", 0) < K["cooldown"]:
+            blocker = "pause apres une perte sur cet actif"
+        if blocker:
+            snap["blocker"] = blocker
+            return
+        self._fxswing_open(symbol, ticker, state, best, price, spread_pct, K)
+
+    def _fxswing_open(self, symbol, ticker, state, cand, price, spread_pct, K):
+        cfg = self.cfg
+        side, plan, zone = cand["side"], cand["plan"], cand["zone"]
+        fill = scalp.fill_price(side, price, spread_pct, K["slip"], "entry")
+        capital = cfg.get("CAPITAL_USD", 100.0)
+        rp = abs(fill - plan["sl"]) / fill * 100
+        notional = max(min(capital * K["risk_pct"] / rp, K["max_notional"]), 10.0)
+        size = round(notional / K["lev"], 4)
+        trade_uid = make_trade_uid("forex_swing")
+        state.open_position(side, fill, plan["sl"], plan["tp"], size, confidence=round(cand["net_rr"] * 10, 1), leverage=K["lev"], strategy="forex_swing")
+        pos = state.position
+        pos["effective_mode"] = "paper"
+        pos["trade_uid"] = trade_uid
+        pos["slot_key"] = symbol
+        pos["engine"] = "fxswing"
+        pos["mtf_swing"] = True
+        pos["mtf_r"] = abs(fill - plan["sl"])
+        pos["swing_info"] = {"pattern": cand["name"], "trend": cand["trend"], "zone": [zone.get("low"), zone.get("high")],
+                             "touches": zone.get("touches"), "risk_pct": round(rp, 4), "rr": plan.get("rr"), "reward_pct": plan.get("reward_pct")}
+        pos["fx"] = {"opened_ts": time.time(), "zone_low": zone["low"], "zone_high": zone["high"], "sl0": plan["sl"],
+                     "tp": plan["tp"], "best": fill, "cost_pct": K["fee"] + spread_pct, "setup": cand["name"]}
+        label = "LONG" if side == "long" else "SHORT"
+        reasons = [f"🌊 Swing Forex {side} : {cand['name']} en zone {'support' if side == 'long' else 'resistance'} Daily "
+                   f"{self._zone_txt(zone)} ({zone.get('touches')} contacts)",
+                   f"tendance Daily {cand['trend']}", "signal H4 a la cloture",
+                   f"stop {rp:.3f} % · objectif {plan['reward_pct']:.3f} % (gain/risque {plan['rr']:.2f}, net de frais {cand['net_rr']:.2f})",
+                   f"spread {spread_pct:.3f} % · frais supposes {K['fee']} %"]
+        try:
+            quality = self.market_quality(ticker, state)
+        except Exception:
+            quality = {"vol_ratio": None, "activity_ratio": None}
+        opened_event = {
+            "vol_ratio": quality.get("vol_ratio"), "activity_ratio": quality.get("activity_ratio"), "flow_at_entry": cand.get("flow"),
+            "spread_at_entry": spread_pct, "trade_uid": trade_uid, "slot_key": symbol, "is_accum_slot": False, "coin": ticker,
+            "action": label, "confidence": pos.get("confidence"), "leverage": K["lev"], "position_size_pct": None,
+            "size_usd": round(size, 4), "sl_pct_used": round(rp, 4), "ttp_arm1_pct_used": None, "adaptive_sl_ttp": None,
+            "strategy": "forex_swing", "trade_mode": "paper", "risk_reward": round(plan["rr"], 2), "timeframe": "SWING_D1H4",
+            "entry": fill, "stop_loss": plan["sl"], "take_profit1": plan["tp"], "take_profit2": plan["tp"], "rsi": None,
+            "entry_reasons": " | ".join(reasons), "confidence_breakdown": json.dumps({"net_rr": round(cand["net_rr"], 3)})}
+        try:
+            db.upsert_open_trade(opened_event)
+            opened_event["persisted"] = True
+        except Exception as e:
+            print(f"[SWING-FX] ecriture synchrone {trade_uid} impossible ({e}) — repli sur la file d evenements.")
+        self.emit("trade_opened", opened_event)
+        self.emit("log", {"msg": f"[{ticker}] 🌊 SWING FX {label} {cand['name']} @ {fill:.6g} | SL {plan['sl']:.6g} ({rp:.3f} %) | "
+                                 f"TP {plan['tp']:.6g} ({plan['reward_pct']:.3f} %, R:R {plan['rr']:.2f})", "level": "signal"})
+        if cand.get("key"):
+            try:
+                db.swing_event_mark_taken(cand["key"][0], cand["key"][1], cand["key"][2], trade_uid)
+            except Exception as _e:
+                print(f"[SWING-FX] marquage pris ignore : {_e}")
+        self._save_open_positions()
+
+    def _manage_fxswing(self, symbol, price, state, pos, ticker):
+        K = self._fxswing_state_cfg()
+        fx = pos.get("fx")
+        if not fx:
+            return
+        long_side = pos["type"] == "long"
+        sgn = 1 if long_side else -1
+        entry, r = pos["entry"], pos.get("mtf_r") or abs(pos["entry"] - fx["sl0"])
+        gain = sgn * (price - entry)
+        fx["best"] = max(fx.get("best", entry), price) if long_side else min(fx.get("best", entry), price)
+        best_gain = sgn * (fx["best"] - entry)
+        pnl_usd_now = pos["size"] * pos.get("leverage", 1) * gain / entry
+        if pnl_usd_now > 0 and (state.peak_pnl_usd is None or pnl_usd_now > state.peak_pnl_usd):
+            state.peak_pnl_usd = pnl_usd_now
+            state.absolute_peak_pnl_usd = pnl_usd_now
+        reason = None
+        if (long_side and price <= pos["sl"]) or ((not long_side) and price >= pos["sl"]):
+            reason = "SWING FX STOP (verrou)" if fx.get("lock_done") or fx.get("be_done") else "SWING FX STOP"
+        elif (long_side and price >= fx["tp"]) or ((not long_side) and price <= fx["tp"]):
+            reason = "SWING FX OBJECTIF"
+        elif time.time() - fx["opened_ts"] >= K["hold_days"] * 86400:
+            reason = "SWING FX DUREE MAX"
+        else:
+            try:                                  # zone cassee a la CLOTURE Daily (bougie cloturee apres l entree)
+                d1 = self._mtf_candles(ticker, "1d", 5, cache_only=True)
+                if d1:
+                    c = d1[-1]
+                    buf = 0.3 * (mtf.atr(d1) or 0)
+                    if c["t"] / 1000 + 86400 > fx["opened_ts"]:
+                        if (long_side and c["c"] < fx["zone_low"] - buf) or ((not long_side) and c["c"] > fx["zone_high"] + buf):
+                            reason = "SWING FX ZONE CASSEE"
+            except Exception:
+                pass
+        if reason is None and r > 0:
+            if best_gain >= 1.5 * r and not fx.get("lock_done"):
+                new_sl = entry + sgn * 0.6 * r
+                if (long_side and new_sl > pos["sl"]) or ((not long_side) and new_sl < pos["sl"]):
+                    pos["sl"] = new_sl
+                fx["lock_done"] = True
+            elif best_gain >= 1.0 * r and not fx.get("be_done"):
+                pad = min(entry * fx.get("cost_pct", 0.1) / 100, 0.5 * best_gain)
+                new_sl = entry + sgn * pad
+                if (long_side and new_sl > pos["sl"]) or ((not long_side) and new_sl < pos["sl"]):
+                    pos["sl"] = new_sl
+                fx["be_done"] = True
+        if reason is None:
+            return
+        try:
+            q = self.market_quality(ticker, state)
+            spread_pct = (q.get("spread_pct") if q else None) or 0.02
+        except Exception:
+            spread_pct = 0.02
+        exit_px = scalp.fill_price(pos["type"], price, spread_pct, K["slip"], "exit")
+        _result = self._safe_close_position(state, exit_px, reason, ticker, pos, symbol, "paper")
+        if _result is None:
+            return
+        pnl, _, trade = _result
+        trade["entry_mechanism"] = f"SWING FX {fx.get('setup', '')}"
+        if pnl < 0:
+            state.fx_last_loss_ts = time.time()
+        self.emit("trade", trade)
+        self.emit("log", {"msg": f"[{ticker}] 🌊 {reason} @ ${exit_px:.6g} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+        self._save_open_positions()
+
     # ───────────────────────── v4.359 — JOURNAL DU SWING (lecture seule) ─────────────────────────
     def _swing_active(self):
         return bool(self.cfg.get("MTF_USE_DAILY", 0) and self.cfg.get("MTF_USE_H4_LOWER", 0))
 
     def _swing_log(self, mode, ticker, long_side, price, zone, target, extreme, v, name, lower, decision, prio=1,
-                   plan=None, flow=None, age=None):
+                   plan=None, flow=None, age=None, force=False):
         """Journalise UN signal H4 en zone Daily et la decision prise. Une ligne par (actif, sens, bougie du signal) ;
         une decision de rang superieur (candidat, pris) remplace un refus. Retourne la cle de l evenement ou None."""
         try:
-            if not self._swing_active() or not lower:
+            if (not force and not self._swing_active()) or not lower:
                 return None
             side = "long" if long_side else "short"
             tf_sec = self._TF_SEC.get(v["lower_tf"], 14400)
@@ -10732,7 +11045,7 @@ class BotEngine:
 
     def _swing_journal_eval_if_due(self):
         """Mesure l issue des setups journalises sur bougies 1H : a 24 h puis a 72 h. 3 actifs au plus par passage."""
-        if self.info is None or not self._swing_active():
+        if self.info is None or not (self._swing_active() or self.cfg.get("FXSWING_ENABLED", 0)):
             return
         now = time.time()
         if now - getattr(self, "_swing_eval_last", 0) < 600:
@@ -11079,12 +11392,12 @@ class BotEngine:
         except Exception as e:
             print(f"[MTF] Rafraichissement des actifs occupes : erreur ignoree : {e}")
 
-    def mtf_view(self, ticker, price, cache_only=False):
-        """Lecture complete pour le diagnostic et l entree."""
+    def mtf_view(self, ticker, price, cache_only=False, force_tf=None):
+        """Lecture complete pour le diagnostic et l entree. force_tf = (unite majeure, unite inferieure) : Swing Forex."""
         cfg = self.cfg
-        major_tf = "1d" if cfg.get("MTF_USE_DAILY", 0) else cfg.get("MTF_MAJOR_TF", "4h")
+        major_tf = force_tf[0] if force_tf else ("1d" if cfg.get("MTF_USE_DAILY", 0) else cfg.get("MTF_MAJOR_TF", "4h"))
         # v4.352 — profil Swing : signal sur bougies H4 (MTF_USE_H4_LOWER=1), tendance et zones en Daily
-        lower_tf = ("4h" if cfg.get("MTF_USE_H4_LOWER", 0) else
+        lower_tf = force_tf[1] if force_tf else ("4h" if cfg.get("MTF_USE_H4_LOWER", 0) else
                     ("1h" if cfg.get("MTF_USE_H1", 0) else cfg.get("MTF_LOWER_TF", "15m")))
         major = self._mtf_candles(ticker, major_tf, 260 if major_tf == "4h" else 230, cache_only=cache_only)
         if len(major) < 60:

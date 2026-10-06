@@ -1177,23 +1177,15 @@ function App() {
   const [swingSt, setSwingSt] = useState(null);
   const [swingStats, setSwingStats] = useState(null);
   const [swingDays, setSwingDays] = useState(14);
-  const loadSwingSt = useCallback(async () => { try { setSwingSt(await apiCall("/api/swing/status","GET",null,token)); } catch(e) {} }, [token]);
+  const [swingErr, setSwingErr] = useState(null);
+  const loadSwingSt = useCallback(async () => {
+    try { setSwingSt(await apiCall("/api/swing/status","GET",null,token)); setSwingErr(null); }
+    catch(e) { setSwingErr((e && e.message) ? e.message : String(e)); }
+  }, [token]);
   const loadSwingStats = async () => { try { setSwingStats(await apiCall(`/api/swing/stats?days=${swingDays}`,"GET",null,token)); } catch(e) { alert("Erreur : "+e.message); } };
-  useEffect(() => {
-    if (!token || tab!=="paper" || paperSubTab!=="swing_tab") return;
-    loadSwingSt();
-    const id = setInterval(loadSwingSt, 30000);
-    return () => clearInterval(id);
-  }, [token, tab, paperSubTab]);
   // v4.358 — trades MANUELS dans les volets Accumulation (shorts) et Spot-Accum (longs) de TRADES P/L
   const [manualPL, setManualPL] = useState(null);
   const loadManualPL = useCallback(async () => { try { setManualPL(await apiCall("/api/manual/state","GET",null,token)); } catch(e) {} }, [token]);
-  useEffect(() => {
-    if (!token || tab!=="paper" || !(paperSubTab==="accumulation" || paperSubTab==="spot_accumulation")) return;
-    loadManualPL();
-    const id = setInterval(loadManualPL, 15000);
-    return () => clearInterval(id);
-  }, [token, tab, paperSubTab]);
   // v4.353 — scalp Forex (paper) : profil, etat, statistiques du journal
   const [scalpProf, setScalpProf] = useState(null);
   const [scalpSt, setScalpSt] = useState(null);
@@ -1267,6 +1259,21 @@ function App() {
   const [trendSummaryLoading, setTrendSummaryLoading] = useState(false);
   // v4.43 — sous-onglets Paper Trading par mode (Normal/Accumulation/Funding/Spot-Accum)
   const [paperSubTab, setPaperSubTab] = useState("all");
+  // v4.360 — CORRECTION : ces deux rafraichissements dependent de paperSubTab ; ils etaient places AVANT sa declaration,
+  // si bien que leur liste de dependances lisait "undefined" a chaque rendu et que l effet ne se relancait JAMAIS au
+  // changement de sous-onglet (Swing : "Chargement…" sans fin ; trades manuels ouverts : jamais charges).
+  useEffect(() => {
+    if (!token || tab!=="paper" || paperSubTab!=="swing_tab") return;
+    loadSwingSt();
+    const id = setInterval(loadSwingSt, 30000);
+    return () => clearInterval(id);
+  }, [token, tab, paperSubTab]);
+  useEffect(() => {
+    if (!token || tab!=="paper" || !(paperSubTab==="accumulation" || paperSubTab==="spot_accumulation")) return;
+    loadManualPL();
+    const id = setInterval(loadManualPL, 15000);
+    return () => clearInterval(id);
+  }, [token, tab, paperSubTab]);
   const [strategyPerf, setStrategyPerf] = useState({});
   const [strategyPerfLoading, setStrategyPerfLoading] = useState(false);
   const [showMarketPanel, setShowMarketPanel] = useState(false);
@@ -2892,7 +2899,7 @@ Confirmer ?`
               <>
                 <div style={{fontSize:10,color:"#94a3b8",marginBottom:8}}>Instantané au moment du clic — "aucun obstacle" veut dire que le signal de base n'est simplement pas encore réuni (RSI/EMA/tendance), pas qu'un trade est imminent.</div>
                 <textarea readOnly value={(entryDiag.market_regime?`🧭 RÉGIME DE MARCHÉ : ${(entryDiag.market_regime.regime||"?").toUpperCase()} — ${entryDiag.market_regime.detail||""}${entryDiag.market_regime.filter_enabled?" (filtre legacy actif : sans effet sur le top-down)":" (aucun blocage global : chaque mode juge la tendance de son actif)"}\n\n`:"")+entryDiag.results.map(r=>
-                  `${r.ticker}${r.has_position?" [position ouverte]":""} (il y a ${r.snapshot_age_sec!=null?r.snapshot_age_sec.toFixed(0)+"s":"?"})\n  💱 FOREX LONG  : ${r.blocker_long||"aucun obstacle particulier"}\n  💱 FOREX SHORT : ${r.blocker_short||"aucun obstacle particulier"}${r.scalp?`\n  ⚡ SCALP : ${r.scalp}`:""}\n  🎯 ACCUMULATION : ${r.blocker_accumulation||"aucun obstacle particulier"}\n  🌱 SPOT-ACCUM : ${r.blocker_spot_accum||"aucun obstacle particulier"}${r.mtf?`\n  📊 TOP-DOWN : ${r.mtf}`:""}${r.blocker_funding?`\n  💰 FUNDING : ${r.blocker_funding}`:""}${r.situation?`\n  🧭 Situation : fond ${r.situation.fond} (1h) · court terme ${r.situation.court||"?"} (5 min) → ${r.situation.name.toUpperCase()}`:""}\n  📐 Niveaux : ${r.levels&&r.levels.trend_ema!=null?`${(r.levels.trend_ema_source||"EMA")} = ${Number(r.levels.trend_ema).toPrecision(6)} (prix ${r.levels.price!=null?(r.levels.price>r.levels.trend_ema?"au-dessus":"en dessous"):"?"})`:"EMA ?"} · support ${r.levels&&r.levels.support!=null?Number(r.levels.support).toPrecision(6):"?"} · résistance ${r.levels&&r.levels.resistance!=null?Number(r.levels.resistance).toPrecision(6):"?"}${r.levels&&r.levels.sr_source?` (${r.levels.sr_source})`:""}${r.levels&&(r.levels.support_1h||r.levels.resistance_1h)?` · structure 1h : support ${r.levels.support_1h!=null?Number(r.levels.support_1h).toPrecision(6):"?"} / résistance ${r.levels.resistance_1h!=null?Number(r.levels.resistance_1h).toPrecision(6):"?"}`:""}\n  📉 Qualité du marché : volatilité ${r.quality&&r.quality.vol_ratio!=null?r.quality.vol_ratio.toFixed(2)+"x":"?"} · activité ${r.quality&&r.quality.activity_ratio!=null?r.quality.activity_ratio.toFixed(2)+"x":"?"} son habitude · spread ${r.quality&&r.quality.spread_pct!=null?r.quality.spread_pct.toFixed(3)+" %":"?"}\n  📊 Flux transactions : ${r.trade_flow_pressure!=null?r.trade_flow_pressure.toFixed(2):"pas encore de donnees"}${r.trend_persistence_confirmed?" · pression soutenue CONFIRMEE":""}`
+                  `${r.ticker}${r.has_position?" [position ouverte]":""} (il y a ${r.snapshot_age_sec!=null?r.snapshot_age_sec.toFixed(0)+"s":"?"})\n  💱 FOREX LONG  : ${r.blocker_long||"aucun obstacle particulier"}\n  💱 FOREX SHORT : ${r.blocker_short||"aucun obstacle particulier"}${r.scalp?`\n  ⚡ SCALP : ${r.scalp}`:""}${r.fxswing?`\n  🌊 SWING FX : ${r.fxswing}`:""}\n  🎯 ACCUMULATION : ${r.blocker_accumulation||"aucun obstacle particulier"}\n  🌱 SPOT-ACCUM : ${r.blocker_spot_accum||"aucun obstacle particulier"}${r.mtf?`\n  📊 TOP-DOWN : ${r.mtf}`:""}${r.blocker_funding?`\n  💰 FUNDING : ${r.blocker_funding}`:""}${r.situation?`\n  🧭 Situation : fond ${r.situation.fond} (1h) · court terme ${r.situation.court||"?"} (5 min) → ${r.situation.name.toUpperCase()}`:""}\n  📐 Niveaux : ${r.levels&&r.levels.trend_ema!=null?`${(r.levels.trend_ema_source||"EMA")} = ${Number(r.levels.trend_ema).toPrecision(6)} (prix ${r.levels.price!=null?(r.levels.price>r.levels.trend_ema?"au-dessus":"en dessous"):"?"})`:"EMA ?"} · support ${r.levels&&r.levels.support!=null?Number(r.levels.support).toPrecision(6):"?"} · résistance ${r.levels&&r.levels.resistance!=null?Number(r.levels.resistance).toPrecision(6):"?"}${r.levels&&r.levels.sr_source?` (${r.levels.sr_source})`:""}${r.levels&&(r.levels.support_1h||r.levels.resistance_1h)?` · structure 1h : support ${r.levels.support_1h!=null?Number(r.levels.support_1h).toPrecision(6):"?"} / résistance ${r.levels.resistance_1h!=null?Number(r.levels.resistance_1h).toPrecision(6):"?"}`:""}\n  📉 Qualité du marché : volatilité ${r.quality&&r.quality.vol_ratio!=null?r.quality.vol_ratio.toFixed(2)+"x":"?"} · activité ${r.quality&&r.quality.activity_ratio!=null?r.quality.activity_ratio.toFixed(2)+"x":"?"} son habitude · spread ${r.quality&&r.quality.spread_pct!=null?r.quality.spread_pct.toFixed(3)+" %":"?"}\n  📊 Flux transactions : ${r.trade_flow_pressure!=null?r.trade_flow_pressure.toFixed(2):"pas encore de donnees"}${r.trend_persistence_confirmed?" · pression soutenue CONFIRMEE":""}`
                 ).join("\n\n")}
                   style={{width:"100%",height:320,background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:10,color:"#e2e8f0",fontFamily:"monospace",fontSize:11,resize:"vertical"}}
                   onClick={e=>e.target.select()}
@@ -3716,7 +3723,36 @@ Confirmer ?`
                     <span style={{marginLeft:10,color:"#e2e8f0"}}>{winTxt}</span><br/>
                     Les trades du profil Swing sont des trades de Spot-Accum (longs) et d'Accumulation (shorts) : ils apparaissent aussi dans ces volets, avec le badge 🌊 SWING. Ici, ils sont isolés, comptés <b>en multiple du risque (R)</b> et <b>nets de frais</b>, et chaque signal H4 est journalisé avec la raison de sa décision. Réglages : volet « 🎛️ Modes ».
                   </div>
-                  {!S ? <div style={{fontSize:11,color:"#94a3b8"}}>Chargement…</div> : (
+                  {S && (
+                    <div style={{background:"#0a0e1a",border:"1px solid #1e3a4a",borderRadius:8,padding:10,marginBottom:14,fontSize:11,color:"#cbd5e1",lineHeight:1.6}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                        <div><b style={{color:"#38bdf8"}}>🌐 Swing Forex (paper)</b>
+                          <span style={{marginLeft:8,fontWeight:700,color:S.fx_enabled?"#86efac":"#94a3b8"}}>{S.fx_enabled?"● actif":"○ éteint"}</span></div>
+                        <button onClick={async()=>{
+                          if(!S.fx_enabled && !window.confirm("Activer le Swing Forex (paper) ?\n\n• même logique que le Swing crypto : tendance et zones Daily, signal de retournement H4 à la clôture, objectif sur la zone opposée\n• actifs : EUR, JPY, KRW, DXY, PAXG (ceux dont l'historique Daily manque seront signalés)\n• PAPER uniquement, 2 positions au plus, perte au stop = 0,5 % du capital\n• stop d'au moins 0,25 % et gain/risque net de frais d'au moins 1,2\n• aucune validation historique : à juger sur le journal")) return;
+                          try{ await apiCall("/api/config/advanced","PUT",{values:{FXSWING_ENABLED: S.fx_enabled?0:1}},token); await loadSwingSt(); }catch(e){ alert("Erreur : "+e.message); }
+                        }} style={{background:S.fx_enabled?"#334155":"#38bdf8",border:"none",borderRadius:7,padding:"8px 14px",color:S.fx_enabled?"#e2e8f0":"#06222f",fontFamily:"inherit",fontSize:12,fontWeight:800,cursor:"pointer"}}>{S.fx_enabled?"Éteindre":"🌐 Activer le Swing Forex"}</button>
+                      </div>
+                      <div style={{color:"#94a3b8",marginTop:4}}>Même logique que le Swing crypto, appliquée aux actifs Forex. Sous-mode séparé : les marchés Forex restent isolés des modes Spot-Accum et Accumulation, et partagent un slot par actif avec le Forex normal et le Scalp. <b>Paper uniquement.</b> Ses trades portent le badge 🌊 SWING et la mention « FX » ci-dessous.</div>
+                      {S.fx_enabled && (
+                        <div style={{marginTop:6}}>
+                          {(S.fx_assets||[]).map(a=>(
+                            <div key={a.asset} style={{display:"flex",gap:8,flexWrap:"wrap",padding:"2px 0",borderTop:"1px solid #1e2d4a"}}>
+                              <b style={{color:"#e2e8f0",minWidth:70}}>{a.asset}</b>
+                              <span style={{color:a.open?"#86efac":(a.evaluated?(String(a.blocker||"").startsWith("historique")||String(a.blocker||"").includes("perim")?"#fca5a5":"#cbd5e1"):"#64748b")}}>
+                                {a.open?"swing FX ouvert":(a.evaluated?(a.blocker||"setup valide"):"pas encore évalué")}</span>
+                              {a.trend && <span style={{color:"#64748b"}}>· tendance Daily {a.trend}</span>}
+                            </div>))}
+                          <div style={{color:"#64748b",marginTop:4}}>Réglages : risque {S.fx_settings.FXSWING_RISK_PCT} % du capital · notionnel max {S.fx_settings.FXSWING_MAX_NOTIONAL_USD} $ · {S.fx_settings.FXSWING_MAX_TRADES} positions au plus · gain/risque {S.fx_settings.FXSWING_MIN_RR} brut / {S.fx_settings.FXSWING_MIN_NET_RR} net · stop {S.fx_settings.FXSWING_MIN_RISK_PCT}-{S.fx_settings.FXSWING_MAX_RISK_PCT} % · durée max {S.fx_settings.FXSWING_MAX_HOLD_DAYS} j (modifiables dans les réglages avancés). Un actif en rouge n'a pas assez de bougies Daily pour être analysé.</div>
+                          {S.perf_fx.n>0 && <div style={{marginTop:4}}>Forex : <b>{S.perf_fx.n}</b> trade(s) fermé(s), {S.perf_fx.win_rate}% gagnants, <b style={{color:S.perf_fx.net>=0?"#86efac":"#fca5a5"}}>{S.perf_fx.net>=0?"+":""}{S.perf_fx.net.toFixed(2)} USDC net</b>, {S.perf_fx.avg_r==null?"—":(S.perf_fx.avg_r>=0?"+":"")+S.perf_fx.avg_r.toFixed(2)} R moyen · Crypto : {S.perf_crypto.n} trade(s), {S.perf_crypto.net>=0?"+":""}{S.perf_crypto.net.toFixed(2)} USDC net.</div>}
+                        </div>)}
+                    </div>)}
+                  {!S ? (swingErr
+                    ? <div style={{fontSize:11,color:"#fca5a5",background:"#2d0a0a",border:"1px solid #7f1d1d",borderRadius:8,padding:10,lineHeight:1.6}}>
+                        Le suivi Swing n'a pas pu être chargé : <b>{swingErr}</b>.<br/>Si le message indique « Not Found » ou une erreur serveur, le serveur n'est pas encore à jour (api.py, db.py, bot_engine.py, swing_journal.py) ou n'a pas redémarré.
+                        <div style={{marginTop:6}}><button onClick={loadSwingSt} style={{background:"#334155",border:"none",borderRadius:6,padding:"6px 12px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer"}}>↻ Réessayer</button></div>
+                      </div>
+                    : <div style={{fontSize:11,color:"#94a3b8"}}>Chargement…</div>) : (
                     <div>
                       <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,marginBottom:12}}>
                         <Tile l="TRADES (ouverts / fermés)" v={`${S.open.length} / ${S.perf.n}`} c="#94a3b8"/>
@@ -3734,7 +3770,7 @@ Confirmer ?`
                       <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700,marginBottom:6}}>Positions Swing ouvertes ({S.open.length})</div>
                       {S.open.length===0 ? <div style={{fontSize:11,color:"#94a3b8",marginBottom:12}}>Aucune position Swing ouverte.</div> : S.open.map((o,i)=>(
                         <div key={i} style={{background:"#0a0e1a",border:"1px solid #1e3a4a",borderRadius:8,padding:8,marginBottom:5,fontSize:11,color:"#cbd5e1",display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6}}>
-                          <span><span style={{background:"#0c2a3a",color:"#38bdf8",border:"1px solid #38bdf8",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700,marginRight:6}}>🌊 SWING</span>
+                          <span><span style={{background:"#0c2a3a",color:"#38bdf8",border:"1px solid #38bdf8",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700,marginRight:6}}>🌊 SWING{o.fx?" · FX":""}</span>
                             <b style={{color:o.side==="long"?"#34d399":"#f87171"}}>{o.side==="long"?"LONG":"SHORT"}</b> {o.asset} <span style={{color:"#64748b"}}>{o.pattern||""}{o.touches?` · zone ${o.touches} contacts`:""}</span></span>
                           <span>entrée {Number(o.entry).toPrecision(6)} · prix {Number(o.price).toPrecision(6)} · stop {Number(o.sl).toPrecision(6)}{o.be_done?" (breakeven)":""} · objectif {o.tp?Number(o.tp).toPrecision(6):"—"}</span>
                           <span style={{color:(o.r_now||0)>=0?"#86efac":"#fca5a5",fontWeight:700}}>{sg(o.r_now)} R · {sg(o.gain_pct,3)} % · {o.age_h==null?"":(o.age_h>=48?`${(o.age_h/24).toFixed(1)} j`:`${o.age_h} h`)}</span>
@@ -3744,7 +3780,7 @@ Confirmer ?`
                         <div style={{maxHeight:420,overflowY:"auto"}}>{S.closed.map(x=>(
                           <div key={x.id} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:8,padding:8,marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
                             <div>
-                              <span style={{background:"#0c2a3a",color:"#38bdf8",border:"1px solid #38bdf8",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>🌊 SWING</span>
+                              <span style={{background:"#0c2a3a",color:"#38bdf8",border:"1px solid #38bdf8",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>🌊 SWING{x.fx?" · FX":""}</span>
                               <span style={{background:x.side==="long"?"#052e16":"#2d0a0a",color:x.side==="long"?"#34d399":"#f87171",padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:700,marginLeft:6}}>{x.side.toUpperCase()}</span>
                               <span style={{marginLeft:6,color:"#e2e8f0",fontSize:11}}>{x.asset}/USDC</span>
                               <span style={{marginLeft:6,color:"#94a3b8",fontSize:9}}>{x.reason}</span>

@@ -1030,6 +1030,19 @@ ADVANCED_SETTINGS = {
     # v4.355 — frais integres aux statistiques et a la performance
     "FEES_IN_STATS":               {"label": "Frais dans les statistiques : 1 = performance NETTE de frais (bilan, onglet P/L, performance par mode, win rate) ; 0 = brute. La base garde toujours le PnL brut", "default": 1},
     "FEE_ROUND_TRIP_PCT":          {"label": "Frais aller-retour estimes (% du notionnel) pour les trades sans frais reels. 0,09 = 2 x 0,045 % (ordres au marche)", "default": 0.09},
+    # v4.361 — Swing Forex (sous-mode, PAPER uniquement)
+    "FXSWING_ENABLED":          {"label": "Swing Forex - active (1) ou eteint (0). PAPER uniquement ; meme logique que le Swing crypto (tendance et zones Daily, signal H4)", "default": 0},
+    "FXSWING_RISK_PCT":         {"label": "Swing Forex - perte au stop = N % du capital", "default": 0.5},
+    "FXSWING_MAX_NOTIONAL_USD": {"label": "Swing Forex - notionnel maximal par trade ($, paper)", "default": 60.0},
+    "FXSWING_LEVERAGE":         {"label": "Swing Forex - levier simule", "default": 3},
+    "FXSWING_MAX_TRADES":       {"label": "Swing Forex - swings simultanes au plus", "default": 2},
+    "FXSWING_MIN_RISK_PCT":     {"label": "Swing Forex - stop minimal (% du prix) : en dessous, frais et spread mangent le gain", "default": 0.25},
+    "FXSWING_MAX_RISK_PCT":     {"label": "Swing Forex - stop maximal (% du prix)", "default": 2.0},
+    "FXSWING_MIN_RR":           {"label": "Swing Forex - gain/risque brut minimal", "default": 2.0},
+    "FXSWING_MIN_NET_RR":       {"label": "Swing Forex - gain/risque NET de frais et spread minimal", "default": 1.2},
+    "FXSWING_SIGNAL_MAX_AGE_SEC": {"label": "Swing Forex - entree dans les N secondes qui suivent la cloture H4", "default": 1800},
+    "FXSWING_MAX_SPREAD_PCT":   {"label": "Swing Forex - spread maximal a l entree (%)", "default": 0.05},
+    "FXSWING_MAX_HOLD_DAYS":    {"label": "Swing Forex - duree maximale d une position (jours)", "default": 10},
     # v4.353 — scalp Forex (sous-mode du Forex, PAPER uniquement)
     "FOREX_SCALP_ENABLED":         {"label": "Scalp Forex - active (1) ou eteint (0). PAPER uniquement ; le mode Forex n est pas modifie", "default": 0},
     "FOREX_SCALP_NOTIONAL_USD":    {"label": "Scalp Forex - notionnel par trade ($, paper)", "default": 30.0},
@@ -1249,7 +1262,7 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+_ZERO_ALLOWED_INT_KEYS = {"FXSWING_ENABLED","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
                           "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
@@ -1309,6 +1322,22 @@ def _coerce_advanced_value(key: str, value):
         return False, "1 (frais inclus) ou 0 (brut)"
     if key == "FEE_ROUND_TRIP_PCT" and not 0 <= value <= 1:
         return False, "entre 0 et 1 % du notionnel"
+    if key == "FXSWING_ENABLED" and value not in (0, 1):
+        return False, "1 (actif) ou 0 (eteint)"
+    if key == "FXSWING_RISK_PCT" and not 0.05 <= value <= 3:
+        return False, "entre 0,05 et 3 % du capital"
+    if key == "FXSWING_MAX_NOTIONAL_USD" and not 5 <= value <= 300:
+        return False, "entre 5 $ et 300 $"
+    if key == "FXSWING_LEVERAGE" and not 1 <= value <= 10:
+        return False, "entre 1 et 10"
+    if key == "FXSWING_MAX_TRADES" and not 1 <= value <= 5:
+        return False, "entre 1 et 5"
+    if key in ("FXSWING_MIN_RISK_PCT", "FXSWING_MAX_RISK_PCT", "FXSWING_MAX_SPREAD_PCT") and not 0.01 <= value <= 10:
+        return False, "entre 0,01 et 10 %"
+    if key in ("FXSWING_MIN_RR", "FXSWING_MIN_NET_RR") and not 0.5 <= value <= 10:
+        return False, "entre 0,5 et 10"
+    if key == "FXSWING_MAX_HOLD_DAYS" and not 1 <= value <= 60:
+        return False, "entre 1 et 60 jours"
     if key in ("FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
     if key == "FOREX_SCALP_FEE_PCT" and not 0 <= value <= 1:
@@ -2436,6 +2465,7 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             "blocker_long": blocker_long,
             "blocker_short": blocker_short,
             "scalp": _scalp_diag_line(ticker, state),   # v4.353
+            "fxswing": _fxswing_diag_line(ticker, state),   # v4.361
             "blocker_spot_accum": blocker_spot_accum,
             "spot_accum_detail": spot_snap if spot_snap else None,
             "blocker_accumulation": blocker_accumulation,
@@ -2649,7 +2679,7 @@ def manual_close(item_id: int, email: str = Depends(require_user)):
 # ─────────────────────────────────────────────────────────────────────────
 #  v4.265 — EXPORT CSV DU SUIVI DES TRADES SPOT-ACCUM / ACCUMULATION
 # ─────────────────────────────────────────────────────────────────────────
-_EXPORT_STRATEGY_LABEL = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation", "funding_contrarian": "Funding", "manual": "Manuel", "forex_scalp": "Forex scalp"}
+_EXPORT_STRATEGY_LABEL = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation", "funding_contrarian": "Funding", "manual": "Manuel", "forex_scalp": "Forex scalp", "forex_swing": "Forex swing"}
 _ROUND_TRIP_FEE_RATE = 0.0009  # 2 x 0,045 % (taker) — estimation quand les frais reels manquent
 
 
@@ -3511,6 +3541,24 @@ def _scalp_diag_line(ticker, state):
         return f"indisponible ({e})"
 
 
+def _fxswing_diag_line(ticker, state):
+    """Ligne du diagnostic par actif pour le Swing Forex (None si non concerne)."""
+    try:
+        if not cfg.get("FXSWING_ENABLED", 0) or ticker not in cfg.get("FXSWING_SYMBOLS", ["xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY", "PAXG"]):
+            return None
+        sn = getattr(state, "fxswing_snapshot", None)
+        if not sn:
+            return "pas encore evalue"
+        parts = [sn.get("blocker") or "setup valide ce cycle (voir le journal)"]
+        if sn.get("trend"):
+            parts.append(f"tendance Daily {sn['trend']}")
+        if sn.get("support") or sn.get("resistance"):
+            parts.append(f"support {sn.get('support') or 'aucun'} / resistance {sn.get('resistance') or 'aucune'}")
+        return " · ".join(parts)
+    except Exception as e:
+        return f"indisponible ({e})"
+
+
 def _scalp_stats(events, fee_default=0.089):
     """Agregats du journal : par decision / setup / type de niveau / biais / heure, avec l issue mesuree 60 min plus tard
     et le gain net ESTIME (frais et spread deduits) si le setup avait ete pris."""
@@ -3650,7 +3698,8 @@ def swing_status(email: str = Depends(require_user)):
             except Exception:
                 pass
             open_pos.append({
-                "asset": tk, "side": pos["type"], "mode": "Spot-Accum" if pos["type"] == "long" else "Accumulation",
+                "asset": tk, "side": pos["type"], "fx": pos.get("strategy") == "forex_swing",
+                "mode": "Swing Forex" if pos.get("strategy") == "forex_swing" else ("Spot-Accum" if pos["type"] == "long" else "Accumulation"),
                 "entry": pos["entry"], "price": px, "sl": pos["sl"], "tp": pos.get("tp"),
                 "gain_pct": round(gain / pos["entry"] * 100, 3), "r_now": round(gain / r_units, 2) if r_units else None,
                 "risk_pct": info.get("risk_pct"), "rr": info.get("rr"), "pattern": info.get("pattern"),
@@ -3669,7 +3718,8 @@ def swing_status(email: str = Depends(require_user)):
             hours = round((datetime.fromisoformat(t["closed_at"]) - datetime.fromisoformat(t["created_at"])).total_seconds() / 3600, 1)
         except Exception:
             pass
-        closed.append({"id": t["id"], "asset": t.get("coin"), "side": (t.get("action") or "").lower(), "reason": t.get("reason"),
+        closed.append({"id": t["id"], "asset": t.get("coin"), "fx": (t.get("strategy") or "") == "forex_swing",
+                       "side": (t.get("action") or "").lower(), "reason": t.get("reason"),
                        "opened": t.get("created_at"), "closed": t.get("closed_at"), "hours": hours, "pnl": t.get("pnl"),
                        "pnl_net": round(_row_pnl(t), 4), "fees": round(_trade_fee_usd(t), 4), "move_pct": round(mv, 3) if mv is not None else None,
                        "risk_pct": risk, "r": round(mv / risk, 2) if (mv is not None and risk) else None,
@@ -3685,11 +3735,25 @@ def swing_status(email: str = Depends(require_user)):
                 "fees": round(sum(x["fees"] or 0 for x in ts), 3), "avg_r": round(sum(rs) / len(rs), 2) if rs else None,
                 "gains": round(sum(x["pnl_net"] for x in wins), 3),
                 "losses": round(sum((x["pnl_net"] or 0) for x in ts if (x["pnl_net"] or 0) <= 0), 3)}
+    fx_assets = []
+    for sk, st in list(bot.states.items()):
+        tk = be.ticker_from_slot_key(sk)
+        if tk in cfg.get("FXSWING_SYMBOLS", ["xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY", "PAXG"]):
+            sn = getattr(st, "fxswing_snapshot", None) or {}
+            fx_assets.append({"asset": tk, "blocker": sn.get("blocker") if sn else None, "evaluated": bool(sn),
+                              "age_s": round(time.time() - sn["ts"], 0) if sn.get("ts") else None, "trend": sn.get("trend"),
+                              "support": sn.get("support"), "resistance": sn.get("resistance"),
+                              "open": bool(st.position and st.position.get("strategy") == "forex_swing")})
+    fx_keys = ("FXSWING_RISK_PCT", "FXSWING_MAX_NOTIONAL_USD", "FXSWING_MAX_TRADES", "FXSWING_MIN_RR", "FXSWING_MIN_NET_RR",
+               "FXSWING_MIN_RISK_PCT", "FXSWING_MAX_RISK_PCT", "FXSWING_MAX_HOLD_DAYS", "FXSWING_SIGNAL_MAX_AGE_SEC")
     recent = db.swing_events_since(int((time.time() - 5 * 86400) * 1000), limit=80)
     keys = ("MTF_USE_DAILY", "MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_MIN_RR", "MTF_MAX_RISK_PCT", "MTF_RISK_PCT",
             "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_MIN_FLOW_PRESSURE", "MTF_ZONE_MAX_WIDTH_ATR",
             "SPOT_ACCUM_MAX_TRADES", "ACCUMULATION_MAX_TRADES", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE")
-    return {"active": _swing_is_active(), "fees_on": _fees_on(), "fee_pct": float(cfg.get("FEE_ROUND_TRIP_PCT", 0.09)),
+    return {"fx_enabled": bool(cfg.get("FXSWING_ENABLED", 0)), "fx_assets": fx_assets,
+            "fx_settings": {k: cfg.get(k, ADVANCED_SETTINGS[k]["default"]) for k in fx_keys if k in ADVANCED_SETTINGS},
+            "perf_fx": perf([x for x in closed if x.get("fx")]), "perf_crypto": perf([x for x in closed if not x.get("fx")]),
+            "active": _swing_is_active(), "fees_on": _fees_on(), "fee_pct": float(cfg.get("FEE_ROUND_TRIP_PCT", 0.09)),
             "settings": {k: cfg.get(k, ADVANCED_SETTINGS[k]["default"]) for k in keys if k in ADVANCED_SETTINGS},
             "open": open_pos, "closed": closed[:100], "perf": perf(closed),
             "perf_long": perf([x for x in closed if x["side"] == "long"]), "perf_short": perf([x for x in closed if x["side"] == "short"]),
