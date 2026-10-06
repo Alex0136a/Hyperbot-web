@@ -26,6 +26,7 @@ import db
 from flow_recorder import FlowRecorder   # v4.349 — enregistreur de flux (lecture seule)
 import scalp_forex as scalp               # v4.353 — scalp Forex (sous-mode du Forex, paper)
 import swing_journal as swj               # v4.359 — journal du Swing (lecture seule)
+import swing_support as sups              # v4.362 — Swing Support (crypto, paper)
 import mtf_analysis as mtf  # v4.299 — analyse multi-unites de temps
 from datetime import datetime
 from collections import deque
@@ -1438,6 +1439,26 @@ PROFILE_SWING = {
     "FXSWING_COOLDOWN_SEC": 14400,
     "FXSWING_DOUBLE_PATTERN": 1,
     "FXSWING_FLOW_VETO": 1,
+    # ── v4.362 — SWING SUPPORT (crypto, PAPER uniquement ; eteint par defaut) ──
+    # Hypothese : tendance Daily haussiere + support (retest tenu sur les dernieres bougies 1 h, ou balayage de liquidite) -> objectif
+    # proche ; stop large = simple filet ; la protection est la SORTIE ANTICIPEE (cloture 1 h sous la zone + flux hostile).
+    # BTC / Weekly / funding sont ENREGISTRES a l entree mais ne filtrent rien. Aucun breakeven : on mesure l hypothese pure.
+    "SUPSW_ENABLED": 0,
+    "SUPSW_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"],
+    "SUPSW_SL_PCT": 5.0,                  # stop catastrophe (% du prix)
+    "SUPSW_TP_PCT": 2.0,                  # objectif (% du prix)
+    "SUPSW_RISK_PCT": 1.0,                # perte au stop plein = N % du capital (dimensionne la taille)
+    "SUPSW_MAX_NOTIONAL_USD": 60.0,
+    "SUPSW_LEVERAGE": 3,
+    "SUPSW_MAX_TRADES": 3,
+    "SUPSW_WINDOW": 5,                    # nombre de bougies 1 h examinees
+    "SUPSW_SIGNAL_MAX_AGE_SEC": 900,      # entree dans les N secondes qui suivent la cloture de la bougie 1 h du signal
+    "SUPSW_MAX_SPREAD_PCT": 0.05,
+    "SUPSW_MAX_HOLD_DAYS": 5,
+    "SUPSW_COOLDOWN_SEC": 14400,
+    "SUPSW_EXIT_BUFFER_ATR": 0.3,         # cloture 1 h sous (bas de zone - N x ATR 1 h) = support casse
+    "SUPSW_EXIT_FLOW": -0.4,              # ... ET flux de transactions inferieur a N
+    "SUPSW_EXIT_REQUIRE_H4_END": 0,       # 1 = exige aussi que la tendance H4 ne soit plus haussiere (sinon : seulement enregistre)
     "FLOW_RECORDER_ENABLED": 1,           # v4.349 : 1 = enregistre le flux acheteur/vendeur par tranche de 5 min et par actif (lecture seule)
     "FLOW_RECORDER_BIG_TRADE_USD": 5000.0, # v4.349 : seuil d une "grosse" transaction
     "FLOW_RECORDER_KEEP_DAYS": 120,       # v4.349 : duree de conservation
@@ -2155,7 +2176,7 @@ def _order_first_status(result):
 # d entree — permet de retrouver le MODE SOURCE d une position directement
 # depuis l historique Hyperliquid, meme si la base locale etait perdue.
 TRADE_UID_MAGIC = "4842"  # "HB"
-STRATEGY_CODES = {"forex": "01", "accumulation": "02", "spot_accumulation": "03", "funding_contrarian": "04", "manual": "05", "forex_scalp": "06", "forex_swing": "07"}
+STRATEGY_CODES = {"forex": "01", "accumulation": "02", "spot_accumulation": "03", "funding_contrarian": "04", "manual": "05", "forex_scalp": "06", "forex_swing": "07", "swing_support": "08"}
 STRATEGY_FROM_CODE = {v: k for k, v in STRATEGY_CODES.items()}
 
 
@@ -5163,7 +5184,7 @@ class BotEngine:
         """v4.264 — mode REEL (paper/live) d une position : celui memorise a
         son ouverture. Repli sur le reglage courant de sa strategie pour les
         positions anciennes sans cette information."""
-        if (pos or {}).get("strategy") in ("forex_scalp", "forex_swing"):      # v4.353 / v4.361 : PAPER par construction
+        if (pos or {}).get("strategy") in ("forex_scalp", "forex_swing", "swing_support"):      # v4.353 / v4.361 / v4.362 : PAPER par construction
             return "paper"
         recorded = (pos or {}).get("effective_mode")
         if recorded in ("paper", "live"):
@@ -5183,7 +5204,7 @@ class BotEngine:
         (FUNDING_MODE_LIVE_ALLOWED) s applique TOUJOURS en plus, meme si
         cette fonction renvoie "live" pour funding_contrarian — double
         protection, pas de retrait de securite existante."""
-        if strategy in ("forex_scalp", "forex_swing"):         # v4.353 / v4.361 : PAPER par construction
+        if strategy in ("forex_scalp", "forex_swing", "swing_support"):         # v4.353 / v4.361 / v4.362 : PAPER par construction
             return "paper"
         override = self.cfg.get("STRATEGY_MODE_OVERRIDE", {}).get(strategy)
         if override in ("paper", "live"):
@@ -7862,6 +7883,8 @@ class BotEngine:
                     self._scalp_journal_eval_if_due()
                     self._fxswing_cycle()               # v4.361
                     self._swing_journal_eval_if_due()   # v4.359
+                    self._supsw_cycle()                 # v4.362
+                    self._supsw_eval_if_due()           # v4.362
                 except Exception as _e_sc:
                     print(f"[SCALP] cycle ignore : {type(_e_sc).__name__}: {_e_sc}")
                 self._decay_confidence_thresholds()
@@ -8104,6 +8127,8 @@ class BotEngine:
             return self._manage_scalp(symbol, price, state, pos, ticker)
         if pos.get("engine") == "fxswing":   # v4.361 — position de Swing Forex : gestion dediee (paper)
             return self._manage_fxswing(symbol, price, state, pos, ticker)
+        if pos.get("engine") == "supsw":     # v4.362 — position de Swing Support : gestion dediee (paper)
+            return self._manage_supsw(symbol, price, state, pos, ticker)
         # v4.33 — SECURITE EXPLICITE : un trade "funding_contrarian" reste
         # simule (paper) meme si le bot tourne globalement en mode live, tant
         # que FUNDING_MODE_LIVE_ALLOWED n est pas active manuellement — ce
@@ -10996,6 +11021,381 @@ class BotEngine:
         self.emit("trade", trade)
         self.emit("log", {"msg": f"[{ticker}] 🌊 {reason} @ ${exit_px:.6g} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
         self._save_open_positions()
+
+    # ───────────────────────── v4.362 — SWING SUPPORT (crypto, PAPER) ─────────────────────────
+    # Tendance Daily haussiere + prix dans un support Daily + (retest tenu sur les dernieres bougies 1 h | balayage de liquidite).
+    # Stop large (filet), objectif proche, SORTIE ANTICIPEE si cloture 1 h sous la zone ET flux hostile. Le contexte (BTC, Weekly,
+    # funding, flux) est ENREGISTRE sans filtrer ; le journal mesure ensuite si les sorties anticipees etaient trop precoces.
+    def _supsw_state_cfg(self):
+        c = self.cfg
+        return {
+            "syms": c.get("SUPSW_SYMBOLS", ["BTC", "ETH", "HYPE", "TAO", "SUI"]),
+            "sl_pct": float(c.get("SUPSW_SL_PCT", 5.0)), "tp_pct": float(c.get("SUPSW_TP_PCT", 2.0)),
+            "risk_pct": float(c.get("SUPSW_RISK_PCT", 1.0)), "max_notional": float(c.get("SUPSW_MAX_NOTIONAL_USD", 60.0)),
+            "lev": max(int(c.get("SUPSW_LEVERAGE", 3)), 1), "max_trades": int(c.get("SUPSW_MAX_TRADES", 3)),
+            "window": max(int(c.get("SUPSW_WINDOW", 5)), 3), "max_age": int(c.get("SUPSW_SIGNAL_MAX_AGE_SEC", 900)),
+            "max_spread": float(c.get("SUPSW_MAX_SPREAD_PCT", 0.05)), "hold_days": float(c.get("SUPSW_MAX_HOLD_DAYS", 5)),
+            "cooldown": int(c.get("SUPSW_COOLDOWN_SEC", 14400)), "exit_buf": float(c.get("SUPSW_EXIT_BUFFER_ATR", 0.3)),
+            "exit_flow": float(c.get("SUPSW_EXIT_FLOW", -0.4)), "need_h4_end": bool(c.get("SUPSW_EXIT_REQUIRE_H4_END", 0)),
+            "slip": float(c.get("FOREX_SCALP_SLIPPAGE_PCT", 0.005)), "fee": float(c.get("FEE_ROUND_TRIP_PCT", 0.09)),
+        }
+
+    def _supsw_open_count(self):
+        n = 0
+        for pool in (self.states, self.accum_states):
+            for st in list(pool.values()):
+                if st.position and st.position.get("strategy") == "swing_support":
+                    n += 1
+        return n
+
+    def _supsw_prefetch_open(self):
+        """Charge (hors flux WebSocket) les bougies dont la gestion des positions ouvertes a besoin : 1 h, et tendances H4 / Daily.
+        La gestion lit ensuite le cache seul, pour ne jamais faire d appel reseau depuis le thread WebSocket."""
+        for pool in (self.states, self.accum_states):
+            for sk, st in list(pool.items()):
+                if st.position and st.position.get("strategy") == "swing_support":
+                    tk = ticker_from_slot_key(sk)
+                    try:
+                        px = float((self.all_mids or {}).get(tk) or 0) or st.position["entry"]
+                        self._mtf_candles(tk, "1h", 30)
+                        self.mtf_view(tk, px, force_tf=("4h", "1h"))
+                        self.mtf_view(tk, px, force_tf=("1d", "1h"))
+                    except Exception as e:
+                        print(f"[SWING-SUP] prechargement {tk} ignore : {type(e).__name__}: {e}")
+
+    def _supsw_cycle(self):
+        cfg = self.cfg
+        if self.info is None:
+            return
+        now = time.time()
+        if now - getattr(self, "_supsw_last_cycle", 0) < 30:
+            return
+        self._supsw_last_cycle = now
+        self._supsw_prefetch_open()          # meme si le mode vient d etre eteint : les positions ouvertes restent gerees
+        if not cfg.get("SUPSW_ENABLED", 0):
+            return
+        enabled_open = self.trading_enabled and cfg.get("STRATEGY_TRADING_ENABLED", {}).get("swing_support", True)
+        for ticker in self._supsw_state_cfg()["syms"]:
+            try:
+                self._supsw_eval_ticker(ticker, now, enabled_open)
+            except Exception as e:
+                print(f"[SWING-SUP] {ticker} : evaluation ignoree : {type(e).__name__}: {e}")
+
+    def _supsw_context(self, ticker, v, price):
+        """Contexte ENREGISTRE (jamais filtrant) : tendance de BTC, tendance Weekly, funding annualise."""
+        ctx = {"btc_trend": None, "weekly_trend": None, "funding_ann": None}
+        try:
+            if ticker == "BTC":
+                ctx["btc_trend"] = v.get("trend")
+            else:
+                bpx = float((self.all_mids or {}).get("BTC") or 0)
+                if bpx > 0:
+                    bv = self.mtf_view("BTC", bpx, cache_only=True, force_tf=("1d", "1h"))
+                    ctx["btc_trend"] = bv.get("trend") if bv.get("ok") else None
+        except Exception:
+            pass
+        try:
+            ctx["weekly_trend"] = sups.weekly_trend(self._mtf_candles(ticker, "1d", 230, cache_only=True))
+        except Exception:
+            pass
+        try:
+            hr = (getattr(self, "funding_rates", None) or {}).get(ticker)
+            if hr is not None:
+                ctx["funding_ann"] = round(float(hr) * 24 * 365 * 100, 2)
+        except Exception:
+            pass
+        return ctx
+
+    def _supsw_log(self, ticker, c1h, v, setup, ctx, price, flow, decision, prio, K):
+        """Journalise UN signal 1 h et la decision. Une ligne par (actif, bougie 1 h). Retourne (event_id, signal_t) ou None."""
+        try:
+            signal_t = int(c1h[-1]["t"] + 3_600_000)
+            seen = getattr(self, "_supsw_seen", None)
+            if seen is None:
+                seen = self._supsw_seen = {}
+            key = (ticker, signal_t)
+            if seen.get(key, (0, None))[0] >= prio:
+                return seen[key][1], signal_t
+            now = time.time()
+            for k in [k for k in list(seen) if k[1] < (now - 8 * 3600) * 1000]:
+                seen.pop(k, None)
+            ref = float(c1h[-1]["c"])
+            zone = v["support"] or {}
+            eid = db.supsw_upsert({
+                "ts": int(now * 1000), "signal_t": signal_t, "asset": ticker, "side": "long", "setup": setup["name"] if setup else None,
+                "setup_kind": setup["kind"] if setup else None, "trend": v.get("trend"), "weekly_trend": ctx.get("weekly_trend"),
+                "btc_trend": ctx.get("btc_trend"), "funding_ann": ctx.get("funding_ann"), "flow": flow,
+                "atr_pct": (v["atr"] / price * 100) if price else None, "hour_utc": datetime.utcfromtimestamp(now).hour,
+                "zone_low": zone.get("low"), "zone_high": zone.get("high"), "zone_touches": zone.get("touches"),
+                "held": setup.get("held") if setup else None, "pierce_pct": setup.get("pierce_pct") if setup else None,
+                "price": price, "entry_ref": ref, "sl": ref * (1 - K["sl_pct"] / 100), "tp": ref * (1 + K["tp_pct"] / 100),
+                "risk_pct": K["sl_pct"], "reward_pct": K["tp_pct"], "decision": decision, "prio": prio, "trade_uid": None})
+            seen[key] = (prio, eid)
+            return eid, signal_t
+        except Exception as e:
+            print(f"[SWING-SUP] journal ignore : {type(e).__name__}: {e}")
+            return None
+
+    def _supsw_eval_ticker(self, ticker, now, enabled_open):
+        cfg = self.cfg
+        K = self._supsw_state_cfg()
+        symbol, state = self._scalp_state_for(ticker)
+        if state is None:
+            return
+        snap = {"ts": now, "blocker": None}
+        state.supsw_snapshot = snap
+        occ = None
+        for pool in (self.states, self.accum_states):
+            st = pool.get(symbol)
+            if st is not None and st.position:
+                occ = st.position.get("strategy") or "?"
+                break
+        if occ is not None:
+            snap["blocker"] = "swing support deja ouvert sur cet actif" if occ == "swing_support" else f"actif deja ouvert dans un autre mode ({occ})"
+            return
+        price = float((self.all_mids or {}).get(ticker) or 0)
+        if price <= 0:
+            snap["blocker"] = "prix indisponible"
+            return
+        v = self.mtf_view(ticker, price, force_tf=("1d", "1h"))
+        if not v["ok"]:
+            snap["blocker"] = v["why"]
+            return
+        if not v.get("data_fresh", True):
+            snap["blocker"] = "donnees Daily perimees — entree suspendue"
+            return
+        ef, es = v.get("ema_fast"), v.get("ema_slow")
+        pullback = ef is not None and es is not None and ef > es and price > es
+        snap["trend"] = v["trend"]
+        snap["support"] = self._zone_txt(v["support"]) if v.get("support") else None
+        if not (v["trend"] == "haussiere" or pullback):
+            snap["blocker"] = f"tendance Daily {v['trend']} (requis : haussiere)"
+            return
+        zone = v["support"]
+        if zone is None or not v["in_support"]:
+            snap["blocker"] = f"prix hors d un support Daily (plus proche : {self._zone_txt(zone)})"
+            return
+        c1h = self._mtf_candles(ticker, "1h", 60)
+        if len(c1h) < K["window"] + 8:
+            snap["blocker"] = f"historique 1h insuffisant ({len(c1h)} bougies)"
+            return
+        setup, why = sups.detect_setup(c1h, zone, v["tolerance"], K["window"])
+        if setup is None:
+            snap["blocker"] = f"dans le support {self._zone_txt(zone)} — {why}"
+            return
+        snap["setup"] = setup["name"]
+        ctx = self._supsw_context(ticker, v, price)
+        flow = None
+        try:
+            flow = self._compute_trade_flow_pressure(ticker, price)
+        except Exception:
+            flow = None
+        age = now - (c1h[-1]["t"] / 1000 + 3600)
+        try:
+            q = self.market_quality(ticker, state)
+            spread_pct = q.get("spread_pct") if q else None
+        except Exception:
+            spread_pct = None
+        spread_pct = spread_pct if spread_pct is not None else 0.02
+        blocker = None
+        if age > K["max_age"]:
+            blocker = f"signal 1 h trop ancien ({age / 60:.0f} min, maximum {K['max_age'] / 60:.0f})"
+        elif spread_pct > K["max_spread"]:
+            blocker = f"spread trop large ({spread_pct:.3f} % > {K['max_spread']} %)"
+        elif not enabled_open:
+            blocker = "swing support arrete (bouton Marche/Arret ou trading global)"
+        elif self._supsw_open_count() >= K["max_trades"]:
+            blocker = "nombre maximal de swings support simultanes atteint"
+        elif now - getattr(state, "supsw_last_loss_ts", 0) < K["cooldown"]:
+            blocker = "pause apres une perte sur cet actif"
+        if blocker:
+            snap["blocker"] = f"{setup['kind']} detecte — {blocker}"
+            self._supsw_log(ticker, c1h, v, setup, ctx, price, flow, f"refus : {blocker.split(' (')[0]}", 1, K)
+            return
+        res = self._supsw_log(ticker, c1h, v, setup, ctx, price, flow, "candidat (non ouvert)", 2, K)
+        self._supsw_open(symbol, ticker, state, setup, ctx, v, zone, price, spread_pct, flow, res, K)
+
+    def _supsw_open(self, symbol, ticker, state, setup, ctx, v, zone, price, spread_pct, flow, res, K):
+        fill = scalp.fill_price("long", price, spread_pct, K["slip"], "entry")
+        sl = fill * (1 - K["sl_pct"] / 100)
+        tp = fill * (1 + K["tp_pct"] / 100)
+        capital = self.cfg.get("CAPITAL_USD", 100.0)
+        notional = max(min(capital * K["risk_pct"] / K["sl_pct"], K["max_notional"]), 10.0)
+        size = round(notional / K["lev"], 4)
+        trade_uid = make_trade_uid("swing_support")
+        state.open_position("long", fill, sl, tp, size, confidence=60.0, leverage=K["lev"], strategy="swing_support")
+        pos = state.position
+        pos["effective_mode"] = "paper"
+        pos["trade_uid"] = trade_uid
+        pos["slot_key"] = symbol
+        pos["engine"] = "supsw"
+        pos["supsw"] = {"opened_ts": time.time(), "zone_low": zone["low"], "zone_high": zone["high"], "sl0": sl, "tp": tp,
+                        "setup": setup["name"], "kind": setup["kind"], "ctx": ctx, "flow_entry": flow, "signal_t": res[1] if res else None}
+        rr_txt = f"{K['tp_pct']:.2f}/{K['sl_pct']:.2f}"
+        reasons = [f"🧱 Swing Support : {setup['name']} — support Daily {self._zone_txt(zone)}",
+                   f"tendance Daily {v['trend']} · Weekly {ctx.get('weekly_trend') or '?'} · BTC {ctx.get('btc_trend') or '?'}"
+                   f" · funding {ctx.get('funding_ann') if ctx.get('funding_ann') is not None else '?'} %/an",
+                   f"stop {K['sl_pct']:.2f} % (filet) · objectif {K['tp_pct']:.2f} % ({rr_txt}) · sortie anticipee : cloture 1 h sous la zone + flux < {K['exit_flow']}",
+                   f"spread {spread_pct:.3f} % · frais supposes {K['fee']} %"]
+        try:
+            quality = self.market_quality(ticker, state)
+        except Exception:
+            quality = {"vol_ratio": None, "activity_ratio": None}
+        opened_event = {
+            "vol_ratio": quality.get("vol_ratio"), "activity_ratio": quality.get("activity_ratio"), "flow_at_entry": flow,
+            "spread_at_entry": spread_pct, "trade_uid": trade_uid, "slot_key": symbol, "is_accum_slot": False, "coin": ticker,
+            "action": "LONG", "confidence": pos.get("confidence"), "leverage": K["lev"], "position_size_pct": None,
+            "size_usd": round(size, 4), "sl_pct_used": round(K["sl_pct"], 4), "ttp_arm1_pct_used": None, "adaptive_sl_ttp": None,
+            "strategy": "swing_support", "trade_mode": "paper", "risk_reward": round(K["tp_pct"] / K["sl_pct"], 2), "timeframe": "SWING_SUP",
+            "entry": fill, "stop_loss": sl, "take_profit1": tp, "take_profit2": tp, "rsi": None,
+            "entry_reasons": " | ".join(reasons), "confidence_breakdown": json.dumps({"setup": setup["kind"], **{k: v_ for k, v_ in ctx.items()}})}
+        try:
+            db.upsert_open_trade(opened_event)
+            opened_event["persisted"] = True
+        except Exception as e:
+            print(f"[SWING-SUP] ecriture synchrone {trade_uid} impossible ({e}) — repli sur la file d evenements.")
+        self.emit("trade_opened", opened_event)
+        self.emit("log", {"msg": f"[{ticker}] 🧱 SWING SUPPORT LONG {setup['kind']} @ {fill:.6g} | SL {sl:.6g} ({K['sl_pct']:.2f} %) | "
+                                 f"TP {tp:.6g} ({K['tp_pct']:.2f} %)", "level": "signal"})
+        if res and res[0]:
+            try:
+                db.supsw_mark_taken(ticker, res[1], trade_uid)
+                db.supsw_update(res[0], {"entry_ref": fill, "price": fill, "sl": sl, "tp": tp})    # niveaux REELS du trade pris
+                seen = getattr(self, "_supsw_seen", {})
+                seen[(ticker, res[1])] = (3, res[0])
+            except Exception as _e:
+                print(f"[SWING-SUP] marquage pris ignore : {_e}")
+        self._save_open_positions()
+
+    def _supsw_trend_snapshot(self, ticker, price):
+        """Tendance H4 et Daily a l instant de la sortie (enregistrees ; H4 'oui' = encore haussiere)."""
+        h4 = d1 = None
+        try:
+            bv = self.mtf_view(ticker, price, cache_only=True, force_tf=("4h", "1h"))
+            if bv.get("ok"):
+                h4 = "oui" if bv["trend"] == "haussiere" else "non"
+        except Exception:
+            pass
+        try:
+            dv = self.mtf_view(ticker, price, cache_only=True, force_tf=("1d", "1h"))
+            if dv.get("ok"):
+                d1 = dv["trend"]
+        except Exception:
+            pass
+        return h4, d1
+
+    def _manage_supsw(self, symbol, price, state, pos, ticker):
+        K = self._supsw_state_cfg()
+        sp = pos.get("supsw")
+        if not sp:
+            return
+        entry = pos["entry"]
+        gain = price - entry
+        pnl_usd_now = pos["size"] * pos.get("leverage", 1) * gain / entry
+        if pnl_usd_now > 0 and (state.peak_pnl_usd is None or pnl_usd_now > state.peak_pnl_usd):
+            state.peak_pnl_usd = pnl_usd_now
+            state.absolute_peak_pnl_usd = pnl_usd_now
+        reason, early, flow_exit = None, False, None
+        if price <= pos["sl"]:
+            reason = "SWING SUPPORT STOP"
+        elif price >= sp["tp"]:
+            reason = "SWING SUPPORT OBJECTIF"
+        elif time.time() - sp["opened_ts"] >= K["hold_days"] * 86400:
+            reason = "SWING SUPPORT DUREE MAX"
+        else:
+            try:
+                c1h = self._mtf_candles(ticker, "1h", 30, cache_only=True)
+                if c1h:
+                    buf = K["exit_buf"] * (mtf.atr(c1h) or 0)
+                    if sups.zone_broken_1h(c1h, sp["zone_low"], sp["opened_ts"], buf):
+                        flow_exit = self._compute_trade_flow_pressure(ticker, price)
+                        sp["flow_exit"] = flow_exit
+                        if flow_exit is not None and flow_exit < K["exit_flow"]:
+                            h4_ok, _ = self._supsw_trend_snapshot(ticker, price)
+                            if (not K["need_h4_end"]) or h4_ok == "non":
+                                reason, early = "SWING SUPPORT CASSE (flux)", True
+                        elif not sp.get("broken_noflow_ts"):
+                            sp["broken_noflow_ts"] = time.time()      # support casse mais flux non hostile : on garde, on note
+            except Exception as e:
+                print(f"[SWING-SUP] sortie anticipee {ticker} ignoree : {type(e).__name__}: {e}")
+        if reason is None:
+            return
+        try:
+            q = self.market_quality(ticker, state)
+            spread_pct = (q.get("spread_pct") if q else None) or 0.02
+        except Exception:
+            spread_pct = 0.02
+        h4_ok, d1_tr = self._supsw_trend_snapshot(ticker, price) if early or reason else (None, None)
+        exit_px = scalp.fill_price(pos["type"], price, spread_pct, K["slip"], "exit")
+        trade_uid = pos.get("trade_uid")
+        _result = self._safe_close_position(state, exit_px, reason, ticker, pos, symbol, "paper")
+        if _result is None:
+            return
+        pnl, _, trade = _result
+        trade["entry_mechanism"] = f"SWING SUPPORT {sp.get('kind', '')}"
+        if pnl < 0:
+            state.supsw_last_loss_ts = time.time()
+        try:
+            db.supsw_record_exit(trade_uid, {
+                "exit_ts": int(time.time() * 1000), "exit_price": exit_px, "exit_reason": reason, "early_exit": 1 if early else 0,
+                "pnl_pct": round((exit_px / entry - 1) * 100, 4), "hold_h": round((time.time() - sp["opened_ts"]) / 3600, 2),
+                "flow_exit": sp.get("flow_exit"), "h4_intact_exit": h4_ok, "d1_trend_exit": d1_tr})
+        except Exception as e:
+            print(f"[SWING-SUP] enregistrement de la sortie ignore : {e}")
+        self.emit("trade", trade)
+        self.emit("log", {"msg": f"[{ticker}] 🧱 {reason} @ ${exit_px:.6g} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+        self._save_open_positions()
+
+    def _supsw_eval_if_due(self):
+        """Mesure sur bougies 1 h : (a) l issue de CHAQUE signal journalise a 24 h puis 72 h ; (b) pour les trades sortis, ce qui s est passe
+        1 h / 4 h / 24 h apres la sortie et si l objectif ou le stop aurait ete touche (sortie anticipee trop tot ?)."""
+        if self.info is None or not self.cfg.get("SUPSW_ENABLED", 0):
+            return
+        now = time.time()
+        if now - getattr(self, "_supsw_eval_last", 0) < 600:
+            return
+        self._supsw_eval_last = now
+        try:
+            now_ms = int(now * 1000)
+            sig = db.supsw_pending_signals(now_ms, limit=60)
+            ext = db.supsw_pending_exits(now_ms, limit=40)
+            if not sig and not ext:
+                return
+            by = {}
+            for e in sig:
+                by.setdefault(e["asset"], {"sig": [], "ext": []})["sig"].append(e)
+            for e in ext:
+                by.setdefault(e["asset"], {"sig": [], "ext": []})["ext"].append(e)
+            for asset, grp in list(by.items())[:3]:
+                t0 = min([e["signal_t"] for e in grp["sig"]] + [e["exit_ts"] for e in grp["ext"]])
+                raw = self.info.post("/info", {"type": "candleSnapshot", "req": {"coin": asset, "interval": "1h",
+                                                                                 "startTime": t0 - 3_600_000, "endTime": now_ms}})
+                time.sleep(0.3)
+                if not isinstance(raw, list) or not raw:
+                    continue
+                cs = [{"t": int(c["t"]), "o": float(c["o"]), "h": float(c["h"]), "l": float(c["l"]), "c": float(c["c"])} for c in raw]
+                for e in grp["sig"]:
+                    horizon = 24 if e["evaluated"] == 0 else 72
+                    out = swj.evaluate_outcome("long", e["entry_ref"], e["sl"], e["tp"], cs, e["signal_t"], horizon)
+                    if out is None:
+                        continue
+                    db.supsw_update(e["id"], {**out, "evaluated": 1 if horizon == 24 else 2})
+                for e in grp["ext"]:
+                    horizon = 24 if e["post_eval"] == 0 else 72
+                    out = swj.evaluate_outcome("long", e["entry_ref"], e["sl"], e["tp"], cs, e["exit_ts"], horizon)
+                    if out is None:
+                        continue
+                    pm = sups.post_exit_metrics("long", e["exit_price"], cs, e["exit_ts"])
+                    upd = {"post_eval": 1 if horizon == 24 else 2, "after_outcome": out["outcome"], "after_hit_h": out["hit_h"],
+                           "after_mfe": out["mfe72"] if horizon == 72 else out["mfe24"],
+                           "after_mae": out["mae72"] if horizon == 72 else out["mae24"],
+                           "too_early": 1 if (e.get("early_exit") and out["outcome"] == "tp") else 0, **pm}
+                    db.supsw_update(e["id"], upd)
+            if now - getattr(self, "_supsw_prune_last", 0) > 86400:
+                self._supsw_prune_last = now
+                db.supsw_events_prune(int((now - 120 * 86400) * 1000))
+        except Exception as e:
+            print(f"[SWING-SUP] evaluation ignoree : {type(e).__name__}: {e}")
 
     # ───────────────────────── v4.359 — JOURNAL DU SWING (lecture seule) ─────────────────────────
     def _swing_active(self):
