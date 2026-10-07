@@ -156,7 +156,7 @@ def init_db():
                 held INTEGER, pierce_pct REAL, price REAL, entry_ref REAL, sl REAL, tp REAL, risk_pct REAL, reward_pct REAL,
                 decision TEXT, prio INTEGER DEFAULT 1, trade_uid TEXT,
                 evaluated INTEGER DEFAULT 0, outcome TEXT, hit_h REAL, mfe24 REAL, mae24 REAL, mfe72 REAL, mae72 REAL,
-                fin24 REAL, fin72 REAL, covered_h REAL,
+                fin24 REAL, fin72 REAL, covered_h REAL, inval REAL,
                 exit_ts INTEGER, exit_price REAL, exit_reason TEXT, early_exit INTEGER, pnl_pct REAL, hold_h REAL,
                 flow_exit REAL, h4_intact_exit TEXT, d1_trend_exit TEXT,
                 post_eval INTEGER DEFAULT 0, fin1h REAL, fin4h REAL, fin24h REAL, after_outcome TEXT, after_hit_h REAL,
@@ -165,6 +165,8 @@ def init_db():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_supsw_events_ts ON supsw_events (ts)")
+        if "inval" not in [r[1] for r in conn.execute("PRAGMA table_info(supsw_events)").fetchall()]:
+            conn.execute("ALTER TABLE supsw_events ADD COLUMN inval REAL")      # v4.363 : niveau d invalidation (sortie anticipee)
         # Migration : ajoute la colonne rsi si la table trades existait deja
         # (CREATE TABLE IF NOT EXISTS n ajoute pas les colonnes manquantes a
         # une table deja creee par une version anterieure du code).
