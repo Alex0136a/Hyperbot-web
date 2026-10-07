@@ -165,6 +165,22 @@ def init_db():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_supsw_events_ts ON supsw_events (ts)")
+        # v4.365 — journal du module TENDANCE CONFIRMEE (paper) : entrees (prises ou refusees), sorties, retard de l entree
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trendf_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, signal_t INTEGER NOT NULL,
+                asset TEXT, side TEXT, d1_trend TEXT, h4_trend TEXT, weekly_trend TEXT, btc_trend TEXT, funding_ann REAL, flow REAL,
+                atr_pct REAL, ext_atr REAL, hour_utc INTEGER, price REAL, entry_ref REAL, sl REAL, risk_pct REAL, entry_mode INTEGER,
+                decision TEXT, prio INTEGER DEFAULT 1, trade_uid TEXT,
+                evaluated INTEGER DEFAULT 0, outcome TEXT, hit_h REAL, mfe24 REAL, mae24 REAL, mfe72 REAL, mae72 REAL,
+                fin24 REAL, fin72 REAL, covered_h REAL,
+                exit_ts INTEGER, exit_price REAL, exit_reason TEXT, pnl_pct REAL, hold_h REAL, peak_pct REAL,
+                d1_trend_exit TEXT, h4_trend_exit TEXT,
+                post_eval INTEGER DEFAULT 0, fin1h REAL, fin4h REAL, fin24h REAL, after_mfe REAL, after_mae REAL,
+                UNIQUE (asset, side, signal_t)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_trendf_events_ts ON trendf_events (ts)")
         if "inval" not in [r[1] for r in conn.execute("PRAGMA table_info(supsw_events)").fetchall()]:
             conn.execute("ALTER TABLE supsw_events ADD COLUMN inval REAL")      # v4.363 : niveau d invalidation (sortie anticipee)
         # Migration : ajoute la colonne rsi si la table trades existait deja
@@ -614,7 +630,7 @@ def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=N
 
 
 # ── v4.265 — Suivi apres sortie + export ─────────────────────────────────
-FOLLOWUP_STRATEGIES = ("spot_accumulation", "accumulation", "funding_contrarian", "forex", "manual", "forex_scalp", "forex_swing", "swing_support")  # v4.269 : + Funding ; v4.273 : + Manuel ; v4.323 : + Forex (export CSV et suivi +30/+60 min)
+FOLLOWUP_STRATEGIES = ("spot_accumulation", "accumulation", "funding_contrarian", "forex", "manual", "forex_scalp", "forex_swing", "swing_support", "trend_follow")  # v4.269 : + Funding ; v4.273 : + Manuel ; v4.323 : + Forex (export CSV et suivi +30/+60 min)
 
 
 def list_trades_needing_followup(min_age_minutes=62, max_age_days=16, limit=5):
@@ -1298,5 +1314,82 @@ def supsw_events_since(since_ms, limit=5000):
 def supsw_events_prune(older_than_ms):
     with _lock, _connect() as conn:
         n = conn.execute("DELETE FROM supsw_events WHERE ts < ?", (older_than_ms,)).rowcount
+        conn.commit()
+    return n
+
+
+# ── v4.365 — Journal du module TENDANCE CONFIRMEE ───────────────────────────────────────────
+_TRENDF_FIELDS = ("ts", "signal_t", "asset", "side", "d1_trend", "h4_trend", "weekly_trend", "btc_trend", "funding_ann", "flow", "atr_pct",
+                  "ext_atr", "hour_utc", "price", "entry_ref", "sl", "risk_pct", "entry_mode", "decision", "prio", "trade_uid")
+
+
+def trendf_upsert(ev):
+    """Une ligne par (actif, sens, bougie 1 h du signal). Decision de rang superieur (pris 3 > candidat 2 > refus 1) remplace la precedente
+    tant que rien n est mesure. Retourne l id."""
+    with _lock, _connect() as conn:
+        row = conn.execute("SELECT id, prio, evaluated FROM trendf_events WHERE asset=? AND side=? AND signal_t=?",
+                           (ev["asset"], ev["side"], ev["signal_t"])).fetchone()
+        if row is None:
+            cur = conn.execute(f"INSERT INTO trendf_events ({', '.join(_TRENDF_FIELDS)}) VALUES ({', '.join('?' * len(_TRENDF_FIELDS))})",
+                               [ev.get(k) for k in _TRENDF_FIELDS])
+            conn.commit()
+            return cur.lastrowid
+        if (ev.get("prio") or 1) > (row["prio"] or 1) and not row["evaluated"]:
+            keys = [k for k in _TRENDF_FIELDS if k not in ("ts", "signal_t", "asset", "side")]
+            conn.execute(f"UPDATE trendf_events SET {', '.join(k + '=?' for k in keys)} WHERE id=?", [ev.get(k) for k in keys] + [row["id"]])
+            conn.commit()
+        return row["id"]
+
+
+def trendf_mark_taken(asset, side, signal_t, trade_uid):
+    with _lock, _connect() as conn:
+        conn.execute("UPDATE trendf_events SET decision='pris', prio=3, trade_uid=? WHERE asset=? AND side=? AND signal_t=?",
+                     (trade_uid, asset, side, signal_t))
+        conn.commit()
+
+
+def trendf_record_exit(trade_uid, fields):
+    if not trade_uid or not fields:
+        return
+    keys = list(fields)
+    with _lock, _connect() as conn:
+        conn.execute(f"UPDATE trendf_events SET {', '.join(k + '=?' for k in keys)} WHERE trade_uid=?", [fields[k] for k in keys] + [trade_uid])
+        conn.commit()
+
+
+def trendf_pending_signals(now_ms, limit=40):
+    with _lock, _connect() as conn:
+        rows = conn.execute("SELECT * FROM trendf_events WHERE sl IS NOT NULL AND entry_ref IS NOT NULL AND ("
+                            "(evaluated=0 AND signal_t <= ?) OR (evaluated=1 AND signal_t <= ?)) ORDER BY signal_t LIMIT ?",
+                            (now_ms - 25 * 3_600_000, now_ms - 73 * 3_600_000, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def trendf_pending_exits(now_ms, limit=40):
+    with _lock, _connect() as conn:
+        rows = conn.execute("SELECT * FROM trendf_events WHERE exit_ts IS NOT NULL AND ("
+                            "(post_eval=0 AND exit_ts <= ?) OR (post_eval=1 AND exit_ts <= ?)) ORDER BY exit_ts LIMIT ?",
+                            (now_ms - 25 * 3_600_000, now_ms - 73 * 3_600_000, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def trendf_update(event_id, fields):
+    if not fields:
+        return
+    keys = list(fields)
+    with _lock, _connect() as conn:
+        conn.execute(f"UPDATE trendf_events SET {', '.join(k + '=?' for k in keys)} WHERE id=?", [fields[k] for k in keys] + [event_id])
+        conn.commit()
+
+
+def trendf_events_since(since_ms, limit=5000):
+    with _lock, _connect() as conn:
+        rows = conn.execute("SELECT * FROM trendf_events WHERE ts >= ? ORDER BY ts DESC LIMIT ?", (since_ms, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def trendf_events_prune(older_than_ms):
+    with _lock, _connect() as conn:
+        n = conn.execute("DELETE FROM trendf_events WHERE ts < ?", (older_than_ms,)).rowcount
         conn.commit()
     return n
