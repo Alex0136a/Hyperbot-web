@@ -283,7 +283,8 @@ const PAPER_SUBTABS = [
   {key:"funding_contrarian", label:"Funding", icon:"💰", color:"#fbbf24"},
   {key:"spot_accumulation", label:"Spot-Accum", icon:"🌱", color:"#34d399"},
   {key:"forex_scalp", label:"Scalp Forex", icon:"⏱️", color:"#facc15"},   // v4.356 : scalps separes du Forex normal
-  {key:"swing_tab", label:"Swing", icon:"🌊", color:"#38bdf8"},   // v4.359 : suivi du profil Swing
+  {key:"swing_tab", label:"Swing", icon:"🌊", color:"#38bdf8"},
+  {key:"trend_tab", label:"Tendance", icon:"📈", color:"#34d399"},   // v4.365 : entree sur tendance confirmee, on reste tant qu elle tient   // v4.359 : suivi du profil Swing
   {key:"modes", label:"Modes : Prudence · Swing · Scalp", icon:"🎛️", color:"#facc15"},   // v4.354
 ];
 // v4.44 — modes ayant une liste d actifs dediee personnalisable (pas
@@ -1188,6 +1189,14 @@ function App() {
     try { setSupSt(await apiCall("/api/supsw/status","GET",null,token)); setSupErr(null); }
     catch(e) { setSupErr((e && e.message) ? e.message : String(e)); }
   }, [token]);
+  const [trendSt, setTrendSt] = useState(null);
+  const [trendStats, setTrendStats] = useState(null);
+  const [trendErr, setTrendErr] = useState(null);
+  const loadTrendSt = useCallback(async () => {
+    try { setTrendSt(await apiCall("/api/trend/status","GET",null,token)); setTrendErr(null); }
+    catch(e) { setTrendErr((e && e.message) ? e.message : String(e)); }
+  }, [token]);
+  const loadTrendStats = async () => { try { setTrendStats(await apiCall("/api/trend/stats?days=30","GET",null,token)); } catch(e) { alert("Erreur : "+e.message); } };
   const loadSupStats = async () => { try { setSupStats(await apiCall("/api/supsw/stats?days=30","GET",null,token)); } catch(e) { alert("Erreur : "+e.message); } };
   const loadSwingSt = useCallback(async () => {
     try { setSwingSt(await apiCall("/api/swing/status","GET",null,token)); setSwingErr(null); }
@@ -1280,6 +1289,12 @@ function App() {
     loadSwingSt();
     loadSupSt();
     const id = setInterval(()=>{ loadSwingSt(); loadSupSt(); }, 30000);
+    return () => clearInterval(id);
+  }, [token, tab, paperSubTab]);
+  useEffect(() => {
+    if (!token || tab!=="paper" || paperSubTab!=="trend_tab") return;
+    loadTrendSt();
+    const id = setInterval(loadTrendSt, 30000);
     return () => clearInterval(id);
   }, [token, tab, paperSubTab]);
   useEffect(() => {
@@ -1564,7 +1579,7 @@ function App() {
   }, [token]);
 
   useEffect(() => {
-    if (tab==="paper" && paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && paperSubTab!=="forex_scalp" && paperSubTab!=="swing_tab" && token) {
+    if (tab==="paper" && paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && paperSubTab!=="forex_scalp" && paperSubTab!=="swing_tab" && paperSubTab!=="trend_tab" && token) {
       loadModeHistory(paperSubTab);
       // v4.46 — les reglages dedies par mode (SL/TTP/Taille) vivent dans
       // advancedSettings — le charger ici aussi, pas seulement quand on
@@ -2917,7 +2932,7 @@ Confirmer ?`
                 </label>
                 <div style={{fontSize:10,color:"#94a3b8",marginBottom:8}}>Instantané au moment du clic — "aucun obstacle" veut dire que le signal de base n'est simplement pas encore réuni (RSI/EMA/tendance), pas qu'un trade est imminent.</div>
                 <textarea readOnly value={(entryDiag.market_regime?`🧭 RÉGIME DE MARCHÉ : ${(entryDiag.market_regime.regime||"?").toUpperCase()} — ${entryDiag.market_regime.detail||""}${entryDiag.market_regime.filter_enabled?" (filtre legacy actif : sans effet sur le top-down)":" (aucun blocage global : chaque mode juge la tendance de son actif)"}\n\n`:"")+entryDiag.results.filter(r=>!watchOnly||WATCHLIST.includes(String(r.ticker).split("/")[0])).map(r=>
-                  `${r.ticker}${r.has_position?" [position ouverte]":""} (il y a ${r.snapshot_age_sec!=null?r.snapshot_age_sec.toFixed(0)+"s":"?"})\n  💱 FOREX LONG  : ${r.blocker_long||"aucun obstacle particulier"}\n  💱 FOREX SHORT : ${r.blocker_short||"aucun obstacle particulier"}${r.scalp?`\n  ⚡ SCALP : ${r.scalp}`:""}${r.fxswing?`\n  🌊 SWING FX : ${r.fxswing}`:""}${r.supsw?`\n  🧱 SWING SUPPORT : ${r.supsw}`:""}\n  🎯 ACCUMULATION : ${r.blocker_accumulation||"aucun obstacle particulier"}\n  🌱 SPOT-ACCUM : ${r.blocker_spot_accum||"aucun obstacle particulier"}${r.mtf?`\n  📊 TOP-DOWN : ${r.mtf}`:""}${r.blocker_funding?`\n  💰 FUNDING : ${r.blocker_funding}`:""}${r.situation?`\n  🧭 Situation : fond ${r.situation.fond} (1h) · court terme ${r.situation.court||"?"} (5 min) → ${r.situation.name.toUpperCase()}`:""}\n  📐 Niveaux : ${r.levels&&r.levels.trend_ema!=null?`${(r.levels.trend_ema_source||"EMA")} = ${Number(r.levels.trend_ema).toPrecision(6)} (prix ${r.levels.price!=null?(r.levels.price>r.levels.trend_ema?"au-dessus":"en dessous"):"?"})`:"EMA ?"} · support ${r.levels&&r.levels.support!=null?Number(r.levels.support).toPrecision(6):"?"} · résistance ${r.levels&&r.levels.resistance!=null?Number(r.levels.resistance).toPrecision(6):"?"}${r.levels&&r.levels.sr_source?` (${r.levels.sr_source})`:""}${r.levels&&(r.levels.support_1h||r.levels.resistance_1h)?` · structure 1h : support ${r.levels.support_1h!=null?Number(r.levels.support_1h).toPrecision(6):"?"} / résistance ${r.levels.resistance_1h!=null?Number(r.levels.resistance_1h).toPrecision(6):"?"}`:""}\n  📉 Qualité du marché : volatilité ${r.quality&&r.quality.vol_ratio!=null?r.quality.vol_ratio.toFixed(2)+"x":"?"} · activité ${r.quality&&r.quality.activity_ratio!=null?r.quality.activity_ratio.toFixed(2)+"x":"?"} son habitude · spread ${r.quality&&r.quality.spread_pct!=null?r.quality.spread_pct.toFixed(3)+" %":"?"}\n  📊 Flux transactions : ${r.trade_flow_pressure!=null?r.trade_flow_pressure.toFixed(2):"pas encore de donnees"}${r.trend_persistence_confirmed?" · pression soutenue CONFIRMEE":""}`
+                  `${r.ticker}${r.has_position?" [position ouverte]":""} (il y a ${r.snapshot_age_sec!=null?r.snapshot_age_sec.toFixed(0)+"s":"?"})\n  💱 FOREX LONG  : ${r.blocker_long||"aucun obstacle particulier"}\n  💱 FOREX SHORT : ${r.blocker_short||"aucun obstacle particulier"}${r.scalp?`\n  ⚡ SCALP : ${r.scalp}`:""}${r.fxswing?`\n  🌊 SWING FX : ${r.fxswing}`:""}${r.supsw?`\n  🧱 SWING SUPPORT : ${r.supsw}`:""}${r.trendf?`\n  📈 TENDANCE : ${r.trendf}`:""}\n  🎯 ACCUMULATION : ${r.blocker_accumulation||"aucun obstacle particulier"}\n  🌱 SPOT-ACCUM : ${r.blocker_spot_accum||"aucun obstacle particulier"}${r.mtf?`\n  📊 TOP-DOWN : ${r.mtf}`:""}${r.blocker_funding?`\n  💰 FUNDING : ${r.blocker_funding}`:""}${r.situation?`\n  🧭 Situation : fond ${r.situation.fond} (1h) · court terme ${r.situation.court||"?"} (5 min) → ${r.situation.name.toUpperCase()}`:""}\n  📐 Niveaux : ${r.levels&&r.levels.trend_ema!=null?`${(r.levels.trend_ema_source||"EMA")} = ${Number(r.levels.trend_ema).toPrecision(6)} (prix ${r.levels.price!=null?(r.levels.price>r.levels.trend_ema?"au-dessus":"en dessous"):"?"})`:"EMA ?"} · support ${r.levels&&r.levels.support!=null?Number(r.levels.support).toPrecision(6):"?"} · résistance ${r.levels&&r.levels.resistance!=null?Number(r.levels.resistance).toPrecision(6):"?"}${r.levels&&r.levels.sr_source?` (${r.levels.sr_source})`:""}${r.levels&&(r.levels.support_1h||r.levels.resistance_1h)?` · structure 1h : support ${r.levels.support_1h!=null?Number(r.levels.support_1h).toPrecision(6):"?"} / résistance ${r.levels.resistance_1h!=null?Number(r.levels.resistance_1h).toPrecision(6):"?"}`:""}\n  📉 Qualité du marché : volatilité ${r.quality&&r.quality.vol_ratio!=null?r.quality.vol_ratio.toFixed(2)+"x":"?"} · activité ${r.quality&&r.quality.activity_ratio!=null?r.quality.activity_ratio.toFixed(2)+"x":"?"} son habitude · spread ${r.quality&&r.quality.spread_pct!=null?r.quality.spread_pct.toFixed(3)+" %":"?"}\n  📊 Flux transactions : ${r.trade_flow_pressure!=null?r.trade_flow_pressure.toFixed(2):"pas encore de donnees"}${r.trend_persistence_confirmed?" · pression soutenue CONFIRMEE":""}`
                 ).join("\n\n")}
                   style={{width:"100%",height:320,background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:10,color:"#e2e8f0",fontFamily:"monospace",fontSize:11,resize:"vertical"}}
                   onClick={e=>e.target.select()}
@@ -3635,7 +3650,7 @@ Confirmer ?`
                 await apiCall("/api/config/advanced","PUT",{values:{FEES_IN_STATS: config?.fees_in_stats!==false ? 0 : 1}},token);
                 await loadData();
                 loadAllStrategyPerformance(false);
-                if(paperSubTab==="swing_tab") loadSwingSt(); else if(paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes") loadStrategyPerformance(paperSubTab,false);
+                if(paperSubTab==="swing_tab") loadSwingSt(); else if(paperSubTab==="trend_tab") loadTrendSt(); else if(paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes") loadStrategyPerformance(paperSubTab,false);
               }catch(e){ alert("Erreur : "+e.message); }
             }} style={{background:"#334155",border:"none",borderRadius:6,padding:"6px 12px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer"}}>
               {config?.fees_in_stats!==false ? "Afficher en brut" : "Inclure les frais"}
@@ -3706,6 +3721,91 @@ Confirmer ?`
                 )}
               </div>
             )}
+
+            {/* v4.365 — TENDANCE CONFIRMEE : module a part (comme Funding), entree quand la tendance est confirmee, on reste tant qu elle tient. */}
+            {paperSubTab==="trend_tab" && (()=>{
+              const P = trendSt, Q = trendStats;
+              const f = (v,d=2)=> v==null?"—":Number(v).toFixed(d);
+              const sg = (v,d=2)=> v==null?"—":`${v>=0?"+":""}${Number(v).toFixed(d)}`;
+              const pc = (v)=> v==null?"—":v+" %";
+              const th = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap",color:"#94a3b8"}, td = {padding:"3px 8px",textAlign:"right",whiteSpace:"nowrap"};
+              const TG = ({title,rows})=>(
+                <div style={{marginTop:8}}>
+                  <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700,marginBottom:2}}>{title}</div>
+                  <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                    <thead><tr><th style={{...th,textAlign:"left"}}></th><th style={th}>Signaux</th><th style={th}>Mesurés</th><th style={th} title="Part des signaux dont le stop initial a été touché dans les 72 h">Stop touché</th><th style={th} title="Résultat moyen estimé par signal (% du prix), frais déduits : stop initial = -risque, sinon rendement à 72 h">Net estimé</th></tr></thead>
+                    <tbody>{rows.map(r=><tr key={r.key} style={{borderTop:"1px solid #1e2d4a"}}>
+                      <td style={{...td,textAlign:"left",color:"#e2e8f0",whiteSpace:"normal"}}>{r.key}</td><td style={td}>{r.n}</td><td style={td}>{r.evaluated}</td><td style={td}>{pc(r.sl_pct)}</td>
+                      <td style={{...td,fontWeight:700,color:r.net_est==null?"#94a3b8":(r.net_est>=0?"#86efac":"#fca5a5")}}>{r.net_est==null?"—":sg(r.net_est,3)+" %"}{r.net_n>0&&r.net_n<20?<span style={{color:"#fbbf24",marginLeft:4,fontSize:9}}>n={r.net_n}</span>:null}</td>
+                    </tr>)}</tbody></table></div>
+                </div>);
+              return (
+              <div style={{background:"#0a0e1a",border:"1px solid #14532d",borderRadius:8,padding:10,marginBottom:14,fontSize:11,color:"#cbd5e1",lineHeight:1.6}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                  <div><b style={{color:"#34d399"}}>📈 Tendance confirmée (paper)</b>
+                    {P && <span style={{marginLeft:8,fontWeight:700,color:P.enabled?"#86efac":"#94a3b8"}}>{P.enabled?"● actif":"○ éteint"}</span>}</div>
+                  {P && <button onClick={async()=>{
+                    if(!P.enabled && !window.confirm("Activer le module Tendance (paper) ?\n\n• entrée quand le Daily ET le H4 vont dans le même sens, avec momentum 1 h et flux dans le sens (LONG comme SHORT)\n• aucun objectif : on reste tant que la tendance tient\n• stop suiveur "+P.settings.TRENDF_STOP_ATR+" x ATR H4 (entre "+P.settings.TRENDF_MIN_STOP_PCT+" et "+P.settings.TRENDF_MAX_STOP_PCT+" %)\n• sortie : stop suiveur, Daily perdue, ou H4 retournée\n• le retard de chaque entrée (distance à la moyenne Daily, en ATR) est enregistré pour mesurer si entrer tard coûte cher\n• PAPER uniquement : un actif = une seule position, quel que soit le mode")) return;
+                    try{ await apiCall("/api/config/advanced","PUT",{values:{TRENDF_ENABLED: P.enabled?0:1}},token); await loadTrendSt(); }catch(e){ alert("Erreur : "+e.message); }
+                  }} style={{background:P.enabled?"#334155":"#34d399",border:"none",borderRadius:7,padding:"8px 14px",color:P.enabled?"#e2e8f0":"#052e1a",fontFamily:"inherit",fontSize:12,fontWeight:800,cursor:"pointer"}}>{P.enabled?"Éteindre":"📈 Activer la Tendance"}</button>}
+                </div>
+                <div style={{color:"#94a3b8",marginTop:4}}>Quand une hausse ou une baisse dure, on <b>entre dès que la tendance est confirmée</b> (Daily + H4) au lieu d'attendre un retour, puis on <b>laisse tourner tant qu'elle tient</b>. Pas d'objectif fixe : un stop suiveur protège le gain et la position se ferme quand la tendance cesse. Chaque entrée (prise ou refusée) est journalisée avec son <b>retard</b>, puis mesurée à 24 h et 72 h ; chaque sortie est suivie 1 h, 4 h et 24 h pour savoir si elle était trop précoce.</div>
+                {!P ? (trendErr ? <div style={{color:"#fca5a5",marginTop:6}}>Suivi Tendance indisponible : <b>{trendErr}</b>. Si « Not Found », le serveur n'est pas à jour (api.py, db.py, bot_engine.py, trend_follow.py).</div> : <div style={{color:"#94a3b8",marginTop:6}}>Chargement…</div>) : (
+                  <div style={{marginTop:6}}>
+                    {P.enabled && (P.assets||[]).map(a=>(
+                      <div key={a.asset} style={{display:"flex",gap:8,flexWrap:"wrap",padding:"2px 0",borderTop:"1px solid #1e2d4a"}}>
+                        <b style={{color:"#e2e8f0",minWidth:70}}>{a.asset}</b>
+                        <span style={{color:a.open?"#86efac":(a.evaluated?"#cbd5e1":"#64748b")}}>{a.open?"tendance ouverte":(a.evaluated?(a.blocker||"entrée évaluée"):"pas encore évalué")}</span>
+                      </div>))}
+                    <div style={{color:"#64748b",marginTop:4}}>Réglages : risque {P.settings.TRENDF_RISK_PCT} % du capital · notionnel max {P.settings.TRENDF_MAX_NOTIONAL_USD} $ · levier {P.settings.TRENDF_LEVERAGE} · {P.settings.TRENDF_MAX_TRADES} positions au plus · stop {P.settings.TRENDF_STOP_ATR} x ATR H4 ({P.settings.TRENDF_MIN_STOP_PCT}-{P.settings.TRENDF_MAX_STOP_PCT} %) · entrée {P.settings.TRENDF_ENTRY_MODE===1?`sur cassure des ${P.settings.TRENDF_BREAK_BARS} dernières heures`:"dès la tendance confirmée"} · flux min {P.settings.TRENDF_MIN_FLOW} · shorts {P.settings.TRENDF_ALLOW_SHORT?"autorisés":"interdits"} · sortie H4 {P.settings.TRENDF_EXIT_H4_REVERSE?"oui":"non"} · durée max {P.settings.TRENDF_MAX_HOLD_DAYS} j (réglages avancés).</div>
+                    {P.perf.n>0 && <div style={{marginTop:4}}><b>{P.perf.n}</b> trade(s) fermé(s), {P.perf.win_rate}% gagnants, <b style={{color:P.perf.net>=0?"#86efac":"#fca5a5"}}>{sg(P.perf.net)} USDC net</b> (brut {sg(P.perf.gross)} − frais {f(P.perf.fees)}){P.perf.n<30 && <span style={{color:"#fbbf24"}}> · moins de 30 trades : à ne pas interpréter.</span>}</div>}
+                    {P.open.map((o,i)=>(
+                      <div key={i} style={{background:"#07140d",border:"1px solid #14532d",borderRadius:8,padding:8,marginTop:5,display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6}}>
+                        <span><span style={{background:"#052e1a",color:"#34d399",border:"1px solid #34d399",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700,marginRight:6}}>📈 TENDANCE</span><b style={{color:o.side==="long"?"#34d399":"#f87171"}}>{String(o.side).toUpperCase()}</b> {o.asset} <span style={{color:"#64748b"}}>Daily {o.d1||"?"} · H4 {o.h4||"?"}{o.ext_atr!=null?` · retard ${o.ext_atr} ATR`:""}</span></span>
+                        <span>entrée {Number(o.entry).toPrecision(6)} · prix {Number(o.price).toPrecision(6)} · stop {o.moved?"suiveur":"initial"} {Number(o.sl).toPrecision(6)}</span>
+                        <span style={{color:o.gain_pct>=0?"#86efac":"#fca5a5",fontWeight:700}}>{sg(o.gain_pct,3)} % (pic {sg(o.peak_pct,2)} %) · {o.age_h>=48?(o.age_h/24).toFixed(1)+" j":o.age_h+" h"}</span>
+                      </div>))}
+                    {P.closed.length>0 && <details style={{marginTop:6}}>
+                      <summary style={{cursor:"pointer",color:"#94a3b8"}}>Trades fermés ({P.closed.length})</summary>
+                      <div style={{maxHeight:260,overflowY:"auto",marginTop:4}}>{P.closed.map(x=>(
+                        <div key={x.id} style={{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6,padding:"3px 0",borderTop:"1px solid #1e2d4a"}}>
+                          <span><b style={{color:"#e2e8f0"}}>{x.asset}</b> <span style={{color:"#94a3b8",fontSize:10}}>{x.reason}</span> <span style={{color:"#64748b",fontSize:10}}>{x.closed?new Date(x.closed).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}):""}</span></span>
+                          <span style={{fontWeight:700,color:(x.pnl_net||0)>=0?"#34d399":"#f87171"}}>{sg(x.pnl_net,3)} $ net{x.move_pct!=null?<span style={{color:"#64748b",fontWeight:400,marginLeft:6}}>({sg(x.move_pct,2)} %)</span>:null}</span>
+                        </div>))}</div>
+                    </details>}
+                    <div style={{marginTop:8,display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                      <button onClick={loadTrendStats} style={{background:"#34d399",border:"none",borderRadius:7,padding:"7px 12px",color:"#052e1a",fontFamily:"inherit",fontSize:11,fontWeight:800,cursor:"pointer"}}>📊 Statistiques Tendance (30 j)</button>
+                      <button onClick={async()=>{
+                        try{
+                          const r = await fetch(`${API}/api/trend/journal/export.csv?days=60`,{headers:{Authorization:`Bearer ${token}`}});
+                          if(!r.ok){ let d={}; try{d=await r.json();}catch(_){} throw new Error(d.detail||`Erreur ${r.status}`); }
+                          const blob = await r.blob(); const cd = r.headers.get("Content-Disposition")||""; const m = cd.match(/filename="([^"]+)"/);
+                          const url = URL.createObjectURL(blob); const a = document.createElement("a");
+                          a.href = url; a.download = m?m[1]:"tendance.csv"; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000);
+                        }catch(e){ alert("Export impossible : "+e.message); }
+                      }} style={{background:"#334155",border:"none",borderRadius:7,padding:"7px 12px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer"}}>📥 Journal CSV</button>
+                    </div>
+                    {Q && (
+                      <div style={{marginTop:8}}>
+                        <div style={{fontSize:11,color:"#94a3b8"}}>Période : {Q.days} jours · {Q.total.n} entrées candidates, {Q.total.evaluated} mesurées (sans objectif : stop initial touché ou rendement à 72 h).</div>
+                        {Q.real.n>0 && <div style={{fontSize:11,color:"#cbd5e1",marginTop:4}}>Trades réellement pris : <b>{Q.real.n}</b>, {Q.real.wins} gagnants après frais, résultat moyen <b style={{color:Q.real.avg_net_pct>=0?"#86efac":"#fca5a5"}}>{sg(Q.real.avg_net_pct,3)} %</b> par trade.</div>}
+                        <TG title="Par RETARD de l'entrée (distance à la moyenne Daily, en ATR) — la question clé : entrer tard coûte-t-il ?" rows={Q.by_late}/>
+                        <TG title="Par sens" rows={Q.by_side}/>
+                        <TG title="Par décision (pris, candidat, ou raison du refus)" rows={Q.by_decision}/>
+                        <TG title="Par tendance Weekly (enregistrée, ne filtre pas)" rows={Q.by_weekly}/>
+                        <TG title="Par tendance de BTC (enregistrée, ne filtre pas)" rows={Q.by_btc}/>
+                        <TG title="Par funding annualisé (enregistré, ne filtre pas)" rows={Q.by_funding}/>
+                        <TG title="Par actif" rows={Q.by_asset}/>
+                        <div style={{marginTop:10,fontSize:11,color:"#e2e8f0",fontWeight:700}}>Sorties : la tendance a-t-elle été quittée au bon moment ?</div>
+                        <div style={{fontSize:11,color:"#cbd5e1",lineHeight:1.6}}>
+                          {Q.exits.taken} trade(s) sortis · gain moyen à la sortie <b>{Q.exits.avg_pnl_pct==null?"—":sg(Q.exits.avg_pnl_pct,3)+" %"}</b> (avant frais) · pic moyen {Q.exits.avg_peak_pct==null?"—":sg(Q.exits.avg_peak_pct,2)+" %"} · durée moyenne {Q.exits.avg_hold_h==null?"—":f(Q.exits.avg_hold_h,1)+" h"}.
+                          Après la sortie ({Q.exits.evaluated} mesurées) : évolution moyenne dans le sens du trade 1 h {Q.exits.avg_fin1h==null?"—":sg(Q.exits.avg_fin1h,2)} % · 4 h {Q.exits.avg_fin4h==null?"—":sg(Q.exits.avg_fin4h,2)} % · 24 h {Q.exits.avg_fin24h==null?"—":sg(Q.exits.avg_fin24h,2)} % (positif = la sortie était trop précoce).
+                        </div>
+                        <TG title="Par motif de sortie (trades pris)" rows={Q.exits.by_reason}/>
+                      </div>)}
+                  </div>)}
+              </div>);
+            })()}
 
             {/* v4.359 — SUR DEMANDE EXPLICITE : onglet de suivi du Swing (comme le scalp) : positions en R, trades fermes,
                 journal de chaque signal H4 (pris ou filtre) mesure 24 h / 72 h plus tard. */}
@@ -4244,7 +4344,7 @@ Confirmer ?`
               </div>
             )}
 
-            {paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && paperSubTab!=="forex_scalp" && paperSubTab!=="swing_tab" && (()=>{
+            {paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && paperSubTab!=="forex_scalp" && paperSubTab!=="swing_tab" && paperSubTab!=="trend_tab" && (()=>{
               const openFiltered = (paper?.open_trades||[]).filter(t=>(t.strategy||"forex")===paperSubTab);
               // v4.44 — FIX : utilise l historique DEDIE recupere pour ce
               // mode precis (deja filtre cote serveur, pool bien plus large
@@ -4609,7 +4709,7 @@ Confirmer ?`
                             try{
                               await apiCall("/api/spot-accum/target","PUT",{trade_id:trade.id,target_price:newTarget},token);
                               loadData();
-                              if (paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && paperSubTab!=="forex_scalp" && paperSubTab!=="swing_tab") loadModeHistory(paperSubTab);
+                              if (paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && paperSubTab!=="forex_scalp" && paperSubTab!=="swing_tab" && paperSubTab!=="trend_tab") loadModeHistory(paperSubTab);
                             }catch(err){ alert("Erreur : "+err.message); }
                           }} style={{background:"#052e1622",border:"1px solid #34d399",borderRadius:5,padding:"3px 8px",color:"#34d399",fontSize:9,cursor:"pointer",fontWeight:700}}>
                             ✓ Modifier
@@ -4629,7 +4729,7 @@ Confirmer ?`
                             try{
                               await apiCall("/api/spot-accum/trailing-arm","PUT",{trade_id:trade.id,trailing_arm_price:newVal},token);
                               loadData();
-                              if (paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && paperSubTab!=="forex_scalp" && paperSubTab!=="swing_tab") loadModeHistory(paperSubTab);
+                              if (paperSubTab!=="all" && paperSubTab!=="performance" && paperSubTab!=="modes" && paperSubTab!=="forex_scalp" && paperSubTab!=="swing_tab" && paperSubTab!=="trend_tab") loadModeHistory(paperSubTab);
                             }catch(err){ alert("Erreur : "+err.message); }
                           }} style={{background:"#052e1622",border:"1px solid #34d399",borderRadius:5,padding:"3px 8px",color:"#34d399",fontSize:9,cursor:"pointer",fontWeight:700}}>
                             ✓ Modifier
