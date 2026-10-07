@@ -1,4 +1,4 @@
-[README (2).md](https://github.com/user-attachments/files/33131577/README.2.md)
+[README (3).md](https://github.com/user-attachments/files/33156768/README.3.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
@@ -647,3 +647,6 @@ Sous-mode PAPER, éteint par défaut (`SUPSW_ENABLED`). Actifs : BTC, ETH, HYPE,
 - **API** : `/api/supsw/status`, `/api/supsw/stats?days=`, `/api/supsw/journal/export.csv`. **UI** : carte « Swing Support » dans TRADES P/L › Swing ; ligne « 🧱 SWING SUPPORT » dans le diagnostic.
 - Fichiers : `swing_support.py` (nouveau), `bot_engine.py`, `db.py`, `api.py`, `index.html`.
 - Le trade occupe le slot de l'actif tant qu'il est ouvert (les autres modes ne peuvent pas trader cet actif).
+
+### v4.363 — Swing Support : niveau de sortie anticipée
+Constat (HYPE, TAO) : sur une zone Daily large, le bas de zone est sous le stop à 5 % → la sortie anticipée était inatteignable. Désormais (`SUPSW_EXIT_LEVEL=1`, défaut) le niveau est le **plus bas du retest** (plus bas des bougies 1 h du signal), borné entre `SUPSW_EXIT_MIN_PCT` (0,5 %) et `SUPSW_EXIT_MAX_PCT` (3 %) sous l'entrée. `SUPSW_EXIT_LEVEL=0` rétablit le bas de zone. Le niveau est stocké sur la position et dans le journal (colonne `inval`) ; les positions déjà ouvertes gardent le bas de zone. Migration automatique de la table `supsw_events`.
