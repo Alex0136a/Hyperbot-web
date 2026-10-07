@@ -27,6 +27,7 @@ from flow_recorder import FlowRecorder   # v4.349 — enregistreur de flux (lect
 import scalp_forex as scalp               # v4.353 — scalp Forex (sous-mode du Forex, paper)
 import swing_journal as swj               # v4.359 — journal du Swing (lecture seule)
 import swing_support as sups              # v4.362 — Swing Support (crypto, paper)
+import trend_follow as trf                # v4.365 — Tendance confirmee (module separe, paper)
 import mtf_analysis as mtf  # v4.299 — analyse multi-unites de temps
 from datetime import datetime
 from collections import deque
@@ -1443,6 +1444,27 @@ PROFILE_SWING = {
     # Hypothese : tendance Daily haussiere + support (retest tenu sur les dernieres bougies 1 h, ou balayage de liquidite) -> objectif
     # proche ; stop large = simple filet ; la protection est la SORTIE ANTICIPEE (cloture 1 h sous la zone + flux hostile).
     # BTC / Weekly / funding sont ENREGISTRES a l entree mais ne filtrent rien. Aucun breakeven : on mesure l hypothese pure.
+    # ── v4.365 — TENDANCE CONFIRMEE (module separe, PAPER uniquement ; eteint par defaut) ──
+    # Entree quand Daily ET H4 sont dans le meme sens (+ momentum 1 h et flux), longs et shorts ; on reste tant que la tendance tient
+    # (stop suiveur ATR H4, sortie quand la tendance cesse). Le retard de l entree est enregistre (ATR Daily) pour mesurer s il coute.
+    "TRENDF_ENABLED": 0,
+    "TRENDF_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI", "PAXG", "xyz:EUR", "xyz:JPY"],
+    "TRENDF_ALLOW_SHORT": 1,
+    "TRENDF_RISK_PCT": 1.0,               # perte au stop initial = N % du capital (dimensionne la taille)
+    "TRENDF_MAX_NOTIONAL_USD": 60.0,
+    "TRENDF_LEVERAGE": 3,
+    "TRENDF_MAX_TRADES": 3,
+    "TRENDF_STOP_ATR": 3.0,               # distance du stop suiveur = N x ATR H4
+    "TRENDF_MIN_STOP_PCT": 0.8,
+    "TRENDF_MAX_STOP_PCT": 6.0,
+    "TRENDF_ENTRY_MODE": 0,               # 0 = entre des que la tendance est confirmee (momentum + flux) ; 1 = exige en plus une cassure
+    "TRENDF_BREAK_BARS": 12,              # mode 1 : cassure du plus haut/bas des N dernieres heures
+    "TRENDF_MIN_FLOW": 0.2,               # flux de transactions minimal dans le sens du trade (absent = on laisse passer)
+    "TRENDF_MAX_EXT_ATR": 0.0,            # 0 = pas de limite ; sinon refuse si le prix est a plus de N ATR Daily de sa moyenne (entree tardive)
+    "TRENDF_MAX_SPREAD_PCT": 0.05,
+    "TRENDF_MAX_HOLD_DAYS": 30,
+    "TRENDF_COOLDOWN_SEC": 14400,
+    "TRENDF_EXIT_H4_REVERSE": 1,          # 1 = sort aussi quand la tendance H4 se retourne franchement
     "SUPSW_ENABLED": 0,
     "SUPSW_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"],
     "SUPSW_SL_PCT": 5.0,                  # stop catastrophe (% du prix)
@@ -2179,7 +2201,7 @@ def _order_first_status(result):
 # d entree — permet de retrouver le MODE SOURCE d une position directement
 # depuis l historique Hyperliquid, meme si la base locale etait perdue.
 TRADE_UID_MAGIC = "4842"  # "HB"
-STRATEGY_CODES = {"forex": "01", "accumulation": "02", "spot_accumulation": "03", "funding_contrarian": "04", "manual": "05", "forex_scalp": "06", "forex_swing": "07", "swing_support": "08"}
+STRATEGY_CODES = {"forex": "01", "accumulation": "02", "spot_accumulation": "03", "funding_contrarian": "04", "manual": "05", "forex_scalp": "06", "forex_swing": "07", "swing_support": "08", "trend_follow": "09"}
 STRATEGY_FROM_CODE = {v: k for k, v in STRATEGY_CODES.items()}
 
 
@@ -5187,7 +5209,7 @@ class BotEngine:
         """v4.264 — mode REEL (paper/live) d une position : celui memorise a
         son ouverture. Repli sur le reglage courant de sa strategie pour les
         positions anciennes sans cette information."""
-        if (pos or {}).get("strategy") in ("forex_scalp", "forex_swing", "swing_support"):      # v4.353 / v4.361 / v4.362 : PAPER par construction
+        if (pos or {}).get("strategy") in ("forex_scalp", "forex_swing", "swing_support", "trend_follow"):      # v4.353 / v4.361 / v4.362 / v4.365 : PAPER par construction
             return "paper"
         recorded = (pos or {}).get("effective_mode")
         if recorded in ("paper", "live"):
@@ -5207,7 +5229,7 @@ class BotEngine:
         (FUNDING_MODE_LIVE_ALLOWED) s applique TOUJOURS en plus, meme si
         cette fonction renvoie "live" pour funding_contrarian — double
         protection, pas de retrait de securite existante."""
-        if strategy in ("forex_scalp", "forex_swing", "swing_support"):         # v4.353 / v4.361 / v4.362 : PAPER par construction
+        if strategy in ("forex_scalp", "forex_swing", "swing_support", "trend_follow"):         # v4.353 / v4.361 / v4.362 / v4.365 : PAPER par construction
             return "paper"
         override = self.cfg.get("STRATEGY_MODE_OVERRIDE", {}).get(strategy)
         if override in ("paper", "live"):
@@ -7888,6 +7910,8 @@ class BotEngine:
                     self._swing_journal_eval_if_due()   # v4.359
                     self._supsw_cycle()                 # v4.362
                     self._supsw_eval_if_due()           # v4.362
+                    self._trendf_cycle()                # v4.365
+                    self._trendf_eval_if_due()          # v4.365
                 except Exception as _e_sc:
                     print(f"[SCALP] cycle ignore : {type(_e_sc).__name__}: {_e_sc}")
                 self._decay_confidence_thresholds()
@@ -8132,6 +8156,8 @@ class BotEngine:
             return self._manage_fxswing(symbol, price, state, pos, ticker)
         if pos.get("engine") == "supsw":     # v4.362 — position de Swing Support : gestion dediee (paper)
             return self._manage_supsw(symbol, price, state, pos, ticker)
+        if pos.get("engine") == "trendf":    # v4.365 — position du module Tendance : gestion dediee (paper)
+            return self._manage_trendf(symbol, price, state, pos, ticker)
         # v4.33 — SECURITE EXPLICITE : un trade "funding_contrarian" reste
         # simule (paper) meme si le bot tourne globalement en mode live, tant
         # que FUNDING_MODE_LIVE_ALLOWED n est pas active manuellement — ce
@@ -10891,8 +10917,8 @@ class BotEngine:
                 reasons.append(("LONG" if long_side else "SHORT", why, detected))
         if best is None:
             det = [r for r in reasons if r[2]]
-            pick = det[0] if det else (reasons[0] if reasons else ("", "aucun setup", False))
-            snap["blocker"] = (pick[0] + " : " if pick[0] else "") + pick[1]
+            shown = det if det else reasons          # v4.364 : montre les DEUX sens (avant : seul le premier, donc toujours le LONG)
+            snap["blocker"] = " | ".join((r[0] + " : " if r[0] else "") + r[1] for r in shown) if shown else "aucun setup"
             return
         # un candidat : controles de portefeuille avant ouverture
         blocker = None
@@ -11402,6 +11428,358 @@ class BotEngine:
                 db.supsw_events_prune(int((now - 120 * 86400) * 1000))
         except Exception as e:
             print(f"[SWING-SUP] evaluation ignoree : {type(e).__name__}: {e}")
+
+    # ───────────────────────── v4.365 — TENDANCE CONFIRMEE (module separe, PAPER) ─────────────────────────
+    # Entree quand la tendance est CONFIRMEE (Daily ET H4 dans le meme sens + momentum 1 h + flux), longs et shorts ; on reste tant
+    # qu elle tient : stop suiveur (multiple de l ATR H4), sortie quand la tendance cesse. Slot unique par actif (comme Hyperliquid).
+    def _trendf_cfg(self):
+        c = self.cfg
+        return {
+            "syms": c.get("TRENDF_SYMBOLS", ["BTC", "ETH", "HYPE", "TAO", "SUI", "PAXG", "xyz:EUR", "xyz:JPY"]),
+            "allow_short": bool(c.get("TRENDF_ALLOW_SHORT", 1)), "risk_pct": float(c.get("TRENDF_RISK_PCT", 1.0)),
+            "max_notional": float(c.get("TRENDF_MAX_NOTIONAL_USD", 60.0)), "lev": max(int(c.get("TRENDF_LEVERAGE", 3)), 1),
+            "max_trades": int(c.get("TRENDF_MAX_TRADES", 3)), "stop_atr": float(c.get("TRENDF_STOP_ATR", 3.0)),
+            "min_stop": float(c.get("TRENDF_MIN_STOP_PCT", 0.8)), "max_stop": float(c.get("TRENDF_MAX_STOP_PCT", 6.0)),
+            "entry_mode": int(c.get("TRENDF_ENTRY_MODE", 0)), "break_bars": max(int(c.get("TRENDF_BREAK_BARS", 12)), 3),
+            "min_flow": float(c.get("TRENDF_MIN_FLOW", 0.2)), "max_ext": float(c.get("TRENDF_MAX_EXT_ATR", 0.0)),
+            "max_spread": float(c.get("TRENDF_MAX_SPREAD_PCT", 0.05)), "hold_days": float(c.get("TRENDF_MAX_HOLD_DAYS", 30)),
+            "cooldown": int(c.get("TRENDF_COOLDOWN_SEC", 14400)), "h4_exit": bool(c.get("TRENDF_EXIT_H4_REVERSE", 1)),
+            "slip": float(c.get("FOREX_SCALP_SLIPPAGE_PCT", 0.005)), "fee": float(c.get("FEE_ROUND_TRIP_PCT", 0.09)),
+        }
+
+    @staticmethod
+    def _trendf_is_fx(ticker):
+        return ticker.startswith("xyz:") or ticker == "PAXG"
+
+    def _trendf_open_count(self):
+        n = 0
+        for pool in (self.states, self.accum_states):
+            for st in list(pool.values()):
+                if st.position and st.position.get("strategy") == "trend_follow":
+                    n += 1
+        return n
+
+    def _trendf_prefetch_open(self):
+        """Charge (hors flux WebSocket) les bougies dont la gestion a besoin ; la gestion lit ensuite le cache seul."""
+        for pool in (self.states, self.accum_states):
+            for sk, st in list(pool.items()):
+                if st.position and st.position.get("strategy") == "trend_follow":
+                    tk = ticker_from_slot_key(sk)
+                    try:
+                        self._mtf_candles(tk, "1d", 230)
+                        self._mtf_candles(tk, "4h", 260)
+                    except Exception as e:
+                        print(f"[TENDANCE] prechargement {tk} ignore : {type(e).__name__}: {e}")
+
+    def _trendf_cycle(self):
+        cfg = self.cfg
+        if self.info is None:
+            return
+        now = time.time()
+        if now - getattr(self, "_trendf_last_cycle", 0) < 30:
+            return
+        self._trendf_last_cycle = now
+        self._trendf_prefetch_open()          # meme si le mode vient d etre eteint : les positions ouvertes restent gerees
+        if not cfg.get("TRENDF_ENABLED", 0):
+            return
+        enabled_open = self.trading_enabled and cfg.get("STRATEGY_TRADING_ENABLED", {}).get("trend_follow", True)
+        for ticker in self._trendf_cfg()["syms"]:
+            try:
+                self._trendf_eval_ticker(ticker, now, enabled_open)
+            except Exception as e:
+                print(f"[TENDANCE] {ticker} : evaluation ignoree : {type(e).__name__}: {e}")
+
+    def _trendf_log(self, ticker, side, c1h, v, ctx, price, flow, ext, decision, prio, K, c4):
+        """Journalise UNE entree candidate (ou refusee) avec son contexte. Retourne (event_id, signal_t) ou None."""
+        try:
+            signal_t = int(c1h[-1]["t"] + 3_600_000)
+            seen = getattr(self, "_trendf_seen", None)
+            if seen is None:
+                seen = self._trendf_seen = {}
+            bucket = signal_t // (4 * 3_600_000)             # au plus une ligne de refus par actif, sens et periode de 4 h
+            key = (ticker, side, bucket)
+            if seen.get(key, (0, None))[0] >= prio:
+                return seen[key][1], seen[key][2] if len(seen[key]) > 2 else signal_t
+            now = time.time()
+            for k in [k for k in list(seen) if k[2] < (now // (4 * 3600)) - 6]:
+                seen.pop(k, None)
+            ref = float(c1h[-1]["c"])
+            atr4 = mtf.atr(c4) or 0
+            sdist = trf.stop_distance(ref, atr4, K["stop_atr"], K["min_stop"], K["max_stop"])
+            sgn = 1 if side == "long" else -1
+            eid = db.trendf_upsert({
+                "ts": int(now * 1000), "signal_t": signal_t, "asset": ticker, "side": side, "d1_trend": v.get("trend"),
+                "h4_trend": mtf.trend(c4)[0], "weekly_trend": ctx.get("weekly_trend"), "btc_trend": ctx.get("btc_trend"),
+                "funding_ann": ctx.get("funding_ann"), "flow": flow, "atr_pct": (v["atr"] / price * 100) if price else None,
+                "ext_atr": ext, "hour_utc": datetime.utcfromtimestamp(now).hour, "price": price, "entry_ref": ref,
+                "sl": ref - sgn * sdist, "risk_pct": round(sdist / ref * 100, 3), "entry_mode": K["entry_mode"],
+                "decision": decision, "prio": prio, "trade_uid": None})
+            seen[key] = (prio, eid, signal_t)
+            return eid, signal_t
+        except Exception as e:
+            print(f"[TENDANCE] journal ignore : {type(e).__name__}: {e}")
+            return None
+
+    def _trendf_eval_ticker(self, ticker, now, enabled_open):
+        cfg = self.cfg
+        K = self._trendf_cfg()
+        symbol, state = self._scalp_state_for(ticker)
+        if state is None:
+            return
+        snap = {"ts": now, "blocker": None}
+        state.trendf_snapshot = snap
+        occ = None
+        for pool in (self.states, self.accum_states):
+            st = pool.get(symbol)
+            if st is not None and st.position:
+                occ = st.position.get("strategy") or "?"
+                break
+        if occ is not None:
+            snap["blocker"] = "position tendance deja ouverte sur cet actif" if occ == "trend_follow" else f"actif deja ouvert dans un autre mode ({occ})"
+            return
+        if self._trendf_is_fx(ticker) and not is_forex_open():
+            snap["blocker"] = "marche ferme"
+            return
+        price = float((self.all_mids or {}).get(ticker) or 0)
+        if price <= 0:
+            snap["blocker"] = "prix indisponible"
+            return
+        v = self.mtf_view(ticker, price, force_tf=("1d", "1h"))
+        if not v["ok"]:
+            snap["blocker"] = v["why"]
+            return
+        if not v.get("data_fresh", True):
+            snap["blocker"] = "donnees Daily perimees — entree suspendue"
+            return
+        c4 = self._mtf_candles(ticker, "4h", 260)
+        if len(c4) < 200:
+            snap["blocker"] = f"historique 4h insuffisant ({len(c4)} bougies)"
+            return
+        tr4 = mtf.trend(c4)[0]
+        snap.update({"d1": v["trend"], "h4": tr4})
+        sides = trf.confirmed_sides(v["trend"], tr4, K["allow_short"])
+        if not sides:
+            snap["blocker"] = f"tendance non confirmee : Daily {v['trend']} · H4 {tr4}"
+            return
+        c1h = self._mtf_candles(ticker, "1h", 60)
+        if len(c1h) < 30:
+            snap["blocker"] = f"historique 1h insuffisant ({len(c1h)} bougies)"
+            return
+        side = sides[0]
+        ok, why = trf.momentum_ok(c1h, side)
+        if ok and K["entry_mode"] == 1:
+            ok, why = trf.breakout_ok(c1h, side, K["break_bars"])
+        if not ok:
+            snap["blocker"] = f"tendance {side.upper()} confirmee (Daily {v['trend']}, H4 {tr4}) — attente : {why}"
+            return
+        flow = None
+        try:
+            flow = self._compute_trade_flow_pressure(ticker, price)
+        except Exception:
+            flow = None
+        req = K["min_flow"] if side == "long" else -K["min_flow"]
+        ext = trf.extension_atr(side, price, v.get("ema_fast"), v.get("atr"))
+        try:
+            q = self.market_quality(ticker, state)
+            spread_pct = q.get("spread_pct") if q else None
+        except Exception:
+            spread_pct = None
+        spread_pct = spread_pct if spread_pct is not None else 0.02
+        snap.update({"side": side, "flow": flow, "ext": ext})
+        ctx = self._supsw_context(ticker, v, price)
+        blocker = None
+        if flow is not None and ((side == "long" and flow < req) or (side == "short" and flow > req)):
+            blocker = f"flux {flow:+.2f} pas assez dans le sens du trade (minimum {req:+.2f})"
+        elif K["max_ext"] > 0 and ext is not None and ext > K["max_ext"]:
+            blocker = f"entree trop tardive : prix a {ext:.1f} ATR Daily de sa moyenne (maximum {K['max_ext']})"
+        elif spread_pct > K["max_spread"]:
+            blocker = f"spread trop large ({spread_pct:.3f} % > {K['max_spread']} %)"
+        elif not enabled_open:
+            blocker = "module arrete (bouton Marche/Arret ou trading global)"
+        elif self._trendf_open_count() >= K["max_trades"]:
+            blocker = "nombre maximal de positions tendance atteint"
+        elif now - getattr(state, "trendf_last_exit_ts", 0) < K["cooldown"]:
+            blocker = "pause apres la derniere sortie sur cet actif"
+        if blocker:
+            snap["blocker"] = f"tendance {side.upper()} confirmee — {blocker}"
+            self._trendf_log(ticker, side, c1h, v, ctx, price, flow, ext, f"refus : {blocker.split(' (')[0].split(' :')[0]}", 1, K, c4)
+            return
+        res = self._trendf_log(ticker, side, c1h, v, ctx, price, flow, ext, "candidat (non ouvert)", 2, K, c4)
+        self._trendf_open(symbol, ticker, state, side, ctx, v, tr4, c4, price, spread_pct, flow, ext, res, K)
+
+    def _trendf_open(self, symbol, ticker, state, side, ctx, v, tr4, c4, price, spread_pct, flow, ext, res, K):
+        sgn = 1 if side == "long" else -1
+        fill = scalp.fill_price(side, price, spread_pct, K["slip"], "entry")
+        dist = trf.stop_distance(fill, mtf.atr(c4), K["stop_atr"], K["min_stop"], K["max_stop"])
+        sl = fill - sgn * dist
+        stop_pct = dist / fill * 100
+        far_tp = fill * 3 if side == "long" else fill * 0.1            # aucun objectif : sentinelle jamais atteinte
+        capital = self.cfg.get("CAPITAL_USD", 100.0)
+        notional = max(min(capital * K["risk_pct"] / stop_pct, K["max_notional"]), 10.0)
+        size = round(notional / K["lev"], 4)
+        trade_uid = make_trade_uid("trend_follow")
+        state.open_position(side, fill, sl, far_tp, size, confidence=60.0, leverage=K["lev"], strategy="trend_follow")
+        pos = state.position
+        pos["effective_mode"] = "paper"
+        pos["trade_uid"] = trade_uid
+        pos["slot_key"] = symbol
+        pos["engine"] = "trendf"
+        pos["trendf"] = {"opened_ts": time.time(), "side": side, "dist": dist, "best": fill, "sl0": sl, "moved": False, "peak_pct": 0.0,
+                         "ctx": ctx, "flow_entry": flow, "ext_atr": ext, "d1": v["trend"], "h4": tr4, "signal_t": res[1] if res else None}
+        label = "LONG" if side == "long" else "SHORT"
+        reasons = [f"📈 Tendance confirmee {side} : Daily {v['trend']} + H4 {tr4}, momentum 1 h et flux dans le sens"
+                   f"{' + cassure ' + str(K['break_bars']) + ' h' if K['entry_mode'] == 1 else ''}",
+                   f"Weekly {ctx.get('weekly_trend') or '?'} · BTC {ctx.get('btc_trend') or '?'} · funding "
+                   f"{ctx.get('funding_ann') if ctx.get('funding_ann') is not None else '?'} %/an · flux {flow if flow is not None else '?'} "
+                   f"· retard {ext if ext is not None else '?'} ATR Daily",
+                   f"stop suiveur {stop_pct:.2f} % ({K['stop_atr']} x ATR H4) · aucun objectif : on reste tant que la tendance tient",
+                   f"spread {spread_pct:.3f} % · frais supposes {K['fee']} %"]
+        try:
+            quality = self.market_quality(ticker, state)
+        except Exception:
+            quality = {"vol_ratio": None, "activity_ratio": None}
+        opened_event = {
+            "vol_ratio": quality.get("vol_ratio"), "activity_ratio": quality.get("activity_ratio"), "flow_at_entry": flow,
+            "spread_at_entry": spread_pct, "trade_uid": trade_uid, "slot_key": symbol, "is_accum_slot": False, "coin": ticker,
+            "action": label, "confidence": pos.get("confidence"), "leverage": K["lev"], "position_size_pct": None,
+            "size_usd": round(size, 4), "sl_pct_used": round(stop_pct, 4), "ttp_arm1_pct_used": None, "adaptive_sl_ttp": None,
+            "strategy": "trend_follow", "trade_mode": "paper", "risk_reward": None, "timeframe": "TREND_D1H4",
+            "entry": fill, "stop_loss": sl, "take_profit1": None, "take_profit2": None, "rsi": None,
+            "entry_reasons": " | ".join(reasons),
+            "confidence_breakdown": json.dumps({"mode": K["entry_mode"], "ext_atr": ext, **{k: v_ for k, v_ in ctx.items()}})}
+        try:
+            db.upsert_open_trade(opened_event)
+            opened_event["persisted"] = True
+        except Exception as e:
+            print(f"[TENDANCE] ecriture synchrone {trade_uid} impossible ({e}) — repli sur la file d evenements.")
+        self.emit("trade_opened", opened_event)
+        self.emit("log", {"msg": f"[{ticker}] 📈 TENDANCE {label} @ {fill:.6g} | stop suiveur {sl:.6g} ({stop_pct:.2f} %) | Daily {v['trend']} · H4 {tr4}",
+                          "level": "signal"})
+        if res and res[0]:
+            try:
+                db.trendf_mark_taken(ticker, side, res[1], trade_uid)
+                db.trendf_update(res[0], {"entry_ref": fill, "price": fill, "sl": sl, "risk_pct": round(stop_pct, 3)})
+                seen = getattr(self, "_trendf_seen", {})
+                seen[(ticker, side, res[1] // (4 * 3_600_000))] = (3, res[0], res[1])
+            except Exception as _e:
+                print(f"[TENDANCE] marquage pris ignore : {_e}")
+        self._save_open_positions()
+
+    def _manage_trendf(self, symbol, price, state, pos, ticker):
+        K = self._trendf_cfg()
+        tf = pos.get("trendf")
+        if not tf:
+            return
+        side = pos["type"]
+        long_side = side == "long"
+        sgn = 1 if long_side else -1
+        entry = pos["entry"]
+        gain_pct = sgn * (price - entry) / entry * 100
+        tf["peak_pct"] = max(tf.get("peak_pct", 0.0), gain_pct)
+        tf["best"] = max(tf.get("best", entry), price) if long_side else min(tf.get("best", entry), price)
+        new_sl = trf.trail_stop(side, tf["best"], tf["dist"], pos["sl"])
+        if (long_side and new_sl > pos["sl"]) or ((not long_side) and new_sl < pos["sl"]):
+            pos["sl"] = new_sl
+            tf["moved"] = True
+        pnl_usd_now = pos["size"] * pos.get("leverage", 1) * sgn * (price - entry) / entry
+        if pnl_usd_now > 0 and (state.peak_pnl_usd is None or pnl_usd_now > state.peak_pnl_usd):
+            state.peak_pnl_usd = pnl_usd_now
+            state.absolute_peak_pnl_usd = pnl_usd_now
+        reason = None
+        d1_label = h4_label = None
+        if (long_side and price <= pos["sl"]) or ((not long_side) and price >= pos["sl"]):
+            reason = "TENDANCE STOP SUIVEUR" if tf.get("moved") else "TENDANCE STOP INITIAL"
+        elif time.time() - tf["opened_ts"] >= K["hold_days"] * 86400:
+            reason = "TENDANCE DUREE MAX"
+        else:
+            try:                                  # tendance jugee sur bougies CLOTUREES apres l entree (jamais sur le prix du moment)
+                c1d = self._mtf_candles(ticker, "1d", 230, cache_only=True)
+                c4 = self._mtf_candles(ticker, "4h", 260, cache_only=True)
+                if c1d and len(c1d) >= 200 and c1d[-1]["t"] / 1000 + 86400 > tf["opened_ts"]:
+                    d1_label = mtf.trend(c1d)[0]
+                if c4 and len(c4) >= 200 and c4[-1]["t"] / 1000 + 14400 > tf["opened_ts"]:
+                    h4_label = mtf.trend(c4)[0]
+                ended, why = trf.trend_end(side, d1_label, h4_label, K["h4_exit"])
+                if ended:
+                    reason = why
+            except Exception as e:
+                print(f"[TENDANCE] verification de tendance {ticker} ignoree : {type(e).__name__}: {e}")
+        if reason is None:
+            return
+        try:
+            q = self.market_quality(ticker, state)
+            spread_pct = (q.get("spread_pct") if q else None) or 0.02
+        except Exception:
+            spread_pct = 0.02
+        exit_px = scalp.fill_price(pos["type"], price, spread_pct, K["slip"], "exit")
+        trade_uid = pos.get("trade_uid")
+        _result = self._safe_close_position(state, exit_px, reason, ticker, pos, symbol, "paper")
+        if _result is None:
+            return
+        pnl, _, trade = _result
+        trade["entry_mechanism"] = f"TENDANCE {side} (Daily {tf.get('d1')} · H4 {tf.get('h4')})"
+        state.trendf_last_exit_ts = time.time()
+        try:
+            db.trendf_record_exit(trade_uid, {
+                "exit_ts": int(time.time() * 1000), "exit_price": exit_px, "exit_reason": reason,
+                "pnl_pct": round(sgn * (exit_px / entry - 1) * 100, 4), "hold_h": round((time.time() - tf["opened_ts"]) / 3600, 2),
+                "peak_pct": round(tf.get("peak_pct", 0.0), 4), "d1_trend_exit": d1_label, "h4_trend_exit": h4_label})
+        except Exception as e:
+            print(f"[TENDANCE] enregistrement de la sortie ignore : {e}")
+        self.emit("trade", trade)
+        self.emit("log", {"msg": f"[{ticker}] 📈 {reason} @ ${exit_px:.6g} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+        self._save_open_positions()
+
+    def _trendf_eval_if_due(self):
+        """Mesure sur bougies 1 h : (a) chaque signal a 24 h puis 72 h (stop initial fixe, sans objectif : rendement a 24/72 h) ;
+        (b) pour les trades sortis, ce que le prix a fait 1 h / 4 h / 24 h apres la sortie."""
+        if self.info is None or not self.cfg.get("TRENDF_ENABLED", 0):
+            return
+        now = time.time()
+        if now - getattr(self, "_trendf_eval_last", 0) < 600:
+            return
+        self._trendf_eval_last = now
+        try:
+            now_ms = int(now * 1000)
+            sig = db.trendf_pending_signals(now_ms, limit=60)
+            ext = db.trendf_pending_exits(now_ms, limit=40)
+            if not sig and not ext:
+                return
+            by = {}
+            for e in sig:
+                by.setdefault(e["asset"], {"sig": [], "ext": []})["sig"].append(e)
+            for e in ext:
+                by.setdefault(e["asset"], {"sig": [], "ext": []})["ext"].append(e)
+            for asset, grp in list(by.items())[:3]:
+                t0 = min([e["signal_t"] for e in grp["sig"]] + [e["exit_ts"] for e in grp["ext"]])
+                raw = self.info.post("/info", {"type": "candleSnapshot", "req": {"coin": asset, "interval": "1h",
+                                                                                 "startTime": t0 - 3_600_000, "endTime": now_ms}})
+                time.sleep(0.3)
+                if not isinstance(raw, list) or not raw:
+                    continue
+                cs = [{"t": int(c["t"]), "o": float(c["o"]), "h": float(c["h"]), "l": float(c["l"]), "c": float(c["c"])} for c in raw]
+                for e in grp["sig"]:
+                    horizon = 24 if e["evaluated"] == 0 else 72
+                    far = e["entry_ref"] * 10 if e["side"] == "long" else e["entry_ref"] * 0.0001     # aucun objectif : seul le stop compte
+                    out = swj.evaluate_outcome(e["side"], e["entry_ref"], e["sl"], far, cs, e["signal_t"], horizon)
+                    if out is None:
+                        continue
+                    db.trendf_update(e["id"], {**out, "evaluated": 1 if horizon == 24 else 2})
+                for e in grp["ext"]:
+                    horizon = 24 if e["post_eval"] == 0 else 72
+                    far = e["entry_ref"] * 10 if e["side"] == "long" else e["entry_ref"] * 0.0001
+                    out = swj.evaluate_outcome(e["side"], e["entry_ref"], e["sl"], far, cs, e["exit_ts"], horizon)
+                    if out is None:
+                        continue
+                    pm = sups.post_exit_metrics(e["side"], e["exit_price"], cs, e["exit_ts"])
+                    db.trendf_update(e["id"], {"post_eval": 1 if horizon == 24 else 2,
+                                               "after_mfe": out["mfe72"] if horizon == 72 else out["mfe24"],
+                                               "after_mae": out["mae72"] if horizon == 72 else out["mae24"], **pm})
+            if now - getattr(self, "_trendf_prune_last", 0) > 86400:
+                self._trendf_prune_last = now
+                db.trendf_events_prune(int((now - 120 * 86400) * 1000))
+        except Exception as e:
+            print(f"[TENDANCE] evaluation ignoree : {type(e).__name__}: {e}")
 
     # ───────────────────────── v4.359 — JOURNAL DU SWING (lecture seule) ─────────────────────────
     def _swing_active(self):
