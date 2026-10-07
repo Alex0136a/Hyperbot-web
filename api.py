@@ -1059,6 +1059,23 @@ ADVANCED_SETTINGS = {
     "SUPSW_EXIT_MIN_PCT":       {"label": "Swing Support - le niveau de sortie est au moins a N % sous l entree", "default": 0.5},
     "SUPSW_EXIT_MAX_PCT":       {"label": "Swing Support - le niveau de sortie est au plus a N % sous l entree (doit rester sous le stop)", "default": 3.0},
     "SUPSW_EXIT_REQUIRE_H4_END": {"label": "Swing Support - 1 = exige aussi que la tendance H4 ne soit plus haussiere pour sortir (0 = seulement enregistree)", "default": 0},
+    "TRENDF_ENABLED":           {"label": "Tendance - actif (1) ou eteint (0). PAPER uniquement ; entree quand Daily ET H4 confirment, on reste tant que la tendance tient", "default": 0},
+    "TRENDF_ALLOW_SHORT":       {"label": "Tendance - autoriser les SHORT quand la tendance confirmee est baissiere (1 = oui)", "default": 1},
+    "TRENDF_RISK_PCT":          {"label": "Tendance - perte au stop initial = N % du capital (dimensionne la taille)", "default": 1.0},
+    "TRENDF_MAX_NOTIONAL_USD":  {"label": "Tendance - notionnel maximal par trade ($, paper)", "default": 60.0},
+    "TRENDF_LEVERAGE":          {"label": "Tendance - levier (paper)", "default": 3},
+    "TRENDF_MAX_TRADES":        {"label": "Tendance - positions simultanees au plus", "default": 3},
+    "TRENDF_STOP_ATR":          {"label": "Tendance - distance du stop suiveur (multiple de l ATR H4)", "default": 3.0},
+    "TRENDF_MIN_STOP_PCT":      {"label": "Tendance - distance minimale du stop (% du prix)", "default": 0.8},
+    "TRENDF_MAX_STOP_PCT":      {"label": "Tendance - distance maximale du stop (% du prix)", "default": 6.0},
+    "TRENDF_ENTRY_MODE":        {"label": "Tendance - 0 = entree des que la tendance est confirmee (momentum 1 h) ; 1 = exige en plus une cassure du plus haut/bas des N dernieres heures", "default": 0},
+    "TRENDF_BREAK_BARS":        {"label": "Tendance - mode cassure : nombre de bougies 1 h de reference", "default": 12},
+    "TRENDF_MIN_FLOW":          {"label": "Tendance - flux de transactions minimal dans le sens du trade (0 a 1)", "default": 0.2},
+    "TRENDF_MAX_EXT_ATR":       {"label": "Tendance - refuse si le prix est a plus de N ATR Daily de sa moyenne (0 = pas de limite, mesure seulement)", "default": 0.0},
+    "TRENDF_MAX_SPREAD_PCT":    {"label": "Tendance - spread maximal (%)", "default": 0.05},
+    "TRENDF_MAX_HOLD_DAYS":     {"label": "Tendance - duree maximale d une position (jours)", "default": 30},
+    "TRENDF_COOLDOWN_SEC":      {"label": "Tendance - pause sur un actif apres une sortie (secondes)", "default": 14400},
+    "TRENDF_EXIT_H4_REVERSE":   {"label": "Tendance - sortir aussi quand la tendance H4 se retourne (1 = oui ; 0 = seulement Daily perdue / stop)", "default": 1},
     # v4.353 — scalp Forex (sous-mode du Forex, PAPER uniquement)
     "FOREX_SCALP_ENABLED":         {"label": "Scalp Forex - active (1) ou eteint (0). PAPER uniquement ; le mode Forex n est pas modifie", "default": 0},
     "FOREX_SCALP_NOTIONAL_USD":    {"label": "Scalp Forex - notionnel par trade ($, paper)", "default": 30.0},
@@ -1278,7 +1295,7 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"FXSWING_ENABLED","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+_ZERO_ALLOWED_INT_KEYS = {"FXSWING_ENABLED","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
                           "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
@@ -1378,6 +1395,32 @@ def _coerce_advanced_value(key: str, value):
         return False, "entre 0 et 3"
     if key == "SUPSW_EXIT_FLOW" and not -1 <= value <= 1:
         return False, "entre -1 et 1"
+    if key in ("TRENDF_ENABLED", "TRENDF_ALLOW_SHORT", "TRENDF_ENTRY_MODE", "TRENDF_EXIT_H4_REVERSE") and value not in (0, 1):
+        return False, "1 (oui) ou 0 (non)"
+    if key == "TRENDF_RISK_PCT" and not 0.05 <= value <= 3:
+        return False, "entre 0,05 et 3 % du capital"
+    if key == "TRENDF_MAX_NOTIONAL_USD" and not 5 <= value <= 300:
+        return False, "entre 5 $ et 300 $"
+    if key == "TRENDF_LEVERAGE" and not 1 <= value <= 10:
+        return False, "entre 1 et 10"
+    if key == "TRENDF_MAX_TRADES" and not 1 <= value <= 8:
+        return False, "entre 1 et 8"
+    if key == "TRENDF_STOP_ATR" and not 0.5 <= value <= 10:
+        return False, "entre 0,5 et 10 ATR"
+    if key in ("TRENDF_MIN_STOP_PCT", "TRENDF_MAX_STOP_PCT") and not 0.1 <= value <= 20:
+        return False, "entre 0,1 et 20 %"
+    if key == "TRENDF_BREAK_BARS" and not 3 <= value <= 48:
+        return False, "entre 3 et 48 bougies"
+    if key == "TRENDF_MIN_FLOW" and not 0 <= value <= 1:
+        return False, "entre 0 et 1"
+    if key == "TRENDF_MAX_EXT_ATR" and not 0 <= value <= 20:
+        return False, "entre 0 et 20 (0 = pas de limite)"
+    if key == "TRENDF_MAX_SPREAD_PCT" and not 0.005 <= value <= 1:
+        return False, "entre 0,005 et 1 %"
+    if key == "TRENDF_MAX_HOLD_DAYS" and not 1 <= value <= 120:
+        return False, "entre 1 et 120 jours"
+    if key == "TRENDF_COOLDOWN_SEC" and not 0 <= value <= 172800:
+        return False, "entre 0 et 172800 secondes"
     if key in ("FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
     if key == "FOREX_SCALP_FEE_PCT" and not 0 <= value <= 1:
@@ -2507,6 +2550,7 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             "scalp": _scalp_diag_line(ticker, state),   # v4.353
             "fxswing": _fxswing_diag_line(ticker, state),   # v4.361
             "supsw": _supsw_diag_line(ticker, state),       # v4.362
+            "trendf": _trendf_diag_line(ticker, state),     # v4.365
             "blocker_spot_accum": blocker_spot_accum,
             "spot_accum_detail": spot_snap if spot_snap else None,
             "blocker_accumulation": blocker_accumulation,
@@ -2720,7 +2764,7 @@ def manual_close(item_id: int, email: str = Depends(require_user)):
 # ─────────────────────────────────────────────────────────────────────────
 #  v4.265 — EXPORT CSV DU SUIVI DES TRADES SPOT-ACCUM / ACCUMULATION
 # ─────────────────────────────────────────────────────────────────────────
-_EXPORT_STRATEGY_LABEL = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation", "funding_contrarian": "Funding", "manual": "Manuel", "forex_scalp": "Forex scalp", "forex_swing": "Forex swing", "swing_support": "Swing Support"}
+_EXPORT_STRATEGY_LABEL = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation", "funding_contrarian": "Funding", "manual": "Manuel", "forex_scalp": "Forex scalp", "forex_swing": "Forex swing", "swing_support": "Swing Support", "trend_follow": "Tendance"}
 _ROUND_TRIP_FEE_RATE = 0.0009  # 2 x 0,045 % (taker) — estimation quand les frais reels manquent
 
 
@@ -3600,6 +3644,24 @@ def _supsw_diag_line(ticker, state):
         return f"indisponible ({e})"
 
 
+def _trendf_diag_line(ticker, state):
+    """Ligne du diagnostic par actif pour le module Tendance (None si non concerne)."""
+    try:
+        if not cfg.get("TRENDF_ENABLED", 0) or ticker not in cfg.get("TRENDF_SYMBOLS", ["BTC", "ETH", "HYPE", "TAO", "SUI", "PAXG", "xyz:EUR", "xyz:JPY"]):
+            return None
+        sn = getattr(state, "trendf_snapshot", None)
+        if not sn:
+            return "pas encore evalue"
+        parts = [sn.get("blocker") or "tendance confirmee, entree evaluee ce cycle (voir le journal)"]
+        if sn.get("flow") is not None:
+            parts.append(f"flux {sn['flow']:+.2f}")
+        if sn.get("ext") is not None:
+            parts.append(f"retard {sn['ext']:.1f} ATR Daily")
+        return " · ".join(parts)
+    except Exception as e:
+        return f"indisponible ({e})"
+
+
 def _fxswing_diag_line(ticker, state):
     """Ligne du diagnostic par actif pour le Swing Forex (None si non concerne)."""
     try:
@@ -3976,6 +4038,151 @@ def supsw_export(days: int = Query(60, ge=1, le=120), email: str = Depends(requi
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%Hh%M")
     return Response(content="﻿" + buf.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="swing_support_{stamp}.csv"'})
+
+
+# ───────────────── v4.365 — TENDANCE CONFIRMEE (paper) : suivi, statistiques, export ─────────────────
+_TRENDF_KEYS = ("TRENDF_ALLOW_SHORT", "TRENDF_RISK_PCT", "TRENDF_MAX_NOTIONAL_USD", "TRENDF_LEVERAGE", "TRENDF_MAX_TRADES", "TRENDF_STOP_ATR",
+                "TRENDF_MIN_STOP_PCT", "TRENDF_MAX_STOP_PCT", "TRENDF_ENTRY_MODE", "TRENDF_BREAK_BARS", "TRENDF_MIN_FLOW", "TRENDF_MAX_EXT_ATR",
+                "TRENDF_MAX_SPREAD_PCT", "TRENDF_MAX_HOLD_DAYS", "TRENDF_COOLDOWN_SEC", "TRENDF_EXIT_H4_REVERSE")
+
+
+def _trendf_est(e, fee):
+    """Resultat estime (% du prix, net de frais) d un signal mesure, sans objectif : stop initial touche -> -risque, sinon rendement 72 h (ou 24 h)."""
+    if not e.get("evaluated") or e.get("outcome") is None:
+        return None
+    if e["outcome"] == "sl":
+        g = -(e.get("risk_pct") or 0.0)
+    else:
+        g = e.get("fin72") if e.get("fin72") is not None else (e.get("fin24") if e.get("fin24") is not None else 0.0)
+    return g - fee
+
+
+def _trendf_stats(events, fee):
+    def agg(rows):
+        ev = [r for r in rows if r.get("evaluated") and r.get("outcome")]
+        n_ev = len(ev)
+        ests = [x for x in (_trendf_est(r, fee) for r in ev) if x is not None]
+        return {"n": len(rows), "evaluated": n_ev,
+                "sl_pct": round(sum(1 for r in ev if r["outcome"] == "sl") / n_ev * 100, 0) if n_ev else None,
+                "net_est": round(sum(ests) / len(ests), 3) if ests else None, "net_n": len(ests)}
+
+    def group(rows, keyfn):
+        d = {}
+        for r in rows:
+            d.setdefault(keyfn(r), []).append(r)
+        return sorted(({"key": k, **agg(v)} for k, v in d.items()), key=lambda x: -x["n"])
+
+    def fbucket(r):
+        f = r.get("funding_ann")
+        return "?" if f is None else ("< 0 %" if f < 0 else ("0 a 15 %" if f < 15 else ("15 a 40 %" if f < 40 else "> 40 %")))
+
+    def late(r):
+        x = r.get("ext_atr")
+        return "?" if x is None else ("< 1 ATR (debut de mouvement)" if x < 1 else ("1 a 2 ATR" if x < 2 else ("2 a 3 ATR" if x < 3 else "> 3 ATR (mouvement avance)")))
+
+    def dec(r):
+        d = r.get("decision") or "?"
+        return d if d in ("pris", "candidat (non ouvert)") else d.replace("refus : ", "")[:46]
+
+    def mean(rows, k):
+        v = [r[k] for r in rows if r.get(k) is not None]
+        return round(sum(v) / len(v), 3) if v else None
+    taken = [r for r in events if r.get("trade_uid") and r.get("exit_ts")]
+    ev_exit = [r for r in taken if r.get("post_eval")]
+    exits = {"taken": len(taken), "evaluated": len(ev_exit), "avg_pnl_pct": mean(taken, "pnl_pct"), "avg_hold_h": mean(taken, "hold_h"),
+             "avg_peak_pct": mean(taken, "peak_pct"), "avg_fin1h": mean(ev_exit, "fin1h"), "avg_fin4h": mean(ev_exit, "fin4h"),
+             "avg_fin24h": mean(ev_exit, "fin24h"), "by_reason": group(taken, lambda r: r.get("exit_reason") or "?")}
+    for x in exits["by_reason"]:
+        rows = [r for r in taken if (r.get("exit_reason") or "?") == x["key"]]
+        x["avg_pnl_pct"] = mean(rows, "pnl_pct")
+        x["avg_pnl_net_pct"] = round(x["avg_pnl_pct"] - fee, 3) if x["avg_pnl_pct"] is not None else None
+        x["avg_hold_h"] = mean(rows, "hold_h")
+    held = [r for r in taken if r.get("pnl_pct") is not None]
+    real = {"n": len(held), "wins": sum(1 for r in held if r["pnl_pct"] - fee > 0),
+            "avg_net_pct": round(sum(r["pnl_pct"] - fee for r in held) / len(held), 3) if held else None}
+    return {"total": agg(events), "by_decision": group(events, dec), "by_side": group(events, lambda r: r.get("side") or "?"),
+            "by_asset": group(events, lambda r: r.get("asset") or "?"), "by_weekly": group(events, lambda r: r.get("weekly_trend") or "?"),
+            "by_btc": group(events, lambda r: r.get("btc_trend") or "?"), "by_funding": group(events, fbucket),
+            "by_late": group(events, late), "exits": exits, "real": real}
+
+
+@app.get("/api/trend/status")
+def trend_status(email: str = Depends(require_user)):
+    open_pos, assets = [], []
+    for pool in (bot.states, bot.accum_states):
+        for sk, st in list(pool.items()):
+            pos = st.position
+            if not (pos and pos.get("strategy") == "trend_follow"):
+                continue
+            tk = be.ticker_from_slot_key(sk)
+            px = float((bot.all_mids or {}).get(tk) or 0) or pos["entry"]
+            tf = pos.get("trendf") or {}
+            sgn = 1 if pos.get("type") == "long" else -1
+            open_pos.append({"asset": tk, "side": pos.get("type"), "entry": pos["entry"], "price": px, "sl": pos["sl"], "sl0": tf.get("sl0"),
+                             "gain_pct": round(sgn * (px - pos["entry"]) / pos["entry"] * 100, 3), "peak_pct": round(tf.get("peak_pct", 0.0), 3),
+                             "moved": bool(tf.get("moved")), "d1": tf.get("d1"), "h4": tf.get("h4"), "ctx": tf.get("ctx"),
+                             "flow_entry": tf.get("flow_entry"), "ext_atr": tf.get("ext_atr"),
+                             "age_h": round((time.time() - tf.get("opened_ts", time.time())) / 3600, 1)})
+    syms = cfg.get("TRENDF_SYMBOLS", ["BTC", "ETH", "HYPE", "TAO", "SUI", "PAXG", "xyz:EUR", "xyz:JPY"])
+    for sk, st in list(bot.states.items()):
+        tk = be.ticker_from_slot_key(sk)
+        if tk in syms:
+            sn = getattr(st, "trendf_snapshot", None) or {}
+            assets.append({"asset": tk, "blocker": sn.get("blocker"), "evaluated": bool(sn), "d1": sn.get("d1"), "h4": sn.get("h4"),
+                           "side": sn.get("side"), "age_s": round(time.time() - sn["ts"], 0) if sn.get("ts") else None,
+                           "open": bool(st.position and st.position.get("strategy") == "trend_follow")})
+    rows = [t for t in db.get_all_closed_trades() if (t.get("strategy") or "") == "trend_follow"]
+    closed = []
+    for t in rows:
+        entry, ex = t.get("entry_price"), t.get("exit_price")
+        mv = (ex - entry) / entry * 100 if entry and ex else None
+        if mv is not None and str(t.get("action") or t.get("side") or "").upper().startswith("SHORT"):
+            mv = -mv
+        closed.append({"id": t["id"], "asset": t.get("coin"), "reason": t.get("reason"), "opened": t.get("created_at"),
+                       "closed": t.get("closed_at"), "pnl": t.get("pnl"), "pnl_net": round(_row_pnl(t), 4), "fees": round(_trade_fee_usd(t), 4),
+                       "move_pct": round(mv, 3) if mv is not None else None})
+    closed.sort(key=lambda x: x["closed"] or "", reverse=True)
+    n = len(closed)
+    wins = [x for x in closed if (x["pnl_net"] or 0) > 0]
+    perf = {"n": n, "wins": len(wins), "win_rate": round(len(wins) / n * 100, 1) if n else None,
+            "net": round(sum(x["pnl_net"] or 0 for x in closed), 3), "gross": round(sum(x["pnl"] or 0 for x in closed), 3),
+            "fees": round(sum(x["fees"] or 0 for x in closed), 3)}
+    return {"enabled": bool(cfg.get("TRENDF_ENABLED", 0)), "symbols": syms, "assets": assets, "open": open_pos, "closed": closed[:60], "perf": perf,
+            "fees_on": _fees_on(), "fee_pct": float(cfg.get("FEE_ROUND_TRIP_PCT", 0.09)),
+            "settings": {k: cfg.get(k, ADVANCED_SETTINGS[k]["default"]) for k in _TRENDF_KEYS if k in ADVANCED_SETTINGS}}
+
+
+@app.get("/api/trend/stats")
+def trend_stats_ep(days: int = Query(30, ge=1, le=120), email: str = Depends(require_user)):
+    """Ce que valent les entrees (prises ET refusees) mesurees a 24 h / 72 h, selon le sens, le contexte et surtout leur RETARD ; qualite des sorties."""
+    fee = float(cfg.get("FEE_ROUND_TRIP_PCT", 0.09))
+    ev = db.trendf_events_since(int((time.time() - days * 86400) * 1000), limit=20000)
+    return {"days": days, "fee_pct": fee, **_trendf_stats(ev, fee)}
+
+
+@app.get("/api/trend/journal/export.csv")
+def trend_export(days: int = Query(60, ge=1, le=120), email: str = Depends(require_user)):
+    import csv
+    import io
+    ev = list(reversed(db.trendf_events_since(int((time.time() - days * 86400) * 1000), limit=50000)))
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
+    cols = ["asset", "side", "d1_trend", "h4_trend", "weekly_trend", "btc_trend", "funding_ann", "flow", "atr_pct", "ext_atr", "hour_utc", "price",
+            "entry_ref", "sl", "risk_pct", "entry_mode", "decision", "trade_uid", "evaluated", "outcome", "hit_h", "mfe24", "mae24", "mfe72",
+            "mae72", "fin24", "fin72", "exit_ts", "exit_price", "exit_reason", "pnl_pct", "hold_h", "peak_pct", "d1_trend_exit", "h4_trend_exit",
+            "post_eval", "fin1h", "fin4h", "fin24h", "after_mfe", "after_mae"]
+    w.writerow(["cloture du signal (UTC)"] + cols)
+    for e in ev:
+        row = [datetime.fromtimestamp(e["signal_t"] / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M")]
+        for c in cols:
+            v = e.get(c)
+            if c == "exit_ts" and v:
+                v = datetime.fromtimestamp(v / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M")
+            row.append("" if v is None else (str(round(v, 6)).replace(".", ",") if isinstance(v, float) else v))
+        w.writerow(row)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%Hh%M")
+    return Response(content="﻿" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="tendance_{stamp}.csv"'})
 
 
 def _swing_stats(events, fee_pct):
