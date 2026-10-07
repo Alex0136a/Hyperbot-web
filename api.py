@@ -1043,6 +1043,19 @@ ADVANCED_SETTINGS = {
     "FXSWING_SIGNAL_MAX_AGE_SEC": {"label": "Swing Forex - entree dans les N secondes qui suivent la cloture H4", "default": 1800},
     "FXSWING_MAX_SPREAD_PCT":   {"label": "Swing Forex - spread maximal a l entree (%)", "default": 0.05},
     "FXSWING_MAX_HOLD_DAYS":    {"label": "Swing Forex - duree maximale d une position (jours)", "default": 10},
+    # v4.362 — Swing Support (crypto, PAPER uniquement)
+    "SUPSW_ENABLED":            {"label": "Swing Support - actif (1) ou eteint (0). PAPER uniquement ; retest de support / balayage de liquidite en tendance Daily haussiere", "default": 0},
+    "SUPSW_SL_PCT":             {"label": "Swing Support - stop catastrophe (% du prix)", "default": 5.0},
+    "SUPSW_TP_PCT":             {"label": "Swing Support - objectif (% du prix)", "default": 2.0},
+    "SUPSW_RISK_PCT":           {"label": "Swing Support - perte au stop plein = N % du capital (dimensionne la taille)", "default": 1.0},
+    "SUPSW_MAX_NOTIONAL_USD":   {"label": "Swing Support - notionnel maximal par trade ($, paper)", "default": 60.0},
+    "SUPSW_MAX_TRADES":         {"label": "Swing Support - positions simultanees au plus", "default": 3},
+    "SUPSW_WINDOW":             {"label": "Swing Support - nombre de bougies 1 h examinees", "default": 5},
+    "SUPSW_SIGNAL_MAX_AGE_SEC": {"label": "Swing Support - entree dans les N secondes qui suivent la cloture de la bougie 1 h du signal", "default": 900},
+    "SUPSW_MAX_HOLD_DAYS":      {"label": "Swing Support - duree maximale d une position (jours)", "default": 5},
+    "SUPSW_EXIT_BUFFER_ATR":    {"label": "Swing Support - support casse = cloture 1 h sous (bas de zone - N x ATR 1 h)", "default": 0.3},
+    "SUPSW_EXIT_FLOW":          {"label": "Swing Support - sortie anticipee si le flux de transactions est inferieur a N (en plus du support casse)", "default": -0.4},
+    "SUPSW_EXIT_REQUIRE_H4_END": {"label": "Swing Support - 1 = exige aussi que la tendance H4 ne soit plus haussiere pour sortir (0 = seulement enregistree)", "default": 0},
     # v4.353 — scalp Forex (sous-mode du Forex, PAPER uniquement)
     "FOREX_SCALP_ENABLED":         {"label": "Scalp Forex - active (1) ou eteint (0). PAPER uniquement ; le mode Forex n est pas modifie", "default": 0},
     "FOREX_SCALP_NOTIONAL_USD":    {"label": "Scalp Forex - notionnel par trade ($, paper)", "default": 30.0},
@@ -1262,7 +1275,7 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"FXSWING_ENABLED","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+_ZERO_ALLOWED_INT_KEYS = {"FXSWING_ENABLED","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
                           "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
@@ -1338,6 +1351,28 @@ def _coerce_advanced_value(key: str, value):
         return False, "entre 0,5 et 10"
     if key == "FXSWING_MAX_HOLD_DAYS" and not 1 <= value <= 60:
         return False, "entre 1 et 60 jours"
+    if key in ("SUPSW_ENABLED", "SUPSW_EXIT_REQUIRE_H4_END") and value not in (0, 1):
+        return False, "1 (oui) ou 0 (non)"
+    if key == "SUPSW_SL_PCT" and not 0.5 <= value <= 15:
+        return False, "entre 0,5 et 15 %"
+    if key == "SUPSW_TP_PCT" and not 0.3 <= value <= 15:
+        return False, "entre 0,3 et 15 %"
+    if key == "SUPSW_RISK_PCT" and not 0.05 <= value <= 3:
+        return False, "entre 0,05 et 3 % du capital"
+    if key == "SUPSW_MAX_NOTIONAL_USD" and not 5 <= value <= 300:
+        return False, "entre 5 $ et 300 $"
+    if key == "SUPSW_MAX_TRADES" and not 1 <= value <= 5:
+        return False, "entre 1 et 5"
+    if key == "SUPSW_WINDOW" and not 3 <= value <= 12:
+        return False, "entre 3 et 12 bougies"
+    if key == "SUPSW_SIGNAL_MAX_AGE_SEC" and not 60 <= value <= 3600:
+        return False, "entre 60 et 3600 secondes"
+    if key == "SUPSW_MAX_HOLD_DAYS" and not 1 <= value <= 30:
+        return False, "entre 1 et 30 jours"
+    if key == "SUPSW_EXIT_BUFFER_ATR" and not 0 <= value <= 3:
+        return False, "entre 0 et 3"
+    if key == "SUPSW_EXIT_FLOW" and not -1 <= value <= 1:
+        return False, "entre -1 et 1"
     if key in ("FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
     if key == "FOREX_SCALP_FEE_PCT" and not 0 <= value <= 1:
@@ -2466,6 +2501,7 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             "blocker_short": blocker_short,
             "scalp": _scalp_diag_line(ticker, state),   # v4.353
             "fxswing": _fxswing_diag_line(ticker, state),   # v4.361
+            "supsw": _supsw_diag_line(ticker, state),       # v4.362
             "blocker_spot_accum": blocker_spot_accum,
             "spot_accum_detail": spot_snap if spot_snap else None,
             "blocker_accumulation": blocker_accumulation,
@@ -2679,7 +2715,7 @@ def manual_close(item_id: int, email: str = Depends(require_user)):
 # ─────────────────────────────────────────────────────────────────────────
 #  v4.265 — EXPORT CSV DU SUIVI DES TRADES SPOT-ACCUM / ACCUMULATION
 # ─────────────────────────────────────────────────────────────────────────
-_EXPORT_STRATEGY_LABEL = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation", "funding_contrarian": "Funding", "manual": "Manuel", "forex_scalp": "Forex scalp", "forex_swing": "Forex swing"}
+_EXPORT_STRATEGY_LABEL = {"spot_accumulation": "Spot-Accum", "accumulation": "Accumulation", "funding_contrarian": "Funding", "manual": "Manuel", "forex_scalp": "Forex scalp", "forex_swing": "Forex swing", "swing_support": "Swing Support"}
 _ROUND_TRIP_FEE_RATE = 0.0009  # 2 x 0,045 % (taker) — estimation quand les frais reels manquent
 
 
@@ -3541,6 +3577,24 @@ def _scalp_diag_line(ticker, state):
         return f"indisponible ({e})"
 
 
+def _supsw_diag_line(ticker, state):
+    """Ligne du diagnostic par actif pour le Swing Support (None si non concerne)."""
+    try:
+        if not cfg.get("SUPSW_ENABLED", 0) or ticker not in cfg.get("SUPSW_SYMBOLS", ["BTC", "ETH", "HYPE", "TAO", "SUI"]):
+            return None
+        sn = getattr(state, "supsw_snapshot", None)
+        if not sn:
+            return "pas encore evalue"
+        parts = [sn.get("blocker") or "setup valide ce cycle (voir le journal)"]
+        if sn.get("trend"):
+            parts.append(f"tendance Daily {sn['trend']}")
+        if sn.get("support"):
+            parts.append(f"support {sn['support']}")
+        return " · ".join(parts)
+    except Exception as e:
+        return f"indisponible ({e})"
+
+
 def _fxswing_diag_line(ticker, state):
     """Ligne du diagnostic par actif pour le Swing Forex (None si non concerne)."""
     try:
@@ -3759,6 +3813,163 @@ def swing_status(email: str = Depends(require_user)):
             "perf_long": perf([x for x in closed if x["side"] == "long"]), "perf_short": perf([x for x in closed if x["side"] == "short"]),
             "recent": [{k: e.get(k) for k in ("ts", "signal_t", "asset", "side", "pattern", "trend", "zone_low", "zone_high", "decision", "rr",
                                                "risk_pct", "reward_pct", "outcome", "evaluated", "r_est", "age_min", "hypothetical")} for e in recent]}
+
+
+# ───────────────── v4.362 — SWING SUPPORT (crypto, paper) : suivi, statistiques, export ─────────────────
+_SUPSW_KEYS = ("SUPSW_SL_PCT", "SUPSW_TP_PCT", "SUPSW_RISK_PCT", "SUPSW_MAX_NOTIONAL_USD", "SUPSW_MAX_TRADES", "SUPSW_WINDOW",
+               "SUPSW_SIGNAL_MAX_AGE_SEC", "SUPSW_MAX_HOLD_DAYS", "SUPSW_EXIT_BUFFER_ATR", "SUPSW_EXIT_FLOW", "SUPSW_EXIT_REQUIRE_H4_END")
+
+
+def _supsw_est(e, fee):
+    """Resultat estime (% du prix, net de frais) d un signal mesure : objectif -> +gain, stop -> -risque, sinon rendement final."""
+    if not e.get("evaluated") or e.get("outcome") is None:
+        return None
+    if e["outcome"] == "tp":
+        g = e.get("reward_pct") or 0.0
+    elif e["outcome"] == "sl":
+        g = -(e.get("risk_pct") or 0.0)
+    else:
+        g = e.get("fin72") if e.get("fin72") is not None else (e.get("fin24") if e.get("fin24") is not None else 0.0)
+    return g - fee
+
+
+def _supsw_stats(events, fee, sl_pct, tp_pct):
+    def agg(rows):
+        ev = [r for r in rows if r.get("evaluated") and r.get("outcome")]
+        n_ev = len(ev)
+        ests = [x for x in (_supsw_est(r, fee) for r in ev) if x is not None]
+        return {"n": len(rows), "evaluated": n_ev,
+                "tp_pct": round(sum(1 for r in ev if r["outcome"] == "tp") / n_ev * 100, 0) if n_ev else None,
+                "sl_pct": round(sum(1 for r in ev if r["outcome"] == "sl") / n_ev * 100, 0) if n_ev else None,
+                "none_pct": round(sum(1 for r in ev if r["outcome"] == "none") / n_ev * 100, 0) if n_ev else None,
+                "net_est": round(sum(ests) / len(ests), 3) if ests else None, "net_n": len(ests)}
+
+    def group(rows, keyfn):
+        d = {}
+        for r in rows:
+            d.setdefault(keyfn(r), []).append(r)
+        return sorted(({"key": k, **agg(v)} for k, v in d.items()), key=lambda x: -x["n"])
+
+    def fbucket(r):
+        f = r.get("funding_ann")
+        return "?" if f is None else ("< 0 %" if f < 0 else ("0 a 15 %" if f < 15 else ("15 a 40 %" if f < 40 else "> 40 %")))
+
+    def dec(r):
+        d = r.get("decision") or "?"
+        return d if d in ("pris", "candidat (non ouvert)") else d.replace("refus : ", "")[:46]
+    # sorties anticipees : etaient-elles justifiees ?
+    taken = [r for r in events if r.get("trade_uid") and r.get("exit_ts")]
+    early = [r for r in taken if r.get("early_exit")]
+    ev_early = [r for r in early if r.get("post_eval")]
+
+    def mean(rows, k):
+        v = [r[k] for r in rows if r.get(k) is not None]
+        return round(sum(v) / len(v), 3) if v else None
+    exits = {"taken": len(taken), "early_n": len(early), "early_evaluated": len(ev_early),
+             "too_early_n": sum(1 for r in ev_early if r.get("too_early")),
+             "after_tp": sum(1 for r in ev_early if r.get("after_outcome") == "tp"),
+             "after_sl": sum(1 for r in ev_early if r.get("after_outcome") == "sl"),
+             "after_none": sum(1 for r in ev_early if r.get("after_outcome") == "none"),
+             "avg_pnl_pct_at_exit": mean(early, "pnl_pct"), "avg_fin1h": mean(ev_early, "fin1h"), "avg_fin4h": mean(ev_early, "fin4h"),
+             "avg_fin24h": mean(ev_early, "fin24h"),
+             "h4_intact_oui": sum(1 for r in early if r.get("h4_intact_exit") == "oui"),
+             "h4_intact_non": sum(1 for r in early if r.get("h4_intact_exit") == "non"),
+             "by_reason": group(taken, lambda r: r.get("exit_reason") or "?")}
+    for x in exits["by_reason"]:
+        rows = [r for r in taken if (r.get("exit_reason") or "?") == x["key"]]
+        x["avg_pnl_pct"] = mean(rows, "pnl_pct")
+        x["avg_pnl_net_pct"] = round(x["avg_pnl_pct"] - fee, 3) if x["avg_pnl_pct"] is not None else None
+    held = [r for r in taken if r.get("pnl_pct") is not None]
+    real = {"n": len(held), "wins": sum(1 for r in held if r["pnl_pct"] - fee > 0),
+            "avg_net_pct": round(sum(r["pnl_pct"] - fee for r in held) / len(held), 3) if held else None}
+    breakeven = round((sl_pct + fee) / (sl_pct + tp_pct) * 100, 1) if (sl_pct + tp_pct) else None
+    return {"total": agg(events), "by_decision": group(events, dec),
+            "by_setup": group(events, lambda r: r.get("setup_kind") or "?"), "by_asset": group(events, lambda r: r.get("asset") or "?"),
+            "by_weekly": group(events, lambda r: r.get("weekly_trend") or "?"), "by_btc": group(events, lambda r: r.get("btc_trend") or "?"),
+            "by_funding": group(events, fbucket), "by_trend": group(events, lambda r: r.get("trend") or "?"),
+            "exits": exits, "real": real, "breakeven_tp_rate": breakeven}
+
+
+@app.get("/api/supsw/status")
+def supsw_status(email: str = Depends(require_user)):
+    open_pos, assets = [], []
+    for pool in (bot.states, bot.accum_states):
+        for sk, st in list(pool.items()):
+            pos = st.position
+            if not (pos and pos.get("strategy") == "swing_support"):
+                continue
+            tk = be.ticker_from_slot_key(sk)
+            px = float((bot.all_mids or {}).get(tk) or 0) or pos["entry"]
+            sp = pos.get("supsw") or {}
+            open_pos.append({"asset": tk, "entry": pos["entry"], "price": px, "sl": pos["sl"], "tp": pos.get("tp"),
+                             "gain_pct": round((px - pos["entry"]) / pos["entry"] * 100, 3), "setup": sp.get("kind"),
+                             "setup_name": sp.get("setup"), "zone": [sp.get("zone_low"), sp.get("zone_high")], "ctx": sp.get("ctx"),
+                             "flow_entry": sp.get("flow_entry"), "broken_noflow": bool(sp.get("broken_noflow_ts")),
+                             "age_h": round((time.time() - sp.get("opened_ts", time.time())) / 3600, 1)})
+    syms = cfg.get("SUPSW_SYMBOLS", ["BTC", "ETH", "HYPE", "TAO", "SUI"])
+    for sk, st in list(bot.states.items()):
+        tk = be.ticker_from_slot_key(sk)
+        if tk in syms:
+            sn = getattr(st, "supsw_snapshot", None) or {}
+            assets.append({"asset": tk, "blocker": sn.get("blocker"), "evaluated": bool(sn), "trend": sn.get("trend"), "support": sn.get("support"),
+                           "setup": sn.get("setup"), "age_s": round(time.time() - sn["ts"], 0) if sn.get("ts") else None,
+                           "open": bool(st.position and st.position.get("strategy") == "swing_support")})
+    rows = [t for t in db.get_all_closed_trades() if (t.get("strategy") or "") == "swing_support"]
+    closed = []
+    for t in rows:
+        entry, ex = t.get("entry_price"), t.get("exit_price")
+        mv = (ex - entry) / entry * 100 if entry and ex else None
+        closed.append({"id": t["id"], "asset": t.get("coin"), "reason": t.get("reason"), "opened": t.get("created_at"),
+                       "closed": t.get("closed_at"), "pnl": t.get("pnl"), "pnl_net": round(_row_pnl(t), 4), "fees": round(_trade_fee_usd(t), 4),
+                       "move_pct": round(mv, 3) if mv is not None else None})
+    closed.sort(key=lambda x: x["closed"] or "", reverse=True)
+    n = len(closed)
+    wins = [x for x in closed if (x["pnl_net"] or 0) > 0]
+    perf = {"n": n, "wins": len(wins), "win_rate": round(len(wins) / n * 100, 1) if n else None,
+            "net": round(sum(x["pnl_net"] or 0 for x in closed), 3), "gross": round(sum(x["pnl"] or 0 for x in closed), 3),
+            "fees": round(sum(x["fees"] or 0 for x in closed), 3)}
+    recent = db.supsw_events_since(int((time.time() - 4 * 86400) * 1000), limit=60)
+    return {"enabled": bool(cfg.get("SUPSW_ENABLED", 0)), "symbols": syms, "assets": assets, "open": open_pos, "closed": closed[:60], "perf": perf,
+            "fees_on": _fees_on(), "fee_pct": float(cfg.get("FEE_ROUND_TRIP_PCT", 0.09)),
+            "settings": {k: cfg.get(k, ADVANCED_SETTINGS[k]["default"]) for k in _SUPSW_KEYS if k in ADVANCED_SETTINGS},
+            "recent": [{k: e.get(k) for k in ("ts", "signal_t", "asset", "setup_kind", "decision", "trend", "weekly_trend", "btc_trend", "funding_ann",
+                                               "flow", "outcome", "evaluated", "exit_reason", "early_exit", "pnl_pct", "too_early", "after_outcome",
+                                               "fin1h", "fin4h", "fin24h", "h4_intact_exit")} for e in recent]}
+
+
+@app.get("/api/supsw/stats")
+def supsw_stats_ep(days: int = Query(30, ge=1, le=120), email: str = Depends(require_user)):
+    """Ce que valent les signaux (pris ET refuses) mesures a 24 h / 72 h, par declencheur et par contexte (BTC, Weekly, funding), et la
+    qualite des sorties anticipees (le prix aurait-il atteint l objectif / le stop ensuite ?)."""
+    fee = float(cfg.get("FEE_ROUND_TRIP_PCT", 0.09))
+    ev = db.supsw_events_since(int((time.time() - days * 86400) * 1000), limit=20000)
+    return {"days": days, "fee_pct": fee, **_supsw_stats(ev, fee, float(cfg.get("SUPSW_SL_PCT", 5.0)), float(cfg.get("SUPSW_TP_PCT", 2.0)))}
+
+
+@app.get("/api/supsw/journal/export.csv")
+def supsw_export(days: int = Query(60, ge=1, le=120), email: str = Depends(require_user)):
+    import csv
+    import io
+    ev = list(reversed(db.supsw_events_since(int((time.time() - days * 86400) * 1000), limit=50000)))
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
+    cols = ["asset", "side", "setup", "setup_kind", "trend", "weekly_trend", "btc_trend", "funding_ann", "flow", "atr_pct", "hour_utc",
+            "zone_low", "zone_high", "zone_touches", "held", "pierce_pct", "price", "entry_ref", "sl", "tp", "risk_pct", "reward_pct", "decision",
+            "trade_uid", "evaluated", "outcome", "hit_h", "mfe24", "mae24", "mfe72", "mae72", "fin24", "fin72", "exit_ts", "exit_price",
+            "exit_reason", "early_exit", "pnl_pct", "hold_h", "flow_exit", "h4_intact_exit", "d1_trend_exit", "post_eval", "fin1h", "fin4h", "fin24h",
+            "after_outcome", "after_hit_h", "after_mfe", "after_mae", "too_early"]
+    w.writerow(["cloture du signal (UTC)"] + cols)
+    for e in ev:
+        row = [datetime.fromtimestamp(e["signal_t"] / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M")]
+        for c in cols:
+            v = e.get(c)
+            if c == "exit_ts" and v:
+                v = datetime.fromtimestamp(v / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M")
+            row.append("" if v is None else (str(round(v, 6)).replace(".", ",") if isinstance(v, float) else v))
+        w.writerow(row)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%Hh%M")
+    return Response(content="﻿" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="swing_support_{stamp}.csv"'})
 
 
 def _swing_stats(events, fee_pct):
