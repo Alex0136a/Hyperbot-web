@@ -1,4 +1,4 @@
-[README (3).md](https://github.com/user-attachments/files/33156768/README.3.md)
+[README (2).md](https://github.com/user-attachments/files/33159870/README.2.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
@@ -650,3 +650,13 @@ Sous-mode PAPER, éteint par défaut (`SUPSW_ENABLED`). Actifs : BTC, ETH, HYPE,
 
 ### v4.363 — Swing Support : niveau de sortie anticipée
 Constat (HYPE, TAO) : sur une zone Daily large, le bas de zone est sous le stop à 5 % → la sortie anticipée était inatteignable. Désormais (`SUPSW_EXIT_LEVEL=1`, défaut) le niveau est le **plus bas du retest** (plus bas des bougies 1 h du signal), borné entre `SUPSW_EXIT_MIN_PCT` (0,5 %) et `SUPSW_EXIT_MAX_PCT` (3 %) sous l'entrée. `SUPSW_EXIT_LEVEL=0` rétablit le bas de zone. Le niveau est stocké sur la position et dans le journal (colonne `inval`) ; les positions déjà ouvertes gardent le bas de zone. Migration automatique de la table `supsw_events`.
+
+## v4.365 — Tendance confirmée (module à part, paper)
+
+Nouveau fichier : `trend_follow.py` (à déposer à côté de `bot_engine.py`). Fichiers modifiés : `bot_engine.py`, `db.py`, `api.py`, `index.html`.
+
+- **Entrée** dès que le Daily ET le H4 vont dans le même sens (LONG ou SHORT), avec momentum 1 h (clôture du bon côté de sa moyenne 20) et flux de transactions dans le sens. Option « cassure » (`TRENDF_ENTRY_MODE=1`).
+- **On reste tant que la tendance tient** : aucun objectif ; stop suiveur = 3 × ATR H4 (borné 0,8–6 %) ; sortie si le Daily n'est plus dans le sens (bougie clôturée), si le H4 se retourne (`TRENDF_EXIT_H4_REVERSE`), au stop, ou après 30 jours.
+- **Module à part** (stratégie `trend_follow`, code 09, sous-onglet « 📈 Tendance »), paper uniquement, désactivé par défaut (`TRENDF_ENABLED`). Un actif = une seule position, tous modes confondus.
+- **Traçabilité** : table `trendf_events` ; chaque entrée (prise ou refusée) est mesurée à 24 h / 72 h, avec son **retard** (distance à la moyenne Daily en ATR) ; chaque sortie est suivie 1 h / 4 h / 24 h. Statistiques `/api/trend/stats`, export `/api/trend/journal/export.csv`.
+- Actifs par défaut : BTC, ETH, HYPE, TAO, SUI, PAXG, xyz:EUR, xyz:JPY (`TRENDF_SYMBOLS`).
