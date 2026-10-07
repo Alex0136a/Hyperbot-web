@@ -44,7 +44,7 @@ def detect_setup(c1h, zone, tol, window=5):
         for c in w[::-1]:
             if c["l"] < lo and c["c"] >= lo:
                 pierce = (lo - c["l"]) / lo * 100
-                return {"kind": "balayage", "held": held, "pierce_pct": round(pierce, 3),
+                return {"kind": "balayage", "held": held, "pierce_pct": round(pierce, 3), "inval_low": min(x["l"] for x in w),
                         "name": f"balayage de liquidite sous le support (meche {pierce:.2f} % sous la zone, reprise)"}, None
     # retest tenu
     touched = any(c["l"] <= hi + tol for c in w)
@@ -55,8 +55,19 @@ def detect_setup(c1h, zone, tol, window=5):
     higher_low = last["l"] > min(c["l"] for c in w[:-1])
     if not (last["c"] >= last["o"] or higher_low):
         return None, "derniere bougie 1h baissiere sans creux plus haut (pas de confirmation)"
-    return {"kind": "retest", "held": held, "pierce_pct": None,
+    return {"kind": "retest", "held": held, "pierce_pct": None, "inval_low": min(x["l"] for x in w),
             "name": f"retest du support tenu ({held}/{window} bougies 1 h au-dessus)"}, None
+
+
+def invalidation_level(entry, setup, zone_low, mode=1, min_pct=0.5, max_pct=3.0):
+    """Niveau dont la cloture 1 h en dessous = setup invalide (sortie anticipee si le flux confirme).
+    mode 1 : plus bas du retest (le plus bas des bougies 1 h du signal), borne entre min_pct et max_pct sous l entree
+             (ni hypersensible, ni plus bas que le stop) ; mode 0 : bas de la zone Daily (ancien comportement)."""
+    if mode == 0 or not setup or setup.get("inval_low") is None:
+        return zone_low
+    hi = entry * (1 - min_pct / 100)
+    lo = entry * (1 - max_pct / 100)
+    return max(min(setup["inval_low"], hi), lo)
 
 
 def zone_broken_1h(c1h, zone_low, opened_ts, buf):
