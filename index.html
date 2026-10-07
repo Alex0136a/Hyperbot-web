@@ -224,6 +224,8 @@ function streaksToCSVRows(result) {
 }
 
 // ── CONSTANTES ───────────────────────────────────────────────
+// Liste de suivi (affichage seulement, ne change pas ce que le bot trade)
+const WATCHLIST = ["BTC","ETH","HYPE","TAO","SUI","xyz:EUR","xyz:JPY","xyz:KRW","xyz:DXY","PAXG"];
 const ALL_COINS = ["BTC","ETH","SOL","ARB","AVAX","LINK","OP","INJ","TIA","BNB","HYPE","PAXG","TAO","WIF","JUP","PENDLE","EIGEN","RENDER","SUI","APT","SEI","DOGE","XRP","NEAR","AAVE","UNI","CRV","SUSHI","GMX","POL","xyz:EUR","xyz:JPY","xyz:KRW","xyz:DXY"];
 // v4.42 — reglages SL/TTP dedies au mode Accumulation : valeur vide = null
 // = "herite du mode normal" (pas de changement de comportement tant que
@@ -1178,6 +1180,15 @@ function App() {
   const [swingStats, setSwingStats] = useState(null);
   const [swingDays, setSwingDays] = useState(14);
   const [swingErr, setSwingErr] = useState(null);
+  // v4.362 — Swing Support (crypto, paper) : statut + statistiques du journal
+  const [supSt, setSupSt] = useState(null);
+  const [supStats, setSupStats] = useState(null);
+  const [supErr, setSupErr] = useState(null);
+  const loadSupSt = useCallback(async () => {
+    try { setSupSt(await apiCall("/api/supsw/status","GET",null,token)); setSupErr(null); }
+    catch(e) { setSupErr((e && e.message) ? e.message : String(e)); }
+  }, [token]);
+  const loadSupStats = async () => { try { setSupStats(await apiCall("/api/supsw/stats?days=30","GET",null,token)); } catch(e) { alert("Erreur : "+e.message); } };
   const loadSwingSt = useCallback(async () => {
     try { setSwingSt(await apiCall("/api/swing/status","GET",null,token)); setSwingErr(null); }
     catch(e) { setSwingErr((e && e.message) ? e.message : String(e)); }
@@ -1255,6 +1266,8 @@ function App() {
   const [atrSummary, setAtrSummary] = useState(null);
   const [entryDiag, setEntryDiag] = useState(null);
   const [entryDiagLoading, setEntryDiagLoading] = useState(false);
+  const [watchOnly, setWatchOnly] = useState(()=>{try{return localStorage.getItem("hb_watchonly")!=="0";}catch(e){return true;}});
+  const toggleWatchOnly = (v)=>{setWatchOnly(v);try{localStorage.setItem("hb_watchonly",v?"1":"0");}catch(e){}};
   const [trendSummary, setTrendSummary] = useState(null);
   const [trendSummaryLoading, setTrendSummaryLoading] = useState(false);
   // v4.43 — sous-onglets Paper Trading par mode (Normal/Accumulation/Funding/Spot-Accum)
@@ -1265,7 +1278,8 @@ function App() {
   useEffect(() => {
     if (!token || tab!=="paper" || paperSubTab!=="swing_tab") return;
     loadSwingSt();
-    const id = setInterval(loadSwingSt, 30000);
+    loadSupSt();
+    const id = setInterval(()=>{ loadSwingSt(); loadSupSt(); }, 30000);
     return () => clearInterval(id);
   }, [token, tab, paperSubTab]);
   useEffect(() => {
@@ -2897,9 +2911,13 @@ Confirmer ?`
               <div style={{fontSize:11,color:"#94a3b8"}}>Cliquez pour voir, pour CHAQUE actif, l'obstacle précis (s'il y en a un) qui bloque un LONG ou un SHORT en ce moment précis — capturé à chaque cycle côté bot, toujours à jour au moment du clic.</div>
             ) : (
               <>
+                <label style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:"#fbbf24",marginBottom:8,cursor:"pointer"}}>
+                  <input type="checkbox" checked={watchOnly} onChange={e=>toggleWatchOnly(e.target.checked)}/>
+                  Liste de suivi seulement ({WATCHLIST.map(t=>t.replace("xyz:","")).join(", ")}) — {entryDiag.results.filter(r=>WATCHLIST.includes(String(r.ticker).split("/")[0])).length}/{entryDiag.results.length} actifs · le bot continue d'analyser tous les actifs
+                </label>
                 <div style={{fontSize:10,color:"#94a3b8",marginBottom:8}}>Instantané au moment du clic — "aucun obstacle" veut dire que le signal de base n'est simplement pas encore réuni (RSI/EMA/tendance), pas qu'un trade est imminent.</div>
-                <textarea readOnly value={(entryDiag.market_regime?`🧭 RÉGIME DE MARCHÉ : ${(entryDiag.market_regime.regime||"?").toUpperCase()} — ${entryDiag.market_regime.detail||""}${entryDiag.market_regime.filter_enabled?" (filtre legacy actif : sans effet sur le top-down)":" (aucun blocage global : chaque mode juge la tendance de son actif)"}\n\n`:"")+entryDiag.results.map(r=>
-                  `${r.ticker}${r.has_position?" [position ouverte]":""} (il y a ${r.snapshot_age_sec!=null?r.snapshot_age_sec.toFixed(0)+"s":"?"})\n  💱 FOREX LONG  : ${r.blocker_long||"aucun obstacle particulier"}\n  💱 FOREX SHORT : ${r.blocker_short||"aucun obstacle particulier"}${r.scalp?`\n  ⚡ SCALP : ${r.scalp}`:""}${r.fxswing?`\n  🌊 SWING FX : ${r.fxswing}`:""}\n  🎯 ACCUMULATION : ${r.blocker_accumulation||"aucun obstacle particulier"}\n  🌱 SPOT-ACCUM : ${r.blocker_spot_accum||"aucun obstacle particulier"}${r.mtf?`\n  📊 TOP-DOWN : ${r.mtf}`:""}${r.blocker_funding?`\n  💰 FUNDING : ${r.blocker_funding}`:""}${r.situation?`\n  🧭 Situation : fond ${r.situation.fond} (1h) · court terme ${r.situation.court||"?"} (5 min) → ${r.situation.name.toUpperCase()}`:""}\n  📐 Niveaux : ${r.levels&&r.levels.trend_ema!=null?`${(r.levels.trend_ema_source||"EMA")} = ${Number(r.levels.trend_ema).toPrecision(6)} (prix ${r.levels.price!=null?(r.levels.price>r.levels.trend_ema?"au-dessus":"en dessous"):"?"})`:"EMA ?"} · support ${r.levels&&r.levels.support!=null?Number(r.levels.support).toPrecision(6):"?"} · résistance ${r.levels&&r.levels.resistance!=null?Number(r.levels.resistance).toPrecision(6):"?"}${r.levels&&r.levels.sr_source?` (${r.levels.sr_source})`:""}${r.levels&&(r.levels.support_1h||r.levels.resistance_1h)?` · structure 1h : support ${r.levels.support_1h!=null?Number(r.levels.support_1h).toPrecision(6):"?"} / résistance ${r.levels.resistance_1h!=null?Number(r.levels.resistance_1h).toPrecision(6):"?"}`:""}\n  📉 Qualité du marché : volatilité ${r.quality&&r.quality.vol_ratio!=null?r.quality.vol_ratio.toFixed(2)+"x":"?"} · activité ${r.quality&&r.quality.activity_ratio!=null?r.quality.activity_ratio.toFixed(2)+"x":"?"} son habitude · spread ${r.quality&&r.quality.spread_pct!=null?r.quality.spread_pct.toFixed(3)+" %":"?"}\n  📊 Flux transactions : ${r.trade_flow_pressure!=null?r.trade_flow_pressure.toFixed(2):"pas encore de donnees"}${r.trend_persistence_confirmed?" · pression soutenue CONFIRMEE":""}`
+                <textarea readOnly value={(entryDiag.market_regime?`🧭 RÉGIME DE MARCHÉ : ${(entryDiag.market_regime.regime||"?").toUpperCase()} — ${entryDiag.market_regime.detail||""}${entryDiag.market_regime.filter_enabled?" (filtre legacy actif : sans effet sur le top-down)":" (aucun blocage global : chaque mode juge la tendance de son actif)"}\n\n`:"")+entryDiag.results.filter(r=>!watchOnly||WATCHLIST.includes(String(r.ticker).split("/")[0])).map(r=>
+                  `${r.ticker}${r.has_position?" [position ouverte]":""} (il y a ${r.snapshot_age_sec!=null?r.snapshot_age_sec.toFixed(0)+"s":"?"})\n  💱 FOREX LONG  : ${r.blocker_long||"aucun obstacle particulier"}\n  💱 FOREX SHORT : ${r.blocker_short||"aucun obstacle particulier"}${r.scalp?`\n  ⚡ SCALP : ${r.scalp}`:""}${r.fxswing?`\n  🌊 SWING FX : ${r.fxswing}`:""}${r.supsw?`\n  🧱 SWING SUPPORT : ${r.supsw}`:""}\n  🎯 ACCUMULATION : ${r.blocker_accumulation||"aucun obstacle particulier"}\n  🌱 SPOT-ACCUM : ${r.blocker_spot_accum||"aucun obstacle particulier"}${r.mtf?`\n  📊 TOP-DOWN : ${r.mtf}`:""}${r.blocker_funding?`\n  💰 FUNDING : ${r.blocker_funding}`:""}${r.situation?`\n  🧭 Situation : fond ${r.situation.fond} (1h) · court terme ${r.situation.court||"?"} (5 min) → ${r.situation.name.toUpperCase()}`:""}\n  📐 Niveaux : ${r.levels&&r.levels.trend_ema!=null?`${(r.levels.trend_ema_source||"EMA")} = ${Number(r.levels.trend_ema).toPrecision(6)} (prix ${r.levels.price!=null?(r.levels.price>r.levels.trend_ema?"au-dessus":"en dessous"):"?"})`:"EMA ?"} · support ${r.levels&&r.levels.support!=null?Number(r.levels.support).toPrecision(6):"?"} · résistance ${r.levels&&r.levels.resistance!=null?Number(r.levels.resistance).toPrecision(6):"?"}${r.levels&&r.levels.sr_source?` (${r.levels.sr_source})`:""}${r.levels&&(r.levels.support_1h||r.levels.resistance_1h)?` · structure 1h : support ${r.levels.support_1h!=null?Number(r.levels.support_1h).toPrecision(6):"?"} / résistance ${r.levels.resistance_1h!=null?Number(r.levels.resistance_1h).toPrecision(6):"?"}`:""}\n  📉 Qualité du marché : volatilité ${r.quality&&r.quality.vol_ratio!=null?r.quality.vol_ratio.toFixed(2)+"x":"?"} · activité ${r.quality&&r.quality.activity_ratio!=null?r.quality.activity_ratio.toFixed(2)+"x":"?"} son habitude · spread ${r.quality&&r.quality.spread_pct!=null?r.quality.spread_pct.toFixed(3)+" %":"?"}\n  📊 Flux transactions : ${r.trade_flow_pressure!=null?r.trade_flow_pressure.toFixed(2):"pas encore de donnees"}${r.trend_persistence_confirmed?" · pression soutenue CONFIRMEE":""}`
                 ).join("\n\n")}
                   style={{width:"100%",height:320,background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:10,color:"#e2e8f0",fontFamily:"monospace",fontSize:11,resize:"vertical"}}
                   onClick={e=>e.target.select()}
@@ -3747,6 +3765,90 @@ Confirmer ?`
                           {S.perf_fx.n>0 && <div style={{marginTop:4}}>Forex : <b>{S.perf_fx.n}</b> trade(s) fermé(s), {S.perf_fx.win_rate}% gagnants, <b style={{color:S.perf_fx.net>=0?"#86efac":"#fca5a5"}}>{S.perf_fx.net>=0?"+":""}{S.perf_fx.net.toFixed(2)} USDC net</b>, {S.perf_fx.avg_r==null?"—":(S.perf_fx.avg_r>=0?"+":"")+S.perf_fx.avg_r.toFixed(2)} R moyen · Crypto : {S.perf_crypto.n} trade(s), {S.perf_crypto.net>=0?"+":""}{S.perf_crypto.net.toFixed(2)} USDC net.</div>}
                         </div>)}
                     </div>)}
+                  {S && (()=>{
+                    const P = supSt;
+                    const Q = supStats;
+                    const pc = (v)=> v==null?"—":v+" %";
+                    const SGT = ({title,rows})=>(
+                      <div style={{marginTop:8}}>
+                        <div style={{fontSize:11,color:"#e2e8f0",fontWeight:700,marginBottom:2}}>{title}</div>
+                        <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                          <thead><tr><th style={{...th,textAlign:"left"}}></th><th style={th}>Signaux</th><th style={th}>Mesurés</th><th style={th}>Objectif</th><th style={th}>Stop</th><th style={th}>Ni l'un ni l'autre</th><th style={th} title="Résultat moyen estimé par signal (% du prix), frais déduits : objectif = +gain, stop = -risque, sinon rendement à 72 h">Net estimé</th></tr></thead>
+                          <tbody>{rows.map(r=><tr key={r.key} style={{borderTop:"1px solid #1e2d4a"}}>
+                            <td style={{...td,textAlign:"left",color:"#e2e8f0",whiteSpace:"normal"}}>{r.key}</td><td style={td}>{r.n}</td><td style={td}>{r.evaluated}</td>
+                            <td style={td}>{pc(r.tp_pct)}</td><td style={td}>{pc(r.sl_pct)}</td><td style={td}>{pc(r.none_pct)}</td>
+                            <td style={{...td,fontWeight:700,color:r.net_est==null?"#94a3b8":(r.net_est>=0?"#86efac":"#fca5a5")}}>{r.net_est==null?"—":sg(r.net_est,3)+" %"}{r.net_n>0&&r.net_n<20?<span style={{color:"#fbbf24",marginLeft:4,fontSize:9}}>n={r.net_n}</span>:null}</td>
+                          </tr>)}</tbody></table></div>
+                      </div>);
+                    return (
+                    <div style={{background:"#0a0e1a",border:"1px solid #3b2a4a",borderRadius:8,padding:10,marginBottom:14,fontSize:11,color:"#cbd5e1",lineHeight:1.6}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                        <div><b style={{color:"#c084fc"}}>🧱 Swing Support (paper)</b>
+                          {P && <span style={{marginLeft:8,fontWeight:700,color:P.enabled?"#86efac":"#94a3b8"}}>{P.enabled?"● actif":"○ éteint"}</span>}</div>
+                        {P && <button onClick={async()=>{
+                          if(!P.enabled && !window.confirm("Activer le Swing Support (paper) ?\n\n• tendance Daily haussière + prix dans un support Daily\n• déclencheurs : retest du support tenu sur les 5 dernières bougies 1 h, ou balayage de liquidité (mèche sous le support puis reprise)\n• objectif "+P.settings.SUPSW_TP_PCT+" %, stop de sécurité "+P.settings.SUPSW_SL_PCT+" %\n• sortie anticipée : clôture 1 h sous la zone ET flux hostile\n• BTC, Weekly et funding sont enregistrés, ils ne filtrent rien\n• PAPER uniquement : le trade occupe le slot de l'actif tant qu'il est ouvert\n• hypothèse à valider : il faut environ "+(P.settings.SUPSW_SL_PCT>0?Math.round((P.settings.SUPSW_SL_PCT+P.fee_pct)/(P.settings.SUPSW_SL_PCT+P.settings.SUPSW_TP_PCT)*100):"?")+" % de réussite si les sorties anticipées ne réduisent pas la perte moyenne")) return;
+                          try{ await apiCall("/api/config/advanced","PUT",{values:{SUPSW_ENABLED: P.enabled?0:1}},token); await loadSupSt(); }catch(e){ alert("Erreur : "+e.message); }
+                        }} style={{background:P.enabled?"#334155":"#c084fc",border:"none",borderRadius:7,padding:"8px 14px",color:P.enabled?"#e2e8f0":"#2a0f3d",fontFamily:"inherit",fontSize:12,fontWeight:800,cursor:"pointer"}}>{P.enabled?"Éteindre":"🧱 Activer le Swing Support"}</button>}
+                      </div>
+                      <div style={{color:"#94a3b8",marginTop:4}}>Crypto (BTC, ETH, HYPE, TAO, SUI). Un LONG près d'un support Daily en tendance haussière, avec un <b>stop large</b> (simple filet) et un <b>objectif proche</b>. La vraie protection est la <b>sortie anticipée</b> quand le support casse. Chaque signal (pris ou non) est journalisé avec le contexte BTC / Weekly / funding / flux, puis mesuré à 24 h et 72 h ; chaque sortie anticipée est suivie 1 h, 4 h et 24 h pour savoir si elle était <b>trop tôt</b>.</div>
+                      {!P ? (supErr ? <div style={{color:"#fca5a5",marginTop:6}}>Suivi du Swing Support indisponible : <b>{supErr}</b>. Si « Not Found », le serveur n'est pas à jour (api.py, db.py, bot_engine.py, swing_support.py).</div> : <div style={{color:"#94a3b8",marginTop:6}}>Chargement…</div>) : (
+                        <div style={{marginTop:6}}>
+                          {P.enabled && (P.assets||[]).map(a=>(
+                            <div key={a.asset} style={{display:"flex",gap:8,flexWrap:"wrap",padding:"2px 0",borderTop:"1px solid #1e2d4a"}}>
+                              <b style={{color:"#e2e8f0",minWidth:60}}>{a.asset}</b>
+                              <span style={{color:a.open?"#86efac":(a.setup?"#c084fc":(a.evaluated?"#cbd5e1":"#64748b"))}}>{a.open?"swing support ouvert":(a.evaluated?(a.blocker||"setup valide"):"pas encore évalué")}</span>
+                            </div>))}
+                          <div style={{color:"#64748b",marginTop:4}}>Réglages : objectif {P.settings.SUPSW_TP_PCT} % · stop {P.settings.SUPSW_SL_PCT} % · risque {P.settings.SUPSW_RISK_PCT} % du capital · {P.settings.SUPSW_MAX_TRADES} positions au plus · {P.settings.SUPSW_WINDOW} bougies 1 h · sortie : cloture 1 h sous la zone (tampon {P.settings.SUPSW_EXIT_BUFFER_ATR} ATR) et flux &lt; {P.settings.SUPSW_EXIT_FLOW}{P.settings.SUPSW_EXIT_REQUIRE_H4_END?" et tendance H4 finie":""} · durée max {P.settings.SUPSW_MAX_HOLD_DAYS} j. Aucun breakeven : on mesure l'hypothèse pure.</div>
+                          {P.perf.n>0 && <div style={{marginTop:4}}><b>{P.perf.n}</b> trade(s) fermé(s), {P.perf.win_rate}% gagnants, <b style={{color:P.perf.net>=0?"#86efac":"#fca5a5"}}>{sg(P.perf.net)} USDC net</b> (brut {sg(P.perf.gross)} − frais {f(P.perf.fees)}){P.perf.n<30 && <span style={{color:"#fbbf24"}}> · moins de 30 trades : à ne pas interpréter.</span>}</div>}
+                          {P.open.map((o,i)=>(
+                            <div key={i} style={{background:"#120a1d",border:"1px solid #3b2a4a",borderRadius:8,padding:8,marginTop:5,display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6}}>
+                              <span><span style={{background:"#2a0f3d",color:"#c084fc",border:"1px solid #c084fc",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700,marginRight:6}}>🧱 SUPPORT</span><b style={{color:"#34d399"}}>LONG</b> {o.asset} <span style={{color:"#64748b"}}>{o.setup}{o.ctx?` · Weekly ${o.ctx.weekly_trend||"?"} · BTC ${o.ctx.btc_trend||"?"}`:""}</span></span>
+                              <span>entrée {Number(o.entry).toPrecision(6)} · prix {Number(o.price).toPrecision(6)} · stop {Number(o.sl).toPrecision(6)} · objectif {Number(o.tp).toPrecision(6)}{o.broken_noflow?" · ⚠ support cassé, flux non hostile":""}</span>
+                              <span style={{color:o.gain_pct>=0?"#86efac":"#fca5a5",fontWeight:700}}>{sg(o.gain_pct,3)} % · {o.age_h>=48?(o.age_h/24).toFixed(1)+" j":o.age_h+" h"}</span>
+                            </div>))}
+                          {P.closed.length>0 && <details style={{marginTop:6}}>
+                            <summary style={{cursor:"pointer",color:"#94a3b8"}}>Trades fermés ({P.closed.length})</summary>
+                            <div style={{maxHeight:260,overflowY:"auto",marginTop:4}}>{P.closed.map(x=>(
+                              <div key={x.id} style={{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6,padding:"3px 0",borderTop:"1px solid #1e2d4a"}}>
+                                <span><b style={{color:"#e2e8f0"}}>{x.asset}</b> <span style={{color:"#94a3b8",fontSize:10}}>{x.reason}</span> <span style={{color:"#64748b",fontSize:10}}>{x.closed?new Date(x.closed).toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}):""}</span></span>
+                                <span style={{fontWeight:700,color:(x.pnl_net||0)>=0?"#34d399":"#f87171"}}>{sg(x.pnl_net,3)} $ net{x.move_pct!=null?<span style={{color:"#64748b",fontWeight:400,marginLeft:6}}>({sg(x.move_pct,2)} %)</span>:null}</span>
+                              </div>))}</div>
+                          </details>}
+                          <div style={{marginTop:8,display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                            <button onClick={loadSupStats} style={{background:"#c084fc",border:"none",borderRadius:7,padding:"7px 12px",color:"#2a0f3d",fontFamily:"inherit",fontSize:11,fontWeight:800,cursor:"pointer"}}>📊 Statistiques Swing Support (30 j)</button>
+                            <button onClick={async()=>{
+                              try{
+                                const r = await fetch(`${API}/api/supsw/journal/export.csv?days=60`,{headers:{Authorization:`Bearer ${token}`}});
+                                if(!r.ok){ let d={}; try{d=await r.json();}catch(_){} throw new Error(d.detail||`Erreur ${r.status}`); }
+                                const blob = await r.blob(); const cd = r.headers.get("Content-Disposition")||""; const m = cd.match(/filename="([^"]+)"/);
+                                const url = URL.createObjectURL(blob); const a = document.createElement("a");
+                                a.href = url; a.download = m?m[1]:"swing_support.csv"; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000);
+                              }catch(e){ alert("Export impossible : "+e.message); }
+                            }} style={{background:"#334155",border:"none",borderRadius:7,padding:"7px 12px",color:"#e2e8f0",fontFamily:"inherit",fontSize:11,fontWeight:700,cursor:"pointer"}}>📥 Journal CSV</button>
+                          </div>
+                          {Q && (
+                            <div style={{marginTop:8}}>
+                              <div style={{fontSize:11,color:"#94a3b8"}}>Période : {Q.days} jours · {Q.total.n} signaux, {Q.total.evaluated} mesurés. Seuil de rentabilité avec ces réglages : <b style={{color:"#fbbf24"}}>{Q.breakeven_tp_rate==null?"—":Q.breakeven_tp_rate+" %"}</b> d'objectifs atteints avant le stop (si on gardait jusqu'au bout).</div>
+                              {Q.real.n>0 && <div style={{fontSize:11,color:"#cbd5e1",marginTop:4}}>Trades réellement pris : <b>{Q.real.n}</b>, {Q.real.wins} gagnants après frais, résultat moyen <b style={{color:Q.real.avg_net_pct>=0?"#86efac":"#fca5a5"}}>{sg(Q.real.avg_net_pct,3)} %</b> par trade.</div>}
+                              <SGT title="Par déclencheur" rows={Q.by_setup}/>
+                              <SGT title="Par décision (pris, candidat, ou raison du refus)" rows={Q.by_decision}/>
+                              <SGT title="Par tendance Weekly (enregistrée, ne filtre pas)" rows={Q.by_weekly}/>
+                              <SGT title="Par tendance de BTC (enregistrée, ne filtre pas)" rows={Q.by_btc}/>
+                              <SGT title="Par funding annualisé (enregistré, ne filtre pas)" rows={Q.by_funding}/>
+                              <SGT title="Par actif" rows={Q.by_asset}/>
+                              <div style={{marginTop:10,fontSize:11,color:"#e2e8f0",fontWeight:700}}>Sorties anticipées : étaient-elles justifiées ?</div>
+                              <div style={{fontSize:11,color:"#cbd5e1",lineHeight:1.6}}>
+                                {Q.exits.early_n} sortie(s) anticipée(s) sur {Q.exits.taken} trade(s) sortis · perte moyenne à la sortie <b>{Q.exits.avg_pnl_pct_at_exit==null?"—":sg(Q.exits.avg_pnl_pct_at_exit,3)+" %"}</b> (avant frais) · tendance H4 encore haussière à la sortie : {Q.exits.h4_intact_oui} fois, finie : {Q.exits.h4_intact_non} fois.<br/>
+                                Mesurées après coup : {Q.exits.early_evaluated} — le prix a ensuite atteint l'objectif {Q.exits.after_tp} fois (<b style={{color:Q.exits.too_early_n>0?"#fbbf24":"#cbd5e1"}}>sortie trop tôt</b>), le stop {Q.exits.after_sl} fois (sortie justifiée), ni l'un ni l'autre {Q.exits.after_none} fois. Évolution moyenne après la sortie : {Q.exits.avg_fin1h==null?"—":sg(Q.exits.avg_fin1h,2)} % à 1 h · {Q.exits.avg_fin4h==null?"—":sg(Q.exits.avg_fin4h,2)} % à 4 h · {Q.exits.avg_fin24h==null?"—":sg(Q.exits.avg_fin24h,2)} % à 24 h (négatif = le prix a continué de baisser, donc sortie justifiée).
+                              </div>
+                              <SGT title="Par motif de sortie (signaux dont le trade a été pris)" rows={Q.exits.by_reason}/>
+                              <div style={{marginTop:8,fontSize:10,color:"#64748b",lineHeight:1.5}}>
+                                <b style={{color:"#94a3b8"}}>Comment s'en servir.</b> (1) Comparez le « Net estimé » des deux déclencheurs : gardez celui qui reste positif sur au moins 20 mesures. (2) Si les sorties anticipées sont suivies le plus souvent de l'objectif atteint (« trop tôt »), exigez en plus la tendance H4 finie (réglage SUPSW_EXIT_REQUIRE_H4_END) ou élargissez le tampon. (3) Les tableaux Weekly / BTC / funding disent si un contexte améliore le résultat : ne le transformez en filtre qu'avec 20 mesures ou plus par ligne. Le « Net estimé » d'un signal est calculé comme si on le gardait jusqu'à l'objectif ou au stop, sans sortie anticipée.
+                              </div>
+                            </div>)}
+                        </div>)}
+                    </div>);
+                  })()}
                   {!S ? (swingErr
                     ? <div style={{fontSize:11,color:"#fca5a5",background:"#2d0a0a",border:"1px solid #7f1d1d",borderRadius:8,padding:10,lineHeight:1.6}}>
                         Le suivi Swing n'a pas pu être chargé : <b>{swingErr}</b>.<br/>Si le message indique « Not Found » ou une erreur serveur, le serveur n'est pas encore à jour (api.py, db.py, bot_engine.py, swing_journal.py) ou n'a pas redémarré.
