@@ -1458,6 +1458,9 @@ PROFILE_SWING = {
     "SUPSW_COOLDOWN_SEC": 14400,
     "SUPSW_EXIT_BUFFER_ATR": 0.3,         # cloture 1 h sous (bas de zone - N x ATR 1 h) = support casse
     "SUPSW_EXIT_FLOW": -0.4,              # ... ET flux de transactions inferieur a N
+    "SUPSW_EXIT_LEVEL": 1,                # v4.363 : 1 = niveau de sortie = plus bas du retest (borne ci-dessous) ; 0 = bas de la zone Daily (ancien)
+    "SUPSW_EXIT_MIN_PCT": 0.5,            # le niveau de sortie est au moins a N % sous l entree (evite le declenchement hypersensible)
+    "SUPSW_EXIT_MAX_PCT": 3.0,            # ... et au plus a N % sous l entree (toujours atteignable avant le stop)
     "SUPSW_EXIT_REQUIRE_H4_END": 0,       # 1 = exige aussi que la tendance H4 ne soit plus haussiere (sinon : seulement enregistre)
     "FLOW_RECORDER_ENABLED": 1,           # v4.349 : 1 = enregistre le flux acheteur/vendeur par tranche de 5 min et par actif (lecture seule)
     "FLOW_RECORDER_BIG_TRADE_USD": 5000.0, # v4.349 : seuil d une "grosse" transaction
@@ -11036,7 +11039,9 @@ class BotEngine:
             "window": max(int(c.get("SUPSW_WINDOW", 5)), 3), "max_age": int(c.get("SUPSW_SIGNAL_MAX_AGE_SEC", 900)),
             "max_spread": float(c.get("SUPSW_MAX_SPREAD_PCT", 0.05)), "hold_days": float(c.get("SUPSW_MAX_HOLD_DAYS", 5)),
             "cooldown": int(c.get("SUPSW_COOLDOWN_SEC", 14400)), "exit_buf": float(c.get("SUPSW_EXIT_BUFFER_ATR", 0.3)),
-            "exit_flow": float(c.get("SUPSW_EXIT_FLOW", -0.4)), "need_h4_end": bool(c.get("SUPSW_EXIT_REQUIRE_H4_END", 0)),
+            "exit_flow": float(c.get("SUPSW_EXIT_FLOW", -0.4)),
+            "exit_level": int(c.get("SUPSW_EXIT_LEVEL", 1)), "exit_min": float(c.get("SUPSW_EXIT_MIN_PCT", 0.5)),
+            "exit_max": float(c.get("SUPSW_EXIT_MAX_PCT", 3.0)), "need_h4_end": bool(c.get("SUPSW_EXIT_REQUIRE_H4_END", 0)),
             "slip": float(c.get("FOREX_SCALP_SLIPPAGE_PCT", 0.005)), "fee": float(c.get("FEE_ROUND_TRIP_PCT", 0.09)),
         }
 
@@ -11229,13 +11234,14 @@ class BotEngine:
         pos["trade_uid"] = trade_uid
         pos["slot_key"] = symbol
         pos["engine"] = "supsw"
-        pos["supsw"] = {"opened_ts": time.time(), "zone_low": zone["low"], "zone_high": zone["high"], "sl0": sl, "tp": tp,
+        inval = sups.invalidation_level(fill, setup, zone["low"], K["exit_level"], K["exit_min"], K["exit_max"])
+        pos["supsw"] = {"opened_ts": time.time(), "zone_low": zone["low"], "zone_high": zone["high"], "sl0": sl, "tp": tp, "inval": inval,
                         "setup": setup["name"], "kind": setup["kind"], "ctx": ctx, "flow_entry": flow, "signal_t": res[1] if res else None}
         rr_txt = f"{K['tp_pct']:.2f}/{K['sl_pct']:.2f}"
         reasons = [f"🧱 Swing Support : {setup['name']} — support Daily {self._zone_txt(zone)}",
                    f"tendance Daily {v['trend']} · Weekly {ctx.get('weekly_trend') or '?'} · BTC {ctx.get('btc_trend') or '?'}"
                    f" · funding {ctx.get('funding_ann') if ctx.get('funding_ann') is not None else '?'} %/an",
-                   f"stop {K['sl_pct']:.2f} % (filet) · objectif {K['tp_pct']:.2f} % ({rr_txt}) · sortie anticipee : cloture 1 h sous la zone + flux < {K['exit_flow']}",
+                   f"stop {K['sl_pct']:.2f} % (filet) · objectif {K['tp_pct']:.2f} % ({rr_txt}) · sortie anticipee : cloture 1 h sous {inval:.6g} ({(1 - inval / fill) * 100:.2f} % sous l entree, {'plus bas du retest' if K['exit_level'] else 'bas de zone'}) + flux < {K['exit_flow']}",
                    f"spread {spread_pct:.3f} % · frais supposes {K['fee']} %"]
         try:
             quality = self.market_quality(ticker, state)
@@ -11260,7 +11266,7 @@ class BotEngine:
         if res and res[0]:
             try:
                 db.supsw_mark_taken(ticker, res[1], trade_uid)
-                db.supsw_update(res[0], {"entry_ref": fill, "price": fill, "sl": sl, "tp": tp})    # niveaux REELS du trade pris
+                db.supsw_update(res[0], {"entry_ref": fill, "price": fill, "sl": sl, "tp": tp, "inval": inval})    # niveaux REELS du trade pris
                 seen = getattr(self, "_supsw_seen", {})
                 seen[(ticker, res[1])] = (3, res[0])
             except Exception as _e:
@@ -11307,7 +11313,7 @@ class BotEngine:
                 c1h = self._mtf_candles(ticker, "1h", 30, cache_only=True)
                 if c1h:
                     buf = K["exit_buf"] * (mtf.atr(c1h) or 0)
-                    if sups.zone_broken_1h(c1h, sp["zone_low"], sp["opened_ts"], buf):
+                    if sups.zone_broken_1h(c1h, sp.get("inval") or sp["zone_low"], sp["opened_ts"], buf):
                         flow_exit = self._compute_trade_flow_pressure(ticker, price)
                         sp["flow_exit"] = flow_exit
                         if flow_exit is not None and flow_exit < K["exit_flow"]:
