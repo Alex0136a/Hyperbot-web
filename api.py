@@ -1055,6 +1055,9 @@ ADVANCED_SETTINGS = {
     "SUPSW_MAX_HOLD_DAYS":      {"label": "Swing Support - duree maximale d une position (jours)", "default": 5},
     "SUPSW_EXIT_BUFFER_ATR":    {"label": "Swing Support - support casse = cloture 1 h sous (bas de zone - N x ATR 1 h)", "default": 0.3},
     "SUPSW_EXIT_FLOW":          {"label": "Swing Support - sortie anticipee si le flux de transactions est inferieur a N (en plus du support casse)", "default": -0.4},
+    "SUPSW_EXIT_LEVEL":         {"label": "Swing Support - niveau de sortie anticipee : 1 = plus bas du retest (borne par les 2 reglages suivants), 0 = bas de la zone Daily", "default": 1},
+    "SUPSW_EXIT_MIN_PCT":       {"label": "Swing Support - le niveau de sortie est au moins a N % sous l entree", "default": 0.5},
+    "SUPSW_EXIT_MAX_PCT":       {"label": "Swing Support - le niveau de sortie est au plus a N % sous l entree (doit rester sous le stop)", "default": 3.0},
     "SUPSW_EXIT_REQUIRE_H4_END": {"label": "Swing Support - 1 = exige aussi que la tendance H4 ne soit plus haussiere pour sortir (0 = seulement enregistree)", "default": 0},
     # v4.353 — scalp Forex (sous-mode du Forex, PAPER uniquement)
     "FOREX_SCALP_ENABLED":         {"label": "Scalp Forex - active (1) ou eteint (0). PAPER uniquement ; le mode Forex n est pas modifie", "default": 0},
@@ -1275,7 +1278,7 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"FXSWING_ENABLED","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+_ZERO_ALLOWED_INT_KEYS = {"FXSWING_ENABLED","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
                           "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
@@ -1351,7 +1354,9 @@ def _coerce_advanced_value(key: str, value):
         return False, "entre 0,5 et 10"
     if key == "FXSWING_MAX_HOLD_DAYS" and not 1 <= value <= 60:
         return False, "entre 1 et 60 jours"
-    if key in ("SUPSW_ENABLED", "SUPSW_EXIT_REQUIRE_H4_END") and value not in (0, 1):
+    if key in ("SUPSW_EXIT_MIN_PCT", "SUPSW_EXIT_MAX_PCT") and not 0.1 <= value <= 10:
+        return False, "entre 0,1 et 10 %"
+    if key in ("SUPSW_ENABLED", "SUPSW_EXIT_REQUIRE_H4_END", "SUPSW_EXIT_LEVEL") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
     if key == "SUPSW_SL_PCT" and not 0.5 <= value <= 15:
         return False, "entre 0,5 et 15 %"
@@ -3817,7 +3822,8 @@ def swing_status(email: str = Depends(require_user)):
 
 # ───────────────── v4.362 — SWING SUPPORT (crypto, paper) : suivi, statistiques, export ─────────────────
 _SUPSW_KEYS = ("SUPSW_SL_PCT", "SUPSW_TP_PCT", "SUPSW_RISK_PCT", "SUPSW_MAX_NOTIONAL_USD", "SUPSW_MAX_TRADES", "SUPSW_WINDOW",
-               "SUPSW_SIGNAL_MAX_AGE_SEC", "SUPSW_MAX_HOLD_DAYS", "SUPSW_EXIT_BUFFER_ATR", "SUPSW_EXIT_FLOW", "SUPSW_EXIT_REQUIRE_H4_END")
+               "SUPSW_SIGNAL_MAX_AGE_SEC", "SUPSW_MAX_HOLD_DAYS", "SUPSW_EXIT_BUFFER_ATR", "SUPSW_EXIT_FLOW", "SUPSW_EXIT_REQUIRE_H4_END",
+               "SUPSW_EXIT_LEVEL", "SUPSW_EXIT_MIN_PCT", "SUPSW_EXIT_MAX_PCT")
 
 
 def _supsw_est(e, fee):
@@ -3903,7 +3909,7 @@ def supsw_status(email: str = Depends(require_user)):
             sp = pos.get("supsw") or {}
             open_pos.append({"asset": tk, "entry": pos["entry"], "price": px, "sl": pos["sl"], "tp": pos.get("tp"),
                              "gain_pct": round((px - pos["entry"]) / pos["entry"] * 100, 3), "setup": sp.get("kind"),
-                             "setup_name": sp.get("setup"), "zone": [sp.get("zone_low"), sp.get("zone_high")], "ctx": sp.get("ctx"),
+                             "setup_name": sp.get("setup"), "zone": [sp.get("zone_low"), sp.get("zone_high")], "inval": sp.get("inval"), "ctx": sp.get("ctx"),
                              "flow_entry": sp.get("flow_entry"), "broken_noflow": bool(sp.get("broken_noflow_ts")),
                              "age_h": round((time.time() - sp.get("opened_ts", time.time())) / 3600, 1)})
     syms = cfg.get("SUPSW_SYMBOLS", ["BTC", "ETH", "HYPE", "TAO", "SUI"])
@@ -3954,7 +3960,7 @@ def supsw_export(days: int = Query(60, ge=1, le=120), email: str = Depends(requi
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
     cols = ["asset", "side", "setup", "setup_kind", "trend", "weekly_trend", "btc_trend", "funding_ann", "flow", "atr_pct", "hour_utc",
-            "zone_low", "zone_high", "zone_touches", "held", "pierce_pct", "price", "entry_ref", "sl", "tp", "risk_pct", "reward_pct", "decision",
+            "zone_low", "zone_high", "zone_touches", "held", "pierce_pct", "price", "entry_ref", "sl", "tp", "inval", "risk_pct", "reward_pct", "decision",
             "trade_uid", "evaluated", "outcome", "hit_h", "mfe24", "mae24", "mfe72", "mae72", "fin24", "fin72", "exit_ts", "exit_price",
             "exit_reason", "early_exit", "pnl_pct", "hold_h", "flow_exit", "h4_intact_exit", "d1_trend_exit", "post_eval", "fin1h", "fin4h", "fin24h",
             "after_outcome", "after_hit_h", "after_mfe", "after_mae", "too_early"]
