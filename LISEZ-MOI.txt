@@ -1,0 +1,2 @@
+Dossier hyperbot_v4.366 : decompressez, puis copiez TOUS les fichiers dans votre depot GitHub (ils remplacent les anciens), commit, Railway redeploie.
+Ajoutes depuis la v4.362 : swing_support.py, trend_follow.py (nouveaux).

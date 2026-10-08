@@ -1484,6 +1484,12 @@ PROFILE_SWING = {
     "SUPSW_EXIT_MIN_PCT": 0.5,            # le niveau de sortie est au moins a N % sous l entree (evite le declenchement hypersensible)
     "SUPSW_EXIT_MAX_PCT": 3.0,            # ... et au plus a N % sous l entree (toujours atteignable avant le stop)
     "SUPSW_EXIT_REQUIRE_H4_END": 0,       # 1 = exige aussi que la tendance H4 ne soit plus haussiere (sinon : seulement enregistre)
+    "SUPSW_LEVER_SCALE": 0,               # v4.366 : 1 = stop et objectif dependent du levier (stop = SUPSW_MARGIN_RISK_PCT / levier, objectif par palier)
+    "SUPSW_MARGIN_RISK_PCT": 7.5,         # perte au stop visee en % de la marge (stop prix = ce chiffre / levier, plafonne a SUPSW_SL_PCT)
+    "SUPSW_MIN_SL_PCT": 1.5,              # plancher du stop (% du prix) pour ne pas etre sorti par le bruit aux leviers eleves
+    "SUPSW_TP_LEV1": 2.0,                 # objectif (% du prix) a levier x1
+    "SUPSW_TP_LEV2": 1.5,                 # ... a levier x2
+    "SUPSW_TP_LEV3": 1.0,                 # ... a levier x3 et plus
     "FLOW_RECORDER_ENABLED": 1,           # v4.349 : 1 = enregistre le flux acheteur/vendeur par tranche de 5 min et par actif (lecture seule)
     "FLOW_RECORDER_BIG_TRADE_USD": 5000.0, # v4.349 : seuil d une "grosse" transaction
     "FLOW_RECORDER_KEEP_DAYS": 120,       # v4.349 : duree de conservation
@@ -11057,7 +11063,7 @@ class BotEngine:
     # funding, flux) est ENREGISTRE sans filtrer ; le journal mesure ensuite si les sorties anticipees etaient trop precoces.
     def _supsw_state_cfg(self):
         c = self.cfg
-        return {
+        K = {
             "syms": c.get("SUPSW_SYMBOLS", ["BTC", "ETH", "HYPE", "TAO", "SUI"]),
             "sl_pct": float(c.get("SUPSW_SL_PCT", 5.0)), "tp_pct": float(c.get("SUPSW_TP_PCT", 2.0)),
             "risk_pct": float(c.get("SUPSW_RISK_PCT", 1.0)), "max_notional": float(c.get("SUPSW_MAX_NOTIONAL_USD", 60.0)),
@@ -11070,6 +11076,14 @@ class BotEngine:
             "exit_max": float(c.get("SUPSW_EXIT_MAX_PCT", 3.0)), "need_h4_end": bool(c.get("SUPSW_EXIT_REQUIRE_H4_END", 0)),
             "slip": float(c.get("FOREX_SCALP_SLIPPAGE_PCT", 0.005)), "fee": float(c.get("FEE_ROUND_TRIP_PCT", 0.09)),
         }
+        # v4.366 : stop / objectif selon le levier (desactive par defaut). La sortie anticipee reste TOUJOURS au-dessus du stop.
+        if int(c.get("SUPSW_LEVER_SCALE", 0)) == 1:
+            K["sl_pct"], K["tp_pct"] = sups.scaled_levels(
+                K["lev"], K["sl_pct"], K["tp_pct"], float(c.get("SUPSW_MARGIN_RISK_PCT", 7.5)), float(c.get("SUPSW_MIN_SL_PCT", 1.5)),
+                float(c.get("SUPSW_TP_LEV1", 2.0)), float(c.get("SUPSW_TP_LEV2", 1.5)), float(c.get("SUPSW_TP_LEV3", 1.0)))
+        K["exit_max"] = min(K["exit_max"], round(K["sl_pct"] * 0.8, 3))
+        K["exit_min"] = min(K["exit_min"], K["exit_max"])
+        return K
 
     def _supsw_open_count(self):
         n = 0

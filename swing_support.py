@@ -94,3 +94,13 @@ def post_exit_metrics(side, ref_px, candles_1h, start_ms):
         if c is not None:
             out[key] = round(sgn * (c["c"] / ref_px - 1) * 100, 4)
     return out
+
+
+def scaled_levels(lev, base_sl, base_tp, margin_risk_pct=7.5, min_sl=1.5, tp1=2.0, tp2=1.5, tp3=1.0):
+    """v4.366 — stop et objectif (en % du PRIX) selon le levier. Stop = margin_risk_pct / levier, plafonne a base_sl et plancher a min_sl
+    (la perte au stop reste ~constante en % de la marge, et la liquidation reste loin). Objectif : tp1 a x1, tp2 a x2, tp3 a x3 et plus.
+    Retourne (sl_pct, tp_pct)."""
+    lev = max(int(lev or 1), 1)
+    sl = min(max(margin_risk_pct / lev, min_sl), base_sl)
+    tp = tp1 if lev <= 1 else (tp2 if lev == 2 else tp3)
+    return round(sl, 4), round(tp, 4)

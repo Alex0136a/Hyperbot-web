@@ -1,4 +1,3 @@
-[README (2).md](https://github.com/user-attachments/files/33159870/README.2.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
@@ -660,3 +659,7 @@ Nouveau fichier : `trend_follow.py` (à déposer à côté de `bot_engine.py`). 
 - **Module à part** (stratégie `trend_follow`, code 09, sous-onglet « 📈 Tendance »), paper uniquement, désactivé par défaut (`TRENDF_ENABLED`). Un actif = une seule position, tous modes confondus.
 - **Traçabilité** : table `trendf_events` ; chaque entrée (prise ou refusée) est mesurée à 24 h / 72 h, avec son **retard** (distance à la moyenne Daily en ATR) ; chaque sortie est suivie 1 h / 4 h / 24 h. Statistiques `/api/trend/stats`, export `/api/trend/journal/export.csv`.
 - Actifs par défaut : BTC, ETH, HYPE, TAO, SUI, PAXG, xyz:EUR, xyz:JPY (`TRENDF_SYMBOLS`).
+
+### v4.366 — Swing Support : stop et objectif selon le levier (optionnel)
+
+Réglage `SUPSW_LEVER_SCALE` (0 par défaut = comportement inchangé). À 1 : stop (en % du prix) = `SUPSW_MARGIN_RISK_PCT` (7,5 % de la marge) / levier, plafonné à `SUPSW_SL_PCT` et plancher `SUPSW_MIN_SL_PCT` (1,5 %) ; objectif : `SUPSW_TP_LEV1` / `LEV2` / `LEV3` = 2 / 1,5 / 1 % pour un levier ×1 / ×2 / ×3 et plus. Le levier se règle avec `SUPSW_LEVERAGE` (1 à 10). La taille reste dimensionnée par le risque (≈ 1 % du capital au stop) ; le niveau de sortie anticipée est toujours maintenu au-dessus du stop. Les positions de la carte affichent « prix X % · marge Y % ».

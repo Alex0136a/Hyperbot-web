@@ -1059,6 +1059,13 @@ ADVANCED_SETTINGS = {
     "SUPSW_EXIT_MIN_PCT":       {"label": "Swing Support - le niveau de sortie est au moins a N % sous l entree", "default": 0.5},
     "SUPSW_EXIT_MAX_PCT":       {"label": "Swing Support - le niveau de sortie est au plus a N % sous l entree (doit rester sous le stop)", "default": 3.0},
     "SUPSW_EXIT_REQUIRE_H4_END": {"label": "Swing Support - 1 = exige aussi que la tendance H4 ne soit plus haussiere pour sortir (0 = seulement enregistree)", "default": 0},
+    "SUPSW_LEVERAGE":           {"label": "Swing Support - levier (paper)", "default": 3},
+    "SUPSW_LEVER_SCALE":        {"label": "Swing Support - 1 = stop et objectif dependent du levier (stop = marge visee / levier, objectif par palier) ; 0 = valeurs fixes ci-dessus", "default": 0},
+    "SUPSW_MARGIN_RISK_PCT":    {"label": "Swing Support - levier : perte visee au stop en % de la marge (stop prix = N / levier, plafonne au stop ci-dessus)", "default": 7.5},
+    "SUPSW_MIN_SL_PCT":         {"label": "Swing Support - levier : plancher du stop (% du prix)", "default": 1.5},
+    "SUPSW_TP_LEV1":            {"label": "Swing Support - levier : objectif (% du prix) a levier x1", "default": 2.0},
+    "SUPSW_TP_LEV2":            {"label": "Swing Support - levier : objectif (% du prix) a levier x2", "default": 1.5},
+    "SUPSW_TP_LEV3":            {"label": "Swing Support - levier : objectif (% du prix) a levier x3 et plus", "default": 1.0},
     "TRENDF_ENABLED":           {"label": "Tendance - actif (1) ou eteint (0). PAPER uniquement ; entree quand Daily ET H4 confirment, on reste tant que la tendance tient", "default": 0},
     "TRENDF_ALLOW_SHORT":       {"label": "Tendance - autoriser les SHORT quand la tendance confirmee est baissiere (1 = oui)", "default": 1},
     "TRENDF_RISK_PCT":          {"label": "Tendance - perte au stop initial = N % du capital (dimensionne la taille)", "default": 1.0},
@@ -1295,7 +1302,7 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"FXSWING_ENABLED","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+_ZERO_ALLOWED_INT_KEYS = {"FXSWING_ENABLED","SUPSW_LEVER_SCALE","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
                           "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
@@ -1373,6 +1380,16 @@ def _coerce_advanced_value(key: str, value):
         return False, "entre 1 et 60 jours"
     if key in ("SUPSW_EXIT_MIN_PCT", "SUPSW_EXIT_MAX_PCT") and not 0.1 <= value <= 10:
         return False, "entre 0,1 et 10 %"
+    if key == "SUPSW_LEVERAGE" and not 1 <= value <= 10:
+        return False, "entre 1 et 10"
+    if key == "SUPSW_LEVER_SCALE" and value not in (0, 1):
+        return False, "1 (oui) ou 0 (non)"
+    if key == "SUPSW_MARGIN_RISK_PCT" and not 1 <= value <= 30:
+        return False, "entre 1 et 30 % de la marge"
+    if key == "SUPSW_MIN_SL_PCT" and not 0.3 <= value <= 10:
+        return False, "entre 0,3 et 10 %"
+    if key in ("SUPSW_TP_LEV1", "SUPSW_TP_LEV2", "SUPSW_TP_LEV3") and not 0.3 <= value <= 15:
+        return False, "entre 0,3 et 15 %"
     if key in ("SUPSW_ENABLED", "SUPSW_EXIT_REQUIRE_H4_END", "SUPSW_EXIT_LEVEL") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
     if key == "SUPSW_SL_PCT" and not 0.5 <= value <= 15:
@@ -3885,7 +3902,8 @@ def swing_status(email: str = Depends(require_user)):
 # ───────────────── v4.362 — SWING SUPPORT (crypto, paper) : suivi, statistiques, export ─────────────────
 _SUPSW_KEYS = ("SUPSW_SL_PCT", "SUPSW_TP_PCT", "SUPSW_RISK_PCT", "SUPSW_MAX_NOTIONAL_USD", "SUPSW_MAX_TRADES", "SUPSW_WINDOW",
                "SUPSW_SIGNAL_MAX_AGE_SEC", "SUPSW_MAX_HOLD_DAYS", "SUPSW_EXIT_BUFFER_ATR", "SUPSW_EXIT_FLOW", "SUPSW_EXIT_REQUIRE_H4_END",
-               "SUPSW_EXIT_LEVEL", "SUPSW_EXIT_MIN_PCT", "SUPSW_EXIT_MAX_PCT")
+               "SUPSW_EXIT_LEVEL", "SUPSW_EXIT_MIN_PCT", "SUPSW_EXIT_MAX_PCT", "SUPSW_LEVERAGE", "SUPSW_LEVER_SCALE", "SUPSW_MARGIN_RISK_PCT", "SUPSW_MIN_SL_PCT",
+               "SUPSW_TP_LEV1", "SUPSW_TP_LEV2", "SUPSW_TP_LEV3")
 
 
 def _supsw_est(e, fee):
@@ -3970,7 +3988,7 @@ def supsw_status(email: str = Depends(require_user)):
             px = float((bot.all_mids or {}).get(tk) or 0) or pos["entry"]
             sp = pos.get("supsw") or {}
             open_pos.append({"asset": tk, "entry": pos["entry"], "price": px, "sl": pos["sl"], "tp": pos.get("tp"),
-                             "gain_pct": round((px - pos["entry"]) / pos["entry"] * 100, 3), "setup": sp.get("kind"),
+                             "gain_pct": round((px - pos["entry"]) / pos["entry"] * 100, 3), "lev": pos.get("leverage") or 1, "setup": sp.get("kind"),
                              "setup_name": sp.get("setup"), "zone": [sp.get("zone_low"), sp.get("zone_high")], "inval": sp.get("inval"), "ctx": sp.get("ctx"),
                              "flow_entry": sp.get("flow_entry"), "broken_noflow": bool(sp.get("broken_noflow_ts")),
                              "age_h": round((time.time() - sp.get("opened_ts", time.time())) / 3600, 1)})
@@ -4011,7 +4029,10 @@ def supsw_stats_ep(days: int = Query(30, ge=1, le=120), email: str = Depends(req
     qualite des sorties anticipees (le prix aurait-il atteint l objectif / le stop ensuite ?)."""
     fee = float(cfg.get("FEE_ROUND_TRIP_PCT", 0.09))
     ev = db.supsw_events_since(int((time.time() - days * 86400) * 1000), limit=20000)
-    return {"days": days, "fee_pct": fee, **_supsw_stats(ev, fee, float(cfg.get("SUPSW_SL_PCT", 5.0)), float(cfg.get("SUPSW_TP_PCT", 2.0)))}
+    last = next((e for e in ev if e.get("risk_pct") and e.get("reward_pct")), None)       # niveaux reellement utilises (peuvent dependre du levier)
+    sl_u = float(last["risk_pct"]) if last else float(cfg.get("SUPSW_SL_PCT", 5.0))
+    tp_u = float(last["reward_pct"]) if last else float(cfg.get("SUPSW_TP_PCT", 2.0))
+    return {"days": days, "fee_pct": fee, **_supsw_stats(ev, fee, sl_u, tp_u)}
 
 
 @app.get("/api/supsw/journal/export.csv")
