@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/33215128/README.md)
+[README.md](https://github.com/user-attachments/files/33219274/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
@@ -668,3 +668,7 @@ Réglage `SUPSW_LEVER_SCALE` (0 par défaut = comportement inchangé). À 1 : st
 ### v4.367 — Trades fermés Swing Support / Tendance : sens et pic
 
 Chaque ligne de « Trades fermés » indique maintenant LONG / SHORT et le pic atteint : « pic prix +X % · marge +Y % · +Z $ » (ou « jamais en gain »).
+
+### v4.368 — Badge de stratégie sur les trades ouverts
+
+La liste « Trades ouverts » affiche maintenant la stratégie de chaque position : 🧱 SWING SUPPORT, 📈 TENDANCE, 🌊 SWING FX, ⚡ SCALP FX, 🧭 TOP-DOWN (moteur principal), en plus de ACCUMULATION et FUNDING.
