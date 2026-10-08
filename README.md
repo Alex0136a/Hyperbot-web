@@ -1,3 +1,4 @@
+[README.md](https://github.com/user-attachments/files/33215128/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
@@ -663,3 +664,7 @@ Nouveau fichier : `trend_follow.py` (à déposer à côté de `bot_engine.py`). 
 ### v4.366 — Swing Support : stop et objectif selon le levier (optionnel)
 
 Réglage `SUPSW_LEVER_SCALE` (0 par défaut = comportement inchangé). À 1 : stop (en % du prix) = `SUPSW_MARGIN_RISK_PCT` (7,5 % de la marge) / levier, plafonné à `SUPSW_SL_PCT` et plancher `SUPSW_MIN_SL_PCT` (1,5 %) ; objectif : `SUPSW_TP_LEV1` / `LEV2` / `LEV3` = 2 / 1,5 / 1 % pour un levier ×1 / ×2 / ×3 et plus. Le levier se règle avec `SUPSW_LEVERAGE` (1 à 10). La taille reste dimensionnée par le risque (≈ 1 % du capital au stop) ; le niveau de sortie anticipée est toujours maintenu au-dessus du stop. Les positions de la carte affichent « prix X % · marge Y % ».
+
+### v4.367 — Trades fermés Swing Support / Tendance : sens et pic
+
+Chaque ligne de « Trades fermés » indique maintenant LONG / SHORT et le pic atteint : « pic prix +X % · marge +Y % · +Z $ » (ou « jamais en gain »).
