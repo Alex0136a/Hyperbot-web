@@ -4007,7 +4007,7 @@ def supsw_status(email: str = Depends(require_user)):
         mv = (ex - entry) / entry * 100 if entry and ex else None
         closed.append({"id": t["id"], "asset": t.get("coin"), "reason": t.get("reason"), "opened": t.get("created_at"),
                        "closed": t.get("closed_at"), "pnl": t.get("pnl"), "pnl_net": round(_row_pnl(t), 4), "fees": round(_trade_fee_usd(t), 4),
-                       "move_pct": round(mv, 3) if mv is not None else None})
+                       "move_pct": round(mv, 3) if mv is not None else None, "side": t.get("action"), "peak_usd": t.get("peak_pnl"), "peak_pct": t.get("peak_pnl_pct"), "lev": t.get("leverage") or 1})
     closed.sort(key=lambda x: x["closed"] or "", reverse=True)
     n = len(closed)
     wins = [x for x in closed if (x["pnl_net"] or 0) > 0]
@@ -4161,7 +4161,7 @@ def trend_status(email: str = Depends(require_user)):
             mv = -mv
         closed.append({"id": t["id"], "asset": t.get("coin"), "reason": t.get("reason"), "opened": t.get("created_at"),
                        "closed": t.get("closed_at"), "pnl": t.get("pnl"), "pnl_net": round(_row_pnl(t), 4), "fees": round(_trade_fee_usd(t), 4),
-                       "move_pct": round(mv, 3) if mv is not None else None})
+                       "move_pct": round(mv, 3) if mv is not None else None, "side": t.get("action"), "peak_usd": t.get("peak_pnl"), "peak_pct": t.get("peak_pnl_pct"), "lev": t.get("leverage") or 1})
     closed.sort(key=lambda x: x["closed"] or "", reverse=True)
     n = len(closed)
     wins = [x for x in closed if (x["pnl_net"] or 0) > 0]
