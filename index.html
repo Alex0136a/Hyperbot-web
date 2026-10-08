@@ -4916,6 +4916,11 @@ Confirmer ?`
                       <span style={{color:"#94a3b8",fontSize:10}}>x{trade.leverage}</span>
                       {trade.strategy==="accumulation" && <span style={{background:"#1a0a2e",color:"#c084fc",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>🎯 ACCUMULATION</span>}
                       {trade.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>💰 FUNDING</span>}
+                      {trade.strategy==="swing_support" && <span style={{background:"#2a0f3d",color:"#c084fc",border:"1px solid #c084fc",padding:"1px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>🧱 SWING SUPPORT</span>}
+                      {trade.strategy==="trend_follow" && <span style={{background:"#052e1a",color:"#34d399",border:"1px solid #34d399",padding:"1px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>📈 TENDANCE</span>}
+                      {trade.strategy==="forex_swing" && <span style={{background:"#0c2a3a",color:"#38bdf8",border:"1px solid #38bdf8",padding:"1px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>🌊 SWING FX</span>}
+                      {trade.strategy==="forex_scalp" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>⚡ SCALP FX</span>}
+                      {(trade.strategy==="forex" || !trade.strategy) && <span style={{background:"#1e293b",color:"#94a3b8",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>🧭 TOP-DOWN</span>}
                       {["spot_accumulation", "accumulation", "forex", "funding_contrarian"].includes(trade.strategy) ? (
                         trade.spot_accum_armed && (
                           <span style={{background:"#052e16",color:"#34d399",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>
