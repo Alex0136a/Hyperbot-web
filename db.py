@@ -183,6 +183,11 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_trendf_events_ts ON trendf_events (ts)")
         if "inval" not in [r[1] for r in conn.execute("PRAGMA table_info(supsw_events)").fetchall()]:
             conn.execute("ALTER TABLE supsw_events ADD COLUMN inval REAL")      # v4.363 : niveau d invalidation (sortie anticipee)
+        # v4.370 : alertes de degradation mesurees en cours de trade (aucune sortie n en depend)
+        _sup_cols = [r[1] for r in conn.execute("PRAGMA table_info(supsw_events)").fetchall()]
+        for _c, _t in (("alerts_max", "INTEGER"), ("alerts_exit", "INTEGER"), ("alerts_json", "TEXT")):
+            if _c not in _sup_cols:
+                conn.execute(f"ALTER TABLE supsw_events ADD COLUMN {_c} {_t}")
         # Migration : ajoute la colonne rsi si la table trades existait deja
         # (CREATE TABLE IF NOT EXISTS n ajoute pas les colonnes manquantes a
         # une table deja creee par une version anterieure du code).

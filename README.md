@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/33221025/README.md)
 # HyperBot Web — déploiement GitHub + Railway
 
 Version web (sans interface Tkinter) du bot de trading, avec l'interface
@@ -676,3 +675,7 @@ La liste « Trades ouverts » affiche maintenant la stratégie de chaque positio
 ### v4.369 — Libellés des réglages Swing Support
 
 Les réglages avancés Swing Support portent maintenant un groupe explicite après « Swing Support · » : ACTIVATION, STOP FIXE, OBJECTIF FIXE, TAILLE, LIMITE, SIGNAL, DURÉE, SORTIE ANTICIPÉE, LEVIER, STOP ET OBJECTIF SELON LE LEVIER, SELON LE LEVIER. Aucun changement de comportement.
+
+### v4.370 — Swing Support : alertes de dégradation (mesure seule)
+
+Aucune sortie ne change. Chaque minute, pour chaque position Swing Support ouverte, le bot compte 7 signes de dégradation : flux vendeur, support cassé en clôture 1 h, H4 baissier, BTC baissier, sous le prix d'entrée depuis 2 h, aucun gain ≥ 0,3 % après 3 h, prix à mi-chemin du stop. Le maximum atteint et le compte à la sortie sont enregistrés dans `supsw_events` (colonnes `alerts_max`, `alerts_exit`, `alerts_json` avec l'historique), migration automatique. La carte Swing Support compare gagnants et perdants (`/api/supsw/stats`, bloc `alerts`) ; l'export CSV contient les nouvelles colonnes. Les positions déjà ouvertes commencent à être mesurées dès le déploiement. Un seuil de sortie ne sera proposé que si les perdants montent nettement plus haut que les gagnants (environ 20 trades fermés).

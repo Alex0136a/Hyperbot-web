@@ -4032,7 +4032,18 @@ def supsw_stats_ep(days: int = Query(30, ge=1, le=120), email: str = Depends(req
     last = next((e for e in ev if e.get("risk_pct") and e.get("reward_pct")), None)       # niveaux reellement utilises (peuvent dependre du levier)
     sl_u = float(last["risk_pct"]) if last else float(cfg.get("SUPSW_SL_PCT", 5.0))
     tp_u = float(last["reward_pct"]) if last else float(cfg.get("SUPSW_TP_PCT", 2.0))
-    return {"days": days, "fee_pct": fee, **_supsw_stats(ev, fee, sl_u, tp_u)}
+    # v4.370 : alertes de degradation (mesure seule) — comparaison entre trades gagnants et perdants
+    grp = {"gagnants": [], "perdants": []}
+    for e in ev:
+        if e.get("exit_ts") and e.get("alerts_max") is not None and e.get("pnl_pct") is not None:
+            grp["gagnants" if (e.get("exit_reason") or "").endswith("OBJECTIF") else "perdants" if (e.get("pnl_pct") or 0) < 0 else "gagnants"].append(e)
+    alerts = {}
+    for k, rows in grp.items():
+        if rows:
+            alerts[k] = {"n": len(rows), "max_moyen": round(sum(r["alerts_max"] for r in rows) / len(rows), 2),
+                         "a_la_sortie_moyen": round(sum((r.get("alerts_exit") or 0) for r in rows) / len(rows), 2),
+                         "repartition_max": {str(i): sum(1 for r in rows if r["alerts_max"] == i) for i in range(0, 8)}}
+    return {"days": days, "fee_pct": fee, **_supsw_stats(ev, fee, sl_u, tp_u), "alerts": alerts}
 
 
 @app.get("/api/supsw/journal/export.csv")
@@ -4046,7 +4057,7 @@ def supsw_export(days: int = Query(60, ge=1, le=120), email: str = Depends(requi
             "zone_low", "zone_high", "zone_touches", "held", "pierce_pct", "price", "entry_ref", "sl", "tp", "inval", "risk_pct", "reward_pct", "decision",
             "trade_uid", "evaluated", "outcome", "hit_h", "mfe24", "mae24", "mfe72", "mae72", "fin24", "fin72", "exit_ts", "exit_price",
             "exit_reason", "early_exit", "pnl_pct", "hold_h", "flow_exit", "h4_intact_exit", "d1_trend_exit", "post_eval", "fin1h", "fin4h", "fin24h",
-            "after_outcome", "after_hit_h", "after_mfe", "after_mae", "too_early"]
+            "after_outcome", "after_hit_h", "after_mfe", "after_mae", "too_early", "alerts_max", "alerts_exit", "alerts_json"]
     w.writerow(["cloture du signal (UTC)"] + cols)
     for e in ev:
         row = [datetime.fromtimestamp(e["signal_t"] / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M")]

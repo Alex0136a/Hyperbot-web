@@ -11330,11 +11330,71 @@ class BotEngine:
             pass
         return h4, d1
 
+    _SUPSW_ALERT_NAMES = ("flux", "support_casse", "h4_baisse", "btc_baisse", "sous_entree_2h", "pas_de_gain_3h", "moitie_du_stop")
+
+    def _supsw_alert_probe(self, ticker, price, pos, sp, K):
+        """v4.370 — MESURE SEULEMENT (aucune sortie n en depend) : compte les signes de degradation d un trade Swing Support ouvert.
+        Au plus une mesure par minute. Resultat dans sp : al_max (maximum atteint), al_n (dernier compte), al_flags, al_hist."""
+        now = time.time()
+        if now - sp.get("al_ts", 0) < 60:
+            return
+        sp["al_ts"] = now
+        entry = pos["entry"]
+        age_h = (now - sp["opened_ts"]) / 3600.0
+        sp["pk"] = max(sp.get("pk") or entry, price)
+        if price < entry:
+            sp.setdefault("under_since", now)
+        else:
+            sp.pop("under_since", None)
+        f = {}
+        try:
+            fl = self._compute_trade_flow_pressure(ticker, price)
+            f["flux"] = bool(fl is not None and fl < K["exit_flow"] * 0.5)
+        except Exception:
+            f["flux"] = False
+        try:
+            c1h = self._mtf_candles(ticker, "1h", 30, cache_only=True)
+            f["support_casse"] = bool(c1h and sups.zone_broken_1h(c1h, sp.get("inval") or sp["zone_low"], sp["opened_ts"], K["exit_buf"] * (mtf.atr(c1h) or 0)))
+        except Exception:
+            f["support_casse"] = False
+        try:
+            h4_ok, _ = self._supsw_trend_snapshot(ticker, price)
+            f["h4_baisse"] = (h4_ok == "non")
+        except Exception:
+            f["h4_baisse"] = False
+        try:
+            bt = None
+            if ticker != "BTC":
+                bpx = float((self.all_mids or {}).get("BTC") or 0)
+                if bpx > 0:
+                    bv = self.mtf_view("BTC", bpx, cache_only=True, force_tf=("1d", "1h"))
+                    bt = bv.get("trend") if bv.get("ok") else None
+            f["btc_baisse"] = bool(bt is not None and bt != "haussiere")
+        except Exception:
+            f["btc_baisse"] = False
+        f["sous_entree_2h"] = bool(sp.get("under_since") and now - sp["under_since"] >= 7200)
+        f["pas_de_gain_3h"] = bool(age_h >= 3 and (sp["pk"] / entry - 1) * 100 < 0.3)
+        try:
+            f["moitie_du_stop"] = bool(entry > pos["sl"] and (entry - price) >= 0.5 * (entry - pos["sl"]))
+        except Exception:
+            f["moitie_du_stop"] = False
+        n = sum(1 for v in f.values() if v)
+        if n != sp.get("al_n") or not sp.get("al_hist"):
+            h = sp.setdefault("al_hist", [])
+            h.append([round(age_h, 2), n, round((price / entry - 1) * 100, 3)])
+            del h[:-80]
+        sp["al_n"], sp["al_flags"] = n, f
+        sp["al_max"] = max(sp.get("al_max", 0), n)
+
     def _manage_supsw(self, symbol, price, state, pos, ticker):
         K = self._supsw_state_cfg()
         sp = pos.get("supsw")
         if not sp:
             return
+        try:
+            self._supsw_alert_probe(ticker, price, pos, sp, K)
+        except Exception as e:
+            print(f"[SWING-SUP] mesure des alertes ignoree {ticker} : {type(e).__name__}: {e}")
         entry = pos["entry"]
         gain = price - entry
         pnl_usd_now = pos["size"] * pos.get("leverage", 1) * gain / entry
@@ -11385,7 +11445,9 @@ class BotEngine:
             db.supsw_record_exit(trade_uid, {
                 "exit_ts": int(time.time() * 1000), "exit_price": exit_px, "exit_reason": reason, "early_exit": 1 if early else 0,
                 "pnl_pct": round((exit_px / entry - 1) * 100, 4), "hold_h": round((time.time() - sp["opened_ts"]) / 3600, 2),
-                "flow_exit": sp.get("flow_exit"), "h4_intact_exit": h4_ok, "d1_trend_exit": d1_tr})
+                "flow_exit": sp.get("flow_exit"), "h4_intact_exit": h4_ok, "d1_trend_exit": d1_tr,
+                "alerts_max": sp.get("al_max"), "alerts_exit": sp.get("al_n"),
+                "alerts_json": json.dumps({"flags": sp.get("al_flags"), "hist": sp.get("al_hist")}) if sp.get("al_hist") else None})
         except Exception as e:
             print(f"[SWING-SUP] enregistrement de la sortie ignore : {e}")
         self.emit("trade", trade)

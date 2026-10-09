@@ -3930,6 +3930,11 @@ Confirmer ?`
                             <div style={{marginTop:8}}>
                               <div style={{fontSize:11,color:"#94a3b8"}}>Période : {Q.days} jours · {Q.total.n} signaux, {Q.total.evaluated} mesurés. Seuil de rentabilité avec ces réglages : <b style={{color:"#fbbf24"}}>{Q.breakeven_tp_rate==null?"—":Q.breakeven_tp_rate+" %"}</b> d'objectifs atteints avant le stop (si on gardait jusqu'au bout).</div>
                               {Q.real.n>0 && <div style={{fontSize:11,color:"#cbd5e1",marginTop:4}}>Trades réellement pris : <b>{Q.real.n}</b>, {Q.real.wins} gagnants après frais, résultat moyen <b style={{color:Q.real.avg_net_pct>=0?"#86efac":"#fca5a5"}}>{sg(Q.real.avg_net_pct,3)} %</b> par trade.</div>}
+                              {Q.alerts && (Q.alerts.gagnants||Q.alerts.perdants) && <div style={{fontSize:11,color:"#cbd5e1",marginTop:6,background:"#0f1424",border:"1px solid #1e2d4a",borderRadius:6,padding:8}}>
+                                <b style={{color:"#fbbf24"}}>⚠️ Alertes de dégradation (mesure seule, aucune sortie n'en dépend)</b> — 7 signes possibles : flux vendeur, support cassé en 1 h, H4 baissier, BTC baissier, sous l'entrée depuis 2 h, aucun gain après 3 h, prix à mi-chemin du stop.
+                                {["gagnants","perdants"].map(k=>Q.alerts[k] && <div key={k} style={{marginTop:3}}>Trades <b style={{color:k==="gagnants"?"#86efac":"#fca5a5"}}>{k}</b> ({Q.alerts[k].n}) : maximum d'alertes en cours de trade <b>{Q.alerts[k].max_moyen}</b> en moyenne · à la sortie <b>{Q.alerts[k].a_la_sortie_moyen}</b>.</div>)}
+                                <div style={{color:"#94a3b8",marginTop:3}}>Un seuil de sortie n'a de sens que si les perdants montent nettement plus haut que les gagnants. Attendre une vingtaine de trades fermés.</div>
+                              </div>}
                               <SGT title="Par déclencheur" rows={Q.by_setup}/>
                               <SGT title="Par décision (pris, candidat, ou raison du refus)" rows={Q.by_decision}/>
                               <SGT title="Par tendance Weekly (enregistrée, ne filtre pas)" rows={Q.by_weekly}/>
