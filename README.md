@@ -696,3 +696,11 @@ Fichiers : `api.py`, `index.html` (généré), `index_src.html` (source), `READM
 - **Mise en page petit écran** (≤ 640 px) : grilles de cartes à 2 colonnes (1 colonne pour les paires), champs à 16 px (plus de zoom automatique sur iPhone), boutons plus hauts, marges de sécurité (encoche et barre du bas), plus de défilement horizontal de la page, en-tête et horloge qui passent à la ligne.
 - **Chargement plus rapide** : `index.html` est maintenant **précompilé** (le navigateur n'a plus à charger ni exécuter Babel, environ 3 Mo, à chaque ouverture). La source reste dans `index_src.html` : c'est elle qui sert aux futures modifications, et `index.html` en est regénéré. **Les deux fichiers sont à déposer dans le dépôt**, mais seul `index.html` est servi.
 - Les notifications ne sont pas incluses (iOS ne les permet qu'à l'application installée et via un service d'envoi côté serveur) ; à reprendre plus tard.
+
+## v4.373 — FIX CRITIQUE : positions perdues au redéploiement
+
+Fichiers : `bot_engine.py`, `db.py`, `README.md`.
+
+- **Cause** (confirmée par les logs Railway du 10/10 à 13:40 UTC) : la sauvegarde automatique des positions (toutes les 5 s) démarrait **avant** la reprise des positions. Quand le démarrage dépassait 5 s, elle écrasait `hyperbot_positions.json` avec 0 position ; la reprise relisait alors un fichier vide (« Chargement OK : 0 position »). Les trades Paper (Swing Support, Spot-Accum…) disparaissaient de la mémoire du bot ; leurs lignes restaient « ouvertes » en base.
+- **Correctif** : aucune écriture du fichier tant que la reprise n'est pas terminée ; copie de sécurité `hyperbot_positions.json.bak` avant chaque reprise ; verrou et fichier temporaire unique par fil (corrige aussi l'erreur « No such file … .tmp »).
+- **Rattrapage** : au démarrage, les trades **Paper Swing Support et Spot-Accum** encore « ouverts » en base depuis moins de 4 jours et absents du fichier sont **reconstruits** avec leurs niveaux d'origine (entrée, stop, objectif, taille, levier). Le suivi du pic et l'armement repartent de zéro ; la sortie anticipée de Swing Support garde son niveau d'invalidation. Un emplacement déjà occupé n'est jamais touché ; les vieilles lignes « ouvertes » (plus de 4 jours) sont ignorées. Message dans les logs : « RECONSTRUITE depuis la base ».

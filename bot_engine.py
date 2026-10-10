@@ -3865,6 +3865,11 @@ class BotEngine:
         depasse son pic, lui faisant reprendre une reference basse et rater
         la fermeture qui aurait du se produire (perte de l avantage acquis)."""
         import json, os
+        # v4.373 — FIX BUG CRITIQUE : la sauvegarde automatique (toutes les 5 s) demarrait AVANT la reprise des positions. Quand le demarrage
+        # prenait plus de 5 s (redeploiement), elle ECRASAIT le fichier avec 0 position, puis la reprise ne trouvait plus rien (Swing Support,
+        # Spot-Accum perdus). Aucune ecriture tant que la reprise n est pas terminee.
+        if not getattr(self, "_positions_restored", False):
+            return
         positions = {}
         for sym, st in self.states.items():
             if st.position:
@@ -3904,12 +3909,17 @@ class BotEngine:
             # un arret Railway (SIGTERM) pendant l ecriture ne peut plus
             # laisser un fichier tronque, donc illisible, donc TOUTES les
             # positions perdues au redemarrage.
-            tmp_path = self.POSITIONS_FILE + ".tmp"
-            with open(tmp_path, "w") as f:
-                json.dump(positions, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, self.POSITIONS_FILE)
+            # v4.373 : verrou + fichier temporaire unique par fil (deux fils ecrivaient le meme .tmp : "No such file ... .tmp")
+            lock = getattr(self, "_pos_save_lock", None)
+            if lock is None:
+                lock = self._pos_save_lock = threading.Lock()
+            with lock:
+                tmp_path = f"{self.POSITIONS_FILE}.{threading.get_ident()}.tmp"
+                with open(tmp_path, "w") as f:
+                    json.dump(positions, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, self.POSITIONS_FILE)
             print(f"[POSITIONS] Sauvegarde OK : {len(positions)} position(s) -> {os.path.abspath(self.POSITIONS_FILE)} (coins: {[ticker_from_slot_key(k) for k in positions]})")
         except Exception as e:
             print(f"[POSITIONS] ERREUR sauvegarde : {e}")
@@ -3988,8 +3998,15 @@ class BotEngine:
            position -> supprimees.
         Si Hyperliquid est illisible, rien n est deduit ni supprime : les
         positions sauvegardees sont restaurees telles quelles."""
+        import os
         cfg = self.cfg
         wallet = cfg.get("WALLET_ADDRESS")
+        try:                                                          # v4.373 : copie de securite du fichier avant toute reprise
+            import shutil
+            if os.path.exists(self.POSITIONS_FILE):
+                shutil.copy2(self.POSITIONS_FILE, self.POSITIONS_FILE + ".bak")
+        except Exception as e:
+            print(f"[POSITIONS] copie de securite impossible : {e}")
         saved = self._load_saved_positions() or {}
         real_tickers = sorted({ticker_from_slot_key(k) for k in cfg["SYMBOLS"]})
         saved_tickers = [ticker_from_slot_key(k.replace("ACCUM__", "", 1)) for k in saved]
@@ -4091,10 +4108,69 @@ class BotEngine:
             except Exception as e:
                 print(f"[RECOVER] Nettoyage des traces pending impossible : {e}")
 
-        summary = f"Reprise : {restored} position(s) restauree(s), {adopted} retrouvee(s) sur Hyperliquid, {closed_offline} fermee(s) pendant la coupure."
-        self.emit("log", {"msg": summary, "level": "ok" if not (adopted or closed_offline) else "warn"})
+        rebuilt = 0
+        try:
+            rebuilt = self._rebuild_paper_from_db()
+        except Exception as e:
+            print(f"[RECOVER] reconstruction depuis la base impossible : {type(e).__name__}: {e}")
+        summary = f"Reprise : {restored} position(s) restauree(s), {adopted} retrouvee(s) sur Hyperliquid, {closed_offline} fermee(s) pendant la coupure" \
+                  + (f", {rebuilt} reconstruite(s) depuis la base." if rebuilt else ".")
+        self.emit("log", {"msg": summary, "level": "ok" if not (adopted or closed_offline or rebuilt) else "warn"})
         print(f"[RECOVER] {summary}")
+        self._positions_restored = True            # v4.373 : a partir d ici seulement, la sauvegarde peut ecrire
         self._save_open_positions()
+
+    def _rebuild_paper_from_db(self, max_age_h=96):
+        """v4.373 — Filet de securite : une position PAPER Swing Support / Spot-Accum encore 'ouverte' en base (moins de 4 jours) mais absente
+        du fichier de positions (ecrase) est reconstruite avec ses niveaux d'origine. Les etats de suivi (pic, armement) repartent de zero.
+        Ne touche jamais un emplacement deja occupe."""
+        from datetime import timezone, timedelta
+        since = (datetime.now(timezone.utc) - timedelta(hours=max_age_h)).strftime("%Y-%m-%dT%H:%M:%S")
+        rows = db.recent_open_paper_trades(since, ("swing_support", "spot_accumulation"))
+        tracked = {st.position.get("trade_uid") for pool in (self.states, self.accum_states) for st in pool.values() if st.position}
+        n = 0
+        for row in rows:
+            uid = row["trade_uid"]
+            if uid in tracked or not row.get("entry_price") or not row.get("stop_loss"):
+                continue
+            coin, action = row["coin"], row["action"]
+            is_accum = bool(row.get("is_accum_slot"))
+            pool = self.accum_states if is_accum else self.states
+            slot = self._resolve_slot(pool, row.get("slot_key"), coin)
+            if slot is None:
+                continue
+            entry = float(row["entry_price"])
+            long_side = action == "LONG"
+            lev = row.get("leverage") or 1
+            opened_at = self._opened_at_from_iso(row.get("created_at")) or datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            try:
+                opened_ts = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00")).replace(tzinfo=timezone.utc).timestamp()
+            except Exception:
+                opened_ts = time.time()
+            pos = {"type": "long" if long_side else "short", "entry": entry, "sl": float(row["stop_loss"]),
+                   "tp": float(row["take_profit1"] or entry * (1.02 if long_side else 0.98)), "size": float(row.get("size_usd") or 0),
+                   "peak": entry, "opened_at": opened_at, "confidence": row.get("confidence"), "leverage": lev,
+                   "strategy": row["strategy"], "effective_mode": "paper", "slot_key": slot, "trade_uid": uid, "recovered": True,
+                   "recovered_from_db": True}
+            if row.get("sl_pct_used") is not None:
+                pos["sl_pct_of_e"] = row["sl_pct_used"]
+            if row.get("ttp_arm1_pct_used") is not None:
+                pos["ttp_arm1_pct"] = row["ttp_arm1_pct_used"]
+            if row["strategy"] == "swing_support":
+                ev = db.supsw_event_by_uid(uid) or {}
+                pos["engine"] = "supsw"
+                pos["supsw"] = {"opened_ts": opened_ts, "zone_low": ev.get("zone_low") or pos["sl"], "zone_high": ev.get("zone_high"),
+                                "sl0": pos["sl"], "tp": pos["tp"], "inval": ev.get("inval") or ev.get("zone_low"),
+                                "setup": ev.get("setup") or "?", "kind": ev.get("setup_kind") or "?", "ctx": {}, "flow_entry": ev.get("flow"),
+                                "signal_t": ev.get("signal_t")}
+            if pos["size"] <= 0:
+                continue
+            target = pool[slot]
+            target.position = pos
+            self._reset_tracking(target)
+            n += 1
+            self.emit("log", {"msg": f"[{coin}] Position {row['strategy']} {action} @ ${entry:.6g} RECONSTRUITE depuis la base (fichier de positions ecrase) — niveaux d origine, suivi du pic reparti de zero.", "level": "warn"})
+        return n
 
     def _close_offline_position(self, target, slot, ticker, pos):
         """Position LIVE sauvegardee absente d Hyperliquid : fermee pendant

@@ -594,6 +594,28 @@ def find_open_trades_for_recovery(coin, action):
         return [dict(r) for r in rows]
 
 
+def recent_open_paper_trades(since_iso, strategies):
+    """v4.373 — trades PAPER encore ouverts en base (closed_at NULL) crees depuis since_iso, pour reconstruire des positions
+    perdues au redemarrage (fichier de positions ecrase)."""
+    if not strategies:
+        return []
+    marks = ", ".join("?" * len(strategies))
+    with _lock, _connect() as conn:
+        rows = conn.execute(f"""
+            SELECT trade_uid, coin, action, strategy, created_at, slot_key, is_accum_slot, leverage, size_usd, entry_price,
+                   stop_loss, take_profit1, confidence, sl_pct_used, ttp_arm1_pct_used
+            FROM trades WHERE closed_at IS NULL AND status='open' AND COALESCE(trade_mode,'paper')='paper'
+              AND trade_uid IS NOT NULL AND strategy IN ({marks}) AND created_at >= ? ORDER BY id
+        """, (*strategies, since_iso)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def supsw_event_by_uid(trade_uid):
+    with _lock, _connect() as conn:
+        row = conn.execute("SELECT * FROM supsw_events WHERE trade_uid=? ORDER BY id DESC LIMIT 1", (trade_uid,)).fetchone()
+        return dict(row) if row else None
+
+
 def insert_orphaned_closed_trade(coin, action, entry_price, exit_price, pnl, reason,
                                   strategy=None, trade_mode=None, peak_pnl=None,
                                   peak_pnl_pct=None, fees_paid=None):
