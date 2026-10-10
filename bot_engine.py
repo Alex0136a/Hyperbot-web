@@ -1423,6 +1423,12 @@ PROFILE_SWING = {
     "FOREX_SCALP_BE_R": 0.6,              # breakeven net de frais apres N x R
     "FOREX_SCALP_FLOW_EXIT": 0.5,         # sortie si le flux se retourne au-dela de +/- N
     "FOREX_SCALP_FLOW_EXIT_MIN_GAIN_R": 0.3,
+    "FOREX_SCALP_STALE_ENABLED": 1,       # v4.371 : sortie "sans progres" (1/0)
+    "FOREX_SCALP_STALE_MIN": 10,          # ... apres N minutes
+    "FOREX_SCALP_STALE_PEAK_PCT": 0.05,   # ... si le pic de gain est reste sous N % du prix
+    "FOREX_SCALP_EARLYFAIL_ENABLED": 1,   # v4.371 : sortie "echec precoce" (1/0)
+    "FOREX_SCALP_EARLYFAIL_RISK_FRAC": 0.5,  # ... quand la perte atteint cette fraction du stop
+    "FOREX_SCALP_EARLYFAIL_PEAK_PCT": 0.03,  # ... et que le pic de gain est reste sous N % du prix
     # ── v4.361 — SWING FOREX (sous-mode, PAPER uniquement ; eteint par defaut) ──
     "FXSWING_ENABLED": 0,
     "FXSWING_SYMBOLS": ["xyz:EUR", "xyz:JPY", "xyz:KRW", "xyz:DXY", "PAXG"],

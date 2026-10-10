@@ -679,3 +679,11 @@ Les réglages avancés Swing Support portent maintenant un groupe explicite apr�
 ### v4.370 — Swing Support : alertes de dégradation (mesure seule)
 
 Aucune sortie ne change. Chaque minute, pour chaque position Swing Support ouverte, le bot compte 7 signes de dégradation : flux vendeur, support cassé en clôture 1 h, H4 baissier, BTC baissier, sous le prix d'entrée depuis 2 h, aucun gain ≥ 0,3 % après 3 h, prix à mi-chemin du stop. Le maximum atteint et le compte à la sortie sont enregistrés dans `supsw_events` (colonnes `alerts_max`, `alerts_exit`, `alerts_json` avec l'historique), migration automatique. La carte Swing Support compare gagnants et perdants (`/api/supsw/stats`, bloc `alerts`) ; l'export CSV contient les nouvelles colonnes. Les positions déjà ouvertes commencent à être mesurées dès le déploiement. Un seuil de sortie ne sera proposé que si les perdants montent nettement plus haut que les gagnants (environ 20 trades fermés).
+
+## v4.371 — Scalp Forex : deux sorties anticipées
+
+Fichiers modifiés : `scalp_forex.py`, `bot_engine.py` (valeurs par défaut), `api.py` (réglages et validation), `README.md`. Actifs par défaut (1) ; chaque règle s'éteint par un réglage à 0.
+
+- **SANS PROGRES** (`FOREX_SCALP_STALE_*`) : après 10 min (`STALE_MIN`), si le pic de gain est resté sous 0,05 % du prix (`STALE_PEAK_PCT`), le trade sort au lieu d'attendre les 20 min du temps max. Motif affiché : « SCALP SANS PROGRES ».
+- **ECHEC PRECOCE** (`FOREX_SCALP_EARLYFAIL_*`) : un trade qui n'a jamais dépassé 0,03 % de gain (`EARLYFAIL_PEAK_PCT`) et a perdu la moitié de son stop (`EARLYFAIL_RISK_FRAC`) sort sans attendre le stop complet (au plus tôt 1 min après l'entrée, jamais après le breakeven). Motif : « SCALP ECHEC PRECOCE ».
+- Constat à l'origine (30 trades, 04-09/10) : 6 stops simples jamais en gain (−0,247 $), 12 « temps max » à −0,159 $. Les sorties « flux contraire » (8/8 gagnantes) et le breakeven ne sont pas touchés. Les positions déjà ouvertes appliquent les nouvelles règles dès le redémarrage.

@@ -266,6 +266,17 @@ def manage(pos, mid, now, m5, flow, cfg):
         return {"exit": "SCALP OBJECTIF", "new_sl": None}
     if now - sc["opened_ts"] >= cfg.get("FOREX_SCALP_MAX_HOLD_MIN", 20) * 60:
         return {"exit": "SCALP TEMPS MAX", "new_sl": None}
+    elapsed = now - sc["opened_ts"]
+    best_pct = best_gain / entry * 100 if entry else 0.0
+    # v4.371 — (1) SANS PROGRES : le trade n'a jamais depasse un petit gain apres N minutes -> on sort sans attendre le temps max
+    if cfg.get("FOREX_SCALP_STALE_ENABLED", 1) and elapsed >= cfg.get("FOREX_SCALP_STALE_MIN", 10) * 60 \
+            and best_pct < cfg.get("FOREX_SCALP_STALE_PEAK_PCT", 0.05):
+        return {"exit": "SCALP SANS PROGRES", "new_sl": None}
+    # v4.371 — (2) ECHEC PRECOCE : jamais en gain et deja la moitie du stop perdue -> on coupe avant le stop complet
+    if cfg.get("FOREX_SCALP_EARLYFAIL_ENABLED", 1) and r > 0 and not sc.get("be_done") and elapsed >= 60 \
+            and best_pct < cfg.get("FOREX_SCALP_EARLYFAIL_PEAK_PCT", 0.03) \
+            and -gain >= cfg.get("FOREX_SCALP_EARLYFAIL_RISK_FRAC", 0.5) * r:
+        return {"exit": "SCALP ECHEC PRECOCE", "new_sl": None}
     if m5:
         c = m5[-1]
         buf = 0.3 * atr(m5)

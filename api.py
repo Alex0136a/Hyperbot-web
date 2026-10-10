@@ -1099,6 +1099,12 @@ ADVANCED_SETTINGS = {
     "FOREX_SCALP_MAX_RISK_PCT":    {"label": "Scalp Forex - stop maximal (% du prix)", "default": 0.30},
     "FOREX_SCALP_MAX_SIGNAL_AGE_SEC": {"label": "Scalp Forex - le rejet 5 min doit dater de moins de N secondes", "default": 150},
     "FOREX_SCALP_REQUIRE_1M":      {"label": "Scalp Forex - exiger la confirmation de la bougie 1 min (1/0)", "default": 1},
+    "FOREX_SCALP_STALE_ENABLED":   {"label": "Scalp Forex · SANS PROGRES - sortir sans attendre le temps max si le trade n'a jamais pris de gain (1 = oui, 0 = non)", "default": 1},
+    "FOREX_SCALP_STALE_MIN":       {"label": "Scalp Forex · SANS PROGRES - delai avant de verifier (minutes)", "default": 10},
+    "FOREX_SCALP_STALE_PEAK_PCT":  {"label": "Scalp Forex · SANS PROGRES - sort si le pic de gain est reste sous ce seuil (% du prix)", "default": 0.05},
+    "FOREX_SCALP_EARLYFAIL_ENABLED": {"label": "Scalp Forex · ECHEC PRECOCE - couper avant le stop complet un trade qui n'a jamais pris de gain (1 = oui, 0 = non)", "default": 1},
+    "FOREX_SCALP_EARLYFAIL_RISK_FRAC": {"label": "Scalp Forex · ECHEC PRECOCE - sort quand la perte atteint cette fraction du stop (0,5 = la moitie)", "default": 0.5},
+    "FOREX_SCALP_EARLYFAIL_PEAK_PCT": {"label": "Scalp Forex · ECHEC PRECOCE - uniquement si le pic de gain est reste sous ce seuil (% du prix)", "default": 0.03},
     "MTF_ZONE_MAX_WIDTH_ATR":          {"label": "Top-down - largeur maximale d une zone support/resistance (en ATR de l unite majeure ; 0 = sans limite). Evite les zones de 40-50 % du prix sur les longues consolidations ; 1,5 conseille en Swing", "default": 0.0},
     "MTF_USE_H4_LOWER":                {"label": "Top-down - signal sur bougies H4 (1) ou selon M15/H1 (0). Profil Swing : 1 avec la tendance Daily", "default": 0},
     "MTF_SIGNAL_MAX_AGE_SEC":          {"label": "Top-down - entree seulement dans les N secondes qui suivent la cloture de la bougie du signal (0 = sans limite)", "default": 0},
@@ -1302,7 +1308,7 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"FXSWING_ENABLED","SUPSW_LEVER_SCALE","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+_ZERO_ALLOWED_INT_KEYS = {"FOREX_SCALP_STALE_ENABLED","FOREX_SCALP_EARLYFAIL_ENABLED","FXSWING_ENABLED","SUPSW_LEVER_SCALE","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
                           "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
@@ -1438,8 +1444,14 @@ def _coerce_advanced_value(key: str, value):
         return False, "entre 1 et 120 jours"
     if key == "TRENDF_COOLDOWN_SEC" and not 0 <= value <= 172800:
         return False, "entre 0 et 172800 secondes"
-    if key in ("FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M") and value not in (0, 1):
+    if key in ("FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_STALE_ENABLED", "FOREX_SCALP_EARLYFAIL_ENABLED") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
+    if key == "FOREX_SCALP_STALE_MIN" and not 2 <= value <= 60:
+        return False, "entre 2 et 60 minutes"
+    if key in ("FOREX_SCALP_STALE_PEAK_PCT", "FOREX_SCALP_EARLYFAIL_PEAK_PCT") and not 0 <= value <= 1:
+        return False, "entre 0 et 1 % du prix"
+    if key == "FOREX_SCALP_EARLYFAIL_RISK_FRAC" and not 0.1 <= value <= 1:
+        return False, "entre 0,1 et 1"
     if key == "FOREX_SCALP_FEE_PCT" and not 0 <= value <= 1:
         return False, "entre 0 et 1 % du notionnel"
     if key == "FOREX_SCALP_NOTIONAL_USD" and not 5 <= value <= 200:
