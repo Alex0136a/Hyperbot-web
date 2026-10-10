@@ -5124,6 +5124,71 @@ def index():
         return f.read()
 
 
+# ── v4.372 — application installable sur smartphone (PWA) : icones generees en code, aucun fichier a deposer en plus ──
+_ICON_CACHE = {}
+
+
+def _png_icon(size):
+    """Icone PNG sans dependance : fond sombre + lettre H bleue. Cache en memoire."""
+    if size in _ICON_CACHE:
+        return _ICON_CACHE[size]
+    import struct
+    import zlib
+    bg, fg = (10, 14, 26), (59, 130, 246)
+    lo, hi = int(size * 0.28), int(size * 0.72)          # zone de la lettre
+    bar = max(int(size * 0.11), 2)
+    mid0, mid1 = int(size * 0.47), int(size * 0.47) + bar
+    rows = []
+    for y in range(size):
+        row = bytearray([0])
+        for x in range(size):
+            in_h = lo <= y < hi and (lo <= x < lo + bar or hi - bar <= x < hi or (mid0 <= y < mid1 and lo <= x < hi))
+            row += bytes(fg if in_h else bg)
+        rows.append(bytes(row))
+
+    def chunk(tag, data):
+        c = struct.pack(">I", len(data)) + tag + data
+        return c + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)) \
+        + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b"")
+    _ICON_CACHE[size] = png
+    return png
+
+
+@app.get("/icon-192.png")
+def pwa_icon_192():
+    return Response(content=_png_icon(192), media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/icon-512.png")
+def pwa_icon_512():
+    return Response(content=_png_icon(512), media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/apple-touch-icon.png")
+def pwa_icon_apple():
+    return Response(content=_png_icon(180), media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/manifest.webmanifest")
+def pwa_manifest():
+    return Response(content=json.dumps({
+        "name": "HyperBot", "short_name": "HyperBot", "start_url": "/", "scope": "/", "display": "standalone",
+        "background_color": "#0a0e1a", "theme_color": "#0a0e1a", "lang": "fr",
+        "icons": [{"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                  {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"}]}),
+        media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+def pwa_service_worker():
+    # Aucun cache : le service worker ne sert qu'a rendre l'application installable (Android). Toujours la version en ligne.
+    js = ("self.addEventListener('install',function(){self.skipWaiting();});"
+          "self.addEventListener('activate',function(e){e.waitUntil(self.clients.claim());});"
+          "self.addEventListener('fetch',function(e){e.respondWith(fetch(e.request));});")
+    return Response(content=js, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/health")
 def health():
     return {

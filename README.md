@@ -687,3 +687,12 @@ Fichiers modifiés : `scalp_forex.py`, `bot_engine.py` (valeurs par défaut), `a
 - **SANS PROGRES** (`FOREX_SCALP_STALE_*`) : après 10 min (`STALE_MIN`), si le pic de gain est resté sous 0,05 % du prix (`STALE_PEAK_PCT`), le trade sort au lieu d'attendre les 20 min du temps max. Motif affiché : « SCALP SANS PROGRES ».
 - **ECHEC PRECOCE** (`FOREX_SCALP_EARLYFAIL_*`) : un trade qui n'a jamais dépassé 0,03 % de gain (`EARLYFAIL_PEAK_PCT`) et a perdu la moitié de son stop (`EARLYFAIL_RISK_FRAC`) sort sans attendre le stop complet (au plus tôt 1 min après l'entrée, jamais après le breakeven). Motif : « SCALP ECHEC PRECOCE ».
 - Constat à l'origine (30 trades, 04-09/10) : 6 stops simples jamais en gain (−0,247 $), 12 « temps max » à −0,159 $. Les sorties « flux contraire » (8/8 gagnantes) et le breakeven ne sont pas touchés. Les positions déjà ouvertes appliquent les nouvelles règles dès le redémarrage.
+
+## v4.372 — Smartphone : application installable, mise en page mobile, chargement plus rapide
+
+Fichiers : `api.py`, `index.html` (généré), `index_src.html` (source), `README.md`.
+
+- **Installation sur l'écran d'accueil** : iPhone (Safari → Partager → « Sur l'écran d'accueil ») et Android (Chrome → menu → « Installer l'application »). L'application s'ouvre en plein écran avec son icône. Les icônes, le manifeste et le service worker sont servis par `api.py` (`/manifest.webmanifest`, `/sw.js`, `/icon-192.png`, `/icon-512.png`, `/apple-touch-icon.png`) : aucun fichier image à déposer. Le service worker ne met rien en cache : c'est toujours la dernière version en ligne.
+- **Mise en page petit écran** (≤ 640 px) : grilles de cartes à 2 colonnes (1 colonne pour les paires), champs à 16 px (plus de zoom automatique sur iPhone), boutons plus hauts, marges de sécurité (encoche et barre du bas), plus de défilement horizontal de la page, en-tête et horloge qui passent à la ligne.
+- **Chargement plus rapide** : `index.html` est maintenant **précompilé** (le navigateur n'a plus à charger ni exécuter Babel, environ 3 Mo, à chaque ouverture). La source reste dans `index_src.html` : c'est elle qui sert aux futures modifications, et `index.html` en est regénéré. **Les deux fichiers sont à déposer dans le dépôt**, mais seul `index.html` est servi.
+- Les notifications ne sont pas incluses (iOS ne les permet qu'à l'application installée et via un service d'envoi côté serveur) ; à reprendre plus tard.
