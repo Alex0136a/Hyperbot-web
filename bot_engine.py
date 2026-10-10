@@ -11232,6 +11232,17 @@ class BotEngine:
             except Exception as e:
                 print(f"[SWING-SUP] {ticker} : evaluation ignoree : {type(e).__name__}: {e}")
 
+    def _supsw_reserved(self, ticker):
+        """v4.375 : True si cet actif est reserve a Swing Support (liste SUPSW_SYMBOLS) et doit donc etre ignore par
+        Tendance, Accumulation et Spot-Accum. Sans effet si Swing Support est eteint ou si la reservation est coupee."""
+        try:
+            c = self.cfg
+            if not c.get("SUPSW_ENABLED", 0) or not int(c.get("SUPSW_RESERVE_ASSETS", 1)):
+                return False
+            return str(ticker) in set(c.get("SUPSW_SYMBOLS", ["BTC", "ETH", "HYPE", "TAO", "SUI"]))
+        except Exception:
+            return False
+
     def _supsw_context(self, ticker, v, price):
         """Contexte ENREGISTRE (jamais filtrant) : tendance de BTC, tendance Weekly, funding annualise."""
         ctx = {"btc_trend": None, "weekly_trend": None, "funding_ann": None}
@@ -11710,6 +11721,9 @@ class BotEngine:
             return
         snap = {"ts": now, "blocker": None}
         state.trendf_snapshot = snap
+        if self._supsw_reserved(ticker):
+            snap["blocker"] = "actif reserve a Swing Support"
+            return
         occ = None
         for pool in (self.states, self.accum_states):
             st = pool.get(symbol)
@@ -12412,6 +12426,9 @@ class BotEngine:
         if not snap["enabled"]:
             snap["blocker"] = "mode desactive"
             return
+        if self._supsw_reserved(ticker):      # v4.375 : actifs dedies a Swing Support
+            snap["blocker"] = "actif reserve a Swing Support"
+            return
         # v4.327 — SUR DEMANDE EXPLICITE : un actif deja ouvert dans N IMPORTE
         # QUEL autre mode (Spot-Accum, Accumulation, Funding, Forex — pools
         # self.states ET self.accum_states) est indisponible ; remplace le
@@ -13065,6 +13082,8 @@ class BotEngine:
         devient son PROPRE mode independant (_check_range_signal)."""
         if self.cfg.get("ENTRY_ENGINE_MTF", 1):  # v4.299 — moteur top-down multi-unites de temps
             return self._mtf_entry("accumulation", symbol, ticker, price, rsi, prices, state, accum_state)
+        if self._supsw_reserved(ticker):      # v4.375 : memes regles avec les anciens moteurs
+            return
         if self.cfg.get("ENTRY_ENGINE_SIMPLE", 1):  # v4.289 — moteur simple (0 = ancienne chaine)
             return self._simple_entry("accumulation", symbol, ticker, price, rsi, prices, state, accum_state)
         cfg = self.cfg
@@ -13585,6 +13604,8 @@ class BotEngine:
         """
         if self.cfg.get("ENTRY_ENGINE_MTF", 1):  # v4.299 — moteur top-down multi-unites de temps
             return self._mtf_entry("spot_accumulation", symbol, ticker, price, rsi, prices, state, state)
+        if self._supsw_reserved(ticker):      # v4.375 : memes regles avec les anciens moteurs
+            return
         if self.cfg.get("ENTRY_ENGINE_SIMPLE", 1):  # v4.289 — moteur simple (0 = ancienne chaine)
             return self._simple_entry("spot_accumulation", symbol, ticker, price, rsi, prices, state, state)
         cfg = self.cfg

@@ -714,3 +714,11 @@ Constat (346 trades Funding fermés, 24/09 → 10/10) : depuis le 28/09 +0,54 $ 
 - **Plafond d'entrée** `FUNDING_MAX_ANNUAL_PCT` (40 %, 0 = sans plafond) : pas d'entrée quand |funding annualisé| dépasse ce niveau. Tranche 40–60 % : −0,55 $ sur 34 trades (depuis le 28/09), −1,09 $ sur 86 trades au total. L'entrée refusée est suivie en lecture seule (« signaux bloqués »).
 - **Actifs exclus** `FUNDING_EXCLUDE_WEAK_COINS` (1) : plus d'entrée Funding sur GMX et RENDER (−0,40 $ / 18 trades et −0,21 $ / 6 depuis le 28/09). Liste `FUNDING_WEAK_COINS` dans le code.
 - **Sans progrès** `FUNDING_STALE_ENABLED` (1), `FUNDING_STALE_MIN` (20 min), `FUNDING_STALE_PEAK_PCT` (0,15 %) : un trade dont le pic est resté sous 0,15 % après 20 min sort (motif « FUNDING SANS PROGRES ») au lieu de continuer vers le stop. Sur l'historique : 22 trades dans ce cas, 21 finissaient au stop (−1,41 $).
+
+## v4.375 — Actifs de Swing Support réservés
+
+Fichiers : `bot_engine.py`, `api.py`, `README.md`. Réglage `SUPSW_RESERVE_ASSETS` (1 par défaut, 0 = ancien comportement), dans la carte Swing Support.
+
+- **Constat** : BTC, ETH, HYPE, TAO et SUI (liste `SUPSW_SYMBOLS`) sont souvent occupés par Swing Support ; Tendance, Accumulation et Spot-Accum y étaient bloqués (« actif déjà ouvert dans un autre mode »).
+- **Changement** : ces trois modes **n'évaluent plus** les actifs de `SUPSW_SYMBOLS` (diagnostic : « actif réservé à Swing Support »). Ils gardent tous les autres actifs. Funding, Scalp et Forex ne changent pas.
+- Sans effet si Swing Support est éteint. Les positions déjà ouvertes continuent d'être gérées normalement.

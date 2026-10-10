@@ -1061,6 +1061,7 @@ ADVANCED_SETTINGS = {
     "SUPSW_EXIT_REQUIRE_H4_END": {"label": "Swing Support · SORTIE ANTICIPÉE — 1 = exige aussi que la tendance H4 ne soit plus haussière pour sortir, 0 = seulement enregistrée", "default": 0},
     "SUPSW_LEVERAGE":           {"label": "Swing Support · LEVIER — levier utilisé par les trades Swing Support (paper, 1 à 10)", "default": 3},
     "SUPSW_LEVER_SCALE":        {"label": "Swing Support · STOP ET OBJECTIF SELON LE LEVIER — 1 = le stop et l'objectif sont calculés d'après le levier (réglages « SELON LE LEVIER » ci-dessous), 0 = stop et objectif fixes (réglages « FIXE »)", "default": 0},
+    "SUPSW_RESERVE_ASSETS":     {"label": "Swing Support · ACTIFS RÉSERVÉS — 1 = les actifs de Swing Support (BTC, ETH, HYPE, TAO, SUI) sont ignorés par Tendance, Accumulation et Spot-Accum pour ne pas se bloquer entre modes, 0 = tous les modes se partagent les actifs", "default": 1},
     "SUPSW_MARGIN_RISK_PCT":    {"label": "Swing Support · SELON LE LEVIER — perte visée au stop en % de la marge ; stop en % du prix = N ÷ levier (plafonné au stop fixe, plancher ci-dessous)", "default": 7.5},
     "SUPSW_MIN_SL_PCT":         {"label": "Swing Support · SELON LE LEVIER — distance minimale du stop en % du prix (évite un stop trop serré aux leviers élevés)", "default": 1.5},
     "SUPSW_TP_LEV1":            {"label": "Swing Support · SELON LE LEVIER — objectif en % du prix quand le levier est ×1", "default": 2.0},
@@ -1313,7 +1314,7 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"FUNDING_EXCLUDE_WEAK_COINS","FUNDING_STALE_ENABLED","FOREX_SCALP_STALE_ENABLED","FOREX_SCALP_EARLYFAIL_ENABLED","FXSWING_ENABLED","SUPSW_LEVER_SCALE","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+_ZERO_ALLOWED_INT_KEYS = {"FUNDING_EXCLUDE_WEAK_COINS","FUNDING_STALE_ENABLED","FOREX_SCALP_STALE_ENABLED","FOREX_SCALP_EARLYFAIL_ENABLED","FXSWING_ENABLED","SUPSW_LEVER_SCALE","SUPSW_RESERVE_ASSETS","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
                           "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
@@ -1393,7 +1394,7 @@ def _coerce_advanced_value(key: str, value):
         return False, "entre 0,1 et 10 %"
     if key == "SUPSW_LEVERAGE" and not 1 <= value <= 10:
         return False, "entre 1 et 10"
-    if key == "SUPSW_LEVER_SCALE" and value not in (0, 1):
+    if key in ("SUPSW_LEVER_SCALE", "SUPSW_RESERVE_ASSETS") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
     if key == "SUPSW_MARGIN_RISK_PCT" and not 1 <= value <= 30:
         return False, "entre 1 et 30 % de la marge"
@@ -3927,7 +3928,7 @@ def swing_status(email: str = Depends(require_user)):
 # ───────────────── v4.362 — SWING SUPPORT (crypto, paper) : suivi, statistiques, export ─────────────────
 _SUPSW_KEYS = ("SUPSW_SL_PCT", "SUPSW_TP_PCT", "SUPSW_RISK_PCT", "SUPSW_MAX_NOTIONAL_USD", "SUPSW_MAX_TRADES", "SUPSW_WINDOW",
                "SUPSW_SIGNAL_MAX_AGE_SEC", "SUPSW_MAX_HOLD_DAYS", "SUPSW_EXIT_BUFFER_ATR", "SUPSW_EXIT_FLOW", "SUPSW_EXIT_REQUIRE_H4_END",
-               "SUPSW_EXIT_LEVEL", "SUPSW_EXIT_MIN_PCT", "SUPSW_EXIT_MAX_PCT", "SUPSW_LEVERAGE", "SUPSW_LEVER_SCALE", "SUPSW_MARGIN_RISK_PCT", "SUPSW_MIN_SL_PCT",
+               "SUPSW_EXIT_LEVEL", "SUPSW_EXIT_MIN_PCT", "SUPSW_EXIT_MAX_PCT", "SUPSW_LEVERAGE", "SUPSW_LEVER_SCALE", "SUPSW_RESERVE_ASSETS", "SUPSW_MARGIN_RISK_PCT", "SUPSW_MIN_SL_PCT",
                "SUPSW_TP_LEV1", "SUPSW_TP_LEV2", "SUPSW_TP_LEV3")
 
 
