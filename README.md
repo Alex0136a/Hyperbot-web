@@ -704,3 +704,13 @@ Fichiers : `bot_engine.py`, `db.py`, `README.md`.
 - **Cause** (confirmée par les logs Railway du 10/10 à 13:40 UTC) : la sauvegarde automatique des positions (toutes les 5 s) démarrait **avant** la reprise des positions. Quand le démarrage dépassait 5 s, elle écrasait `hyperbot_positions.json` avec 0 position ; la reprise relisait alors un fichier vide (« Chargement OK : 0 position »). Les trades Paper (Swing Support, Spot-Accum…) disparaissaient de la mémoire du bot ; leurs lignes restaient « ouvertes » en base.
 - **Correctif** : aucune écriture du fichier tant que la reprise n'est pas terminée ; copie de sécurité `hyperbot_positions.json.bak` avant chaque reprise ; verrou et fichier temporaire unique par fil (corrige aussi l'erreur « No such file … .tmp »).
 - **Rattrapage** : au démarrage, les trades **Paper Swing Support et Spot-Accum** encore « ouverts » en base depuis moins de 4 jours et absents du fichier sont **reconstruits** avec leurs niveaux d'origine (entrée, stop, objectif, taille, levier). Le suivi du pic et l'armement repartent de zéro ; la sortie anticipée de Swing Support garde son niveau d'invalidation. Un emplacement déjà occupé n'est jamais touché ; les vieilles lignes « ouvertes » (plus de 4 jours) sont ignorées. Message dans les logs : « RECONSTRUITE depuis la base ».
+
+## v4.374 — Funding : plafond d'entrée, actifs exclus, sortie « sans progrès »
+
+Fichiers : `bot_engine.py`, `api.py`, `README.md`. Les trois règles sont actives par défaut ; chacune a un réglage (groupes « Funding · PLAFOND D'ENTREE », « ACTIFS EXCLUS », « SANS PROGRES »).
+
+Constat (346 trades Funding fermés, 24/09 → 10/10) : depuis le 28/09 +0,54 $ net (68 % de réussite), mais gains moyens +0,04 $ pour des pertes moyennes −0,077 $ et frais = 72 % du gain brut.
+
+- **Plafond d'entrée** `FUNDING_MAX_ANNUAL_PCT` (40 %, 0 = sans plafond) : pas d'entrée quand |funding annualisé| dépasse ce niveau. Tranche 40–60 % : −0,55 $ sur 34 trades (depuis le 28/09), −1,09 $ sur 86 trades au total. L'entrée refusée est suivie en lecture seule (« signaux bloqués »).
+- **Actifs exclus** `FUNDING_EXCLUDE_WEAK_COINS` (1) : plus d'entrée Funding sur GMX et RENDER (−0,40 $ / 18 trades et −0,21 $ / 6 depuis le 28/09). Liste `FUNDING_WEAK_COINS` dans le code.
+- **Sans progrès** `FUNDING_STALE_ENABLED` (1), `FUNDING_STALE_MIN` (20 min), `FUNDING_STALE_PEAK_PCT` (0,15 %) : un trade dont le pic est resté sous 0,15 % après 20 min sort (motif « FUNDING SANS PROGRES ») au lieu de continuer vers le stop. Sur l'historique : 22 trades dans ce cas, 21 finissaient au stop (−1,41 $).

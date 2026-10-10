@@ -1499,6 +1499,12 @@ PROFILE_SWING = {
     "FLOW_RECORDER_ENABLED": 1,           # v4.349 : 1 = enregistre le flux acheteur/vendeur par tranche de 5 min et par actif (lecture seule)
     "FLOW_RECORDER_BIG_TRADE_USD": 5000.0, # v4.349 : seuil d une "grosse" transaction
     "FLOW_RECORDER_KEEP_DAYS": 120,       # v4.349 : duree de conservation
+    "FUNDING_MAX_ANNUAL_PCT": 40.0,       # v4.374 : pas d entree si |funding| annualise depasse N % (0 = sans plafond). Constat : tranche 40-60 % = -0,55 $ sur 34 trades (depuis le 28/09)
+    "FUNDING_EXCLUDE_WEAK_COINS": 1,      # v4.374 : 1 = n ouvre plus de Funding sur FUNDING_WEAK_COINS (test)
+    "FUNDING_WEAK_COINS": ["GMX", "RENDER"],
+    "FUNDING_STALE_ENABLED": 1,           # v4.374 : sortie "sans progres" (1/0)
+    "FUNDING_STALE_MIN": 20,              # ... apres N minutes
+    "FUNDING_STALE_PEAK_PCT": 0.15,       # ... si le pic de gain est reste sous N % du prix
     "FUNDING_SHADOW_TRACKING": 1,         # v4.346 : 1 = suit ce que deviennent les entrees Funding bloquees par le filtre qualite (lecture seule)
     "FUNDING_SHADOW_SL_PCT": 0.7,         # v4.346 : stop hypothetique (% du prix) pour mesurer "+1R avant SL" (approximation du stop Funding)
     "BLOCKED_FOLLOWUP_ENABLED": 1,       # v4.338 : 1 = suit ce que devient un signal BLOQUE (lecture seule, aucun effet sur les entrees)
@@ -9175,6 +9181,24 @@ class BotEngine:
             if state.spot_accum_peak_pnl_pct is None or pnl_pct > state.spot_accum_peak_pnl_pct:
                 state.spot_accum_peak_pnl_pct = pnl_pct
             peak_f = state.spot_accum_peak_pnl_pct
+            # v4.374 — SANS PROGRES : le trade n'a jamais pris un petit gain apres N minutes (21 des 22 trades dans ce cas finissaient au stop)
+            if cfg.get("FUNDING_STALE_ENABLED", 1) and not state.spot_accum_armed and peak_f < cfg.get("FUNDING_STALE_PEAK_PCT", 0.15):
+                try:
+                    age_min = (datetime.now() - datetime.strptime(pos.get("opened_at", ""), "%d/%m/%Y %H:%M:%S")).total_seconds() / 60.0
+                except (ValueError, TypeError):
+                    age_min = 0.0
+                if age_min >= cfg.get("FUNDING_STALE_MIN", 20):
+                    _result = self._safe_close_position(state, price, "FUNDING SANS PROGRES", ticker, pos, symbol, mode)
+                    if _result is None:
+                        return
+                    pnl, _, trade = _result
+                    self.emit("trade", trade)
+                    if pnl > 0:
+                        self._register_win(ticker)
+                    self.emit("log", {"msg": f"[{ticker}] 💰 Funding : sans progres apres {age_min:.0f} min (pic +{peak_f:.2f}% sous +{cfg.get('FUNDING_STALE_PEAK_PCT', 0.15)}%) @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+                    self._save_open_positions()
+                    self._persist_capital_snapshot()
+                    return
             if peak_f >= arm_pct_funding:
                 if not state.spot_accum_armed:
                     state.spot_accum_armed = True
@@ -13455,6 +13479,10 @@ class BotEngine:
             snap["blocker"] = _gate_f
             return  # v4.276 — hors plage horaire du mode ; v4.281 — qualite du marche
 
+        if cfg.get("FUNDING_EXCLUDE_WEAK_COINS", 1) and ticker in (cfg.get("FUNDING_WEAK_COINS", ["GMX", "RENDER"]) or []):
+            snap["blocker"] = "actif exclu du Funding (resultats negatifs, test v4.374)"
+            return
+
         hourly_rate = self.funding_rates.get(ticker)
         if hourly_rate is None:
             snap["blocker"] = "taux de financement pas encore recu"
@@ -13472,6 +13500,14 @@ class BotEngine:
 
         if direction is None:
             snap["blocker"] = f"taux {annual_pct:+.1f}%/an, pas assez extreme (seuil +/-{threshold:.0f}%)"
+            return
+
+        # v4.374 : un funding TRES extreme annonce souvent un mouvement qui continue contre le pari (tranche 40-60 % : -1,09 $ sur 86 trades)
+        max_annual = float(cfg.get("FUNDING_MAX_ANNUAL_PCT", 40.0) or 0)
+        if max_annual > 0 and abs(annual_pct) > max_annual:
+            snap["blocker"] = f"funding {annual_pct:+.1f}%/an au-dessus du plafond {max_annual:.0f}%"
+            if not skip_quality:
+                self._funding_shadow_note(ticker, direction, price, f"funding > {max_annual:.0f} %/an")
             return
 
         # ── Score de confiance dedie : plus le funding est extreme, plus la
