@@ -835,6 +835,90 @@ function LiveSyncCard({ token }) {
   );
 }
 
+// v4.376 — Alertes telephone (Web Push). Le bouton d'activation DOIT venir d'un toucher (exigence iOS).
+function PushPanel({ token }) {
+  const [ps, setPs] = useState(null);
+  const [here, setHere] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const supported = typeof window !== "undefined" && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  const standalone = (window.navigator && window.navigator.standalone) || (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+  const refresh = useCallback(async () => {
+    try {
+      const st = await apiCall("/api/push/status","GET",null,token); setPs(st);
+      if (supported) { const reg = await navigator.serviceWorker.ready; const sub = await reg.pushManager.getSubscription(); setHere(!!sub && st.endpoints.includes(sub.endpoint)); }
+    } catch(e) { setMsg(e.message); }
+  }, [token, supported]);
+  useEffect(() => { refresh(); }, [refresh]);
+  const u8 = (b64) => { const p = "=".repeat((4 - b64.length % 4) % 4); const r = atob((b64 + p).replace(/-/g,"+").replace(/_/g,"/")); return Uint8Array.from([...r].map(c => c.charCodeAt(0))); };
+  const enable = async () => {
+    setBusy(true); setMsg("");
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { setMsg("Notifications refusées : autorise-les dans Réglages > Notifications > HyperBot."); setBusy(false); return; }
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: u8(ps.public_key) });
+      await apiCall("/api/push/subscribe","POST",{ subscription: sub.toJSON() },token);
+      await refresh(); setMsg("Alertes activées sur cet appareil.");
+    } catch(e) { setMsg("Activation impossible : " + e.message); }
+    setBusy(false);
+  };
+  const disable = async () => {
+    setBusy(true); setMsg("");
+    try {
+      const reg = await navigator.serviceWorker.ready; const sub = await reg.pushManager.getSubscription();
+      if (sub) { await apiCall("/api/push/unsubscribe","POST",{ endpoint: sub.endpoint },token); await sub.unsubscribe(); }
+      await refresh(); setMsg("Alertes désactivées sur cet appareil.");
+    } catch(e) { setMsg(e.message); }
+    setBusy(false);
+  };
+  const test = async () => { try { await apiCall("/api/push/test","POST",null,token); setMsg("Alerte de test envoyée."); } catch(e) { setMsg(e.message); } };
+  const setPref = async (k, v) => {
+    try { const st = await apiCall("/api/push/prefs","PUT",{ prefs: { [k]: v } },token); setPs(st); setMsg(""); } catch(e) { setMsg(e.message); } };
+  if (!ps) return null;
+  const P = ps.prefs || {};
+  const row = (k, label, extra) => (
+    <label key={k} style={{display:"flex",gap:8,alignItems:"center",fontSize:12,color:"#cbd5e1",marginTop:6,flexWrap:"wrap"}}>
+      <input type="checkbox" checked={!!P[k]} onChange={e=>setPref(k, e.target.checked ? 1 : 0)}/> {label} {extra}
+    </label>);
+  const num = (k, w, suffix) => (
+    <span style={{display:"inline-flex",gap:4,alignItems:"center"}}>
+      <input type="number" defaultValue={P[k]} key={k + ":" + P[k]} style={{...MT.input,width:w}} onBlur={e=>{ if (e.target.value !== "" && Number(e.target.value) !== P[k]) setPref(k, Number(e.target.value)); }}/>{suffix}
+    </span>);
+  return (
+    <div style={MT.card}>
+      <div style={MT.title}>🔔 ALERTES TÉLÉPHONE <span style={{fontWeight:400,color:"#64748b"}}>— notifications même application fermée</span></div>
+      {!ps.available && <div style={{fontSize:12,color:"#fca5a5"}}>Alertes indisponibles sur le serveur : ajouter la ligne <b>cryptography</b> dans requirements.txt puis redéployer.</div>}
+      {ps.available && !supported && (
+        <div style={{fontSize:12,color:"#fbbf24"}}>
+          {isIOS && !standalone
+            ? "Sur iPhone : installe d'abord l'application (Safari > Partager > « Sur l'écran d'accueil »), ouvre-la depuis l'icône, puis reviens ici pour activer les alertes."
+            : "Ce navigateur ne gère pas les notifications. Sur iPhone, utilise l'application installée sur l'écran d'accueil (iOS 16.4 ou plus)."}
+        </div>)}
+      {ps.available && supported && (
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+          {!here
+            ? <button style={MT.btn("#22c55e")} disabled={busy} onClick={enable}>Activer les alertes sur cet appareil</button>
+            : <><span style={{fontSize:12,color:"#86efac"}}>✅ Actives sur cet appareil</span>
+                <button style={MT.btn("#60a5fa")} onClick={test}>Envoyer un test</button>
+                <button style={MT.btn("#ef4444")} disabled={busy} onClick={disable}>Désactiver</button></>}
+          <span style={{fontSize:11,color:"#64748b"}}>{ps.devices} appareil(s) abonné(s)</span>
+        </div>)}
+      {msg && <div style={{fontSize:11,color:"#fbbf24",marginTop:6}}>{msg}</div>}
+      <div style={{marginTop:10,borderTop:"1px solid #1e293b",paddingTop:6}}>
+        <div style={{fontSize:10,color:"#64748b"}}>Événements envoyés à tous les appareils abonnés :</div>
+        {row("trade_open","Trade ouvert")}
+        {row("trade_close","Trade fermé (avec le résultat)")}
+        {row("daily_loss","Perte du jour au-delà de", num("daily_loss_usd",70,"$ (tous modes)"))}
+        {row("offline","Connexion Hyperliquid perdue depuis plus de", num("offline_min",56,"min"))}
+        {row("opps","Opportunités du bot (celles de la liste ci-dessous) · confiance ≥", num("opps_min_conf",56,"%"))}
+        {P.opps ? <div style={{fontSize:10,color:"#64748b",marginLeft:22}}>Une même opportunité n'est annoncée qu'une fois toutes les {num("opps_cooldown_min",56,"min")}.</div> : null}
+      </div>
+    </div>);
+}
+
 const TREND_LBL = {haussiere:"haussière", baissiere:"baissière", neutre:"neutre"};   // v4.343
 function ManualTradingTab({ token }) {
   const [st, setSt] = useState(null);
@@ -944,6 +1028,8 @@ function ManualTradingTab({ token }) {
   return (
     <div style={{padding:16,maxWidth:1100}}>
       {err && <div style={{...MT.card,borderColor:"#7f1d1d",color:"#fca5a5"}}>⚠️ {err}</div>}
+
+      <PushPanel token={token}/>
 
       {/* ORDRE LIBRE — v4.343 */}
       <div style={MT.card}>

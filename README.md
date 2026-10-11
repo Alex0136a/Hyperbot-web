@@ -722,3 +722,14 @@ Fichiers : `bot_engine.py`, `api.py`, `README.md`. Réglage `SUPSW_RESERVE_ASSET
 - **Constat** : BTC, ETH, HYPE, TAO et SUI (liste `SUPSW_SYMBOLS`) sont souvent occupés par Swing Support ; Tendance, Accumulation et Spot-Accum y étaient bloqués (« actif déjà ouvert dans un autre mode »).
 - **Changement** : ces trois modes **n'évaluent plus** les actifs de `SUPSW_SYMBOLS` (diagnostic : « actif réservé à Swing Support »). Ils gardent tous les autres actifs. Funding, Scalp et Forex ne changent pas.
 - Sans effet si Swing Support est éteint. Les positions déjà ouvertes continuent d'être gérées normalement.
+
+## v4.376 — Alertes sur téléphone (notifications push)
+
+Fichiers : **nouveau `push_alerts.py`**, `api.py`, `manual_trading.py`, `index.html`, `index_src.html`, `README.md`.
+
+- **À vérifier avant le déploiement** : le fichier `requirements.txt` doit contenir la ligne `cryptography` (seule dépendance utilisée, aucun service externe). Sans elle, le bot démarre normalement et le panneau affiche « Alertes indisponibles ».
+- **Activation** : onglet **Trading Manuel**, panneau « 🔔 ALERTES TÉLÉPHONE » → *Activer les alertes sur cet appareil* (un toucher est obligatoire sur iPhone). Sur iPhone : d'abord installer l'app (Safari > Partager > Sur l'écran d'accueil), l'ouvrir depuis l'icône, puis activer. iOS 16.4 ou plus.
+- **Événements** (chacun activable) : trade ouvert · trade fermé avec son résultat · perte du jour au-delà d'un seuil (2 $ par défaut, tous modes, journée locale America/Marigot, une seule alerte par jour) · connexion Hyperliquid perdue depuis plus de 3 min (puis « rétablie ») · **opportunités du bot** (désactivé par défaut ; confiance minimale 70 %, une même opportunité n'est annoncée qu'une fois par 30 min).
+- Les alertes partent du serveur Railway : elles arrivent app fermée et téléphone verrouillé. Maximum 30 alertes par 10 minutes.
+- Les clés et les appareils abonnés sont dans `/data/hyperbot_push.json` (survivent aux redéploiements). Si iOS invalide un abonnement, le panneau permet de se réabonner.
+- Service worker : ajout de l'affichage des notifications et de l'ouverture de l'app au toucher.

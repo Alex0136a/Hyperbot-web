@@ -98,10 +98,12 @@ class ManualTrading:
             for c in candidates:
                 key = (strategy, c["ticker"], c["signal"])
                 opp = self.opportunities.get(key)
+                is_new = False
                 if opp is None or now - opp["last_seen"] > self._ttl():
                     opp = {"strategy": strategy, "ticker": c["ticker"], "direction": c["signal"],
                            "first_seen": now}
                     self.opportunities[key] = opp
+                    is_new = True
                 opp.update({
                     "last_seen": now,
                     "price": c.get("price"),
@@ -110,6 +112,10 @@ class ManualTrading:
                     "resistance": c.get("resistance"),
                     "reasons": [str(r) for r in (c.get("reasons") or [])][:8],
                 })
+                if is_new:      # v4.376 — alerte telephone (si activee dans Trading Manuel)
+                    _push = getattr(self.bot, "push", None)
+                    if _push is not None:
+                        _push.on_opportunity(dict(opp))
 
     def _ttl(self):
         return self.cfg.get("MANUAL_OPPORTUNITY_TTL_SEC", 120)

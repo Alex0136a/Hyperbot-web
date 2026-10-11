@@ -46,6 +46,7 @@ import asset_cards as ac       # v4.349 — fiche actif (lecture seule)
 # cherchait dans le Volume -> "ModuleNotFoundError: No module named
 # 'manual_trading'" et le serveur ne demarrait plus.
 import manual_trading
+import push_alerts             # v4.376 — alertes telephone
 
 # ── Dossier de donnees persistantes (a monter en Volume sur Railway) ─────
 # Fait APRES les imports ci-dessus : seuls les FICHIERS ecrits a l execution
@@ -145,6 +146,11 @@ bot = be.BotEngine(cfg, event_queue)
 # v4.273 — trading manuel (doit exister AVANT le demarrage du moteur : la
 # reprise des positions tient compte des positions manuelles)
 bot.manual = manual_trading.ManualTrading(bot)
+# v4.376 — alertes sur telephone (Web Push). Sans `cryptography`, elles sont simplement indisponibles.
+push = push_alerts.PushAlerts(_DATA_DIR, log=print, closed_trades_since=lambda since: db.get_all_closed_trades(since=since))
+push.ticker_from_slot = be.ticker_from_slot_key
+bot.push = push
+push.start()
 
 log_buffer = deque(maxlen=3000)
 _state_lock = threading.Lock()
@@ -310,6 +316,7 @@ def _consume_events():
                     print(f"[AUDIT] ACTIVE_COINS auto-etendu suite a une opportunite forte sur {data.get('ticker')} : {new_list}")
         except Exception as e:
             print(f"[event_consumer] Erreur traitement evenement {etype}: {e}")
+        push.on_event(etype, data)      # v4.376 — alertes (apres l ecriture en base : la perte du jour inclut ce trade)
 
 
 threading.Thread(target=_consume_events, daemon=True).start()
@@ -5199,8 +5206,65 @@ def pwa_service_worker():
     # Aucun cache : le service worker ne sert qu'a rendre l'application installable (Android). Toujours la version en ligne.
     js = ("self.addEventListener('install',function(){self.skipWaiting();});"
           "self.addEventListener('activate',function(e){e.waitUntil(self.clients.claim());});"
-          "self.addEventListener('fetch',function(e){e.respondWith(fetch(e.request));});")
+          "self.addEventListener('fetch',function(e){e.respondWith(fetch(e.request));});"
+          # v4.376 — alertes : affichage de la notification recue, puis ouverture de l'application au toucher
+          "self.addEventListener('push',function(e){var d={};try{d=e.data?e.data.json():{};}catch(x){d={title:'HyperBot',body:e.data?e.data.text():''};}"
+          "e.waitUntil(self.registration.showNotification(d.title||'HyperBot',{body:d.body||'',icon:'/icon-192.png',badge:'/icon-192.png',tag:d.tag||undefined,renotify:!!d.tag,data:{url:d.url||'/'}}));});"
+          "self.addEventListener('notificationclick',function(e){e.notification.close();var u=(e.notification.data&&e.notification.data.url)||'/';"
+          "e.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(function(cs){for(var i=0;i<cs.length;i++){if('focus' in cs[i]){return cs[i].focus();}}"
+          "return self.clients.openWindow(u);}));});")
     return Response(content=js, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+
+
+class PushSubBody(BaseModel):
+    subscription: Dict[str, Any]
+
+
+class PushUnsubBody(BaseModel):
+    endpoint: str
+
+
+class PushPrefsBody(BaseModel):
+    prefs: Dict[str, Any]
+
+
+@app.get("/api/push/status")
+def push_status(email: str = Depends(require_user)):
+    return push.status()
+
+
+@app.post("/api/push/subscribe")
+def push_subscribe(body: PushSubBody, email: str = Depends(require_user)):
+    if not push.available():
+        raise HTTPException(status_code=503, detail="Alertes indisponibles : la bibliotheque `cryptography` est absente (voir requirements.txt).")
+    try:
+        push.add_sub(body.subscription)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return push.status()
+
+
+@app.post("/api/push/unsubscribe")
+def push_unsubscribe(body: PushUnsubBody, email: str = Depends(require_user)):
+    push.remove_sub(body.endpoint)
+    return push.status()
+
+
+@app.put("/api/push/prefs")
+def push_prefs(body: PushPrefsBody, email: str = Depends(require_user)):
+    try:
+        push.set_prefs(body.prefs)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return push.status()
+
+
+@app.post("/api/push/test")
+def push_test(email: str = Depends(require_user)):
+    if not push.status()["devices"]:
+        raise HTTPException(status_code=400, detail="Aucun appareil abonne : active d'abord les alertes sur cet appareil.")
+    push.send_test()
+    return {"ok": True}
 
 
 @app.get("/health")
