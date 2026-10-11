@@ -1728,7 +1728,7 @@ function App() {
   const loadAllStrategyPerformance = useCallback(async (silent) => {
     if (!token) return;
     if (!silent) setStrategyPerfLoading(true);
-    const modes = ["forex","forex_scalp","accumulation","funding_contrarian","spot_accumulation"];
+    const modes = ["forex","forex_scalp","accumulation","funding_contrarian","spot_accumulation","swing_support","trend_follow"];
     try {
       const results = await Promise.all(modes.map(m=>
         apiCall(`/api/strategy-performance/${m}`, "GET", null, token).catch(()=>null)
@@ -1747,7 +1747,7 @@ function App() {
   // l ouverture du sous-onglet, puis rafraichissement silencieux chaque minute.
   useEffect(() => {
     if (!token) return;
-    const modes = ["forex","forex_scalp","accumulation","funding_contrarian","spot_accumulation"];
+    const modes = ["forex","forex_scalp","accumulation","funding_contrarian","spot_accumulation","swing_support","trend_follow"];
     if (!(modes.includes(paperSubTab) || paperSubTab === "performance")) return;
     const refresh = () => paperSubTab === "performance" ? loadAllStrategyPerformance(true) : loadStrategyPerformance(paperSubTab, true);
     refresh();
@@ -3889,14 +3889,14 @@ Confirmer ?`
               <div>
                 <button onClick={()=>loadAllStrategyPerformance(false)} disabled={strategyPerfLoading}
                   style={{background:"#05301622",border:"1px solid #34d399",borderRadius:6,padding:"8px 16px",color:"#34d399",fontSize:11,cursor:"pointer",fontWeight:700,marginBottom:14}}>
-                  {strategyPerfLoading?"Chargement...":"🔄 Rafraîchir les 4 modes"}
+                  {strategyPerfLoading?"Chargement...":"🔄 Rafraîchir les modes"}
                 </button>
-                {["forex","accumulation","funding_contrarian","spot_accumulation"].every(m=>!strategyPerf[m]) ? (
-                  <div style={{fontSize:11,color:"#94a3b8"}}>Cliquez sur "Rafraîchir" pour comparer la performance des 4 modes en un coup d'œil.</div>
+                {["forex","forex_scalp","accumulation","funding_contrarian","spot_accumulation","swing_support","trend_follow"].every(m=>!strategyPerf[m]) ? (
+                  <div style={{fontSize:11,color:"#94a3b8"}}>Cliquez sur "Rafraîchir" pour comparer la performance des modes en un coup d'œil.</div>
                 ) : (
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-                    {["forex","forex_scalp","accumulation","funding_contrarian","spot_accumulation"].map(m=>{
-                      const meta = PAPER_SUBTABS.find(s=>s.key===m);
+                    {["forex","forex_scalp","accumulation","funding_contrarian","spot_accumulation","swing_support","trend_follow"].map(m=>{
+                      const meta = PAPER_SUBTABS.find(s=>s.key===m) || ({swing_support:{icon:"🧱",label:"Swing Support",color:"#38bdf8"}, trend_follow:{icon:"📈",label:"Tendance",color:"#34d399"}})[m];
                       const perf = strategyPerf[m];
                       return (
                         <div key={m} style={{background:"#0a0e1a",border:`1px solid ${meta.color}`,borderRadius:8,padding:12}}>

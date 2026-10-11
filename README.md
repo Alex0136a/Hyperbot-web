@@ -788,3 +788,9 @@ Fichiers : `api.py`, `index.html`, `index_src.html`, `README.md`.
 - Ils restent affichés dans l'onglet de leur mode (shorts → Accumulation, longs → Spot-Accum), dans le bloc « TRADES MANUELS OUVERTS » existant depuis la v4.358, sans doublon.
 - Ils ne sont **pas inclus** dans le solde ni dans le PnL ouvert du bot.
 - API : `paper_portfolio` renvoie en plus `manual_open`.
+
+## v4.384 — Performance : Swing Support et Tendance
+
+Fichiers : `index.html`, `index_src.html`, `README.md` (aucun changement serveur).
+
+- Trades P/L > **Performance** affiche désormais aussi les cartes **🧱 Swing Support** et **📈 Tendance** (ouverts/total, win rate, net, frais), en plus de Forex, Scalp, Accumulation, Funding et Spot-Accum. Même calcul que les autres modes (net après frais si l'option est active, depuis le point de réinitialisation des statistiques).
