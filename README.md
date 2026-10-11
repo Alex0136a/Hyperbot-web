@@ -741,3 +741,11 @@ Fichiers : `push_alerts.py`, `bot_engine.py`, `index.html`, `index_src.html`, `R
 - Dans le panneau « 🔔 ALERTES TÉLÉPHONE » (Trading Manuel), la case **Opportunités du bot** affiche maintenant des boutons pour choisir les types annoncés : **Swing Support**, Accumulation, Spot-Accum, Funding, Forex. Par défaut : les quatre types déjà existants (Swing Support à cocher).
 - **Swing Support** : alerte à chaque setup valide (retest tenu ou balayage de liquidité), qu'il soit ouvert par le bot ou non (dans ce cas le motif est indiqué : nombre maximal atteint, pause après perte, arrêt…). Les signaux 1 h trop anciens et les spreads trop larges n'envoient rien. Pas de seuil de confiance pour ce type (le seuil ne s'applique qu'aux autres).
 - Tendance, Swing Forex et Scalp Forex n'ont pas d'alerte d'opportunité pour l'instant.
+
+## v4.378 — Alertes Swing Support : tous les actifs et note de qualité réglable
+
+Fichiers : `bot_engine.py`, `push_alerts.py`, `swing_support.py`, `index.html`, `index_src.html`, `README.md`.
+
+- **Tous les actifs crypto** : avec l'alerte « Swing Support » cochée (Trading Manuel > Alertes téléphone > Opportunités), le bot cherche aussi des setups Swing Support (tendance Daily haussière, prix dans un support Daily, retest tenu ou balayage de liquidité) sur **les autres actifs crypto** de la liste `SYMBOLS`, 6 actifs par passage (toutes les 30 s). Pour ces actifs : **alerte seulement**, jamais d'ouverture, rien dans le journal ni dans la carte Swing Support. Les 5 actifs du mode restent traités comme avant (pris par le bot ou non, avec le motif).
+- **Note de qualité 0-100** (réglage « Note de qualité minimale », 60 par défaut ; 40 = souple, 60 = normal, 80 = strict) : Daily 20 (repli en tendance : 10) · Weekly 15 · BTC 15 · H4 haussier 10 · contacts de la zone 15 · flux acheteur 15 · funding 10. Un élément inconnu (flux, funding) vaut une note partielle. La note et le détail figurent dans l'alerte. **Elle ne sert qu'à filtrer les alertes** (aucun trade n'en dépend) et n'est pas calibrée sur des résultats : elle sera à ajuster à l'usage.
+- La confiance minimale existante (70 % par défaut) continue de s'appliquer à Accumulation, Spot-Accum, Funding et Forex.

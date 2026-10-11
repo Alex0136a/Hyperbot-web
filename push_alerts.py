@@ -35,11 +35,12 @@ DEFAULT_PREFS = {
     "offline": 1,             # connexion Hyperliquid perdue depuis N minutes
     "offline_min": 3,
     "opps": 0,                # opportunites du bot (Trading Manuel)
-    "opps_min_conf": 70,      # ne concerne pas Swing Support (pas de note de confiance)
+    "opps_min_conf": 70,      # confiance minimale (Accumulation, Spot-Accum, Funding, Forex)
+    "opps_min_score": 60,     # note de qualite minimale Swing Support (0-100)
     "opps_types": ["forex", "accumulation", "spot_accumulation", "funding_contrarian"],   # types d'opportunites annonces
     "opps_cooldown_min": 30,  # pas de nouvelle alerte pour la meme opportunite avant ce delai
 }
-_PREF_BOUNDS = {"daily_loss_usd": (0.1, 100000.0), "offline_min": (1, 120), "opps_min_conf": (0, 100), "opps_cooldown_min": (1, 1440)}
+_PREF_BOUNDS = {"opps_min_score": (0, 100), "daily_loss_usd": (0.1, 100000.0), "offline_min": (1, 120), "opps_min_conf": (0, 100), "opps_cooldown_min": (1, 1440)}
 
 STRATEGY_LABELS = {
     "forex_scalp": "Scalp Forex", "forex_swing": "Swing Forex", "swing_support": "Swing Support", "trend_follow": "Tendance",
@@ -377,17 +378,28 @@ class PushAlerts:
         except Exception as e:
             self.log(f"[PUSH] opportunite ignoree : {type(e).__name__}: {e}")
 
-    def on_setup(self, strategy, ticker, direction, title, body):
-        """Alerte d'un mode qui ouvre lui-meme ses trades (Swing Support) : setup valide detecte, pris ou non par le bot.
-        Memes reglages que les opportunites (case « Opportunites », type coche, delai entre deux alertes), sans seuil de confiance."""
+    def _opp_type_on(self, strategy):
+        return bool(self.pref("opps")) and strategy in (self.pref("opps_types") or [])
+
+    def watch_wanted(self, strategy):
+        """True si une surveillance supplementaire (actifs hors liste) a un sens : alertes d'opportunites actives pour ce type."""
+        return bool(self.state["subs"]) and self._opp_type_on(strategy)
+
+    def setup_ready(self, strategy, ticker, direction):
+        """True si une alerte pour ce setup pourrait partir maintenant (type coche, delai ecoule)."""
+        if not self.state["subs"] or not self._opp_type_on(strategy):
+            return False
+        return time.time() - self._opp_seen.get((strategy, ticker, direction), 0) >= float(self.pref("opps_cooldown_min")) * 60
+
+    def on_setup(self, strategy, ticker, direction, title, body, score=None):
+        """Alerte d'un mode qui ouvre lui-meme ses trades (Swing Support) : setup valide detecte.
+        Memes reglages que les opportunites (case, type coche, delai entre deux alertes) ; `score` compare a opps_min_score."""
         try:
-            if not self.pref("opps") or strategy not in (self.pref("opps_types") or []):
+            if not self.setup_ready(strategy, ticker, direction):
                 return
-            key = (strategy, ticker, direction)
-            now = time.time()
-            if now - self._opp_seen.get(key, 0) < float(self.pref("opps_cooldown_min")) * 60:
+            if score is not None and score < float(self.pref("opps_min_score")):
                 return
-            self._opp_seen[key] = now
+            self._opp_seen[(strategy, ticker, direction)] = time.time()
             self.notify(title, body, tag=f"opp-{ticker}-{direction}", urgent=False)
         except Exception as e:
             self.log(f"[PUSH] setup ignore : {type(e).__name__}: {e}")

@@ -11223,6 +11223,10 @@ class BotEngine:
             return
         self._supsw_last_cycle = now
         self._supsw_prefetch_open()          # meme si le mode vient d etre eteint : les positions ouvertes restent gerees
+        try:
+            self._supsw_watch_cycle(now)     # v4.378 : alertes sur les autres actifs (si demandees)
+        except Exception as e:
+            print(f"[SWING-SUP] surveillance ignoree : {type(e).__name__}: {e}")
         if not cfg.get("SUPSW_ENABLED", 0):
             return
         enabled_open = self.trading_enabled and cfg.get("STRATEGY_TRADING_ENABLED", {}).get("swing_support", True)
@@ -11298,14 +11302,15 @@ class BotEngine:
             print(f"[SWING-SUP] journal ignore : {type(e).__name__}: {e}")
             return None
 
-    def _supsw_eval_ticker(self, ticker, now, enabled_open):
+    def _supsw_eval_ticker(self, ticker, now, enabled_open, watch=False):
         cfg = self.cfg
         K = self._supsw_state_cfg()
         symbol, state = self._scalp_state_for(ticker)
         if state is None:
             return
         snap = {"ts": now, "blocker": None}
-        state.supsw_snapshot = snap
+        if not watch:                      # v4.378 : surveillance d alertes (actifs hors liste) : aucun effet sur la carte ni le journal
+            state.supsw_snapshot = snap
         occ = None
         for pool in (self.states, self.accum_states):
             st = pool.get(symbol)
@@ -11370,21 +11375,62 @@ class BotEngine:
             blocker = "nombre maximal de swings support simultanes atteint"
         elif now - getattr(state, "supsw_last_loss_ts", 0) < K["cooldown"]:
             blocker = "pause apres une perte sur cet actif"
+        if watch:                          # v4.378 : actif hors des 5 du mode -> alerte seulement, jamais d ouverture ni de journal
+            if age <= K["max_age"] and spread_pct <= K["max_spread"]:
+                self._supsw_alert(ticker, v, ctx, zone, setup, price, flow, None, True)
+            return
         # v4.376 : alerte telephone « Swing Support » (si coche dans Trading Manuel) — setup valide, hors signal perime ou spread trop large
-        _push = getattr(self, "push", None)
-        if _push is not None and not (blocker and (blocker.startswith("signal 1 h trop ancien") or blocker.startswith("spread"))):
-            try:
-                _push.on_setup("swing_support", ticker, "long", f"🧱 Swing Support {ticker} : {setup['kind']} détecté",
-                               f"{setup['name']} · support {self._zone_txt(zone)} · prix {price:.6g} · "
-                               + ("ouvert par le bot (Paper)" if not blocker else f"non ouvert : {blocker.split(' (')[0]}"))
-            except Exception:
-                pass
+        if not (blocker and (blocker.startswith("signal 1 h trop ancien") or blocker.startswith("spread"))):
+            self._supsw_alert(ticker, v, ctx, zone, setup, price, flow, blocker, False)
         if blocker:
             snap["blocker"] = f"{setup['kind']} detecte — {blocker}"
             self._supsw_log(ticker, c1h, v, setup, ctx, price, flow, f"refus : {blocker.split(' (')[0]}", 1, K)
             return
         res = self._supsw_log(ticker, c1h, v, setup, ctx, price, flow, "candidat (non ouvert)", 2, K)
         self._supsw_open(symbol, ticker, state, setup, ctx, v, zone, price, spread_pct, flow, res, K)
+
+    def _supsw_alert(self, ticker, v, ctx, zone, setup, price, flow, blocker, watch_only):
+        """v4.378 : alerte telephone d un setup Swing Support valide, avec sa note de qualite (0-100) filtree par reglage."""
+        push = getattr(self, "push", None)
+        try:
+            if push is None or not push.setup_ready("swing_support", ticker, "long"):
+                return
+            h4_up = False
+            try:
+                bv = self.mtf_view(ticker, price, force_tf=("4h", "1h"))
+                h4_up = bool(bv.get("ok") and bv.get("trend") == "haussiere")
+            except Exception:
+                pass
+            score, why = sups.quality_score(v["trend"], ctx.get("weekly_trend"), ctx.get("btc_trend"), h4_up,
+                                            zone.get("touches", 1), flow, ctx.get("funding_ann"))
+            if watch_only:
+                status = "actif hors des 5 du mode : alerte seulement"
+            else:
+                status = "ouvert par le bot (Paper)" if not blocker else f"non ouvert : {blocker.split(' (')[0]}"
+            push.on_setup("swing_support", ticker, "long", f"🧱 Swing Support {ticker} · note {score}/100 : {setup['kind']} détecté",
+                          f"{setup['name']} · support {self._zone_txt(zone)} · prix {price:.6g} · {why} · {status}", score=score)
+        except Exception as e:
+            print(f"[SWING-SUP] alerte ignoree : {type(e).__name__}: {e}")
+
+    def _supsw_watch_cycle(self, now):
+        """v4.378 : cherche des setups Swing Support sur TOUS les autres actifs crypto (alerte seulement), 6 actifs par passage."""
+        push = getattr(self, "push", None)
+        if push is None or not push.watch_wanted("swing_support"):
+            return
+        cfg = self.cfg
+        own = set(cfg.get("SUPSW_SYMBOLS", ["BTC", "ETH", "HYPE", "TAO", "SUI"]))
+        fx = set(cfg.get("FOREX_SYMBOLS", []))
+        uni = [t for t in cfg.get("SYMBOLS", []) if t not in own and t not in fx and not str(t).startswith("xyz:")]
+        if not uni:
+            return
+        i = getattr(self, "_supsw_watch_i", 0) % len(uni)
+        n = min(6, len(uni))
+        self._supsw_watch_i = (i + n) % len(uni)
+        for t in [uni[(i + k) % len(uni)] for k in range(n)]:
+            try:
+                self._supsw_eval_ticker(t, now, True, watch=True)
+            except Exception as e:
+                print(f"[SWING-SUP] surveillance {t} ignoree : {type(e).__name__}: {e}")
 
     def _supsw_open(self, symbol, ticker, state, setup, ctx, v, zone, price, spread_pct, flow, res, K):
         fill = scalp.fill_price("long", price, spread_pct, K["slip"], "entry")

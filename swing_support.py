@@ -104,3 +104,27 @@ def scaled_levels(lev, base_sl, base_tp, margin_risk_pct=7.5, min_sl=1.5, tp1=2.
     sl = min(max(margin_risk_pct / lev, min_sl), base_sl)
     tp = tp1 if lev <= 1 else (tp2 if lev == 2 else tp3)
     return round(sl, 4), round(tp, 4)
+
+
+def quality_score(daily_trend, weekly, btc, h4_up, touches, flow, funding_ann):
+    """v4.378 — note de QUALITE d un setup (0-100), sert UNIQUEMENT a filtrer les alertes (aucun trade n en depend).
+    Barème : Daily 20 (repli en tendance : 10) · Weekly 15 (neutre 7) · BTC 15 (neutre 7) · H4 haussier 10 · contacts de la zone 15/10/5
+    · flux acheteur 15 (>= +0,2) ou 9 (>= 0) (inconnu : 7) · funding <= 25 %/an 10 (<= 60 : 4) (inconnu : 5). Non calibree sur des resultats."""
+    parts, tot = [], 0
+    d = 20 if daily_trend == "haussiere" else 10
+    tot += d; parts.append("Daily " + ("✓" if d == 20 else "repli"))
+    for lbl, tr in (("Weekly", weekly), ("BTC", btc)):
+        pts = 15 if tr == "haussiere" else (7 if tr == "neutre" else 0)
+        tot += pts; parts.append(f"{lbl} " + ("✓" if pts == 15 else ("~" if pts else "✗")))
+    tot += 10 if h4_up else 0; parts.append("H4 " + ("✓" if h4_up else "✗"))
+    t = int(touches or 1)
+    tot += 15 if t >= 3 else (10 if t == 2 else 5); parts.append(f"{t} contact{'s' if t > 1 else ''}")
+    if flow is None:
+        tot += 7; parts.append("flux ?")
+    else:
+        tot += 15 if flow >= 0.2 else (9 if flow >= 0 else 0); parts.append(f"flux {flow:+.2f}")
+    if funding_ann is None:
+        tot += 5; parts.append("funding ?")
+    else:
+        tot += 10 if funding_ann <= 25 else (4 if funding_ann <= 60 else 0); parts.append(f"funding {funding_ann:.0f} %/an")
+    return int(tot), " · ".join(parts)

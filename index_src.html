@@ -922,7 +922,11 @@ function PushPanel({ token }) {
               return <button key={k} style={{...MT.seg(on,"#22c55e"),fontSize:11}} onClick={()=>setPref("opps_types", on ? (P.opps_types||[]).filter(x=>x!==k) : [...(P.opps_types||[]), k])}>{l}</button>;
             })}
           </div>
-          <div style={{fontSize:10,color:"#64748b",marginTop:4}}>Swing Support : alerte à chaque setup valide (pris ou non par le bot), sans seuil de confiance. Une même opportunité n'est annoncée qu'une fois toutes les {num("opps_cooldown_min",56,"min")}.</div>
+          <div style={{fontSize:10,color:"#64748b",marginTop:4}}>
+            <b>Swing Support</b> : setup valide sur <b>tous les actifs crypto</b> (les 5 du mode, pris ou non par le bot, et les autres en alerte seulement). Note de qualité minimale : {num("opps_min_score",56,"/ 100")}
+            <div>Repères : 40 = souple · 60 = normal · 80 = strict. Note = Daily 20, Weekly 15, BTC 15, H4 10, contacts de la zone 15, flux 15, funding 10 (non calibrée sur des résultats : à ajuster à l'usage).</div>
+          </div>
+          <div style={{fontSize:10,color:"#64748b",marginTop:4}}>Une même opportunité n'est annoncée qu'une fois toutes les {num("opps_cooldown_min",56,"min")}. « confiance ≥ » ci-dessus concerne Accumulation, Spot-Accum, Funding et Forex.</div>
         </div> : null}
       </div>
     </div>);
