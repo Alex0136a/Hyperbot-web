@@ -874,6 +874,9 @@ function PushPanel({ token }) {
     } catch(e) { setMsg(e.message); }
     setBusy(false);
   };
+  const [hist, setHist] = useState(null);
+  const loadHist = useCallback(async () => { try { const r = await apiCall("/api/push/history?limit=50","GET",null,token); setHist(r.items); } catch(e) { setMsg(e.message); } }, [token]);
+  useEffect(() => { if (hist === null) return; const t = setInterval(loadHist, 30000); return () => clearInterval(t); }, [hist === null, loadHist]);
   const test = async () => { try { await apiCall("/api/push/test","POST",null,token); setMsg("Alerte de test envoyée."); } catch(e) { setMsg(e.message); } };
   const setPref = async (k, v) => {
     try { const st = await apiCall("/api/push/prefs","PUT",{ prefs: { [k]: v } },token); setPs(st); setMsg(""); } catch(e) { setMsg(e.message); } };
@@ -907,6 +910,18 @@ function PushPanel({ token }) {
           <span style={{fontSize:11,color:"#64748b"}}>{ps.devices} appareil(s) abonné(s)</span>
         </div>)}
       {msg && <div style={{fontSize:11,color:"#fbbf24",marginTop:6}}>{msg}</div>}
+      <div style={{marginTop:10,borderTop:"1px solid #1e293b",paddingTop:6}}>
+        <button style={{...MT.btn("#94a3b8"),fontSize:11}} onClick={()=> hist === null ? loadHist() : setHist(null)}>{hist === null ? "📜 Voir l'historique des alertes" : "Masquer l'historique"}</button>
+        <span style={{fontSize:10,color:"#64748b",marginLeft:8}}>iOS retire la notification dès qu'on la touche : tout reste ici (100 dernières).</span>
+        {hist !== null && (hist.length === 0
+          ? <div style={{fontSize:12,color:"#64748b",marginTop:6}}>Aucune alerte pour le moment.</div>
+          : <div style={{marginTop:6,maxHeight:320,overflowY:"auto"}}>{hist.map((a,i)=>(
+              <div key={i} style={{borderTop:i?"1px solid #1e293b":"none",padding:"6px 0",fontSize:12}}>
+                <div style={{color:"#e2e8f0"}}>{a.title}</div>
+                <div style={{color:"#94a3b8",fontSize:11}}>{a.body}</div>
+                <div style={{color:"#64748b",fontSize:10}}>{new Date(a.ts*1000).toLocaleString("fr-FR")}</div>
+              </div>))}</div>)}
+      </div>
       <div style={{marginTop:10,borderTop:"1px solid #1e293b",paddingTop:6}}>
         <div style={{fontSize:10,color:"#64748b"}}>Événements envoyés à tous les appareils abonnés :</div>
         {row("trade_open","Trade ouvert")}

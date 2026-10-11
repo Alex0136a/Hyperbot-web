@@ -94,7 +94,7 @@ class PushAlerts:
         self._down_alerted = False
         self._loss_alert_day = None
         self._started = False
-        self.state = {"vapid_private_pem": None, "vapid_public": None, "subs": {}, "prefs": dict(DEFAULT_PREFS)}
+        self.state = {"vapid_private_pem": None, "vapid_public": None, "subs": {}, "prefs": dict(DEFAULT_PREFS), "history": []}
         self._load()
 
     # ───────────────────────────── etat ─────────────────────────────
@@ -102,7 +102,7 @@ class PushAlerts:
         try:
             with open(self.path, "r", encoding="utf-8") as f:
                 d = json.load(f)
-            self.state.update({k: d[k] for k in ("vapid_private_pem", "vapid_public", "subs") if k in d})
+            self.state.update({k: d[k] for k in ("vapid_private_pem", "vapid_public", "subs", "history") if k in d})
             self.state["prefs"] = {**DEFAULT_PREFS, **(d.get("prefs") or {})}
         except FileNotFoundError:
             pass
@@ -197,6 +197,7 @@ class PushAlerts:
 
     def notify(self, title, body, tag=None, url="/", urgent=True):
         """Met une alerte en file ; ne bloque jamais le bot."""
+        self._remember(title, body, tag)            # v4.379 : historique consultable dans l'app (iOS efface la notification au toucher)
         if not CRYPTO_OK or not self.state["subs"]:
             return False
         now = time.time()
@@ -209,6 +210,20 @@ class PushAlerts:
             return True
         except queue.Full:
             return False
+
+    def _remember(self, title, body, tag):
+        try:
+            with self.lock:
+                h = self.state.setdefault("history", [])
+                h.append({"ts": int(time.time()), "title": title, "body": body, "tag": tag})
+                del h[:-100]
+                self._save()
+        except Exception:
+            pass
+
+    def history(self, limit=50):
+        with self.lock:
+            return list(reversed(self.state.get("history", [])[-max(1, min(int(limit), 100)):]))
 
     def _worker(self):
         while True:

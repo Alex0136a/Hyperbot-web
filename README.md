@@ -749,3 +749,10 @@ Fichiers : `bot_engine.py`, `push_alerts.py`, `swing_support.py`, `index.html`, 
 - **Tous les actifs crypto** : avec l'alerte « Swing Support » cochée (Trading Manuel > Alertes téléphone > Opportunités), le bot cherche aussi des setups Swing Support (tendance Daily haussière, prix dans un support Daily, retest tenu ou balayage de liquidité) sur **les autres actifs crypto** de la liste `SYMBOLS`, 6 actifs par passage (toutes les 30 s). Pour ces actifs : **alerte seulement**, jamais d'ouverture, rien dans le journal ni dans la carte Swing Support. Les 5 actifs du mode restent traités comme avant (pris par le bot ou non, avec le motif).
 - **Note de qualité 0-100** (réglage « Note de qualité minimale », 60 par défaut ; 40 = souple, 60 = normal, 80 = strict) : Daily 20 (repli en tendance : 10) · Weekly 15 · BTC 15 · H4 haussier 10 · contacts de la zone 15 · flux acheteur 15 · funding 10. Un élément inconnu (flux, funding) vaut une note partielle. La note et le détail figurent dans l'alerte. **Elle ne sert qu'à filtrer les alertes** (aucun trade n'en dépend) et n'est pas calibrée sur des résultats : elle sera à ajuster à l'usage.
 - La confiance minimale existante (70 % par défaut) continue de s'appliquer à Accumulation, Spot-Accum, Funding et Forex.
+
+## v4.379 — Historique des alertes
+
+Fichiers : `push_alerts.py`, `api.py`, `index.html`, `index_src.html`, `README.md`.
+
+- Sur iPhone, **toucher une notification la retire du centre de notifications** (comportement d'iOS, non modifiable par l'application). Les 100 dernières alertes sont donc conservées côté serveur (`/data/hyperbot_push.json`) et consultables dans Trading Manuel > Alertes téléphone > « Voir l'historique des alertes » (titre, détail, heure locale).
+- Route `GET /api/push/history`. L'historique se remplit même si aucun appareil n'est abonné.

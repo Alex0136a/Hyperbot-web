@@ -5259,6 +5259,11 @@ def push_prefs(body: PushPrefsBody, email: str = Depends(require_user)):
     return push.status()
 
 
+@app.get("/api/push/history")
+def push_history(limit: int = Query(50, ge=1, le=100), email: str = Depends(require_user)):
+    return {"items": push.history(limit)}
+
+
 @app.post("/api/push/test")
 def push_test(email: str = Depends(require_user)):
     if not push.status()["devices"]:
