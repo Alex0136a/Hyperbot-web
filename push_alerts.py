@@ -104,6 +104,8 @@ class PushAlerts:
                 d = json.load(f)
             self.state.update({k: d[k] for k in ("vapid_private_pem", "vapid_public", "subs", "history") if k in d})
             self.state["prefs"] = {**DEFAULT_PREFS, **(d.get("prefs") or {})}
+            for i, x in enumerate(self.state.get("history", []), 1):
+                x.setdefault("id", i)
         except FileNotFoundError:
             pass
         except Exception as e:
@@ -215,11 +217,26 @@ class PushAlerts:
         try:
             with self.lock:
                 h = self.state.setdefault("history", [])
-                h.append({"ts": int(time.time()), "title": title, "body": body, "tag": tag})
+                nid = max([x.get("id", 0) for x in h] + [0]) + 1
+                h.append({"id": nid, "ts": int(time.time()), "title": title, "body": body, "tag": tag})
                 del h[:-100]
                 self._save()
         except Exception:
             pass
+
+    def delete_history(self, ids=None, everything=False):
+        """Efface des alertes de l'historique (par identifiants) ou tout l'historique. Retourne le nombre efface."""
+        with self.lock:
+            h = self.state.get("history", [])
+            before = len(h)
+            if everything:
+                h = []
+            else:
+                drop = {int(i) for i in (ids or [])}
+                h = [x for x in h if x.get("id") not in drop]
+            self.state["history"] = h
+            self._save()
+            return before - len(h)
 
     def history(self, limit=50):
         with self.lock:

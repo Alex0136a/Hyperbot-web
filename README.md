@@ -756,3 +756,10 @@ Fichiers : `push_alerts.py`, `api.py`, `index.html`, `index_src.html`, `README.m
 
 - Sur iPhone, **toucher une notification la retire du centre de notifications** (comportement d'iOS, non modifiable par l'application). Les 100 dernières alertes sont donc conservées côté serveur (`/data/hyperbot_push.json`) et consultables dans Trading Manuel > Alertes téléphone > « Voir l'historique des alertes » (titre, détail, heure locale).
 - Route `GET /api/push/history`. L'historique se remplit même si aucun appareil n'est abonné.
+
+## v4.380 — Historique des alertes : sélection et suppression
+
+Fichiers : `push_alerts.py`, `api.py`, `index.html`, `index_src.html`, `README.md`.
+
+- Dans l'historique des alertes (Trading Manuel > Alertes téléphone), chaque alerte a une case : **Tout sélectionner**, **Effacer la sélection (n)** et **Tout effacer** (avec confirmation).
+- Route `POST /api/push/history/delete` (`ids` ou `everything`). Les anciennes alertes reçoivent un identifiant au chargement.

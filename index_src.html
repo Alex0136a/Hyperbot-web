@@ -877,6 +877,9 @@ function PushPanel({ token }) {
   const [hist, setHist] = useState(null);
   const loadHist = useCallback(async () => { try { const r = await apiCall("/api/push/history?limit=50","GET",null,token); setHist(r.items); } catch(e) { setMsg(e.message); } }, [token]);
   useEffect(() => { if (hist === null) return; const t = setInterval(loadHist, 30000); return () => clearInterval(t); }, [hist === null, loadHist]);
+  const [chk, setChk] = useState([]);                     // alertes cochees (identifiants)
+  const delHist = async (ids, everything) => {
+    try { const r = await apiCall("/api/push/history/delete","POST",{ ids, everything },token); setHist(r.items); setChk([]); } catch(e) { setMsg(e.message); } };
   const test = async () => { try { await apiCall("/api/push/test","POST",null,token); setMsg("Alerte de test envoyée."); } catch(e) { setMsg(e.message); } };
   const setPref = async (k, v) => {
     try { const st = await apiCall("/api/push/prefs","PUT",{ prefs: { [k]: v } },token); setPs(st); setMsg(""); } catch(e) { setMsg(e.message); } };
@@ -915,12 +918,22 @@ function PushPanel({ token }) {
         <span style={{fontSize:10,color:"#64748b",marginLeft:8}}>iOS retire la notification dès qu'on la touche : tout reste ici (100 dernières).</span>
         {hist !== null && (hist.length === 0
           ? <div style={{fontSize:12,color:"#64748b",marginTop:6}}>Aucune alerte pour le moment.</div>
-          : <div style={{marginTop:6,maxHeight:320,overflowY:"auto"}}>{hist.map((a,i)=>(
-              <div key={i} style={{borderTop:i?"1px solid #1e293b":"none",padding:"6px 0",fontSize:12}}>
-                <div style={{color:"#e2e8f0"}}>{a.title}</div>
-                <div style={{color:"#94a3b8",fontSize:11}}>{a.body}</div>
-                <div style={{color:"#64748b",fontSize:10}}>{new Date(a.ts*1000).toLocaleString("fr-FR")}</div>
-              </div>))}</div>)}
+          : <div style={{marginTop:6}}>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginBottom:4}}>
+                <button style={{...MT.btn("#60a5fa"),fontSize:11}} onClick={()=>setChk(chk.length === hist.length ? [] : hist.map(a=>a.id))}>{chk.length === hist.length ? "Tout désélectionner" : "Tout sélectionner"}</button>
+                <button style={{...MT.btn("#ef4444"),fontSize:11,opacity:chk.length?1:0.4}} disabled={!chk.length} onClick={()=>delHist(chk,false)}>Effacer la sélection ({chk.length})</button>
+                <button style={{...MT.btn("#94a3b8"),fontSize:11}} onClick={()=>{ if (window.confirm("Effacer tout l'historique des alertes ?")) delHist([],true); }}>Tout effacer</button>
+              </div>
+              <div style={{maxHeight:320,overflowY:"auto"}}>{hist.map((a,i)=>(
+                <label key={a.id} style={{display:"flex",gap:8,alignItems:"flex-start",borderTop:i?"1px solid #1e293b":"none",padding:"6px 0",fontSize:12,cursor:"pointer",background:chk.includes(a.id)?"#ef444411":"transparent"}}>
+                  <input type="checkbox" style={{marginTop:3}} checked={chk.includes(a.id)} onChange={e=>setChk(e.target.checked ? [...chk, a.id] : chk.filter(x=>x!==a.id))}/>
+                  <span style={{flex:1,minWidth:0}}>
+                    <div style={{color:"#e2e8f0"}}>{a.title}</div>
+                    <div style={{color:"#94a3b8",fontSize:11}}>{a.body}</div>
+                    <div style={{color:"#64748b",fontSize:10}}>{new Date(a.ts*1000).toLocaleString("fr-FR")}</div>
+                  </span>
+                </label>))}</div>
+            </div>)}
       </div>
       <div style={{marginTop:10,borderTop:"1px solid #1e293b",paddingTop:6}}>
         <div style={{fontSize:10,color:"#64748b"}}>Événements envoyés à tous les appareils abonnés :</div>

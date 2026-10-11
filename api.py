@@ -5259,6 +5259,17 @@ def push_prefs(body: PushPrefsBody, email: str = Depends(require_user)):
     return push.status()
 
 
+class PushHistDeleteBody(BaseModel):
+    ids: List[int] = []
+    everything: bool = False
+
+
+@app.post("/api/push/history/delete")
+def push_history_delete(body: PushHistDeleteBody, email: str = Depends(require_user)):
+    n = push.delete_history(body.ids, body.everything)
+    return {"deleted": n, "items": push.history(50)}
+
+
 @app.get("/api/push/history")
 def push_history(limit: int = Query(50, ge=1, le=100), email: str = Depends(require_user)):
     return {"items": push.history(limit)}
