@@ -913,8 +913,17 @@ function PushPanel({ token }) {
         {row("trade_close","Trade fermé (avec le résultat)")}
         {row("daily_loss","Perte du jour au-delà de", num("daily_loss_usd",70,"$ (tous modes)"))}
         {row("offline","Connexion Hyperliquid perdue depuis plus de", num("offline_min",56,"min"))}
-        {row("opps","Opportunités du bot (celles de la liste ci-dessous) · confiance ≥", num("opps_min_conf",56,"%"))}
-        {P.opps ? <div style={{fontSize:10,color:"#64748b",marginLeft:22}}>Une même opportunité n'est annoncée qu'une fois toutes les {num("opps_cooldown_min",56,"min")}.</div> : null}
+        {row("opps","Opportunités du bot · confiance ≥", num("opps_min_conf",56,"%"))}
+        {P.opps ? <div style={{marginLeft:22,marginTop:4}}>
+          <div style={{fontSize:10,color:"#64748b",marginBottom:4}}>Types annoncés :</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {[["swing_support","Swing Support"],["accumulation","Accumulation"],["spot_accumulation","Spot-Accum"],["funding_contrarian","Funding"],["forex","Forex"]].map(([k,l])=>{
+              const on = (P.opps_types||[]).includes(k);
+              return <button key={k} style={{...MT.seg(on,"#22c55e"),fontSize:11}} onClick={()=>setPref("opps_types", on ? (P.opps_types||[]).filter(x=>x!==k) : [...(P.opps_types||[]), k])}>{l}</button>;
+            })}
+          </div>
+          <div style={{fontSize:10,color:"#64748b",marginTop:4}}>Swing Support : alerte à chaque setup valide (pris ou non par le bot), sans seuil de confiance. Une même opportunité n'est annoncée qu'une fois toutes les {num("opps_cooldown_min",56,"min")}.</div>
+        </div> : null}
       </div>
     </div>);
 }

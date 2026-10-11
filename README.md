@@ -733,3 +733,11 @@ Fichiers : **nouveau `push_alerts.py`**, `api.py`, `manual_trading.py`, `index.h
 - Les alertes partent du serveur Railway : elles arrivent app fermée et téléphone verrouillé. Maximum 30 alertes par 10 minutes.
 - Les clés et les appareils abonnés sont dans `/data/hyperbot_push.json` (survivent aux redéploiements). Si iOS invalide un abonnement, le panneau permet de se réabonner.
 - Service worker : ajout de l'affichage des notifications et de l'ouverture de l'app au toucher.
+
+## v4.377 — Alertes d'opportunités : choix du type
+
+Fichiers : `push_alerts.py`, `bot_engine.py`, `index.html`, `index_src.html`, `README.md`.
+
+- Dans le panneau « 🔔 ALERTES TÉLÉPHONE » (Trading Manuel), la case **Opportunités du bot** affiche maintenant des boutons pour choisir les types annoncés : **Swing Support**, Accumulation, Spot-Accum, Funding, Forex. Par défaut : les quatre types déjà existants (Swing Support à cocher).
+- **Swing Support** : alerte à chaque setup valide (retest tenu ou balayage de liquidité), qu'il soit ouvert par le bot ou non (dans ce cas le motif est indiqué : nombre maximal atteint, pause après perte, arrêt…). Les signaux 1 h trop anciens et les spreads trop larges n'envoient rien. Pas de seuil de confiance pour ce type (le seuil ne s'applique qu'aux autres).
+- Tendance, Swing Forex et Scalp Forex n'ont pas d'alerte d'opportunité pour l'instant.

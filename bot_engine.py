@@ -11370,6 +11370,15 @@ class BotEngine:
             blocker = "nombre maximal de swings support simultanes atteint"
         elif now - getattr(state, "supsw_last_loss_ts", 0) < K["cooldown"]:
             blocker = "pause apres une perte sur cet actif"
+        # v4.376 : alerte telephone « Swing Support » (si coche dans Trading Manuel) — setup valide, hors signal perime ou spread trop large
+        _push = getattr(self, "push", None)
+        if _push is not None and not (blocker and (blocker.startswith("signal 1 h trop ancien") or blocker.startswith("spread"))):
+            try:
+                _push.on_setup("swing_support", ticker, "long", f"🧱 Swing Support {ticker} : {setup['kind']} détecté",
+                               f"{setup['name']} · support {self._zone_txt(zone)} · prix {price:.6g} · "
+                               + ("ouvert par le bot (Paper)" if not blocker else f"non ouvert : {blocker.split(' (')[0]}"))
+            except Exception:
+                pass
         if blocker:
             snap["blocker"] = f"{setup['kind']} detecte — {blocker}"
             self._supsw_log(ticker, c1h, v, setup, ctx, price, flow, f"refus : {blocker.split(' (')[0]}", 1, K)

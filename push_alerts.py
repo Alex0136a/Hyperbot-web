@@ -35,7 +35,8 @@ DEFAULT_PREFS = {
     "offline": 1,             # connexion Hyperliquid perdue depuis N minutes
     "offline_min": 3,
     "opps": 0,                # opportunites du bot (Trading Manuel)
-    "opps_min_conf": 70,
+    "opps_min_conf": 70,      # ne concerne pas Swing Support (pas de note de confiance)
+    "opps_types": ["forex", "accumulation", "spot_accumulation", "funding_contrarian"],   # types d'opportunites annonces
     "opps_cooldown_min": 30,  # pas de nouvelle alerte pour la meme opportunite avant ce delai
 }
 _PREF_BOUNDS = {"daily_loss_usd": (0.1, 100000.0), "offline_min": (1, 120), "opps_min_conf": (0, 100), "opps_cooldown_min": (1, 1440)}
@@ -45,6 +46,10 @@ STRATEGY_LABELS = {
     "spot_accumulation": "Spot-Accum", "accumulation": "Accumulation", "funding_contrarian": "Funding", "forex": "Forex",
     "manual": "Manuel", "normal": "Normal",
 }
+
+
+OPP_TYPES = {"forex": "Forex", "accumulation": "Accumulation", "spot_accumulation": "Spot-Accum",
+             "funding_contrarian": "Funding", "swing_support": "Swing Support"}
 
 
 def _b64u(b):
@@ -163,6 +168,9 @@ class PushAlerts:
             cur = self.state["prefs"]
             for k, v in (prefs or {}).items():
                 if k not in DEFAULT_PREFS:
+                    continue
+                if k == "opps_types":
+                    cur[k] = [t for t in OPP_TYPES if t in (v or [])]
                     continue
                 if k in _PREF_BOUNDS:
                     lo, hi = _PREF_BOUNDS[k]
@@ -351,7 +359,7 @@ class PushAlerts:
     def on_opportunity(self, opp):
         """Appele par Trading Manuel quand une opportunite NOUVELLE apparait."""
         try:
-            if not self.pref("opps"):
+            if not self.pref("opps") or opp.get("strategy") not in (self.pref("opps_types") or []):
                 return
             conf = opp.get("confidence")
             if conf is None or float(conf) < float(self.pref("opps_min_conf")):
@@ -368,3 +376,18 @@ class PushAlerts:
                         f"Prix {self._fmt(opp.get('price'))}" + (f" · {why}" if why else ""), tag=f"opp-{key[1]}-{key[2]}", urgent=False)
         except Exception as e:
             self.log(f"[PUSH] opportunite ignoree : {type(e).__name__}: {e}")
+
+    def on_setup(self, strategy, ticker, direction, title, body):
+        """Alerte d'un mode qui ouvre lui-meme ses trades (Swing Support) : setup valide detecte, pris ou non par le bot.
+        Memes reglages que les opportunites (case « Opportunites », type coche, delai entre deux alertes), sans seuil de confiance."""
+        try:
+            if not self.pref("opps") or strategy not in (self.pref("opps_types") or []):
+                return
+            key = (strategy, ticker, direction)
+            now = time.time()
+            if now - self._opp_seen.get(key, 0) < float(self.pref("opps_cooldown_min")) * 60:
+                return
+            self._opp_seen[key] = now
+            self.notify(title, body, tag=f"opp-{ticker}-{direction}", urgent=False)
+        except Exception as e:
+            self.log(f"[PUSH] setup ignore : {type(e).__name__}: {e}")
