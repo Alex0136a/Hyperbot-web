@@ -32,14 +32,17 @@ from datetime import datetime
 
 import db
 import bot_engine as be
+import swing_support as sups     # v4.381 : niveaux Swing Support (ticket prepare depuis une alerte)
 
 STRATEGY_LABELS = {
     "libre": "Ordre libre",
+    "swing_support": "Swing Support",
     "forex": "Forex",
     "accumulation": "Accumulation",
     "spot_accumulation": "Spot-Accum",
     "funding_contrarian": "Funding",
 }
+FREE_LIKE = ("libre", "swing_support")     # tickets sans opportunite du bot a confirmer
 OPEN_STATUSES = ("scheduled", "opening", "open", "closing")
 TREND_FR = {"haussiere": "haussière", "baissiere": "baissière", "neutre": "neutre"}  # v4.343
 FEE_ROUND_TRIP = be.FEE_RATE_TAKER_ESTIMATE * 2
@@ -278,9 +281,31 @@ class ManualTrading:
             raise ManualError("Regle de sortie sur la tendance invalide.")
         p["trend_entry"], p["trend_exit"] = te, tx
 
+    def _propose_swing_support(self, ticker, direction, market):
+        """v4.381 : ticket prepare depuis une alerte Swing Support (n importe quel actif crypto). Memes stop / objectif / levier
+        / taille que le mode Swing Support, tout reste modifiable ; aucune opportunite du bot n est requise."""
+        if direction != "long":
+            raise ManualError("Swing Support : achat (LONG) uniquement.")
+        p = self._propose_free(ticker, direction, market)
+        cfg = self.cfg
+        lev = 1 if market == "spot" else max(int(cfg.get("SUPSW_LEVERAGE", 3)), 1)
+        sl, tp = float(cfg.get("SUPSW_SL_PCT", 5.0)), float(cfg.get("SUPSW_TP_PCT", 2.0))
+        if int(cfg.get("SUPSW_LEVER_SCALE", 0)) == 1:
+            sl, tp = sups.scaled_levels(lev, sl, tp, float(cfg.get("SUPSW_MARGIN_RISK_PCT", 7.5)), float(cfg.get("SUPSW_MIN_SL_PCT", 1.5)),
+                                        float(cfg.get("SUPSW_TP_LEV1", 2.0)), float(cfg.get("SUPSW_TP_LEV2", 1.5)), float(cfg.get("SUPSW_TP_LEV3", 1.0)))
+        notional = max(min(float(cfg.get("CAPITAL_USD", 100.0)) * float(cfg.get("SUPSW_RISK_PCT", 1.0)) / sl, float(cfg.get("SUPSW_MAX_NOTIONAL_USD", 60.0))), 10.0)
+        p.update({"strategy": "swing_support", "free": False, "no_ttp": True, "leverage": lev, "notional_usd": round(notional, 2),
+                  "margin_usd": round(notional / lev, 2), "sl_pct": round(sl, 3), "sl_basis": "stop Swing Support (selon le levier)" if int(cfg.get("SUPSW_LEVER_SCALE", 0)) == 1 else "stop fixe Swing Support",
+                  "tp_pct": round(tp, 3), "tp_basis": "objectif Swing Support",
+                  "reasons": ["Ticket prepare depuis une alerte Swing Support : stop, objectif, levier et taille du mode (modifiables). "
+                              "La sortie anticipee du mode ne s applique pas aux trades manuels."]})
+        return p
+
     def propose(self, strategy, ticker, direction, market="perp"):
         if strategy == "libre":
             return self._propose_free(ticker, direction, market)
+        if strategy == "swing_support":
+            return self._propose_swing_support(ticker, direction, market)
         opp = self.get_opportunity(strategy, ticker, direction)
         if opp is None:
             raise ManualError("Cette opportunite n est pas (ou plus) valable dans ce sens.")
@@ -374,7 +399,7 @@ class ManualTrading:
                 raise ManualError(f"Champ manquant : {key}")
         if p["direction"] not in ("long", "short") or p["market"] not in ("perp", "spot") or p["mode"] not in ("paper", "live"):
             raise ManualError("Parametres invalides.")
-        if p["strategy"] == "libre":
+        if p["strategy"] in FREE_LIKE:
             # v4.343 — ORDRE LIBRE : aucun besoin d une opportunite du bot ; l actif doit simplement etre suivi
             opp = {}
             p["require_valid"] = False
@@ -761,7 +786,7 @@ class ManualTrading:
                 or (ex == "time" and time.time() >= item["trigger_time"]))
         if not fire:
             return
-        if (item.get("require_valid", True) and item.get("strategy_source") != "libre"
+        if (item.get("require_valid", True) and item.get("strategy_source") not in FREE_LIKE
                 and not self.get_opportunity(item["strategy_source"], item["ticker"], item["direction"])):
             self._finish_order(item, "cancelled", "declenche mais l opportunite n est plus valable — ordre annule")
             return
@@ -934,7 +959,7 @@ class ManualTrading:
                 out["pnl"] = item["qty"] * (price - item["entry_price"]) * sign
         elif item.get("status") == "scheduled":
             out["current_price"] = self.price(item["ticker"], item["market"])
-            out["opportunity_valid"] = (True if item.get("strategy_source") == "libre"
+            out["opportunity_valid"] = (True if item.get("strategy_source") in FREE_LIKE
                                         else self.get_opportunity(item["strategy_source"], item["ticker"], item["direction"]) is not None)
         return out
 

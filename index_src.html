@@ -836,7 +836,7 @@ function LiveSyncCard({ token }) {
 }
 
 // v4.376 — Alertes telephone (Web Push). Le bouton d'activation DOIT venir d'un toucher (exigence iOS).
-function PushPanel({ token }) {
+function PushPanel({ token, onPrepare }) {
   const [ps, setPs] = useState(null);
   const [here, setHere] = useState(false);
   const [msg, setMsg] = useState("");
@@ -931,6 +931,7 @@ function PushPanel({ token }) {
                     <div style={{color:"#e2e8f0"}}>{a.title}</div>
                     <div style={{color:"#94a3b8",fontSize:11}}>{a.body}</div>
                     <div style={{color:"#64748b",fontSize:10}}>{new Date(a.ts*1000).toLocaleString("fr-FR")}</div>
+                    {a.opp && onPrepare && <button style={{...MT.btn("#22c55e"),fontSize:11,marginTop:4}} onClick={(ev)=>{ ev.preventDefault(); onPrepare(a.opp); }}>🧾 Préparer le trade</button>}
                   </span>
                 </label>))}</div>
             </div>)}
@@ -990,15 +991,21 @@ function ManualTradingTab({ token }) {
         expiry_hours: prev?.expiry_hours || 24, require_valid: prev?.require_valid ?? true,
         notional_usd: p.notional_usd, leverage: p.leverage,
         sl_pct: p.sl_pct, tp_on: !p.free, tp_pct: p.tp_pct,
-        ttp_on: !p.free, ttp_arm_pct: p.ttp_arm_pct, ttp_trail_pct: p.ttp_trail_pct,
+        ttp_on: !p.free && !p.no_ttp, ttp_arm_pct: p.ttp_arm_pct, ttp_trail_pct: p.ttp_trail_pct,
         lock_on: !!p.free, lock_arm_pct: p.lock_arm_pct ?? p.sl_pct, lock_fraction_pct: Math.round((p.lock_fraction ?? 0.5)*100),
         trend_entry: prev?.trend_entry || "", trend_exit: prev?.trend_exit || "",
       }));
     } catch(e) { alert(e.message); setSel(null); setProp(null); setF(null); }
   };
-  const choose = (opp) => { setSel(opp); setF(null); loadProposal(opp, "perp"); };
+  const choose = (opp) => { setSel(opp); setF(null); loadProposal(opp, "perp"); setTimeout(() => { const el = document.getElementById("manual-ticket"); if (el) el.scrollIntoView({behavior:"smooth", block:"start"}); }, 700); };
+  // v4.381 : prepare un ticket depuis une alerte. Opportunite encore valable -> ticket de son mode ; sinon ticket libre (Swing Support : ses propres niveaux).
+  const prepareFromAlert = (o) => {
+    const live = st && st.opportunities.some(x => x.strategy===o.strategy && x.ticker===o.ticker && x.direction===o.direction);
+    if (o.strategy === "swing_support" || live) choose({strategy:o.strategy, ticker:o.ticker, direction:o.direction});
+    else { setErr(`Opportunité ${o.ticker} expirée : ticket libre préparé (stop, objectif et taille par défaut).`); choose({strategy:"libre", ticker:o.ticker, direction:o.direction}); }
+  };
 
-  const oppStillValid = sel && ((sel.strategy==="libre") || (st && st.opportunities.some(o => o.strategy===sel.strategy && o.ticker===sel.ticker && o.direction===sel.direction)));
+  const oppStillValid = sel && ((sel.strategy==="libre" || sel.strategy==="swing_support") || (st && st.opportunities.some(o => o.strategy===sel.strategy && o.ticker===sel.ticker && o.direction===sel.direction)));
   const refPrice = f && prop ? ((f.execution==="price_above"||f.execution==="price_below") && Number(f.trigger_price)>0 ? Number(f.trigger_price) : prop.price) : null;
   const isLong = sel?.direction === "long";
   const pxFromPct = (pct, side) => refPrice ? refPrice * (1 + (side==="sl" ? (isLong?-1:1) : (isLong?1:-1)) * pct/100) : null;
@@ -1070,7 +1077,7 @@ function ManualTradingTab({ token }) {
     <div style={{padding:16,maxWidth:1100}}>
       {err && <div style={{...MT.card,borderColor:"#7f1d1d",color:"#fca5a5"}}>⚠️ {err}</div>}
 
-      <PushPanel token={token}/>
+      <PushPanel token={token} onPrepare={prepareFromAlert}/>
 
       {/* ORDRE LIBRE — v4.343 */}
       <div style={MT.card}>
@@ -1109,9 +1116,9 @@ function ManualTradingTab({ token }) {
 
       {/* FORMULAIRE */}
       {sel && f && prop && (
-        <div style={{...MT.card,borderColor:f.mode==="live"?"#ef4444":"#1e2d4a"}}>
+        <div id="manual-ticket" style={{...MT.card,borderColor:f.mode==="live"?"#ef4444":"#1e2d4a"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>
-            <div style={{fontSize:15,fontWeight:800,color:"#e2e8f0"}}>{dirBadge(sel.direction)} {sel.ticker} <span style={{fontSize:11,color:"#94a3b8",fontWeight:400}}>{sel.strategy==="libre" ? <>— ordre libre · prix {fmtP(prop.price)}</> : <>— opportunité {prop && sel ? (st.opportunities.find(o=>o.ticker===sel.ticker&&o.strategy===sel.strategy)?.strategy_label||sel.strategy) : ""} · confiance {prop.confidence!=null?Math.round(prop.confidence)+" %":"—"} · prix {fmtP(prop.price)}</>}</span></div>
+            <div style={{fontSize:15,fontWeight:800,color:"#e2e8f0"}}>{dirBadge(sel.direction)} {sel.ticker} <span style={{fontSize:11,color:"#94a3b8",fontWeight:400}}>{sel.strategy==="libre" || sel.strategy==="swing_support" ? <>— {sel.strategy==="swing_support" ? "Swing Support (stop, objectif et taille du mode)" : "ordre libre"} · prix {fmtP(prop.price)}</> : <>— opportunité {prop && sel ? (st.opportunities.find(o=>o.ticker===sel.ticker&&o.strategy===sel.strategy)?.strategy_label||sel.strategy) : ""} · confiance {prop.confidence!=null?Math.round(prop.confidence)+" %":"—"} · prix {fmtP(prop.price)}</>}</span></div>
             <button style={MT.btn("#1e2d4a","#94a3b8")} onClick={()=>{setSel(null);setF(null);setProp(null);}}>Fermer</button>
           </div>
           {!oppStillValid && <div style={{background:"#7f1d1d33",border:"1px solid #7f1d1d",borderRadius:7,padding:8,color:"#fca5a5",fontSize:12,marginBottom:10}}>⛔ Le bot ne confirme plus cette opportunité : l'ordre sera refusé.</div>}
@@ -1230,7 +1237,7 @@ function ManualTradingTab({ token }) {
               <td style={MT.td}>{o.market.toUpperCase()}</td><td style={{...MT.td,color:o.mode==="live"?"#ef4444":"#22c55e"}}>{o.mode.toUpperCase()}</td>
               <td style={MT.td}>{o.execution==="price_above"?`prix ≥ ${fmtP(o.trigger_price)}`:o.execution==="price_below"?`prix ≤ ${fmtP(o.trigger_price)}`:`à ${fmtTime(o.trigger_time)}`}</td>
               <td style={MT.td}>{fmtP(o.current_price)}</td>
-              <td style={{...MT.td,color:o.opportunity_valid?"#22c55e":"#fbbf24"}}>{o.strategy_source==="libre"?"ordre libre":(o.opportunity_valid?"valable":"non confirmée")}</td>
+              <td style={{...MT.td,color:o.opportunity_valid?"#22c55e":"#fbbf24"}}>{o.strategy_source==="libre"?"ordre libre":(o.strategy_source==="swing_support"?"Swing Support":(o.opportunity_valid?"valable":"non confirmée"))}</td>
               <td style={MT.td}>{fmtTime(o.expires_at)}</td>
               <td style={MT.td}><button style={MT.btn("#1e2d4a","#fca5a5")} onClick={()=>cancelOrder(o.id)}>Annuler</button></td>
             </tr>)}</tbody>
@@ -1305,7 +1312,13 @@ function App() {
   const [prices, setPrices] = useState({});
   const [stats, setStats] = useState({});
   const [positions, setPositions] = useState([]);
-  const [tab, setTab] = useState("dashboard");
+  const [tab, setTab] = useState(() => { try { const t = new URLSearchParams(window.location.search).get("tab"); return t === "manuel" ? "manuel" : "dashboard"; } catch(_) { return "dashboard"; } });
+  useEffect(() => {      // v4.381 : toucher une alerte d'opportunite ouvre Trading Manuel (app deja ouverte)
+    if (!("serviceWorker" in navigator)) return;
+    const h = (e) => { if (e.data && e.data.tab === "manuel") setTab("manuel"); };
+    navigator.serviceWorker.addEventListener("message", h);
+    return () => navigator.serviceWorker.removeEventListener("message", h);
+  }, []);
   const [logs, setLogs] = useState([]);
   const [paper, setPaper] = useState(null);
   const [aiContinuous, setAiContinuous] = useState(false);

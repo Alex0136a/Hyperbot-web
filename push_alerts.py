@@ -197,9 +197,9 @@ class PushAlerts:
         threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._watchdog, daemon=True).start()
 
-    def notify(self, title, body, tag=None, url="/", urgent=True):
+    def notify(self, title, body, tag=None, url="/", urgent=True, opp=None):
         """Met une alerte en file ; ne bloque jamais le bot."""
-        self._remember(title, body, tag)            # v4.379 : historique consultable dans l'app (iOS efface la notification au toucher)
+        self._remember(title, body, tag, opp)            # v4.379 : historique consultable dans l'app (iOS efface la notification au toucher)
         if not CRYPTO_OK or not self.state["subs"]:
             return False
         now = time.time()
@@ -207,18 +207,20 @@ class PushAlerts:
         if len(self._sent_times) >= 30:                    # au plus 30 alertes par 10 minutes
             return False
         self._sent_times.append(now)
+        if opp:
+            url = "/?tab=manuel"                       # un toucher sur l'alerte ouvre Trading Manuel
         try:
             self.q.put_nowait({"title": title, "body": body, "tag": tag, "url": url, "urgent": urgent})
             return True
         except queue.Full:
             return False
 
-    def _remember(self, title, body, tag):
+    def _remember(self, title, body, tag, opp=None):
         try:
             with self.lock:
                 h = self.state.setdefault("history", [])
                 nid = max([x.get("id", 0) for x in h] + [0]) + 1
-                h.append({"id": nid, "ts": int(time.time()), "title": title, "body": body, "tag": tag})
+                h.append({"id": nid, "ts": int(time.time()), "title": title, "body": body, "tag": tag, "opp": opp})
                 del h[:-100]
                 self._save()
         except Exception:
@@ -406,7 +408,8 @@ class PushAlerts:
             side = "LONG" if opp.get("direction") == "long" else "SHORT"
             why = " · ".join((opp.get("reasons") or [])[:2])
             self.notify(f"🎯 Opportunité {side} {opp.get('ticker')} · {strat} · {float(conf):.0f} %",
-                        f"Prix {self._fmt(opp.get('price'))}" + (f" · {why}" if why else ""), tag=f"opp-{key[1]}-{key[2]}", urgent=False)
+                        f"Prix {self._fmt(opp.get('price'))}" + (f" · {why}" if why else ""), tag=f"opp-{key[1]}-{key[2]}", urgent=False,
+                        opp={"strategy": key[0], "ticker": key[1], "direction": key[2]})
         except Exception as e:
             self.log(f"[PUSH] opportunite ignoree : {type(e).__name__}: {e}")
 
@@ -432,6 +435,7 @@ class PushAlerts:
             if score is not None and score < float(self.pref("opps_min_score")):
                 return
             self._opp_seen[(strategy, ticker, direction)] = time.time()
-            self.notify(title, body, tag=f"opp-{ticker}-{direction}", urgent=False)
+            self.notify(title, body, tag=f"opp-{ticker}-{direction}", urgent=False,
+                        opp={"strategy": strategy, "ticker": ticker, "direction": direction})
         except Exception as e:
             self.log(f"[PUSH] setup ignore : {type(e).__name__}: {e}")

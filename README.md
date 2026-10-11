@@ -763,3 +763,12 @@ Fichiers : `push_alerts.py`, `api.py`, `index.html`, `index_src.html`, `README.m
 
 - Dans l'historique des alertes (Trading Manuel > Alertes téléphone), chaque alerte a une case : **Tout sélectionner**, **Effacer la sélection (n)** et **Tout effacer** (avec confirmation).
 - Route `POST /api/push/history/delete` (`ids` ou `everything`). Les anciennes alertes reçoivent un identifiant au chargement.
+
+## v4.381 — Préparer un trade depuis une alerte d'opportunité
+
+Fichiers : `manual_trading.py`, `push_alerts.py`, `api.py`, `index.html`, `index_src.html`, `README.md`.
+
+- Dans l'historique des alertes, chaque alerte d'opportunité a un bouton **🧾 Préparer le trade** : le ticket de Trading Manuel s'ouvre (et l'écran défile jusqu'à lui). Rien n'est envoyé tant que tu ne valides pas ; paper ou live au choix, comme avant.
+- **Opportunité encore valable** (Accumulation, Spot-Accum, Funding, Forex) : ticket de son mode, comme depuis la liste d'opportunités. **Opportunité expirée** : ticket libre (taille, stop et objectif par défaut), avec un message.
+- **Swing Support** (nouveau type de ticket, n'importe quel actif crypto, LONG uniquement) : stop, objectif, levier et taille du mode Swing Support (selon le levier si activé), sans opportunité du bot à confirmer, pas de trailing par défaut. La sortie anticipée du mode ne s'applique pas aux trades manuels.
+- **Toucher la notification** d'une opportunité ouvre l'application sur l'onglet Trading Manuel (application fermée ou déjà ouverte).
