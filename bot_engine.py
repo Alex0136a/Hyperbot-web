@@ -11249,7 +11249,23 @@ class BotEngine:
 
     def _supsw_context(self, ticker, v, price):
         """Contexte ENREGISTRE (jamais filtrant) : tendance de BTC, tendance Weekly, funding annualise."""
-        ctx = {"btc_trend": None, "weekly_trend": None, "funding_ann": None}
+        ctx = {"btc_trend": None, "weekly_trend": None, "funding_ann": None, "btc_chg24": None, "btc_h4": None, "h4_trend": None}
+        try:      # v4.387 : contexte de marche enregistre (jamais filtrant) : BTC sur 24 h, tendance H4 de BTC et de l actif
+            cb = self._mtf_candles("BTC", "1h", 30, cache_only=True)
+            if cb and len(cb) >= 25 and float(cb[-25]["c"]) > 0:
+                ctx["btc_chg24"] = round((float(cb[-1]["c"]) / float(cb[-25]["c"]) - 1) * 100, 3)
+        except Exception:
+            pass
+        try:
+            bpx4 = float((self.all_mids or {}).get("BTC") or 0)
+            if bpx4 > 0:
+                b4 = self.mtf_view("BTC", bpx4, cache_only=True, force_tf=("4h", "1h"))
+                ctx["btc_h4"] = b4.get("trend") if b4.get("ok") else None
+            if price:
+                a4 = self.mtf_view(ticker, float(price), cache_only=True, force_tf=("4h", "1h"))
+                ctx["h4_trend"] = a4.get("trend") if a4.get("ok") else None
+        except Exception:
+            pass
         try:
             if ticker == "BTC":
                 ctx["btc_trend"] = v.get("trend")
@@ -11291,6 +11307,7 @@ class BotEngine:
                 "ts": int(now * 1000), "signal_t": signal_t, "asset": ticker, "side": "long", "setup": setup["name"] if setup else None,
                 "setup_kind": setup["kind"] if setup else None, "trend": v.get("trend"), "weekly_trend": ctx.get("weekly_trend"),
                 "btc_trend": ctx.get("btc_trend"), "funding_ann": ctx.get("funding_ann"), "flow": flow,
+                "btc_chg24": ctx.get("btc_chg24"), "btc_h4": ctx.get("btc_h4"), "h4_trend": ctx.get("h4_trend"),
                 "atr_pct": (v["atr"] / price * 100) if price else None, "hour_utc": datetime.utcfromtimestamp(now).hour,
                 "zone_low": zone.get("low"), "zone_high": zone.get("high"), "zone_touches": zone.get("touches"),
                 "held": setup.get("held") if setup else None, "pierce_pct": setup.get("pierce_pct") if setup else None,

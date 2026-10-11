@@ -809,3 +809,11 @@ Fichiers : `push_alerts.py`, `bot_engine.py`, `api.py`, `index.html`, `index_src
 - La notification d'une opportunité (y compris Swing Support) commence par l'heure locale : « 🕐 18:06 · … ».
 - Dans l'historique des alertes : âge en couleur (vert ≤ 15 min, orange ≤ 1 h, rouge au-delà avec « probablement dépassée »), et « prix à l'alerte X → maintenant Y · +n % dans ton sens / contre toi » (sens LONG/SHORT pris en compte).
 - Le prix à l'alerte est conservé avec chaque alerte ; les anciennes alertes n'affichent que l'âge. `GET /api/push/history` renvoie `now_price`.
+
+## v4.387 — Journal Swing Support : contexte de marché (BTC 24 h, H4)
+
+Fichiers : `bot_engine.py`, `db.py`, `api.py`, `README.md`.
+
+- Trois colonnes sont ajoutées au journal des signaux Swing Support et à son export CSV : `btc_chg24` (variation de BTC sur 24 h, en %), `btc_h4` (tendance H4 de BTC) et `h4_trend` (tendance H4 de l'actif). Elles sont enregistrées seulement : aucune décision du bot n'en dépend.
+- Les colonnes sont créées automatiquement au démarrage dans la base existante ; les anciens signaux restent vides pour ces colonnes.
+- Objectif : tester dans quelques semaines un filtre « ne pas entrer quand BTC chute » sur des données réelles.

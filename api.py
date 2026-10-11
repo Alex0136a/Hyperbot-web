@@ -4090,7 +4090,7 @@ def supsw_export(days: int = Query(60, ge=1, le=120), email: str = Depends(requi
             "zone_low", "zone_high", "zone_touches", "held", "pierce_pct", "price", "entry_ref", "sl", "tp", "inval", "risk_pct", "reward_pct", "decision",
             "trade_uid", "evaluated", "outcome", "hit_h", "mfe24", "mae24", "mfe72", "mae72", "fin24", "fin72", "exit_ts", "exit_price",
             "exit_reason", "early_exit", "pnl_pct", "hold_h", "flow_exit", "h4_intact_exit", "d1_trend_exit", "post_eval", "fin1h", "fin4h", "fin24h",
-            "after_outcome", "after_hit_h", "after_mfe", "after_mae", "too_early", "alerts_max", "alerts_exit", "alerts_json"]
+            "after_outcome", "after_hit_h", "after_mfe", "after_mae", "too_early", "alerts_max", "alerts_exit", "alerts_json", "btc_chg24", "btc_h4", "h4_trend"]
     w.writerow(["cloture du signal (UTC)"] + cols)
     for e in ev:
         row = [datetime.fromtimestamp(e["signal_t"] / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M")]
