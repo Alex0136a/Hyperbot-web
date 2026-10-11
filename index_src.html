@@ -962,6 +962,39 @@ function PushPanel({ token, onPrepare }) {
     </div>);
 }
 
+// v4.383 — carte d'un trade MANUEL ouvert, affichee avec les trades du bot (onglet « Tous » et volet du mode) avec le tag Manuel.
+function ManualOpenCard({ t, token, onDone }) {
+  const pnl = t.pnl, up = pnl == null ? null : pnl >= 0;
+  const age = t.opened_at ? Math.max(0, Math.round((Date.now()/1000 - t.opened_at)/60)) : null;
+  const close = async () => {
+    if (!window.confirm(`${t.mode==="live"?"⚠️ LIVE — ":""}Fermer maintenant ${String(t.direction).toUpperCase()} ${t.ticker} (PnL actuel ${fmtUsd(pnl)}) ?`)) return;
+    try { await apiCall(`/api/manual/positions/${t.id}/close`,"POST",null,token); if (onDone) onDone(); } catch(e) { alert("Fermeture : " + e.message); }
+  };
+  return (
+    <div style={{background:"#0a0e1a",borderRadius:8,padding:12,marginBottom:8,border:`1px solid ${up==null?"#1e2d4a":(up?"#14532d":"#450a0a")}`}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <span style={{background:t.direction==="long"?"#052e16":"#2d0a0a",color:t.direction==="long"?"#34d399":"#f87171",padding:"2px 8px",borderRadius:4,fontSize:11,fontWeight:700}}>{String(t.direction).toUpperCase()}</span>
+          <span style={{color:"#f1f5f9",fontWeight:700}}>{t.ticker}{t.market==="spot"?" (spot)":"/USDC"}</span>
+          <span style={{color:"#94a3b8",fontSize:10}}>x{t.leverage}</span>
+          <span style={{background:"#0c2a3a",color:"#7dd3fc",border:"1px solid #38bdf8",padding:"1px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>✋ MANUEL</span>
+          <span style={{background:t.mode==="live"?"#2d0a0a":"#1e293b",color:t.mode==="live"?"#fca5a5":"#94a3b8",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>{t.mode==="live"?"LIVE":"PAPER"}</span>
+          {t.strategy_label && <span style={{color:"#64748b",fontSize:9}}>source : {t.strategy_label}</span>}
+        </div>
+        <span style={{color:up==null?"#94a3b8":(up?"#34d399":"#f87171"),fontWeight:700,fontSize:13}}>{fmtUsd(pnl)}{t.move_pct!=null && <span style={{fontSize:10,marginLeft:6}}>({t.move_pct>=0?"+":""}{Number(t.move_pct).toFixed(2)} % prix)</span>}</span>
+      </div>
+      <div style={{display:"flex",gap:14,flexWrap:"wrap",fontSize:10,color:"#94a3b8",marginTop:6}}>
+        <span>Entrée {fmtP(t.entry_price)}</span><span>Prix {fmtP(t.current_price)}</span>
+        <span style={{color:"#f87171"}}>SL {fmtP(t.sl_price)}</span>{t.tp_price ? <span style={{color:"#34d399"}}>TP {fmtP(t.tp_price)}</span> : null}
+        <span>{Number(t.notional_usd).toFixed(2)} $</span>{age!=null && <span>{age < 120 ? `${age} min` : `${Math.round(age/60)} h`}</span>}
+      </div>
+      <div style={{display:"flex",gap:8,alignItems:"center",marginTop:8,flexWrap:"wrap"}}>
+        <button style={{background:"#450a0a",border:"1px solid #ef4444",color:"#fca5a5",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer",fontFamily:"inherit"}} onClick={close}>Fermer</button>
+        <span style={{fontSize:9,color:"#64748b"}}>Modifier SL / TP / trailing : onglet Trading Manuel.</span>
+      </div>
+    </div>);
+}
+
 const TREND_LBL = {haussiere:"haussière", baissiere:"baissière", neutre:"neutre"};   // v4.343
 function ManualTradingTab({ token }) {
   const [st, setSt] = useState(null);
@@ -3830,7 +3863,7 @@ Confirmer ?`
               {l:"DISPONIBLE (hors positions)",v:`${paper?.balance?.toFixed(2)||"1000.00"} USDC`,c:"#60a5fa"},
               {l:"PNL OUVERT",v:`${paper?.total_pnl>=0?"+":""}${paper?.total_pnl?.toFixed(2)||"0.00"} USDC`,c:paper?.total_pnl>=0?"#34d399":"#f87171"},
               {l:"PERFORMANCE",v:`${paper?.total_pnl_pct>=0?"+":""}${paper?.total_pnl_pct?.toFixed(2)||"0.00"}%`,c:paper?.total_pnl_pct>=0?"#34d399":"#f87171"},
-              {l:"TRADES OUVERTS",v:paper?.open_trades?.length||0,c:"#c084fc"},
+              {l:"TRADES OUVERTS",v:(paper?.open_trades?.length||0)+(paper?.manual_open?.length||0),c:"#c084fc"},
               {l:`WIN RATE${paper?.fees_on?" (après frais)":""}`,v:`${paper?.win_rate??0}%`,c:"#fbbf24"},
             ].map((s,i)=>(
               <div key={i} style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:8,padding:"12px",textAlign:"center"}}>
@@ -5077,9 +5110,10 @@ Confirmer ?`
           {paperSubTab==="all" && (
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:16,marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:"#60a5fa",marginBottom:12}}>📈 Trades ouverts</div>
-            {!paper?.open_trades?.length
+            {(paper?.manual_open||[]).map(t=><ManualOpenCard key={"m"+t.id} t={t} token={token} onDone={loadData}/>)}
+            {!(paper?.open_trades?.length || paper?.manual_open?.length)
               ? <div style={{color:"#94a3b8",fontSize:11,textAlign:"center",padding:"20px 0"}}>Aucun trade ouvert — exécutez un signal !</div>
-              : paper.open_trades.map(trade=>(
+              : (paper.open_trades||[]).map(trade=>(
                 <div key={trade.id} style={{background:"#0a0e1a",borderRadius:8,padding:12,marginBottom:8,border:`1px solid ${trade.pnl>=0?"#14532d":"#450a0a"}`}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
                     <div style={{display:"flex",gap:8,alignItems:"center"}}>

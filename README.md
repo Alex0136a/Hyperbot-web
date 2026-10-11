@@ -779,3 +779,12 @@ Fichiers : `manual_trading.py`, `bot_engine.py`, `api.py`, `index.html`, `index_
 
 - Une opportunité sur un actif où une **position est déjà ouverte** (n'importe quel mode du bot, paper ou live, ou un trade manuel) n'est plus : proposée dans la liste de Trading Manuel, annoncée par alerte (Accumulation, Spot-Accum, Funding, Forex et Swing Support), ni préparable en ticket. Si une position s'ouvre pendant qu'une opportunité est affichée, elle disparaît de la liste.
 - Dans l'historique des alertes, le bouton « Préparer le trade » est remplacé par « Position déjà ouverte sur … » quand l'actif est occupé.
+
+## v4.383 — Trades manuels ouverts dans « Tous »
+
+Fichiers : `api.py`, `index.html`, `index_src.html`, `README.md`.
+
+- Les trades ouverts en **Manuel** apparaissent dans Trades P/L > **Tous**, avec les autres trades ouverts, taggés « ✋ MANUEL » (entrée, prix actuel, PnL, SL/TP, bouton Fermer). Ils sont comptés dans la tuile TRADES OUVERTS.
+- Ils restent affichés dans l'onglet de leur mode (shorts → Accumulation, longs → Spot-Accum), dans le bloc « TRADES MANUELS OUVERTS » existant depuis la v4.358, sans doublon.
+- Ils ne sont **pas inclus** dans le solde ni dans le PnL ouvert du bot.
+- API : `paper_portfolio` renvoie en plus `manual_open`.
