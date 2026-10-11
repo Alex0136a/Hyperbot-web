@@ -5267,12 +5267,20 @@ class PushHistDeleteBody(BaseModel):
 @app.post("/api/push/history/delete")
 def push_history_delete(body: PushHistDeleteBody, email: str = Depends(require_user)):
     n = push.delete_history(body.ids, body.everything)
-    return {"deleted": n, "items": push.history(50)}
+    items = push.history(50)
+    for it in items:
+        o = it.get("opp")
+        it["busy"] = bool(o and bot.manual.ticker_busy(o.get("ticker")))
+    return {"deleted": n, "items": items}
 
 
 @app.get("/api/push/history")
 def push_history(limit: int = Query(50, ge=1, le=100), email: str = Depends(require_user)):
-    return {"items": push.history(limit)}
+    items = push.history(limit)
+    for it in items:      # v4.382 : le bouton « Preparer le trade » disparait si une position est deja ouverte sur l actif
+        o = it.get("opp")
+        it["busy"] = bool(o and bot.manual.ticker_busy(o.get("ticker")))
+    return {"items": items}
 
 
 @app.post("/api/push/test")

@@ -772,3 +772,10 @@ Fichiers : `manual_trading.py`, `push_alerts.py`, `api.py`, `index.html`, `index
 - **Opportunité encore valable** (Accumulation, Spot-Accum, Funding, Forex) : ticket de son mode, comme depuis la liste d'opportunités. **Opportunité expirée** : ticket libre (taille, stop et objectif par défaut), avec un message.
 - **Swing Support** (nouveau type de ticket, n'importe quel actif crypto, LONG uniquement) : stop, objectif, levier et taille du mode Swing Support (selon le levier si activé), sans opportunité du bot à confirmer, pas de trailing par défaut. La sortie anticipée du mode ne s'applique pas aux trades manuels.
 - **Toucher la notification** d'une opportunité ouvre l'application sur l'onglet Trading Manuel (application fermée ou déjà ouverte).
+
+## v4.382 — Pas d'opportunité sur un actif déjà occupé
+
+Fichiers : `manual_trading.py`, `bot_engine.py`, `api.py`, `index.html`, `index_src.html`, `README.md`.
+
+- Une opportunité sur un actif où une **position est déjà ouverte** (n'importe quel mode du bot, paper ou live, ou un trade manuel) n'est plus : proposée dans la liste de Trading Manuel, annoncée par alerte (Accumulation, Spot-Accum, Funding, Forex et Swing Support), ni préparable en ticket. Si une position s'ouvre pendant qu'une opportunité est affichée, elle disparaît de la liste.
+- Dans l'historique des alertes, le bouton « Préparer le trade » est remplacé par « Position déjà ouverte sur … » quand l'actif est occupé.

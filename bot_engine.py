@@ -11395,6 +11395,9 @@ class BotEngine:
         try:
             if push is None or not push.setup_ready("swing_support", ticker, "long"):
                 return
+            mt = getattr(self, "manual", None)
+            if mt is not None and mt.ticker_busy(ticker):      # v4.382 : actif deja occupe (y compris par un trade manuel)
+                return
             h4_up = False
             try:
                 bv = self.mtf_view(ticker, price, force_tf=("4h", "1h"))

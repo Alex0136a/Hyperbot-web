@@ -93,12 +93,26 @@ class ManualTrading:
         self._last_persist[item["id"]] = time.time()
 
     # ─────────────────────────── opportunites ────────────────────────────
+    def ticker_busy(self, ticker):
+        """v4.382 : True si une position est deja ouverte sur cet actif (n importe quel mode du bot, paper ou live,
+        ou un trade manuel). Une opportunite sur un actif occupe n est ni proposee ni annoncee."""
+        try:
+            for pool in (self.bot.states, self.bot.accum_states):
+                for sk, st in list(pool.items()):
+                    if st.position and be.ticker_from_slot_key(sk) == ticker:
+                        return True
+            return any(i.get("status") in ("opening", "open", "closing") and i.get("ticker") == ticker for i in list(self.items.values()))
+        except Exception:
+            return False
+
     def record_candidates(self, strategy, candidates):
         """Appele par le bot a chaque cycle avec ses candidats d entree
         (avant tout filtrage par plafond de positions)."""
         now = time.time()
         with self.lock:
             for c in candidates:
+                if self.ticker_busy(c["ticker"]):
+                    continue
                 key = (strategy, c["ticker"], c["signal"])
                 opp = self.opportunities.get(key)
                 is_new = False
@@ -137,7 +151,7 @@ class ManualTrading:
             out = []
             for o in self.opportunities.values():
                 valid = now - o["last_seen"] <= self._ttl()
-                if not valid:
+                if not valid or self.ticker_busy(o["ticker"]):     # v4.382 : plus proposee si une position vient de s ouvrir
                     continue
                 out.append({**o, "strategy_label": STRATEGY_LABELS.get(o["strategy"], o["strategy"]),
                             "age_sec": round(now - o["first_seen"]),
@@ -309,6 +323,8 @@ class ManualTrading:
         opp = self.get_opportunity(strategy, ticker, direction)
         if opp is None:
             raise ManualError("Cette opportunite n est pas (ou plus) valable dans ce sens.")
+        if self.ticker_busy(ticker):
+            raise ManualError(f"Une position est deja ouverte sur {ticker} : opportunite non proposee.")
         if market == "spot" and (direction != "long" or not self.spot_pair(ticker)):
             raise ManualError("Pas de marche spot disponible pour cet actif (le spot n autorise que l achat).")
         cfg = self.cfg
