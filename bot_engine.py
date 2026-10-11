@@ -11409,9 +11409,9 @@ class BotEngine:
             if watch_only:
                 status = "actif hors des 5 du mode : alerte seulement"
             else:
-                status = "ouvert par le bot (Paper)" if not blocker else f"non ouvert : {blocker.split(' (')[0]}"
-            push.on_setup("swing_support", ticker, "long", f"🧱 Swing Support {ticker} · note {score}/100 : {setup['kind']} détecté",
-                          f"{setup['name']} · support {self._zone_txt(zone)} · prix {price:.6g} · {why} · {status}", score=score)
+                status = "ouvert par le bot (Paper)" if not blocker else f"le bot n'a pas ouvert ce trade ({blocker.split(' (')[0]})"
+            push.on_setup("swing_support", ticker, "long", f"🧱 Swing Support · 📈 LONG (achat) {ticker} · note {score}/100 : {setup['kind']} détecté",
+                          f"{setup['name']} · support {self._zone_txt(zone)} · prix {price:.6g} · {why} · {status}", score=score, price=price)
         except Exception as e:
             print(f"[SWING-SUP] alerte ignoree : {type(e).__name__}: {e}")
 

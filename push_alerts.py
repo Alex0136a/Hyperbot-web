@@ -210,6 +210,8 @@ class PushAlerts:
         if opp:
             url = "/?tab=manuel"                       # un toucher sur l'alerte ouvre Trading Manuel
         try:
+            if opp:
+                body = f"🕐 {self._local_hhmm()} · {body}"      # v4.386 : heure de l alerte dans la notification (heure locale)
             self.q.put_nowait({"title": title, "body": body, "tag": tag, "url": url, "urgent": urgent})
             return True
         except queue.Full:
@@ -347,6 +349,14 @@ class PushAlerts:
         if pnl is not None and pnl < 0:
             self._check_daily_loss()
 
+    def _local_hhmm(self):
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("America/Marigot")
+        except Exception:
+            tz = timezone(timedelta(hours=-4))
+        return datetime.now(tz).strftime("%H:%M")
+
     def _local_day_start_iso(self):
         try:
             from zoneinfo import ZoneInfo
@@ -409,7 +419,7 @@ class PushAlerts:
             why = " · ".join((opp.get("reasons") or [])[:2])
             self.notify(f"🎯 Opportunité {side} {opp.get('ticker')} · {strat} · {float(conf):.0f} %",
                         f"Prix {self._fmt(opp.get('price'))}" + (f" · {why}" if why else ""), tag=f"opp-{key[1]}-{key[2]}", urgent=False,
-                        opp={"strategy": key[0], "ticker": key[1], "direction": key[2]})
+                        opp={"strategy": key[0], "ticker": key[1], "direction": key[2], "price": opp.get("price")})
         except Exception as e:
             self.log(f"[PUSH] opportunite ignoree : {type(e).__name__}: {e}")
 
@@ -426,7 +436,7 @@ class PushAlerts:
             return False
         return time.time() - self._opp_seen.get((strategy, ticker, direction), 0) >= float(self.pref("opps_cooldown_min")) * 60
 
-    def on_setup(self, strategy, ticker, direction, title, body, score=None):
+    def on_setup(self, strategy, ticker, direction, title, body, score=None, price=None):
         """Alerte d'un mode qui ouvre lui-meme ses trades (Swing Support) : setup valide detecte.
         Memes reglages que les opportunites (case, type coche, delai entre deux alertes) ; `score` compare a opps_min_score."""
         try:
@@ -436,6 +446,6 @@ class PushAlerts:
                 return
             self._opp_seen[(strategy, ticker, direction)] = time.time()
             self.notify(title, body, tag=f"opp-{ticker}-{direction}", urgent=False,
-                        opp={"strategy": strategy, "ticker": ticker, "direction": direction})
+                        opp={"strategy": strategy, "ticker": ticker, "direction": direction, "price": price})
         except Exception as e:
             self.log(f"[PUSH] setup ignore : {type(e).__name__}: {e}")

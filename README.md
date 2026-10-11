@@ -794,3 +794,18 @@ Fichiers : `api.py`, `index.html`, `index_src.html`, `README.md`.
 Fichiers : `index.html`, `index_src.html`, `README.md` (aucun changement serveur).
 
 - Trades P/L > **Performance** affiche désormais aussi les cartes **🧱 Swing Support** et **📈 Tendance** (ouverts/total, win rate, net, frais), en plus de Forex, Scalp, Accumulation, Funding et Spot-Accum. Même calcul que les autres modes (net après frais si l'option est active, depuis le point de réinitialisation des statistiques).
+
+## v4.385 — Alerte Swing Support : sens indiqué
+
+Fichiers : `bot_engine.py`, `README.md`.
+
+- Le titre de l'alerte Swing Support indique maintenant le sens : « 🧱 Swing Support · 📈 LONG (achat) ETH · note 75/100 ». Le mode est LONG uniquement (achat sur support).
+- Le statut en fin de message est plus clair : « le bot n'a pas ouvert ce trade (nombre maximal de swings support simultanes atteint) ».
+
+## v4.386 — Alertes horodatées et fraîcheur des opportunités
+
+Fichiers : `push_alerts.py`, `bot_engine.py`, `api.py`, `index.html`, `index_src.html`, `README.md`.
+
+- La notification d'une opportunité (y compris Swing Support) commence par l'heure locale : « 🕐 18:06 · … ».
+- Dans l'historique des alertes : âge en couleur (vert ≤ 15 min, orange ≤ 1 h, rouge au-delà avec « probablement dépassée »), et « prix à l'alerte X → maintenant Y · +n % dans ton sens / contre toi » (sens LONG/SHORT pris en compte).
+- Le prix à l'alerte est conservé avec chaque alerte ; les anciennes alertes n'affichent que l'âge. `GET /api/push/history` renvoie `now_price`.

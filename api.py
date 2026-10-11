@@ -5284,6 +5284,10 @@ def push_history_delete(body: PushHistDeleteBody, email: str = Depends(require_u
     for it in items:
         o = it.get("opp")
         it["busy"] = bool(o and bot.manual.ticker_busy(o.get("ticker")))
+        try:      # v4.386 : prix actuel, pour juger si l opportunite vaut encore la peine
+            it["now_price"] = float((bot.all_mids or {}).get(o.get("ticker"))) if o and o.get("ticker") in (bot.all_mids or {}) else None
+        except Exception:
+            it["now_price"] = None
     return {"deleted": n, "items": items}
 
 
@@ -5293,6 +5297,10 @@ def push_history(limit: int = Query(50, ge=1, le=100), email: str = Depends(requ
     for it in items:      # v4.382 : le bouton « Preparer le trade » disparait si une position est deja ouverte sur l actif
         o = it.get("opp")
         it["busy"] = bool(o and bot.manual.ticker_busy(o.get("ticker")))
+        try:      # v4.386 : prix actuel, pour juger si l opportunite vaut encore la peine
+            it["now_price"] = float((bot.all_mids or {}).get(o.get("ticker"))) if o and o.get("ticker") in (bot.all_mids or {}) else None
+        except Exception:
+            it["now_price"] = None
     return {"items": items}
 
 

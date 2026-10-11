@@ -930,7 +930,18 @@ function PushPanel({ token, onPrepare }) {
                   <span style={{flex:1,minWidth:0}}>
                     <div style={{color:"#e2e8f0"}}>{a.title}</div>
                     <div style={{color:"#94a3b8",fontSize:11}}>{a.body}</div>
-                    <div style={{color:"#64748b",fontSize:10}}>{new Date(a.ts*1000).toLocaleString("fr-FR")}</div>
+                    {(()=>{
+                      const mins = Math.max(0, Math.round((Date.now()/1000 - a.ts)/60));
+                      const ageTxt = mins < 1 ? "à l'instant" : mins < 60 ? `il y a ${mins} min` : mins < 1440 ? `il y a ${Math.floor(mins/60)} h ${String(mins%60).padStart(2,"0")}` : `il y a ${Math.floor(mins/1440)} j`;
+                      const col = !a.opp ? "#64748b" : mins <= 15 ? "#86efac" : mins <= 60 ? "#fbbf24" : "#f87171";
+                      const p0 = a.opp && a.opp.price != null ? Number(a.opp.price) : null, p1 = a.now_price != null ? Number(a.now_price) : null;
+                      let mv = null;
+                      if (p0 && p1) { const d = (p1/p0 - 1) * 100 * (a.opp.direction === "short" ? -1 : 1); mv = d; }
+                      return <div style={{fontSize:10,color:"#64748b"}}>{new Date(a.ts*1000).toLocaleString("fr-FR")} · <b style={{color:col}}>{ageTxt}</b>
+                        {a.opp && mins > 60 ? <span style={{color:"#f87171"}}> · probablement dépassée</span> : null}
+                        {mv != null ? <div style={{marginTop:2}}>prix à l'alerte {p0} → maintenant {p1} · <b style={{color:mv >= 0 ? "#86efac" : "#f87171"}}>{mv >= 0 ? "+" : ""}{mv.toFixed(2)} %</b> {mv >= 0 ? "dans ton sens" : "contre toi"}</div> : null}
+                      </div>;
+                    })()}
                     {a.opp && a.busy && <div style={{color:"#fbbf24",fontSize:10,marginTop:4}}>Position déjà ouverte sur {a.opp.ticker}</div>}
                     {a.opp && !a.busy && onPrepare && <button style={{...MT.btn("#22c55e"),fontSize:11,marginTop:4}} onClick={(ev)=>{ ev.preventDefault(); onPrepare(a.opp); }}>🧾 Préparer le trade</button>}
                   </span>
