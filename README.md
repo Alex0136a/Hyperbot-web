@@ -817,3 +817,12 @@ Fichiers : `bot_engine.py`, `db.py`, `api.py`, `README.md`.
 - Trois colonnes sont ajoutées au journal des signaux Swing Support et à son export CSV : `btc_chg24` (variation de BTC sur 24 h, en %), `btc_h4` (tendance H4 de BTC) et `h4_trend` (tendance H4 de l'actif). Elles sont enregistrées seulement : aucune décision du bot n'en dépend.
 - Les colonnes sont créées automatiquement au démarrage dans la base existante ; les anciens signaux restent vides pour ces colonnes.
 - Objectif : tester dans quelques semaines un filtre « ne pas entrer quand BTC chute » sur des données réelles.
+
+## v4.388 — Forex : suivi du creux de PnL pendant le trade
+
+Fichiers : `bot_engine.py`, `README.md`.
+
+- Les trades du mode Forex enregistrent désormais, comme Funding, le chemin de leur PnL (lecture seule, aucun effet sur une décision) : creux atteint pendant le trade, creux après l'armement du trailing, pic au moment de ce creux et délai jusqu'à l'armement. Ces valeurs apparaissent dans l'export « Suivi … Forex » (colonnes « PnL minimal pendant le trade % », « PnL minimal APRES avoir touche +0,5 % », « pic atteint au moment de ce minimum % », « delai jusqu a +0,5 % (s) »).
+- **Attention au libellé** : pour le Forex, le seuil de « contact » est l'armement du trailing (`FOREX_TTP_ARM_PCT`, 0,15 %), pas +0,5 % comme l'indique l'en-tête de colonne (conservé pour Funding).
+- « suivi complet du trade » = oui seulement si le trade a été ouvert après le déploiement ; un trade déjà ouvert garde un creux partiel.
+- Objectif : tester dans quelques semaines une sortie « sans progrès » (stop de plafond de −0,5 % touché par des trades qui n'ont jamais bougé dans le bon sens).

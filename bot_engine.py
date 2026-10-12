@@ -7519,7 +7519,7 @@ class BotEngine:
             return True
         return False
 
-    def _funding_pnl_track(self, state, pos, pnl_pct):
+    def _funding_pnl_track(self, state, pos, pnl_pct, touch_pct=None):
         """v4.342 — SUIVI DU CHEMIN DU PNL (LECTURE SEULE, aucun effet sur une decision).
         Sur demande : savoir, pour chaque trade Funding, par quel chemin il est passe
         (ex. : pic +0.9 %, recul a -0.1 %, puis repart au-dessus de +1 %). Note sur la
@@ -7539,7 +7539,7 @@ class BotEngine:
                     age = None
                 pos["pp_complete"] = bool(age is not None and age < 180)
                 pos["pp_t0"] = now - (age if age is not None and age > 0 else 0)
-            touch = self.cfg.get("FUNDING_PNL_TRACK_TOUCH_PCT", 0.5)
+            touch = touch_pct if touch_pct is not None else self.cfg.get("FUNDING_PNL_TRACK_TOUCH_PCT", 0.5)
             if pos.get("pp_touch_ts") is None and pnl_pct >= touch:
                 pos["pp_touch_ts"] = now
             if pos.get("pp_touch_ts") is not None:
@@ -8413,6 +8413,8 @@ class BotEngine:
 
             # v4.336 — SUR DEMANDE EXPLICITE : SL dynamique Forex (voir _forex_dynamic_sl)
             _forex_dsl_on = pos.get("strategy") == "forex" and bool(cfg.get("FOREX_DYNAMIC_SL", 1))
+            if pos.get("strategy") == "forex":      # v4.388 : suivi du chemin du PnL (lecture seule) ; seuil = armement du trailing Forex
+                self._funding_pnl_track(state, pos, pnl_pct, touch_pct=cfg.get("FOREX_TTP_ARM_PCT", 0.15))
             if _forex_dsl_on and self._forex_dynamic_sl(state, pos, price, pnl_pct, ticker, symbol, mode):
                 return
 
