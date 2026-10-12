@@ -826,3 +826,13 @@ Fichiers : `bot_engine.py`, `README.md`.
 - **Attention au libellé** : pour le Forex, le seuil de « contact » est l'armement du trailing (`FOREX_TTP_ARM_PCT`, 0,15 %), pas +0,5 % comme l'indique l'en-tête de colonne (conservé pour Funding).
 - « suivi complet du trade » = oui seulement si le trade a été ouvert après le déploiement ; un trade déjà ouvert garde un creux partiel.
 - Objectif : tester dans quelques semaines une sortie « sans progrès » (stop de plafond de −0,5 % touché par des trades qui n'ont jamais bougé dans le bon sens).
+
+## v4.389 — Swing Support : laisser courir après l'objectif + réentrée après un gain
+
+Fichiers : `bot_engine.py`, `db.py`, `api.py`, `index.html`, `index_src.html`, `README.md`.
+
+- **Laisser courir** (`SUPSW_TRAIL_ON`, 1 par défaut) : à l'objectif (+1 %), le trade n'est plus fermé. Le stop remonte aussitôt à +0,5 % au-dessus de l'entrée (`SUPSW_TRAIL_LOCK_PCT`, gain verrouillé), puis suit le plus haut atteint à 0,5 % en dessous (`SUPSW_TRAIL_PCT`). Sortie : « SWING SUPPORT TRAILING OBJECTIF ». La durée max (5 j) reste active ; la sortie anticipée « CASSE (flux) » est suspendue une fois le gain verrouillé. `SUPSW_TRAIL_ON = 0` rétablit l'objectif fixe. Redémarrage : le niveau du stop suiveur est sauvegardé (au plus une fois par minute) ; une position reconstruite au démarrage repart du stop d'origine et se ré-arme si le prix est au-dessus de l'objectif.
+- **Réentrée après un gain** (`SUPSW_REENTRY_ON`, 1 par défaut) : pendant 12 h (`SUPSW_REENTRY_HOURS`) après une sortie gagnante sur un actif, un nouveau signal n'est accepté que si le prix est au moins à (prix de sortie − 0,2 %) (`SUPSW_REENTRY_TOL_PCT`), donc « ça continue de monter ». Si le prix a baissé, le bot attend la fin de la baisse : point bas fait depuis au moins 2 bougies 1 h et dernière bougie 1 h verte. Le refus apparaît dans le journal (« baisse apres un gain … ») et la carte du mode.
+- **Journal / export** : deux colonnes ajoutées (`peak_pct` = plus haut atteint pendant le trade en %, `trail_armed`), pour comparer chaque trade au gain qu'aurait donné l'objectif fixe. Les colonnes sont créées automatiquement au démarrage.
+- Les 6 réglages sont modifiables dans Réglages ; le texte du mode (Trading > Swing Support) indique le trailing et la réentrée.
+- Limite : l'export historique ne contient pas le chemin du prix, l'effet du trailing se mesure donc sur les trades à venir.

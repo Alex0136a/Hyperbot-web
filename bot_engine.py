@@ -1484,6 +1484,12 @@ PROFILE_SWING = {
     "SUPSW_MAX_SPREAD_PCT": 0.05,
     "SUPSW_MAX_HOLD_DAYS": 5,
     "SUPSW_COOLDOWN_SEC": 14400,
+    "SUPSW_TRAIL_ON": 1,                  # v4.389 : 1 = a l objectif on ne ferme pas : on verrouille un gain et on laisse courir (trailing)
+    "SUPSW_TRAIL_LOCK_PCT": 0.5,          # ... le stop passe immediatement a +N % au-dessus de l entree (gain verrouille)
+    "SUPSW_TRAIL_PCT": 0.5,               # ... puis suit le plus haut atteint a N % en dessous
+    "SUPSW_REENTRY_ON": 1,                # v4.389 : apres un trade gagnant sur un actif, controle avant de reprendre
+    "SUPSW_REENTRY_HOURS": 12,            # ... valable N heures apres la sortie gagnante
+    "SUPSW_REENTRY_TOL_PCT": 0.2,         # ... prix >= prix de sortie - N % = ca continue de monter : on reprend ; sinon on attend la fin de la baisse
     "SUPSW_EXIT_BUFFER_ATR": 0.3,         # cloture 1 h sous (bas de zone - N x ATR 1 h) = support casse
     "SUPSW_EXIT_FLOW": -0.4,              # ... ET flux de transactions inferieur a N
     "SUPSW_EXIT_LEVEL": 1,                # v4.363 : 1 = niveau de sortie = plus bas du retest (borne ci-dessous) ; 0 = bas de la zone Daily (ancien)
@@ -11180,6 +11186,10 @@ class BotEngine:
             "max_spread": float(c.get("SUPSW_MAX_SPREAD_PCT", 0.05)), "hold_days": float(c.get("SUPSW_MAX_HOLD_DAYS", 5)),
             "cooldown": int(c.get("SUPSW_COOLDOWN_SEC", 14400)), "exit_buf": float(c.get("SUPSW_EXIT_BUFFER_ATR", 0.3)),
             "exit_flow": float(c.get("SUPSW_EXIT_FLOW", -0.4)),
+            "trail_on": bool(int(c.get("SUPSW_TRAIL_ON", 1))), "trail_lock": float(c.get("SUPSW_TRAIL_LOCK_PCT", 0.5)),
+            "trail_pct": max(float(c.get("SUPSW_TRAIL_PCT", 0.5)), 0.1),
+            "re_on": bool(int(c.get("SUPSW_REENTRY_ON", 1))), "re_h": float(c.get("SUPSW_REENTRY_HOURS", 12)),
+            "re_tol": float(c.get("SUPSW_REENTRY_TOL_PCT", 0.2)),
             "exit_level": int(c.get("SUPSW_EXIT_LEVEL", 1)), "exit_min": float(c.get("SUPSW_EXIT_MIN_PCT", 0.5)),
             "exit_max": float(c.get("SUPSW_EXIT_MAX_PCT", 3.0)), "need_h4_end": bool(c.get("SUPSW_EXIT_REQUIRE_H4_END", 0)),
             "slip": float(c.get("FOREX_SCALP_SLIPPAGE_PCT", 0.005)), "fee": float(c.get("FEE_ROUND_TRIP_PCT", 0.09)),
@@ -11189,6 +11199,7 @@ class BotEngine:
             K["sl_pct"], K["tp_pct"] = sups.scaled_levels(
                 K["lev"], K["sl_pct"], K["tp_pct"], float(c.get("SUPSW_MARGIN_RISK_PCT", 7.5)), float(c.get("SUPSW_MIN_SL_PCT", 1.5)),
                 float(c.get("SUPSW_TP_LEV1", 2.0)), float(c.get("SUPSW_TP_LEV2", 1.5)), float(c.get("SUPSW_TP_LEV3", 1.0)))
+        K["trail_lock"] = max(min(K["trail_lock"], K["tp_pct"] * 0.9), 0.0)      # le verrou reste sous l objectif
         K["exit_max"] = min(K["exit_max"], round(K["sl_pct"] * 0.8, 3))
         K["exit_min"] = min(K["exit_min"], K["exit_max"])
         return K
@@ -11394,6 +11405,8 @@ class BotEngine:
             blocker = "nombre maximal de swings support simultanes atteint"
         elif now - getattr(state, "supsw_last_loss_ts", 0) < K["cooldown"]:
             blocker = "pause apres une perte sur cet actif"
+        else:
+            blocker = self._supsw_reentry_blocker(ticker, c1h, price, now, K)
         if watch:                          # v4.378 : actif hors des 5 du mode -> alerte seulement, jamais d ouverture ni de journal
             if age <= K["max_age"] and spread_pct <= K["max_spread"]:
                 self._supsw_alert(ticker, v, ctx, zone, setup, price, flow, None, True)
@@ -11453,6 +11466,34 @@ class BotEngine:
                 self._supsw_eval_ticker(t, now, True, watch=True)
             except Exception as e:
                 print(f"[SWING-SUP] surveillance {t} ignoree : {type(e).__name__}: {e}")
+
+    def _supsw_reentry_blocker(self, ticker, c1h, price, now, K):
+        """v4.389 : apres un trade GAGNANT sur cet actif (dans les N dernieres heures) : on reprend si le prix continue de monter
+        (>= prix de sortie - tolerance) ; s il a baisse, on attend la fin de la baisse (point bas fait depuis >= 2 bougies 1 h et
+        derniere bougie 1 h verte). Retourne le texte du refus, ou None."""
+        if not K["re_on"]:
+            return None
+        try:
+            last = db.supsw_last_exit(ticker)
+        except Exception:
+            return None
+        if not last or (last.get("pnl_pct") or 0) <= 0 or not last.get("exit_price"):
+            return None
+        t_exit = (last.get("exit_ts") or 0) / 1000
+        if now - t_exit > K["re_h"] * 3600:
+            return None
+        xp = float(last["exit_price"])
+        if price >= xp * (1 - K["re_tol"] / 100):
+            return None                                        # ca continue de monter
+        cs = [c for c in c1h if c["t"] / 1000 >= t_exit - 3600]
+        if len(cs) < 3:
+            return f"baisse apres un gain (sortie {xp:.6g}) — on attend la fin de la baisse"
+        lows = [float(c["l"]) for c in cs]
+        i_low = lows.index(min(lows))
+        green = float(cs[-1]["c"]) > float(cs[-1]["o"])
+        if i_low <= len(cs) - 3 and green:
+            return None                                        # point bas fait, la baisse semble finie
+        return f"baisse apres un gain (sortie {xp:.6g}, prix {price:.6g}) — on attend la fin de la baisse pres du support"
 
     def _supsw_open(self, symbol, ticker, state, setup, ctx, v, zone, price, spread_pct, flow, res, K):
         fill = scalp.fill_price("long", price, spread_pct, K["slip"], "entry")
@@ -11596,12 +11637,29 @@ class BotEngine:
             state.peak_pnl_usd = pnl_usd_now
             state.absolute_peak_pnl_usd = pnl_usd_now
         reason, early, flow_exit = None, False, None
+        # v4.389 : a l objectif on ne ferme plus (si SUPSW_TRAIL_ON) : gain verrouille puis stop suiveur sous le plus haut
+        if K["trail_on"] and not sp.get("trail") and price >= sp["tp"] and price > pos["sl"]:
+            sp["trail"], sp["trail_ts"], sp["peak"] = True, time.time(), price
+            pos["sl"] = max(pos["sl"], entry * (1 + K["trail_lock"] / 100), price * (1 - K["trail_pct"] / 100))
+            self.emit("log", {"msg": f"[{ticker}] 🧱 Objectif {sp['tp']:.6g} atteint : on laisse courir — stop remonté à {pos['sl']:.6g} "
+                                     f"(+{(pos['sl'] / entry - 1) * 100:.2f} % verrouillé)", "level": "signal"})
+            self._save_open_positions()
+        if sp.get("trail") and price > sp.get("peak", 0):
+            sp["peak"] = price
+            new_sl = max(pos["sl"], price * (1 - K["trail_pct"] / 100))
+            if new_sl > pos["sl"]:
+                pos["sl"] = new_sl
+                if time.time() - sp.get("sl_saved_ts", 0) > 60:
+                    sp["sl_saved_ts"] = time.time()
+                    self._save_open_positions()
         if price <= pos["sl"]:
-            reason = "SWING SUPPORT STOP"
-        elif price >= sp["tp"]:
+            reason = "SWING SUPPORT TRAILING OBJECTIF" if sp.get("trail") else "SWING SUPPORT STOP"
+        elif price >= sp["tp"] and not sp.get("trail") and not K["trail_on"]:
             reason = "SWING SUPPORT OBJECTIF"
         elif time.time() - sp["opened_ts"] >= K["hold_days"] * 86400:
             reason = "SWING SUPPORT DUREE MAX"
+        elif sp.get("trail"):
+            pass                                  # gain verrouille : seul le stop suiveur (ou la duree max) ferme
         else:
             try:
                 c1h = self._mtf_candles(ticker, "1h", 30, cache_only=True)
@@ -11640,6 +11698,8 @@ class BotEngine:
                 "exit_ts": int(time.time() * 1000), "exit_price": exit_px, "exit_reason": reason, "early_exit": 1 if early else 0,
                 "pnl_pct": round((exit_px / entry - 1) * 100, 4), "hold_h": round((time.time() - sp["opened_ts"]) / 3600, 2),
                 "flow_exit": sp.get("flow_exit"), "h4_intact_exit": h4_ok, "d1_trend_exit": d1_tr,
+                "peak_pct": round((max(sp.get("pk") or entry, sp.get("peak") or entry) / entry - 1) * 100, 4),
+                "trail_armed": 1 if sp.get("trail") else 0,
                 "alerts_max": sp.get("al_max"), "alerts_exit": sp.get("al_n"),
                 "alerts_json": json.dumps({"flags": sp.get("al_flags"), "hist": sp.get("al_hist")}) if sp.get("al_hist") else None})
         except Exception as e:

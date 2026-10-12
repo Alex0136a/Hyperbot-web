@@ -186,7 +186,8 @@ def init_db():
         # v4.370 : alertes de degradation mesurees en cours de trade (aucune sortie n en depend)
         _sup_cols = [r[1] for r in conn.execute("PRAGMA table_info(supsw_events)").fetchall()]
         for _c, _t in (("alerts_max", "INTEGER"), ("alerts_exit", "INTEGER"), ("alerts_json", "TEXT"),
-                   ("btc_chg24", "REAL"), ("btc_h4", "TEXT"), ("h4_trend", "TEXT")):      # v4.387 : contexte de marche
+                   ("btc_chg24", "REAL"), ("btc_h4", "TEXT"), ("h4_trend", "TEXT"),
+                   ("peak_pct", "REAL"), ("trail_armed", "INTEGER")):      # v4.387 : contexte de marche
             if _c not in _sup_cols:
                 conn.execute(f"ALTER TABLE supsw_events ADD COLUMN {_c} {_t}")
         # Migration : ajoute la colonne rsi si la table trades existait deja
@@ -1294,6 +1295,14 @@ def supsw_mark_taken(asset, signal_t, trade_uid):
         conn.execute("UPDATE supsw_events SET decision='pris', prio=3, trade_uid=? WHERE asset=? AND signal_t=?",
                      (trade_uid, asset, signal_t))
         conn.commit()
+
+
+def supsw_last_exit(asset):
+    """v4.389 : derniere sortie journalisee d un actif (exit_ts ms, exit_price, pnl_pct) ou None."""
+    with _lock, _connect() as conn:
+        row = conn.execute("SELECT exit_ts, exit_price, pnl_pct FROM supsw_events WHERE asset=? AND exit_ts IS NOT NULL "
+                           "ORDER BY exit_ts DESC LIMIT 1", (asset,)).fetchone()
+    return dict(row) if row else None
 
 
 def supsw_record_exit(trade_uid, fields):
