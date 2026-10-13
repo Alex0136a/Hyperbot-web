@@ -981,6 +981,18 @@ function ManualOpenCard({ t, token, onDone }) {
     if (!window.confirm(`${t.mode==="live"?"⚠️ LIVE — ":""}Fermer maintenant ${String(t.direction).toUpperCase()} ${t.ticker} (PnL actuel ${fmtUsd(pnl)}) ?`)) return;
     try { await apiCall(`/api/manual/positions/${t.id}/close`,"POST",null,token); if (onDone) onDone(); } catch(e) { alert("Fermeture : " + e.message); }
   };
+  // v4.390 — pic atteint + modification du TP directement depuis la carte
+  const [tpEdit, setTpEdit] = useState(null);
+  const sgn = t.direction==="long" ? 1 : -1;
+  const peak = Number(t.peak_pct)||0;
+  const peakPx = t.entry_price ? t.entry_price*(1+sgn*peak/100) : null;
+  const peakUsd = t.entry_price && t.qty ? t.qty*t.entry_price*peak/100 : null;
+  const saveTp = async () => {
+    const v = String(tpEdit).trim();
+    const body = v==="" ? {clear_tp:true} : {tp_price:Number(v)};
+    if (v!=="" && !(Number(v)>0)) { alert("TP invalide."); return; }
+    try { await apiCall(`/api/manual/positions/${t.id}`,"PUT",body,token); setTpEdit(null); if (onDone) onDone(); } catch(e) { alert("Modification du TP : " + e.message); }
+  };
   return (
     <div style={{background:"#0a0e1a",borderRadius:8,padding:12,marginBottom:8,border:`1px solid ${up==null?"#1e2d4a":(up?"#14532d":"#450a0a")}`}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
@@ -996,12 +1008,20 @@ function ManualOpenCard({ t, token, onDone }) {
       </div>
       <div style={{display:"flex",gap:14,flexWrap:"wrap",fontSize:10,color:"#94a3b8",marginTop:6}}>
         <span>Entrée {fmtP(t.entry_price)}</span><span>Prix {fmtP(t.current_price)}</span>
-        <span style={{color:"#f87171"}}>SL {fmtP(t.sl_price)}</span>{t.tp_price ? <span style={{color:"#34d399"}}>TP {fmtP(t.tp_price)}</span> : null}
+        <span style={{color:"#f87171"}}>SL {fmtP(t.sl_price)}</span>{t.tp_price ? <span style={{color:"#34d399"}}>TP {fmtP(t.tp_price)}</span> : null}<span style={{color:"#fbbf24"}}>pic +{peak.toFixed(2)} %{peakPx!=null?` (${fmtP(peakPx)}${peakUsd!=null?` · ${fmtUsd(peakUsd)}`:""})`:""}</span>
         <span>{Number(t.notional_usd).toFixed(2)} $</span>{age!=null && <span>{age < 120 ? `${age} min` : `${Math.round(age/60)} h`}</span>}
       </div>
       <div style={{display:"flex",gap:8,alignItems:"center",marginTop:8,flexWrap:"wrap"}}>
         <button style={{background:"#450a0a",border:"1px solid #ef4444",color:"#fca5a5",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer",fontFamily:"inherit"}} onClick={close}>Fermer</button>
-        <span style={{fontSize:9,color:"#64748b"}}>Modifier SL / TP / trailing : onglet Trading Manuel.</span>
+        {t.status==="open" && (tpEdit===null
+          ? <button style={{background:"#0c2a3a",border:"1px solid #38bdf8",color:"#7dd3fc",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer",fontFamily:"inherit"}} onClick={()=>setTpEdit(t.tp_price||"")}>Modifier le TP</button>
+          : <span style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+              <input type="number" step="any" value={tpEdit} placeholder="prix du TP (vide = aucun)" onChange={e=>setTpEdit(e.target.value)} style={{background:"#050810",border:"1px solid #1e2d4a",color:"#e2e8f0",borderRadius:6,padding:"4px 8px",fontSize:11,width:150,fontFamily:"inherit"}}/>
+              <button style={{background:"#052e16",border:"1px solid #34d399",color:"#6ee7b7",borderRadius:6,padding:"5px 10px",fontSize:11,cursor:"pointer",fontFamily:"inherit"}} onClick={saveTp}>Enregistrer</button>
+              <button style={{background:"#1e293b",border:"1px solid #334155",color:"#94a3b8",borderRadius:6,padding:"5px 10px",fontSize:11,cursor:"pointer",fontFamily:"inherit"}} onClick={()=>setTpEdit(null)}>Annuler</button>
+              <span style={{fontSize:9,color:"#64748b"}}>Le TP doit rester du bon côté du prix ; vide = retirer le TP.</span>
+            </span>)}
+        <span style={{fontSize:9,color:"#64748b"}}>SL / trailing : onglet Trading Manuel.</span>
       </div>
     </div>);
 }

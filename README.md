@@ -836,3 +836,12 @@ Fichiers : `bot_engine.py`, `db.py`, `api.py`, `index.html`, `index_src.html`, `
 - **Journal / export** : deux colonnes ajoutées (`peak_pct` = plus haut atteint pendant le trade en %, `trail_armed`), pour comparer chaque trade au gain qu'aurait donné l'objectif fixe. Les colonnes sont créées automatiquement au démarrage.
 - Les 6 réglages sont modifiables dans Réglages ; le texte du mode (Trading > Swing Support) indique le trailing et la réentrée.
 - Limite : l'export historique ne contient pas le chemin du prix, l'effet du trailing se mesure donc sur les trades à venir.
+
+## v4.390 — Trades manuels ouverts : pic atteint et modification du TP
+
+Fichiers : `api.py`, `index.html`, `index_src.html`, `README.md`.
+
+- La carte d'un trade manuel ouvert (onglet « Tous » et volet du mode) affiche maintenant le **pic** : « pic +2,50 % (prix · gain en $) », c'est-à-dire le meilleur gain atteint depuis l'ouverture, en % du prix, en prix et en dollars.
+- Bouton **« Modifier le TP »** sur la même carte : saisie du nouveau prix puis Enregistrer ; champ vide = retirer le TP. Le serveur refuse un TP du mauvais côté du prix actuel (message affiché). Le TP est géré par le bot (il n'est pas posé sur Hyperliquid), donc la modification est immédiate en paper comme en live.
+- SL, trailing, verrou et règle de tendance restent modifiables dans l'onglet Trading Manuel (inchangé).
+- `GET /api/paper/portfolio` : `manual_open` renvoie aussi `peak_pct`, `qty`, `armed`. Aucun changement de moteur.

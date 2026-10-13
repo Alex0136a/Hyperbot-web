@@ -4442,7 +4442,7 @@ def _manual_open_list():
         with bot.manual.lock:
             items = [bot.manual.public(i) for i in bot.manual.items.values() if i.get("status") in ("open", "opening", "closing")]
         keys = ("id", "ticker", "direction", "mode", "market", "leverage", "entry_price", "current_price", "move_pct", "pnl", "qty",
-                "notional_usd", "sl_price", "tp_price", "opened_at", "strategy_label", "status", "ttp_arm_pct", "trade_uid")
+                "notional_usd", "sl_price", "tp_price", "opened_at", "strategy_label", "status", "ttp_arm_pct", "trade_uid", "peak_pct", "qty", "armed")
         return [{k: it.get(k) for k in keys} for it in sorted(items, key=lambda i: i.get("opened_at") or 0, reverse=True)]
     except Exception as e:
         print(f"[portfolio] trades manuels ignores : {type(e).__name__}: {e}")
