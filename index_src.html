@@ -1133,7 +1133,11 @@ function ManualTradingTab({ token }) {
     if (edit.lock_off) body.clear_lock = true;
     else { if (edit.lock_arm_pct) body.lock_arm_pct = Number(edit.lock_arm_pct); if (edit.lock_fraction_pct) body.lock_fraction = Number(edit.lock_fraction_pct)/100; }
     if (edit.trend_exit === "") body.clear_trend_exit = true; else if (edit.trend_exit) body.trend_exit = edit.trend_exit;
-    try { await apiCall(`/api/manual/positions/${p.id}`,"PUT",body,token); setEditId(null); load(); } catch(e) { alert(e.message); } };
+    try {
+      const res = await apiCall(`/api/manual/positions/${p.id}`,"PUT",body,token);
+      if (body.tp_run && !(res && res.tp_run)) alert("⚠️ « Laisser courir au TP » n'a pas été pris en compte : le serveur n'est pas à jour (déposer api.py et manual_trading.py de la v4.395, puis attendre le redéploiement) ou le trade n'a pas de TP.");
+      setEditId(null); load();
+    } catch(e) { alert(e.message); } };
 
   if (!st) return <div style={{padding:16,color:"#94a3b8"}}>{err || "Chargement..."}</div>;
 

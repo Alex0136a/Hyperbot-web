@@ -894,3 +894,10 @@ Fichiers : `manual_trading.py`, `api.py`, `index.html`, `index_src.html`, `READM
 - **Fonctionnement** : quand le prix touche le TP, le trade n'est plus fermé. Le SL monte aussitôt à +verrou % au-dessus de l'entrée (en SHORT : en dessous), puis suit le plus haut atteint à N % de distance. La sortie s'appelle « TRAILING TAKE PROFIT (manuel) ». LONG et SHORT, paper et live. En **live**, le SL natif Hyperliquid est mis à jour à chaque palier (au moins `MANUAL_LOCK_PUSH_MIN_STEP_PCT`, 0,05 %), donc le stop reste protégé même si le bot s'arrête ; le TP, lui, n'est pas un ordre natif (inchangé).
 - **Trades déjà ouverts** : bouton « Modifier » (onglet Trading Manuel) : case « laisser courir au TP » + verrou et suiveur. Le verrou doit rester inférieur à la distance du TP. Retirer le TP désactive l'effet.
 - Le trade ouvert affiche « laisser courir » puis « armé » une fois l'objectif atteint. Aucun changement pour les ordres sans cette option.
+
+## v4.396 — Trades manuels : alerte si « laisser courir au TP » n'est pas pris en compte
+
+Fichiers : `index.html`, `index_src.html`, `README.md`.
+
+- Après « Enregistrer » dans la modification d'un trade manuel ouvert, si la case « laisser courir au TP » était cochée et que le serveur ne la confirme pas, un message l'explique. Cause typique : seuls les fichiers de l'interface (`index.html`) ont été déposés, pas `api.py` et `manual_trading.py` de la v4.395 : l'ancien serveur ignore silencieusement les champs qu'il ne connaît pas, et la case revient décochée à la réouverture.
+- Aucun changement côté serveur.
