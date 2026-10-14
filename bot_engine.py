@@ -1487,6 +1487,12 @@ PROFILE_SWING = {
     "SUPSW_TRAIL_ON": 1,                  # v4.389 : 1 = a l objectif on ne ferme pas : on verrouille un gain et on laisse courir (trailing)
     "SUPSW_TRAIL_LOCK_PCT": 0.5,          # ... le stop passe immediatement a +N % au-dessus de l entree (gain verrouille)
     "SUPSW_TRAIL_PCT": 0.5,               # ... puis suit le plus haut atteint a N % en dessous
+    "SUPSW_RES_FILTER_ON": 1,             # v4.391 : 1 = pas d entree si une resistance Daily est trop proche au-dessus (retournement probable)
+    "SUPSW_RES_MIN_PCT": 3.0,             # ... distance minimale (% du prix) entre le prix et le bas de la resistance Daily
+    "SUPSW_RIDE_ON": 1,                   # v4.391 : 1 = on vise la resistance : objectif = resistance - tampon (au lieu de l objectif fixe)
+    "SUPSW_RES_BUFFER_PCT": 0.3,          # ... tampon sous la resistance (% du prix)
+    "SUPSW_RIDE_MAX_PCT": 6.0,            # ... objectif maximal (% du prix)
+    "SUPSW_RIDE_TRAIL_PCT": 1.0,          # ... pendant la montee vers la resistance, le stop suit le plus haut a N % (large, pour ne pas etre sorti par le bruit)
     "SUPSW_REENTRY_ON": 1,                # v4.389 : apres un trade gagnant sur un actif, controle avant de reprendre
     "SUPSW_REENTRY_HOURS": 12,            # ... valable N heures apres la sortie gagnante
     "SUPSW_REENTRY_TOL_PCT": 0.2,         # ... prix >= prix de sortie - N % = ca continue de monter : on reprend ; sinon on attend la fin de la baisse
@@ -11188,6 +11194,9 @@ class BotEngine:
             "exit_flow": float(c.get("SUPSW_EXIT_FLOW", -0.4)),
             "trail_on": bool(int(c.get("SUPSW_TRAIL_ON", 1))), "trail_lock": float(c.get("SUPSW_TRAIL_LOCK_PCT", 0.5)),
             "trail_pct": max(float(c.get("SUPSW_TRAIL_PCT", 0.5)), 0.1),
+            "res_on": bool(int(c.get("SUPSW_RES_FILTER_ON", 1))), "res_min": float(c.get("SUPSW_RES_MIN_PCT", 3.0)),
+            "ride_on": bool(int(c.get("SUPSW_RIDE_ON", 1))), "res_buf": float(c.get("SUPSW_RES_BUFFER_PCT", 0.3)),
+            "ride_max": float(c.get("SUPSW_RIDE_MAX_PCT", 6.0)), "ride_trail": max(float(c.get("SUPSW_RIDE_TRAIL_PCT", 1.0)), 0.1),
             "re_on": bool(int(c.get("SUPSW_REENTRY_ON", 1))), "re_h": float(c.get("SUPSW_REENTRY_HOURS", 12)),
             "re_tol": float(c.get("SUPSW_REENTRY_TOL_PCT", 0.2)),
             "exit_level": int(c.get("SUPSW_EXIT_LEVEL", 1)), "exit_min": float(c.get("SUPSW_EXIT_MIN_PCT", 0.5)),
@@ -11262,7 +11271,20 @@ class BotEngine:
 
     def _supsw_context(self, ticker, v, price):
         """Contexte ENREGISTRE (jamais filtrant) : tendance de BTC, tendance Weekly, funding annualise."""
-        ctx = {"btc_trend": None, "weekly_trend": None, "funding_ann": None, "btc_chg24": None, "btc_h4": None, "h4_trend": None}
+        ctx = {"btc_trend": None, "weekly_trend": None, "funding_ann": None, "btc_chg24": None, "btc_h4": None, "h4_trend": None,
+               "res_low": None, "res_dist_pct": None}
+        try:      # v4.391 : prochaine resistance Daily AU-DESSUS de la zone de support et du prix (distance en % du prix)
+            sup = v.get("support") or {}
+            zs = mtf.find_zones(self._mtf_candles(ticker, "1d", 230, cache_only=True), lookback=self.cfg.get("MTF_ZONE_LOOKBACK", 120),
+                                max_width_atr=(self.cfg.get("MTF_ZONE_MAX_WIDTH_ATR", 0) or None))
+            lim = max(float(sup.get("high") or 0), float(price or 0))
+            above = [z for z in zs if z["low"] > lim]
+            if above and price:
+                r = min(above, key=lambda z: z["low"])
+                ctx["res_low"] = round(float(r["low"]), 8)
+                ctx["res_dist_pct"] = round((float(r["low"]) / float(price) - 1) * 100, 3)
+        except Exception:
+            pass
         try:      # v4.387 : contexte de marche enregistre (jamais filtrant) : BTC sur 24 h, tendance H4 de BTC et de l actif
             cb = self._mtf_candles("BTC", "1h", 30, cache_only=True)
             if cb and len(cb) >= 25 and float(cb[-25]["c"]) > 0:
@@ -11321,6 +11343,7 @@ class BotEngine:
                 "setup_kind": setup["kind"] if setup else None, "trend": v.get("trend"), "weekly_trend": ctx.get("weekly_trend"),
                 "btc_trend": ctx.get("btc_trend"), "funding_ann": ctx.get("funding_ann"), "flow": flow,
                 "btc_chg24": ctx.get("btc_chg24"), "btc_h4": ctx.get("btc_h4"), "h4_trend": ctx.get("h4_trend"),
+                "res_low": ctx.get("res_low"), "res_dist_pct": ctx.get("res_dist_pct"),
                 "atr_pct": (v["atr"] / price * 100) if price else None, "hour_utc": datetime.utcfromtimestamp(now).hour,
                 "zone_low": zone.get("low"), "zone_high": zone.get("high"), "zone_touches": zone.get("touches"),
                 "held": setup.get("held") if setup else None, "pierce_pct": setup.get("pierce_pct") if setup else None,
@@ -11405,6 +11428,9 @@ class BotEngine:
             blocker = "nombre maximal de swings support simultanes atteint"
         elif now - getattr(state, "supsw_last_loss_ts", 0) < K["cooldown"]:
             blocker = "pause apres une perte sur cet actif"
+        elif K["res_on"] and ctx.get("res_dist_pct") is not None and ctx["res_dist_pct"] < K["res_min"]:
+            blocker = (f"resistance Daily trop proche ({ctx['res_dist_pct']:.1f} % au-dessus, minimum {K['res_min']:g} %) "
+                       f"— retournement probable")
         else:
             blocker = self._supsw_reentry_blocker(ticker, c1h, price, now, K)
         if watch:                          # v4.378 : actif hors des 5 du mode -> alerte seulement, jamais d ouverture ni de journal
@@ -11499,6 +11525,12 @@ class BotEngine:
         fill = scalp.fill_price("long", price, spread_pct, K["slip"], "entry")
         sl = fill * (1 - K["sl_pct"] / 100)
         tp = fill * (1 + K["tp_pct"] / 100)
+        arm_px = tp
+        rd = ctx.get("res_dist_pct")
+        if K["ride_on"] and rd is not None:       # v4.391 : on vise la resistance (si elle est plus loin que l objectif fixe)
+            tp_eff = min(rd - K["res_buf"], K["ride_max"])
+            if tp_eff > K["tp_pct"]:
+                tp = fill * (1 + tp_eff / 100)
         capital = self.cfg.get("CAPITAL_USD", 100.0)
         notional = max(min(capital * K["risk_pct"] / K["sl_pct"], K["max_notional"]), 10.0)
         size = round(notional / K["lev"], 4)
@@ -11510,13 +11542,13 @@ class BotEngine:
         pos["slot_key"] = symbol
         pos["engine"] = "supsw"
         inval = sups.invalidation_level(fill, setup, zone["low"], K["exit_level"], K["exit_min"], K["exit_max"])
-        pos["supsw"] = {"opened_ts": time.time(), "zone_low": zone["low"], "zone_high": zone["high"], "sl0": sl, "tp": tp, "inval": inval,
+        pos["supsw"] = {"opened_ts": time.time(), "zone_low": zone["low"], "zone_high": zone["high"], "sl0": sl, "tp": tp, "arm": arm_px, "inval": inval,
                         "setup": setup["name"], "kind": setup["kind"], "ctx": ctx, "flow_entry": flow, "signal_t": res[1] if res else None}
         rr_txt = f"{K['tp_pct']:.2f}/{K['sl_pct']:.2f}"
         reasons = [f"🧱 Swing Support : {setup['name']} — support Daily {self._zone_txt(zone)}",
                    f"tendance Daily {v['trend']} · Weekly {ctx.get('weekly_trend') or '?'} · BTC {ctx.get('btc_trend') or '?'}"
                    f" · funding {ctx.get('funding_ann') if ctx.get('funding_ann') is not None else '?'} %/an",
-                   f"stop {K['sl_pct']:.2f} % (filet) · objectif {K['tp_pct']:.2f} % ({rr_txt}) · sortie anticipee : cloture 1 h sous {inval:.6g} ({(1 - inval / fill) * 100:.2f} % sous l entree, {'plus bas du retest' if K['exit_level'] else 'bas de zone'}) + flux < {K['exit_flow']}",
+                   f"stop {K['sl_pct']:.2f} % (filet) · objectif {(tp / fill - 1) * 100:.2f} % ({'resistance Daily ' + format(ctx.get('res_low') or 0, '.6g') if tp > arm_px else 'fixe'}; verrou des {K['tp_pct']:.2f} %) · sortie anticipee : cloture 1 h sous {inval:.6g} ({(1 - inval / fill) * 100:.2f} % sous l entree, {'plus bas du retest' if K['exit_level'] else 'bas de zone'}) + flux < {K['exit_flow']}",
                    f"spread {spread_pct:.3f} % · frais supposes {K['fee']} %"]
         try:
             quality = self.market_quality(ticker, state)
@@ -11637,21 +11669,34 @@ class BotEngine:
             state.peak_pnl_usd = pnl_usd_now
             state.absolute_peak_pnl_usd = pnl_usd_now
         reason, early, flow_exit = None, False, None
-        # v4.389 : a l objectif on ne ferme plus (si SUPSW_TRAIL_ON) : gain verrouille puis stop suiveur sous le plus haut
-        if K["trail_on"] and not sp.get("trail") and price >= sp["tp"] and price > pos["sl"]:
+        # v4.389/v4.391 : a l objectif fixe (verrou) on ne ferme plus ; si une resistance est visee (sp["tp"] > sp["arm"]) le stop suit
+        # le plus haut a distance LARGE jusqu a la resistance, puis serre (distance normale) une fois la resistance atteinte.
+        arm_px = sp.get("arm") or sp["tp"]
+        ride = sp["tp"] > arm_px * 1.0005
+        if K["trail_on"] and not sp.get("trail") and price >= arm_px and price > pos["sl"]:
             sp["trail"], sp["trail_ts"], sp["peak"] = True, time.time(), price
-            pos["sl"] = max(pos["sl"], entry * (1 + K["trail_lock"] / 100), price * (1 - K["trail_pct"] / 100))
-            self.emit("log", {"msg": f"[{ticker}] 🧱 Objectif {sp['tp']:.6g} atteint : on laisse courir — stop remonté à {pos['sl']:.6g} "
-                                     f"(+{(pos['sl'] / entry - 1) * 100:.2f} % verrouillé)", "level": "signal"})
+            dist = K["ride_trail"] if ride else K["trail_pct"]
+            pos["sl"] = max(pos["sl"], entry * (1 + K["trail_lock"] / 100), price * (1 - dist / 100))
+            self.emit("log", {"msg": f"[{ticker}] 🧱 Verrou {arm_px:.6g} atteint : on laisse courir"
+                                     + (f" vers la résistance {sp['tp']:.6g}" if ride else "")
+                                     + f" — stop remonté à {pos['sl']:.6g} (+{(pos['sl'] / entry - 1) * 100:.2f} % verrouillé)", "level": "signal"})
             self._save_open_positions()
-        if sp.get("trail") and price > sp.get("peak", 0):
-            sp["peak"] = price
-            new_sl = max(pos["sl"], price * (1 - K["trail_pct"] / 100))
-            if new_sl > pos["sl"]:
-                pos["sl"] = new_sl
-                if time.time() - sp.get("sl_saved_ts", 0) > 60:
-                    sp["sl_saved_ts"] = time.time()
-                    self._save_open_positions()
+        if sp.get("trail"):
+            if ride and not sp.get("ride_end") and price >= sp["tp"]:
+                sp["ride_end"] = True
+                self.emit("log", {"msg": f"[{ticker}] 🧱 Résistance {sp['tp']:.6g} atteinte : le stop serre à {K['trail_pct']:g} % sous le plus haut", "level": "signal"})
+            dist = K["ride_trail"] if (ride and not sp.get("ride_end")) else K["trail_pct"]
+            tighten = bool(sp.get("ride_end")) and not sp.get("ride_tight")      # une seule fois : on resserre le stop au passage de la resistance
+            if price > sp.get("peak", 0) or tighten:
+                sp["peak"] = max(price, sp.get("peak", 0))
+                if tighten:
+                    sp["ride_tight"] = True
+                new_sl = max(pos["sl"], sp["peak"] * (1 - dist / 100))
+                if new_sl > pos["sl"]:
+                    pos["sl"] = new_sl
+                    if time.time() - sp.get("sl_saved_ts", 0) > 60:
+                        sp["sl_saved_ts"] = time.time()
+                        self._save_open_positions()
         if price <= pos["sl"]:
             reason = "SWING SUPPORT TRAILING OBJECTIF" if sp.get("trail") else "SWING SUPPORT STOP"
         elif price >= sp["tp"] and not sp.get("trail") and not K["trail_on"]:

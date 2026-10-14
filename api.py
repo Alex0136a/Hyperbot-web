@@ -1062,6 +1062,12 @@ ADVANCED_SETTINGS = {
     "SUPSW_TRAIL_ON":           {"label": "Swing Support · LAISSER COURIR — 1 = à l'objectif on ne ferme pas : le stop remonte pour verrouiller un gain puis suit le plus haut ; 0 = sortie fixe à l'objectif", "default": 1},
     "SUPSW_TRAIL_LOCK_PCT":     {"label": "Swing Support · LAISSER COURIR — gain verrouillé dès l'objectif atteint (stop remonté à +N % au-dessus de l'entrée)", "default": 0.5},
     "SUPSW_TRAIL_PCT":          {"label": "Swing Support · LAISSER COURIR — le stop suit le plus haut atteint à N % en dessous", "default": 0.5},
+    "SUPSW_RES_FILTER_ON":      {"label": "Swing Support · RÉSISTANCE — 1 = pas d'entrée si une résistance Daily est trop proche au-dessus du prix (retournement probable)", "default": 1},
+    "SUPSW_RES_MIN_PCT":        {"label": "Swing Support · RÉSISTANCE — distance minimale en % du prix entre le prix et le bas de la résistance Daily pour accepter l'entrée", "default": 3.0},
+    "SUPSW_RIDE_ON":            {"label": "Swing Support · VISER LA RÉSISTANCE — 1 = l'objectif est la résistance Daily moins un tampon (au lieu de l'objectif fixe) ; le gain est verrouillé dès l'objectif fixe", "default": 1},
+    "SUPSW_RES_BUFFER_PCT":     {"label": "Swing Support · VISER LA RÉSISTANCE — tampon sous la résistance en % du prix", "default": 0.3},
+    "SUPSW_RIDE_MAX_PCT":       {"label": "Swing Support · VISER LA RÉSISTANCE — objectif maximal en % du prix", "default": 6.0},
+    "SUPSW_RIDE_TRAIL_PCT":     {"label": "Swing Support · VISER LA RÉSISTANCE — distance du stop suiveur sous le plus haut pendant la montée (large, pour ne pas être sorti par le bruit)", "default": 1.0},
     "SUPSW_REENTRY_ON":         {"label": "Swing Support · RÉENTRÉE APRÈS GAIN — 1 = après un trade gagnant, on reprend si le prix continue de monter, sinon on attend la fin de la baisse près du support", "default": 1},
     "SUPSW_REENTRY_HOURS":      {"label": "Swing Support · RÉENTRÉE APRÈS GAIN — la règle s'applique pendant N heures après la sortie gagnante", "default": 12},
     "SUPSW_REENTRY_TOL_PCT":    {"label": "Swing Support · RÉENTRÉE APRÈS GAIN — le prix doit être au moins à (prix de sortie − N %) pour reprendre tout de suite", "default": 0.2},
@@ -1414,7 +1420,8 @@ def _coerce_advanced_value(key: str, value):
     if key == "SUPSW_MIN_SL_PCT" and not 0.3 <= value <= 10:
         return False, "entre 0,3 et 10 %"
     if key in ("SUPSW_TP_LEV1", "SUPSW_TP_LEV2", "SUPSW_TP_LEV3",
-               "SUPSW_TRAIL_ON", "SUPSW_TRAIL_LOCK_PCT", "SUPSW_TRAIL_PCT", "SUPSW_REENTRY_ON", "SUPSW_REENTRY_HOURS", "SUPSW_REENTRY_TOL_PCT") and not 0.3 <= value <= 15:
+               "SUPSW_TRAIL_ON", "SUPSW_TRAIL_LOCK_PCT", "SUPSW_TRAIL_PCT", "SUPSW_REENTRY_ON", "SUPSW_REENTRY_HOURS", "SUPSW_REENTRY_TOL_PCT",
+               "SUPSW_RES_FILTER_ON", "SUPSW_RES_MIN_PCT", "SUPSW_RIDE_ON", "SUPSW_RES_BUFFER_PCT", "SUPSW_RIDE_MAX_PCT", "SUPSW_RIDE_TRAIL_PCT") and not 0.3 <= value <= 15:
         return False, "entre 0,3 et 15 %"
     if key in ("SUPSW_ENABLED", "SUPSW_EXIT_REQUIRE_H4_END", "SUPSW_EXIT_LEVEL") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
@@ -4097,7 +4104,7 @@ def supsw_export(days: int = Query(60, ge=1, le=120), email: str = Depends(requi
             "zone_low", "zone_high", "zone_touches", "held", "pierce_pct", "price", "entry_ref", "sl", "tp", "inval", "risk_pct", "reward_pct", "decision",
             "trade_uid", "evaluated", "outcome", "hit_h", "mfe24", "mae24", "mfe72", "mae72", "fin24", "fin72", "exit_ts", "exit_price",
             "exit_reason", "early_exit", "pnl_pct", "hold_h", "flow_exit", "h4_intact_exit", "d1_trend_exit", "post_eval", "fin1h", "fin4h", "fin24h",
-            "after_outcome", "after_hit_h", "after_mfe", "after_mae", "too_early", "alerts_max", "alerts_exit", "alerts_json", "btc_chg24", "btc_h4", "h4_trend", "peak_pct", "trail_armed"]
+            "after_outcome", "after_hit_h", "after_mfe", "after_mae", "too_early", "alerts_max", "alerts_exit", "alerts_json", "btc_chg24", "btc_h4", "h4_trend", "peak_pct", "trail_armed", "res_low", "res_dist_pct"]
     w.writerow(["cloture du signal (UTC)"] + cols)
     for e in ev:
         row = [datetime.fromtimestamp(e["signal_t"] / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M")]

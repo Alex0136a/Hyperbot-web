@@ -845,3 +845,14 @@ Fichiers : `api.py`, `index.html`, `index_src.html`, `README.md`.
 - Bouton **« Modifier le TP »** sur la même carte : saisie du nouveau prix puis Enregistrer ; champ vide = retirer le TP. Le serveur refuse un TP du mauvais côté du prix actuel (message affiché). Le TP est géré par le bot (il n'est pas posé sur Hyperliquid), donc la modification est immédiate en paper comme en live.
 - SL, trailing, verrou et règle de tendance restent modifiables dans l'onglet Trading Manuel (inchangé).
 - `GET /api/paper/portfolio` : `manual_open` renvoie aussi `peak_pct`, `qty`, `armed`. Aucun changement de moteur.
+
+## v4.391 — Swing Support : entrée seulement loin de la résistance, objectif = la résistance
+
+Fichiers : `bot_engine.py`, `db.py`, `api.py`, `index.html`, `index_src.html`, `README.md`.
+
+- **Distance à la résistance** : pour chaque signal, le bot calcule la prochaine résistance Daily AU-DESSUS de la zone de support et du prix (mêmes zones que le reste du bot) et enregistre `res_low` (niveau) et `res_dist_pct` (distance en % du prix) dans le journal et dans l'export CSV, pour TOUS les signaux, pris ou refusés. Les colonnes sont créées au démarrage. Sans résistance au-dessus, l'entrée n'est pas limitée.
+- **Filtre d'entrée** (`SUPSW_RES_FILTER_ON`, 1 par défaut) : entrée refusée si la résistance est à moins de `SUPSW_RES_MIN_PCT` (3 %) au-dessus du prix : « resistance Daily trop proche … retournement probable ». Les signaux refusés sont quand même mesurés à 24 h / 72 h : après quelques jours on pourra voir, avec les colonnes MFE/MAE de ces lignes, s'ils auraient perdu (et donc si un SHORT à la résistance aurait gagné).
+- **Viser la résistance** (`SUPSW_RIDE_ON`, 1 par défaut) : l'objectif devient (résistance − 0,3 %), plafonné à 6 % (`SUPSW_RIDE_MAX_PCT`), seulement s'il est plus loin que l'objectif fixe de 1 %. À +1 % le gain est verrouillé (stop à +0,5 %, comme en v4.389), puis le stop suit le plus haut à 1 % (`SUPSW_RIDE_TRAIL_PCT`, large pour ne pas être sorti par le bruit) jusqu'à la résistance. Une fois la résistance atteinte, le stop se resserre à 0,5 % sous le plus haut (`SUPSW_TRAIL_PCT`). Sortie : « SWING SUPPORT TRAILING OBJECTIF ».
+- Après un redémarrage, une position reconstruite repart avec l'objectif = résistance comme seuil de verrou (le verrou à +1 % n'est pas rejoué).
+- **SHORT à la résistance** : NON implémenté. Il est mesuré d'abord via les signaux refusés (voir ci-dessus).
+- Limite : ces règles ne peuvent pas être testées sur l'historique (les exports n'ont pas de bougies) ; elles sont mesurées sur les prochains signaux. Si peu d'entrées passent le filtre, baisser `SUPSW_RES_MIN_PCT`.
