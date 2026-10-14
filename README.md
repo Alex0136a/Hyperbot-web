@@ -867,3 +867,12 @@ Fichiers : `bot_engine.py`, `db.py`, `api.py`, `README.md`.
 - Ordre des contrôles : pause après perte → BTC 24 h → H4 de BTC → chute actif → chute BTC → résistance proche (v4.391) → réentrée après gain (v4.389).
 - Rejeu sur l'export du 14/10 (15 trades pris avec contexte BTC) : BTC 24 h ≥ 0 seul garde 7 trades (−7,5 % au lieu de −18,2 %) ; avec H4 haussière exigée, 4 trades (−6,2 %). Les seuils « chute en cours » ne peuvent pas être rejoués (colonne nouvelle). Ces deux sous-ensembles restent négatifs : l'échantillon est petit et issu d'une même phase de baisse.
 - Critère d'arrêt proposé : environ 20 trades avec ces règles ; si le total net de frais n'est pas positif, Swing Support est abandonné. Si trop peu d'entrées passent, assouplir `SUPSW_BTC_H4_MODE` (2 → 1) en premier.
+
+## v4.393 — Top-down (Spot-Accum, Accumulation, Swing) : verrou de gain en % du prix
+
+Fichiers : `bot_engine.py`, `api.py`, `README.md`.
+
+- **Constat** (cas UNI) : le verrou existant (v4.340) ne s'arme qu'à +1R. Avec un stop large (R de 3 à 4 % du prix), il n'armait qu'à +3 % de gain : les pics à +1,4 % et +1,9 % n'avaient aucune protection et ont fini en perte (« STRUCTURE CASSEE »), et le pic de +4,15 % n'a été rendu que pour moitié.
+- **Nouveau verrou en %** (`MTF_PCT_LOCK_ON`, 1 par défaut) : dès que le meilleur gain atteint `MTF_PCT_LOCK_ARM_PCT` (1 % du prix), le SL monte pour garantir 60 % du pic (`MTF_PCT_LOCK_FRACTION`), 75 % au-delà d'un pic de 3 % (`MTF_PCT_LOCK_BIG_PCT` / `MTF_PCT_LOCK_BIG_FRACTION`), et jamais moins que +0,15 % de l'entrée (`MTF_PCT_LOCK_FLOOR_PCT`, frais couverts). Il ne fait que monter (long) / descendre (short), se combine avec le verrou en R et le suiveur existants (le plus favorable l'emporte), et marque la position « SL remonté » : la sortie s'appelle « STOP SUIVEUR (top-down) ». En live, le SL natif est mis à jour par le mécanisme existant.
+- **Estimation sur l'export du 12/10** (82 trades top-down Spot-Accum / Accumulation, net actuel −12,6 $) : armement à 1 % et 60 % du pic ≈ +4 $ ; armement à 0,8 % ≈ +4,6 $ ; à 0,6 % ≈ +6,9 $. C'est une **borne haute** : l'export donne le pic et la sortie, pas le chemin ; un stop plus serré peut aussi couper des trades qui seraient repartis, et les frais ne sont pas retranchés.
+- Tous les moteurs top-down sont concernés (pas seulement le profil Swing). Pour désactiver : `MTF_PCT_LOCK_ON = 0`.

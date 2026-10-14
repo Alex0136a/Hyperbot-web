@@ -1530,6 +1530,12 @@ PROFILE_SWING = {
     "BLOCKED_FOLLOWUP_HORIZON_MIN": 120, # duree d observation apres le blocage (minutes)
     "ENTRY_FUNNEL_TRACKING": 1,          # v4.330 : 1 = compte, par fenetre de 15 min, les etapes atteintes par le top-down (lecture seule)
     "MTF_ENTRY_ALLOW_PULLBACK_TREND": 1, # v4.329 : 1 = accepte aussi repli/rebond avec structure EMA50/EMA200 intacte (pas seulement prix > EMA50 > EMA200)
+    "MTF_PCT_LOCK_ON": 1,                # v4.393 : verrou de gain en % du prix (independant du R) : une fois le pic atteint, le SL garantit une part du pic
+    "MTF_PCT_LOCK_ARM_PCT": 1.0,         # ... arme des que le meilleur gain atteint N % du prix (le verrou en R n arme qu a +1R, soit +3 % avec un stop large)
+    "MTF_PCT_LOCK_FRACTION": 0.6,        # ... part du pic garantie (0.6 = 60 %)
+    "MTF_PCT_LOCK_BIG_PCT": 3.0,         # ... au-dela de ce pic (%), part garantie plus elevee
+    "MTF_PCT_LOCK_BIG_FRACTION": 0.75,
+    "MTF_PCT_LOCK_FLOOR_PCT": 0.15,      # ... le SL est toujours au moins a +N % de l entree (frais couverts)
     "MTF_LOCK_FRACTION": 0.5,            # v4.340 : apres +1R, le SL garantit cette fraction du gain maximal (0 = desactive)
     "MTF_SL_PUSH_MIN_STEP_PCT": 0.05,    # v4.340 : live — ecart minimal (% du prix d entree) avant de renvoyer le SL a Hyperliquid
     "MTF_DATA_GRACE_SEC": 90,            # v4.341 : tolerance apres une limite de periode avant de declarer les bougies PERIMEES
@@ -13112,6 +13118,22 @@ class BotEngine:
                 _cur = new_sl if new_sl is not None else pos["sl"]
                 if (long_side and _lock > _cur) or ((not long_side) and _lock < _cur):
                     new_sl = _lock
+        # v4.393 — SUR DEMANDE EXPLICITE (cas UNI : pic +4,15 % rendu pour moitie ; pics +1,4 % et +1,9 % sortis en perte). Le verrou
+        # ci-dessus s arme en R : avec un stop large (R de 3 a 4 %), il n armait qu a +3 % de gain. Ce verrou-ci s arme en % du prix :
+        # des que le meilleur gain atteint MTF_PCT_LOCK_ARM_PCT, le SL garantit une part (MTF_PCT_LOCK_FRACTION, plus haute au-dela de
+        # MTF_PCT_LOCK_BIG_PCT) du pic, jamais moins que MTF_PCT_LOCK_FLOOR_PCT. Il ne fait que MONTER (long) / DESCENDRE (short).
+        if cfg.get("MTF_PCT_LOCK_ON", 1) and pos["entry"] > 0:
+            _mfe_pct = ((best - pos["entry"]) if long_side else (pos["entry"] - best)) / pos["entry"] * 100
+            if _mfe_pct >= cfg.get("MTF_PCT_LOCK_ARM_PCT", 1.0):
+                _f = cfg.get("MTF_PCT_LOCK_BIG_FRACTION", 0.75) if _mfe_pct >= cfg.get("MTF_PCT_LOCK_BIG_PCT", 3.0) else cfg.get("MTF_PCT_LOCK_FRACTION", 0.6)
+                _lp = max(cfg.get("MTF_PCT_LOCK_FLOOR_PCT", 0.15), _f * _mfe_pct)
+                _lvl = pos["entry"] * (1 + _lp / 100) if long_side else pos["entry"] * (1 - _lp / 100)
+                _cur = new_sl if new_sl is not None else pos["sl"]
+                if (long_side and _lvl > _cur) or ((not long_side) and _lvl < _cur):
+                    new_sl = _lvl
+                    if not pos.get("mtf_be_done"):
+                        pos["mtf_be_done"] = True            # libelle de sortie « STOP SUIVEUR » et suivi R actif
+                        self.emit("log", {"msg": f"[{ticker}] Top-down : pic +{_mfe_pct:.2f} % — SL verrouillé à +{_lp:.2f} % ({_lvl:.6g})", "level": "signal"})
         if new_sl is not None and new_sl != pos["sl"]:
             pos["sl"] = new_sl
             # v4.340 : en live, ne pousse le SL natif que s il a bouge d au moins
