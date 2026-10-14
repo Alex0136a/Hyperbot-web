@@ -1062,6 +1062,13 @@ ADVANCED_SETTINGS = {
     "SUPSW_TRAIL_ON":           {"label": "Swing Support · LAISSER COURIR — 1 = à l'objectif on ne ferme pas : le stop remonte pour verrouiller un gain puis suit le plus haut ; 0 = sortie fixe à l'objectif", "default": 1},
     "SUPSW_TRAIL_LOCK_PCT":     {"label": "Swing Support · LAISSER COURIR — gain verrouillé dès l'objectif atteint (stop remonté à +N % au-dessus de l'entrée)", "default": 0.5},
     "SUPSW_TRAIL_PCT":          {"label": "Swing Support · LAISSER COURIR — le stop suit le plus haut atteint à N % en dessous", "default": 0.5},
+    "SUPSW_BTC_GATE_ON":        {"label": "Swing Support · PORTE BTC — 1 = pas d'entrée quand BTC est en baisse (variation 24 h sous le minimum ci-dessous, ou tendance H4 non conforme au mode)", "default": 1},
+    "SUPSW_BTC24_MIN":          {"label": "Swing Support · PORTE BTC — variation minimale de BTC sur 24 h en % pour accepter l'entrée (0 = BTC au moins stable)", "default": 0.0},
+    "SUPSW_BTC_H4_MODE":        {"label": "Swing Support · PORTE BTC — tendance H4 de BTC : 0 = ignorée, 1 = refus si baissière, 2 = haussière exigée", "default": 2},
+    "SUPSW_RECENT_ON":          {"label": "Swing Support · DERNIÈRES HEURES — 1 = pas d'entrée pendant une chute en cours (actif ou BTC)", "default": 1},
+    "SUPSW_RECENT_HOURS":       {"label": "Swing Support · DERNIÈRES HEURES — fenêtre examinée en heures", "default": 4},
+    "SUPSW_RECENT_ASSET_MIN_PCT": {"label": "Swing Support · DERNIÈRES HEURES — refus si l'actif a perdu plus de N % sur la fenêtre", "default": 1.5},
+    "SUPSW_RECENT_BTC_MIN_PCT": {"label": "Swing Support · DERNIÈRES HEURES — refus si BTC a perdu plus de N % sur la fenêtre", "default": 0.5},
     "SUPSW_RES_FILTER_ON":      {"label": "Swing Support · RÉSISTANCE — 1 = pas d'entrée si une résistance Daily est trop proche au-dessus du prix (retournement probable)", "default": 1},
     "SUPSW_RES_MIN_PCT":        {"label": "Swing Support · RÉSISTANCE — distance minimale en % du prix entre le prix et le bas de la résistance Daily pour accepter l'entrée", "default": 3.0},
     "SUPSW_RIDE_ON":            {"label": "Swing Support · VISER LA RÉSISTANCE — 1 = l'objectif est la résistance Daily moins un tampon (au lieu de l'objectif fixe) ; le gain est verrouillé dès l'objectif fixe", "default": 1},
@@ -1421,6 +1428,7 @@ def _coerce_advanced_value(key: str, value):
         return False, "entre 0,3 et 10 %"
     if key in ("SUPSW_TP_LEV1", "SUPSW_TP_LEV2", "SUPSW_TP_LEV3",
                "SUPSW_TRAIL_ON", "SUPSW_TRAIL_LOCK_PCT", "SUPSW_TRAIL_PCT", "SUPSW_REENTRY_ON", "SUPSW_REENTRY_HOURS", "SUPSW_REENTRY_TOL_PCT",
+               "SUPSW_BTC_GATE_ON", "SUPSW_BTC24_MIN", "SUPSW_BTC_H4_MODE", "SUPSW_RECENT_ON", "SUPSW_RECENT_HOURS", "SUPSW_RECENT_ASSET_MIN_PCT", "SUPSW_RECENT_BTC_MIN_PCT",
                "SUPSW_RES_FILTER_ON", "SUPSW_RES_MIN_PCT", "SUPSW_RIDE_ON", "SUPSW_RES_BUFFER_PCT", "SUPSW_RIDE_MAX_PCT", "SUPSW_RIDE_TRAIL_PCT") and not 0.3 <= value <= 15:
         return False, "entre 0,3 et 15 %"
     if key in ("SUPSW_ENABLED", "SUPSW_EXIT_REQUIRE_H4_END", "SUPSW_EXIT_LEVEL") and value not in (0, 1):
@@ -4104,7 +4112,7 @@ def supsw_export(days: int = Query(60, ge=1, le=120), email: str = Depends(requi
             "zone_low", "zone_high", "zone_touches", "held", "pierce_pct", "price", "entry_ref", "sl", "tp", "inval", "risk_pct", "reward_pct", "decision",
             "trade_uid", "evaluated", "outcome", "hit_h", "mfe24", "mae24", "mfe72", "mae72", "fin24", "fin72", "exit_ts", "exit_price",
             "exit_reason", "early_exit", "pnl_pct", "hold_h", "flow_exit", "h4_intact_exit", "d1_trend_exit", "post_eval", "fin1h", "fin4h", "fin24h",
-            "after_outcome", "after_hit_h", "after_mfe", "after_mae", "too_early", "alerts_max", "alerts_exit", "alerts_json", "btc_chg24", "btc_h4", "h4_trend", "peak_pct", "trail_armed", "res_low", "res_dist_pct"]
+            "after_outcome", "after_hit_h", "after_mfe", "after_mae", "too_early", "alerts_max", "alerts_exit", "alerts_json", "btc_chg24", "btc_h4", "h4_trend", "peak_pct", "trail_armed", "res_low", "res_dist_pct", "chg_recent", "btc_chg_recent"]
     w.writerow(["cloture du signal (UTC)"] + cols)
     for e in ev:
         row = [datetime.fromtimestamp(e["signal_t"] / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M")]

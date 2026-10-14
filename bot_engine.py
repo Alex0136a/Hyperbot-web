@@ -1487,6 +1487,13 @@ PROFILE_SWING = {
     "SUPSW_TRAIL_ON": 1,                  # v4.389 : 1 = a l objectif on ne ferme pas : on verrouille un gain et on laisse courir (trailing)
     "SUPSW_TRAIL_LOCK_PCT": 0.5,          # ... le stop passe immediatement a +N % au-dessus de l entree (gain verrouille)
     "SUPSW_TRAIL_PCT": 0.5,               # ... puis suit le plus haut atteint a N % en dessous
+    "SUPSW_BTC_GATE_ON": 1,               # v4.392 : porte de regime : pas d entree si BTC est en baisse (24 h / tendance H4)
+    "SUPSW_BTC24_MIN": 0.0,               # ... refuse si la variation de BTC sur 24 h est inferieure a N % (0 = BTC doit etre au moins stable)
+    "SUPSW_BTC_H4_MODE": 2,               # ... tendance H4 de BTC : 0 = ignoree, 1 = refuse si baissiere, 2 = exige haussiere
+    "SUPSW_RECENT_ON": 1,                 # v4.392 : controle des dernieres heures : pas d entree pendant une chute en cours
+    "SUPSW_RECENT_HOURS": 4,              # ... fenetre en heures
+    "SUPSW_RECENT_ASSET_MIN_PCT": 1.5,    # ... refuse si l actif a perdu plus de N % sur la fenetre
+    "SUPSW_RECENT_BTC_MIN_PCT": 0.5,      # ... refuse si BTC a perdu plus de N % sur la fenetre
     "SUPSW_RES_FILTER_ON": 1,             # v4.391 : 1 = pas d entree si une resistance Daily est trop proche au-dessus (retournement probable)
     "SUPSW_RES_MIN_PCT": 3.0,             # ... distance minimale (% du prix) entre le prix et le bas de la resistance Daily
     "SUPSW_RIDE_ON": 1,                   # v4.391 : 1 = on vise la resistance : objectif = resistance - tampon (au lieu de l objectif fixe)
@@ -11194,6 +11201,10 @@ class BotEngine:
             "exit_flow": float(c.get("SUPSW_EXIT_FLOW", -0.4)),
             "trail_on": bool(int(c.get("SUPSW_TRAIL_ON", 1))), "trail_lock": float(c.get("SUPSW_TRAIL_LOCK_PCT", 0.5)),
             "trail_pct": max(float(c.get("SUPSW_TRAIL_PCT", 0.5)), 0.1),
+            "btc_on": bool(int(c.get("SUPSW_BTC_GATE_ON", 1))), "btc24_min": float(c.get("SUPSW_BTC24_MIN", 0.0)),
+            "btc_h4_mode": int(c.get("SUPSW_BTC_H4_MODE", 2)),
+            "rec_on": bool(int(c.get("SUPSW_RECENT_ON", 1))), "rec_h": max(int(c.get("SUPSW_RECENT_HOURS", 4)), 1),
+            "rec_asset": float(c.get("SUPSW_RECENT_ASSET_MIN_PCT", 1.5)), "rec_btc": float(c.get("SUPSW_RECENT_BTC_MIN_PCT", 0.5)),
             "res_on": bool(int(c.get("SUPSW_RES_FILTER_ON", 1))), "res_min": float(c.get("SUPSW_RES_MIN_PCT", 3.0)),
             "ride_on": bool(int(c.get("SUPSW_RIDE_ON", 1))), "res_buf": float(c.get("SUPSW_RES_BUFFER_PCT", 0.3)),
             "ride_max": float(c.get("SUPSW_RIDE_MAX_PCT", 6.0)), "ride_trail": max(float(c.get("SUPSW_RIDE_TRAIL_PCT", 1.0)), 0.1),
@@ -11272,7 +11283,15 @@ class BotEngine:
     def _supsw_context(self, ticker, v, price):
         """Contexte ENREGISTRE (jamais filtrant) : tendance de BTC, tendance Weekly, funding annualise."""
         ctx = {"btc_trend": None, "weekly_trend": None, "funding_ann": None, "btc_chg24": None, "btc_h4": None, "h4_trend": None,
-               "res_low": None, "res_dist_pct": None}
+               "res_low": None, "res_dist_pct": None, "chg_recent": None, "btc_chg_recent": None}
+        try:      # v4.392 : variation sur les dernieres heures (fenetre SUPSW_RECENT_HOURS) de l actif et de BTC, sur bougies 1 h cloturees
+            n = max(int(self.cfg.get("SUPSW_RECENT_HOURS", 4)), 1)
+            for key, tk in (("chg_recent", ticker), ("btc_chg_recent", "BTC")):
+                cc = self._mtf_candles(tk, "1h", 30, cache_only=True)
+                if cc and len(cc) > n and float(cc[-1 - n]["c"]) > 0:
+                    ctx[key] = round((float(cc[-1]["c"]) / float(cc[-1 - n]["c"]) - 1) * 100, 3)
+        except Exception:
+            pass
         try:      # v4.391 : prochaine resistance Daily AU-DESSUS de la zone de support et du prix (distance en % du prix)
             sup = v.get("support") or {}
             zs = mtf.find_zones(self._mtf_candles(ticker, "1d", 230, cache_only=True), lookback=self.cfg.get("MTF_ZONE_LOOKBACK", 120),
@@ -11344,6 +11363,7 @@ class BotEngine:
                 "btc_trend": ctx.get("btc_trend"), "funding_ann": ctx.get("funding_ann"), "flow": flow,
                 "btc_chg24": ctx.get("btc_chg24"), "btc_h4": ctx.get("btc_h4"), "h4_trend": ctx.get("h4_trend"),
                 "res_low": ctx.get("res_low"), "res_dist_pct": ctx.get("res_dist_pct"),
+                "chg_recent": ctx.get("chg_recent"), "btc_chg_recent": ctx.get("btc_chg_recent"),
                 "atr_pct": (v["atr"] / price * 100) if price else None, "hour_utc": datetime.utcfromtimestamp(now).hour,
                 "zone_low": zone.get("low"), "zone_high": zone.get("high"), "zone_touches": zone.get("touches"),
                 "held": setup.get("held") if setup else None, "pierce_pct": setup.get("pierce_pct") if setup else None,
@@ -11428,6 +11448,15 @@ class BotEngine:
             blocker = "nombre maximal de swings support simultanes atteint"
         elif now - getattr(state, "supsw_last_loss_ts", 0) < K["cooldown"]:
             blocker = "pause apres une perte sur cet actif"
+        elif K["btc_on"] and ctx.get("btc_chg24") is not None and ctx["btc_chg24"] < K["btc24_min"]:
+            blocker = f"BTC en baisse sur 24 h ({ctx['btc_chg24']:+.2f} %, minimum {K['btc24_min']:+g} %)"
+        elif K["btc_on"] and K["btc_h4_mode"] >= 1 and ctx.get("btc_h4") is not None and (
+                ctx["btc_h4"] == "baissiere" or (K["btc_h4_mode"] >= 2 and ctx["btc_h4"] != "haussiere")):
+            blocker = f"tendance H4 de BTC {ctx['btc_h4']}" + (" (haussiere exigee)" if K["btc_h4_mode"] >= 2 else "")
+        elif K["rec_on"] and ctx.get("chg_recent") is not None and ctx["chg_recent"] < -K["rec_asset"]:
+            blocker = f"chute en cours : actif {ctx['chg_recent']:+.2f} % sur {K['rec_h']} h"
+        elif K["rec_on"] and ctx.get("btc_chg_recent") is not None and ctx["btc_chg_recent"] < -K["rec_btc"]:
+            blocker = f"chute en cours : BTC {ctx['btc_chg_recent']:+.2f} % sur {K['rec_h']} h"
         elif K["res_on"] and ctx.get("res_dist_pct") is not None and ctx["res_dist_pct"] < K["res_min"]:
             blocker = (f"resistance Daily trop proche ({ctx['res_dist_pct']:.1f} % au-dessus, minimum {K['res_min']:g} %) "
                        f"— retournement probable")

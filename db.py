@@ -188,7 +188,8 @@ def init_db():
         for _c, _t in (("alerts_max", "INTEGER"), ("alerts_exit", "INTEGER"), ("alerts_json", "TEXT"),
                    ("btc_chg24", "REAL"), ("btc_h4", "TEXT"), ("h4_trend", "TEXT"),
                    ("peak_pct", "REAL"), ("trail_armed", "INTEGER"),
-                   ("res_low", "REAL"), ("res_dist_pct", "REAL")):      # v4.387 : contexte de marche
+                   ("res_low", "REAL"), ("res_dist_pct", "REAL"),
+                   ("chg_recent", "REAL"), ("btc_chg_recent", "REAL")):      # v4.387 : contexte de marche
             if _c not in _sup_cols:
                 conn.execute(f"ALTER TABLE supsw_events ADD COLUMN {_c} {_t}")
         # Migration : ajoute la colonne rsi si la table trades existait deja
@@ -1270,7 +1271,7 @@ def swing_events_prune(older_than_ms):
 # ── v4.362 — Journal du SWING SUPPORT ───────────────────────────────────────────────────────
 _SUPSW_FIELDS = ("ts", "signal_t", "asset", "side", "setup", "setup_kind", "trend", "weekly_trend", "btc_trend", "funding_ann", "flow",
                  "atr_pct", "hour_utc", "zone_low", "zone_high", "zone_touches", "held", "pierce_pct", "price", "entry_ref", "sl", "tp",
-                 "risk_pct", "reward_pct", "decision", "prio", "trade_uid", "btc_chg24", "btc_h4", "h4_trend", "res_low", "res_dist_pct")
+                 "risk_pct", "reward_pct", "decision", "prio", "trade_uid", "btc_chg24", "btc_h4", "h4_trend", "res_low", "res_dist_pct", "chg_recent", "btc_chg_recent")
 
 
 def supsw_upsert(ev):

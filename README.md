@@ -856,3 +856,14 @@ Fichiers : `bot_engine.py`, `db.py`, `api.py`, `index.html`, `index_src.html`, `
 - Après un redémarrage, une position reconstruite repart avec l'objectif = résistance comme seuil de verrou (le verrou à +1 % n'est pas rejoué).
 - **SHORT à la résistance** : NON implémenté. Il est mesuré d'abord via les signaux refusés (voir ci-dessus).
 - Limite : ces règles ne peuvent pas être testées sur l'historique (les exports n'ont pas de bougies) ; elles sont mesurées sur les prochains signaux. Si peu d'entrées passent le filtre, baisser `SUPSW_RES_MIN_PCT`.
+
+## v4.392 — Swing Support : porte BTC et contrôle des dernières heures
+
+Fichiers : `bot_engine.py`, `db.py`, `api.py`, `README.md`.
+
+- **Porte BTC** (`SUPSW_BTC_GATE_ON`, 1 par défaut) : entrée refusée si la variation de BTC sur 24 h est inférieure à `SUPSW_BTC24_MIN` (0 %) ou si la tendance H4 de BTC n'est pas conforme à `SUPSW_BTC_H4_MODE` (0 = ignorée, 1 = refus si baissière, **2 = haussière exigée**, valeur par défaut). Si la donnée manque, l'entrée n'est pas bloquée.
+- **Dernières heures** (`SUPSW_RECENT_ON`, 1 par défaut) : entrée refusée pendant une chute en cours : l'actif a perdu plus de 1,5 % (`SUPSW_RECENT_ASSET_MIN_PCT`) ou BTC plus de 0,5 % (`SUPSW_RECENT_BTC_MIN_PCT`) sur les 4 dernières heures (`SUPSW_RECENT_HOURS`), mesuré sur les bougies 1 h clôturées.
+- **Journal / export** : deux colonnes ajoutées, `chg_recent` (actif) et `btc_chg_recent` (BTC) sur la fenêtre, enregistrées pour tous les signaux (pris ou refusés) afin de calibrer les seuils. Les signaux refusés restent mesurés à 24 h / 72 h.
+- Ordre des contrôles : pause après perte → BTC 24 h → H4 de BTC → chute actif → chute BTC → résistance proche (v4.391) → réentrée après gain (v4.389).
+- Rejeu sur l'export du 14/10 (15 trades pris avec contexte BTC) : BTC 24 h ≥ 0 seul garde 7 trades (−7,5 % au lieu de −18,2 %) ; avec H4 haussière exigée, 4 trades (−6,2 %). Les seuils « chute en cours » ne peuvent pas être rejoués (colonne nouvelle). Ces deux sous-ensembles restent négatifs : l'échantillon est petit et issu d'une même phase de baisse.
+- Critère d'arrêt proposé : environ 20 trades avec ces règles ; si le total net de frais n'est pas positif, Swing Support est abandonné. Si trop peu d'entrées passent, assouplir `SUPSW_BTC_H4_MODE` (2 → 1) en premier.
