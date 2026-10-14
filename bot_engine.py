@@ -39,8 +39,8 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.299"
-BOT_BUILD   = "2026-09-26-e"  # incremente a chaque correctif — visible dans les logs
+BOT_VERSION = "4.397"
+BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
 # 4.299 — Moteur TOP-DOWN multi-unites de temps (H4/Daily -> M15/H1) pour

@@ -901,3 +901,10 @@ Fichiers : `index.html`, `index_src.html`, `README.md`.
 
 - Après « Enregistrer » dans la modification d'un trade manuel ouvert, si la case « laisser courir au TP » était cochée et que le serveur ne la confirme pas, un message l'explique. Cause typique : seuls les fichiers de l'interface (`index.html`) ont été déposés, pas `api.py` et `manual_trading.py` de la v4.395 : l'ancien serveur ignore silencieusement les champs qu'il ne connaît pas, et la case revient décochée à la réouverture.
 - Aucun changement côté serveur.
+
+## v4.397 — Version affichée par /health
+
+Fichiers : `bot_engine.py`, `README.md`.
+
+- `BOT_VERSION` (4.299 jusque-là, jamais mis à jour) et `BOT_BUILD` reflètent désormais la version déployée : `GET /health` renvoie `"version": "4.397"` et `"build": "2026-10-14-a"`. Ouvrir `https://<ton-app>/health` permet de confirmer que Railway fait bien tourner le dernier code (utile quand une nouveauté de l'interface ne semble pas prise en compte côté serveur).
+- Vérifié de bout en bout (requête HTTP simulée, route `PUT /api/manual/positions/{id}`) : « laisser courir au TP » est bien enregistré et renvoyé par le serveur de la v4.395 ; si ce n'est pas le cas chez toi, c'est que le serveur déployé n'est pas à jour.
