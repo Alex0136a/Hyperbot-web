@@ -884,3 +884,13 @@ Fichiers : `index.html`, `index_src.html`, `README.md`.
 - Dans les trades manuels ouverts (onglet Trading Manuel, onglet « Tous » et volet du mode), le PnL s'affiche désormais **d'abord en $, puis en % entre parenthèses**, comme sur Hyperliquid : « +0,351 $ (+2,06 %) ». Avant, l'onglet Trading Manuel affichait le % avant le $ et le volet du mode aussi.
 - Le % est maintenant le **% de marge (ROE = mouvement de prix × levier)**, comme Hyperliquid et comme les trades du bot ; à levier ×1 il est identique au mouvement de prix. Le pic affiché suit la même règle : « 🏔️ pic +0,41 $ (+1,44 %) · prix … ».
 - Les trades du bot et les historiques étaient déjà au format « $ (%) » : inchangés.
+
+## v4.395 — Trades manuels : « laisser courir au TP » (trailing après l'objectif)
+
+Fichiers : `manual_trading.py`, `api.py`, `index.html`, `index_src.html`, `README.md`.
+
+- **Constat** : le trailing de la v4.389 ne concerne que le Swing Support du bot (paper). Un ticket manuel préparé depuis une alerte Swing Support n'avait qu'un TP fixe (sans TTP), qui fermait tout le trade à l'objectif.
+- **Nouvelle option « LAISSER COURIR AU TP »** sur tout ticket manuel qui a un TP (case dans le ticket, sous le TP). Elle est **cochée par défaut pour les tickets Swing Support** (verrou +0,5 % et suiveur 0,5 %, repris de `SUPSW_TRAIL_LOCK_PCT` / `SUPSW_TRAIL_PCT`) ; décochée pour les autres, à cocher à la main.
+- **Fonctionnement** : quand le prix touche le TP, le trade n'est plus fermé. Le SL monte aussitôt à +verrou % au-dessus de l'entrée (en SHORT : en dessous), puis suit le plus haut atteint à N % de distance. La sortie s'appelle « TRAILING TAKE PROFIT (manuel) ». LONG et SHORT, paper et live. En **live**, le SL natif Hyperliquid est mis à jour à chaque palier (au moins `MANUAL_LOCK_PUSH_MIN_STEP_PCT`, 0,05 %), donc le stop reste protégé même si le bot s'arrête ; le TP, lui, n'est pas un ordre natif (inchangé).
+- **Trades déjà ouverts** : bouton « Modifier » (onglet Trading Manuel) : case « laisser courir au TP » + verrou et suiveur. Le verrou doit rester inférieur à la distance du TP. Retirer le TP désactive l'effet.
+- Le trade ouvert affiche « laisser courir » puis « armé » une fois l'objectif atteint. Aucun changement pour les ordres sans cette option.

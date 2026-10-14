@@ -2748,6 +2748,9 @@ class ManualOrderBody(BaseModel):
     lock_fraction: Optional[float] = None
     trend_entry: Optional[str] = None     # None | "haussiere" | "baissiere" | "neutre"
     trend_exit: Optional[str] = None      # None | "opposee" | "perdue"
+    tp_run: Optional[bool] = None         # v4.395 : laisser courir au TP (gain verrouille puis stop suiveur)
+    tp_run_lock_pct: Optional[float] = None
+    tp_run_trail_pct: Optional[float] = None
 
 
 class ManualModifyBody(BaseModel):
@@ -2762,6 +2765,9 @@ class ManualModifyBody(BaseModel):
     clear_lock: bool = False
     trend_exit: Optional[str] = None
     clear_trend_exit: bool = False
+    tp_run: Optional[bool] = None            # v4.395 : laisser courir au TP
+    tp_run_lock_pct: Optional[float] = None
+    tp_run_trail_pct: Optional[float] = None
 
 
 def _manual_call(fn, *args):
@@ -2821,6 +2827,12 @@ def manual_modify(item_id: int, body: ManualModifyBody, email: str = Depends(req
             changes["lock_arm_pct"] = body.lock_arm_pct
         if body.lock_fraction:
             changes["lock_fraction"] = body.lock_fraction
+    if body.tp_run is not None:
+        changes["tp_run"] = body.tp_run
+    if body.tp_run_lock_pct is not None:
+        changes["tp_run_lock_pct"] = body.tp_run_lock_pct
+    if body.tp_run_trail_pct is not None:
+        changes["tp_run_trail_pct"] = body.tp_run_trail_pct
     if body.clear_trend_exit:
         changes["trend_exit"] = None
     elif body.trend_exit:
@@ -4463,7 +4475,8 @@ def _manual_open_list():
         with bot.manual.lock:
             items = [bot.manual.public(i) for i in bot.manual.items.values() if i.get("status") in ("open", "opening", "closing")]
         keys = ("id", "ticker", "direction", "mode", "market", "leverage", "entry_price", "current_price", "move_pct", "pnl", "qty",
-                "notional_usd", "sl_price", "tp_price", "opened_at", "strategy_label", "status", "ttp_arm_pct", "trade_uid", "peak_pct", "qty", "armed")
+                "notional_usd", "sl_price", "tp_price", "opened_at", "strategy_label", "status", "ttp_arm_pct", "trade_uid", "peak_pct", "qty", "armed",
+                "tp_run", "tp_run_armed", "tp_run_lock_pct", "tp_run_trail_pct")
         return [{k: it.get(k) for k in keys} for it in sorted(items, key=lambda i: i.get("opened_at") or 0, reverse=True)]
     except Exception as e:
         print(f"[portfolio] trades manuels ignores : {type(e).__name__}: {e}")

@@ -308,7 +308,8 @@ class ManualTrading:
             sl, tp = sups.scaled_levels(lev, sl, tp, float(cfg.get("SUPSW_MARGIN_RISK_PCT", 7.5)), float(cfg.get("SUPSW_MIN_SL_PCT", 1.5)),
                                         float(cfg.get("SUPSW_TP_LEV1", 2.0)), float(cfg.get("SUPSW_TP_LEV2", 1.5)), float(cfg.get("SUPSW_TP_LEV3", 1.0)))
         notional = max(min(float(cfg.get("CAPITAL_USD", 100.0)) * float(cfg.get("SUPSW_RISK_PCT", 1.0)) / sl, float(cfg.get("SUPSW_MAX_NOTIONAL_USD", 60.0))), 10.0)
-        p.update({"strategy": "swing_support", "free": False, "no_ttp": True, "leverage": lev, "notional_usd": round(notional, 2),
+        p.update({"strategy": "swing_support", "free": False, "no_ttp": True, "tp_run": True,
+                  "tp_run_lock_pct": float(cfg.get("SUPSW_TRAIL_LOCK_PCT", 0.5)), "tp_run_trail_pct": float(cfg.get("SUPSW_TRAIL_PCT", 0.5)), "leverage": lev, "notional_usd": round(notional, 2),
                   "margin_usd": round(notional / lev, 2), "sl_pct": round(sl, 3), "sl_basis": "stop Swing Support (selon le levier)" if int(cfg.get("SUPSW_LEVER_SCALE", 0)) == 1 else "stop fixe Swing Support",
                   "tp_pct": round(tp, 3), "tp_basis": "objectif Swing Support",
                   "reasons": ["Ticket prepare depuis une alerte Swing Support : stop, objectif, levier et taille du mode (modifiables). "
@@ -447,6 +448,12 @@ class ManualTrading:
         tp = p.get("tp_pct")
         if tp not in (None, "", 0) and not 0.05 <= float(tp) <= 500:
             raise ManualError("Take profit invalide (0,05 % a 500 %, ou vide).")
+        if p.get("tp_run"):      # v4.395 : laisser courir au TP (verrou puis stop suiveur)
+            if tp in (None, "", 0):
+                raise ManualError("Laisser courir au TP : un take profit est necessaire.")
+            lk, tr_ = float(p.get("tp_run_lock_pct") or 0), float(p.get("tp_run_trail_pct") or 0)
+            if not (0 <= lk < float(tp)) or not 0.05 <= tr_ <= 50:
+                raise ManualError("Laisser courir : le gain verrouille doit etre inferieur au TP (en %) et le suiveur compris entre 0,05 et 50 %.")
         arm, trail = float(p.get("ttp_arm_pct") or 0), float(p.get("ttp_trail_pct") or 0)
         if arm and not (0.05 <= arm <= 500 and 0.02 <= trail <= 100):
             raise ManualError("Trailing TP invalide (armement 0,05-500 %, repli 0,02-100 %).")
@@ -483,6 +490,10 @@ class ManualTrading:
                 "tp_pct": float(p["tp_pct"]) if p.get("tp_pct") not in (None, "", 0) else None,
                 "ttp_arm_pct": float(p.get("ttp_arm_pct") or 0) or None,
                 "ttp_trail_pct": float(p.get("ttp_trail_pct") or 0) or None,
+                # v4.395 — laisser courir au TP : a l objectif, gain verrouille puis stop suiveur sous le plus haut
+                "tp_run": bool(p.get("tp_run")) and p.get("tp_pct") not in (None, "", 0),
+                "tp_run_lock_pct": float(p.get("tp_run_lock_pct") or 0), "tp_run_trail_pct": float(p.get("tp_run_trail_pct") or 0.5),
+                "tp_run_armed": False,
                 # v4.343 — verrou progressif du SL + criteres de tendance (choix manuels)
                 "lock_arm_pct": p.get("lock_arm_pct"), "lock_fraction": p.get("lock_fraction"), "lock_active": False,
                 "trend_entry": p.get("trend_entry"), "trend_exit": p.get("trend_exit"),
@@ -705,7 +716,8 @@ class ManualTrading:
                 raise ManualError("Element introuvable.")
             if item["status"] == "scheduled":
                 for k in ("sl_pct", "tp_pct", "ttp_arm_pct", "ttp_trail_pct", "trigger_price", "notional_usd", "leverage",
-                          "lock_arm_pct", "lock_fraction", "trend_entry", "trend_exit"):
+                          "lock_arm_pct", "lock_fraction", "trend_entry", "trend_exit",
+                          "tp_run", "tp_run_lock_pct", "tp_run_trail_pct"):
                     if k in changes:
                         item[k] = changes[k]
                 probe = {k: item.get(k) for k in ("lock_arm_pct", "lock_fraction", "trend_entry", "trend_exit")}
@@ -736,6 +748,17 @@ class ManualTrading:
             for k in ("ttp_arm_pct", "ttp_trail_pct"):
                 if k in changes:
                     item[k] = float(changes[k]) if changes[k] else None
+            if any(k in changes for k in ("tp_run", "tp_run_lock_pct", "tp_run_trail_pct")):      # v4.395
+                if "tp_run_lock_pct" in changes and changes["tp_run_lock_pct"] is not None:
+                    item["tp_run_lock_pct"] = float(changes["tp_run_lock_pct"])
+                if "tp_run_trail_pct" in changes and changes["tp_run_trail_pct"] is not None:
+                    item["tp_run_trail_pct"] = float(changes["tp_run_trail_pct"])
+                if "tp_run" in changes and changes["tp_run"] is not None:
+                    item["tp_run"] = bool(changes["tp_run"]) and bool(item.get("tp_price"))
+                if item.get("tp_run") and item.get("tp_price"):
+                    _d = abs(item["tp_price"] - item["entry_price"]) / item["entry_price"] * 100
+                    if not (0 <= float(item.get("tp_run_lock_pct") or 0) < _d) or not 0.05 <= float(item.get("tp_run_trail_pct") or 0) <= 50:
+                        raise ManualError("Laisser courir : le gain verrouille doit etre inferieur a la distance du TP et le suiveur compris entre 0,05 et 50 %.")
             if "lock_arm_pct" in changes or "lock_fraction" in changes:   # v4.343
                 probe = {"lock_arm_pct": changes.get("lock_arm_pct", item.get("lock_arm_pct")),
                          "lock_fraction": changes.get("lock_fraction", item.get("lock_fraction"))}
@@ -855,9 +878,34 @@ class ManualTrading:
                     self._log(f"#{item['id']} {item['ticker']} : verrou du SL actif a +{item['peak_pct']:.2f}% — SL {new_sl:.6g} (garantit {lock_pct:.2f}%)", "signal")
                     self._save(item)
                 self._maybe_push_sl(item, new_sl)
+        # v4.395 — LAISSER COURIR AU TP : a l objectif on ne ferme pas ; le SL monte (gain verrouille puis suit le plus haut)
+        if item.get("tp_run") and item.get("tp_price"):
+            _tp_hit = (sign > 0 and price >= item["tp_price"]) or (sign < 0 and price <= item["tp_price"])
+            _trail = float(item.get("tp_run_trail_pct") or 0.5)
+            if _tp_hit and not item.get("tp_run_armed"):
+                item["tp_run_armed"], item["tp_run_peak_px"] = True, price
+                _lk = item["entry_price"] * (1 + sign * float(item.get("tp_run_lock_pct") or 0) / 100)
+                _tr = price * (1 - sign * _trail / 100)
+                _new = max(item["sl_price"], _lk, _tr) if sign > 0 else min(item["sl_price"], _lk, _tr)
+                item["sl_price"] = _new
+                self._log(f"#{item['id']} {item['ticker']} : objectif atteint — on laisse courir, SL remonte a {_new:.6g}", "signal")
+                self._save(item)
+                self._maybe_push_sl(item, _new)
+            elif item.get("tp_run_armed"):
+                _pk = item.get("tp_run_peak_px") or price
+                if (sign > 0 and price > _pk) or (sign < 0 and price < _pk):
+                    item["tp_run_peak_px"] = price
+                    _new = price * (1 - sign * _trail / 100)
+                    if (sign > 0 and _new > item["sl_price"]) or (sign < 0 and _new < item["sl_price"]):
+                        item["sl_price"] = _new
+                        self._maybe_push_sl(item, _new)
+                        if time.time() - item.get("tp_run_saved_ts", 0) > 60:
+                            item["tp_run_saved_ts"] = time.time()
+                            self._save(item)
         if (sign > 0 and price <= item["sl_price"]) or (sign < 0 and price >= item["sl_price"]):
-            reason = "STOP DYNAMIQUE (manuel)" if item.get("lock_active") else "STOP LOSS (manuel)"
-        elif item.get("tp_price") and ((sign > 0 and price >= item["tp_price"]) or (sign < 0 and price <= item["tp_price"])):
+            reason = ("TRAILING TAKE PROFIT (manuel)" if item.get("tp_run_armed")
+                      else "STOP DYNAMIQUE (manuel)" if item.get("lock_active") else "STOP LOSS (manuel)")
+        elif item.get("tp_price") and not item.get("tp_run") and ((sign > 0 and price >= item["tp_price"]) or (sign < 0 and price <= item["tp_price"])):
             reason = "TAKE PROFIT (manuel)"
         elif item.get("ttp_arm_pct"):
             if not item.get("armed") and item["peak_pct"] >= item["ttp_arm_pct"]:

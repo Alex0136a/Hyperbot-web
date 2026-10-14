@@ -1008,7 +1008,7 @@ function ManualOpenCard({ t, token, onDone }) {
       </div>
       <div style={{display:"flex",gap:14,flexWrap:"wrap",fontSize:10,color:"#94a3b8",marginTop:6}}>
         <span>Entrée {fmtP(t.entry_price)}</span><span>Prix {fmtP(t.current_price)}</span>
-        <span style={{color:"#f87171"}}>SL {fmtP(t.sl_price)}</span>{t.tp_price ? <span style={{color:"#34d399"}}>TP {fmtP(t.tp_price)}</span> : null}<span style={{color:"#fbbf24"}}>🏔️ pic {peakUsd!=null?`${fmtUsd(peakUsd)} `:""}(+{Number(_roe(peak,t.leverage)).toFixed(2)} %){peakPx!=null?` · prix ${fmtP(peakPx)}`:""}</span>
+        <span style={{color:"#f87171"}}>SL {fmtP(t.sl_price)}</span>{t.tp_price ? <span style={{color:"#34d399"}}>TP {fmtP(t.tp_price)}{t.tp_run?(t.tp_run_armed?" · on laisse courir (armé)":" · laisser courir"):""}</span> : null}<span style={{color:"#fbbf24"}}>🏔️ pic {peakUsd!=null?`${fmtUsd(peakUsd)} `:""}(+{Number(_roe(peak,t.leverage)).toFixed(2)} %){peakPx!=null?` · prix ${fmtP(peakPx)}`:""}</span>
         <span>{Number(t.notional_usd).toFixed(2)} $</span>{age!=null && <span>{age < 120 ? `${age} min` : `${Math.round(age/60)} h`}</span>}
       </div>
       <div style={{display:"flex",gap:8,alignItems:"center",marginTop:8,flexWrap:"wrap"}}>
@@ -1057,6 +1057,7 @@ function ManualTradingTab({ token }) {
         notional_usd: p.notional_usd, leverage: p.leverage,
         sl_pct: p.sl_pct, tp_on: !p.free, tp_pct: p.tp_pct,
         ttp_on: !p.free && !p.no_ttp, ttp_arm_pct: p.ttp_arm_pct, ttp_trail_pct: p.ttp_trail_pct,
+        tp_run: !!p.tp_run, tp_run_lock_pct: p.tp_run_lock_pct ?? 0.5, tp_run_trail_pct: p.tp_run_trail_pct ?? 0.5,
         lock_on: !!p.free, lock_arm_pct: p.lock_arm_pct ?? p.sl_pct, lock_fraction_pct: Math.round((p.lock_fraction ?? 0.5)*100),
         trend_entry: prev?.trend_entry || "", trend_exit: prev?.trend_exit || "",
       }));
@@ -1084,6 +1085,7 @@ function ManualTradingTab({ token }) {
       execution: f.execution, notional_usd: Number(f.notional_usd), leverage: f.market==="spot" ? 1 : Number(f.leverage),
       sl_pct: Number(f.sl_pct), tp_pct: f.tp_on ? Number(f.tp_pct) : null,
       ttp_arm_pct: f.ttp_on ? Number(f.ttp_arm_pct) : null, ttp_trail_pct: f.ttp_on ? Number(f.ttp_trail_pct) : null,
+      tp_run: !!(f.tp_on && f.tp_run), tp_run_lock_pct: Number(f.tp_run_lock_pct) || 0, tp_run_trail_pct: Number(f.tp_run_trail_pct) || 0.5,
       trigger_price: (f.execution==="price_above"||f.execution==="price_below") ? Number(f.trigger_price) : null,
       trigger_time: f.execution==="time" && f.trigger_time ? new Date(f.trigger_time).getTime()/1000 : null,
       expiry_hours: Number(f.expiry_hours) || 24, require_valid: !!f.require_valid, confirm_live: false,
@@ -1125,6 +1127,7 @@ function ManualTradingTab({ token }) {
     const body = {};
     if (edit.sl_price) body.sl_price = Number(edit.sl_price);
     if (edit.tp_price === "") body.clear_tp = true; else if (edit.tp_price) body.tp_price = Number(edit.tp_price);
+    if (edit.tp_run !== undefined) { body.tp_run = !!edit.tp_run && edit.tp_price !== ""; body.tp_run_lock_pct = Number(edit.tp_run_lock_pct) || 0; body.tp_run_trail_pct = Number(edit.tp_run_trail_pct) || 0.5; }
     if (edit.ttp_off) body.clear_ttp = true;
     else { if (edit.ttp_arm_pct) body.ttp_arm_pct = Number(edit.ttp_arm_pct); if (edit.ttp_trail_pct) body.ttp_trail_pct = Number(edit.ttp_trail_pct); }
     if (edit.lock_off) body.clear_lock = true;
@@ -1243,6 +1246,11 @@ function ManualTradingTab({ token }) {
                 <input style={MT.input} type="number" step="any" value={refPrice?Number(pxFromPct(Number(f.tp_pct),"tp")).toPrecision(6):""} onChange={e=>{const v=pctFromPx(Number(e.target.value),"tp"); if(v!=null) set("tp_pct",Number(v.toFixed(3)));}}/>
               </div>}
               {f.tp_on && <div style={{fontSize:11,color:"#86efac",marginTop:4}}>Gain au TP ≈ {(notional*Number(f.tp_pct)/100).toFixed(2)} $</div>}
+              {f.tp_on && <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:6,marginTop:8,alignItems:"center"}}><input type="checkbox" checked={!!f.tp_run} onChange={e=>set("tp_run",e.target.checked)}/>LAISSER COURIR AU TP <span style={{color:"#64748b"}}>(à l'objectif : gain verrouillé puis stop suiveur)</span></label>}
+              {f.tp_on && f.tp_run && <div style={{display:"flex",gap:6,marginTop:4}}>
+                <div style={{flex:1}}><span style={MT.label}>GAIN VERROUILLÉ (+%)</span><input style={MT.input} type="number" step="0.05" value={f.tp_run_lock_pct} onChange={e=>set("tp_run_lock_pct",e.target.value)}/></div>
+                <div style={{flex:1}}><span style={MT.label}>SUIVEUR SOUS LE PLUS HAUT (%)</span><input style={MT.input} type="number" step="0.05" value={f.tp_run_trail_pct} onChange={e=>set("tp_run_trail_pct",e.target.value)}/></div>
+              </div>}
             </div>
 
             <div>
@@ -1319,19 +1327,22 @@ function ManualTradingTab({ token }) {
               <span>{p.market.toUpperCase()} · <span style={{color:p.mode==="live"?"#ef4444":"#22c55e"}}>{p.mode.toUpperCase()}</span> · x{p.leverage}</span>
               <span>Entrée {fmtP(p.entry_price)} → {fmtP(p.current_price)}</span>
               <span style={{color:(p.pnl||0)>=0?"#22c55e":"#ef4444",fontWeight:800}}>{fmtUsd(p.pnl)} {p.move_pct!=null?`(${_roe(p.move_pct,p.leverage)>=0?"+":""}${Number(_roe(p.move_pct,p.leverage)).toFixed(2)} %)`:""}</span>
-              <span style={{color:"#94a3b8"}}>SL {fmtP(p.sl_price)} · TP {p.tp_price?fmtP(p.tp_price):"—"} · TTP {p.ttp_arm_pct?`+${p.ttp_arm_pct}%/${p.ttp_trail_pct}%${p.armed?" (armé)":""}`:"—"} · pic +{(p.peak_pct||0).toFixed(2)} %
+              <span style={{color:"#94a3b8"}}>SL {fmtP(p.sl_price)} · TP {p.tp_price?fmtP(p.tp_price):"—"}{p.tp_run?` (laisser courir : verrou +${p.tp_run_lock_pct}%, suiveur ${p.tp_run_trail_pct}%${p.tp_run_armed?" — ARMÉ":""})`:""} · TTP {p.ttp_arm_pct?`+${p.ttp_arm_pct}%/${p.ttp_trail_pct}%${p.armed?" (armé)":""}`:"—"} · pic +{(p.peak_pct||0).toFixed(2)} %
                 {p.lock_arm_pct ? ` · SL dynamique : ${Math.round(p.lock_fraction*100)}% du pic dès +${p.lock_arm_pct}%${p.lock_active?" (actif)":""}` : ""}
                 {(p.trend_entry||p.trend_exit) ? ` · tendance H4 : ${p.trend_entry?`entrée ${TREND_LBL[p.trend_entry]}`:""}${p.trend_entry&&p.trend_exit?", ":""}${p.trend_exit?`sortie ${p.trend_exit==="opposee"?"si opposée":"si perdue"}`:""}` : ""}</span>
               {p.status!=="open" && <span style={{color:"#fbbf24"}}>{p.status==="opening"?"ouverture…":"fermeture…"}</span>}
               {p.error && <span style={{color:"#fca5a5"}}>⚠️ {p.error}</span>}
               <span style={{marginLeft:"auto",display:"flex",gap:6}}>
-                <button style={MT.btn("#1e2d4a","#93c5fd")} onClick={()=>{setEditId(editId===p.id?null:p.id);setEdit({sl_price:p.sl_price,tp_price:p.tp_price||"",ttp_arm_pct:p.ttp_arm_pct||"",ttp_trail_pct:p.ttp_trail_pct||"",ttp_off:false,lock_arm_pct:p.lock_arm_pct||"",lock_fraction_pct:p.lock_fraction?Math.round(p.lock_fraction*100):"",lock_off:false,trend_exit:p.trend_exit||""});}}>Modifier</button>
+                <button style={MT.btn("#1e2d4a","#93c5fd")} onClick={()=>{setEditId(editId===p.id?null:p.id);setEdit({sl_price:p.sl_price,tp_price:p.tp_price||"",tp_run:!!p.tp_run,tp_run_lock_pct:p.tp_run_lock_pct??0.5,tp_run_trail_pct:p.tp_run_trail_pct??0.5,ttp_arm_pct:p.ttp_arm_pct||"",ttp_trail_pct:p.ttp_trail_pct||"",ttp_off:false,lock_arm_pct:p.lock_arm_pct||"",lock_fraction_pct:p.lock_fraction?Math.round(p.lock_fraction*100):"",lock_off:false,trend_exit:p.trend_exit||""});}}>Modifier</button>
                 <button style={MT.btn("#ef4444","#fff")} onClick={()=>closePos(p)}>Fermer</button>
               </span>
             </div>
             {editId===p.id && <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:8,alignItems:"flex-end"}}>
               <div><span style={MT.label}>SL (prix)</span><input style={{...MT.input,width:120}} type="number" step="any" value={edit.sl_price} onChange={e=>setEdit({...edit,sl_price:e.target.value})}/></div>
               <div><span style={MT.label}>TP (prix, vide = aucun)</span><input style={{...MT.input,width:140}} type="number" step="any" value={edit.tp_price} onChange={e=>setEdit({...edit,tp_price:e.target.value})}/></div>
+              <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={!!edit.tp_run} onChange={e=>setEdit({...edit,tp_run:e.target.checked})}/>laisser courir au TP</label>
+              {edit.tp_run && <><div><span style={MT.label}>VERROU (+%)</span><input style={{...MT.input,width:90}} type="number" step="0.05" value={edit.tp_run_lock_pct} onChange={e=>setEdit({...edit,tp_run_lock_pct:e.target.value})}/></div>
+              <div><span style={MT.label}>SUIVEUR (%)</span><input style={{...MT.input,width:90}} type="number" step="0.05" value={edit.tp_run_trail_pct} onChange={e=>setEdit({...edit,tp_run_trail_pct:e.target.value})}/></div></>}
               <div><span style={MT.label}>TTP armement %</span><input style={{...MT.input,width:100}} type="number" step="0.05" value={edit.ttp_arm_pct} disabled={edit.ttp_off} onChange={e=>setEdit({...edit,ttp_arm_pct:e.target.value})}/></div>
               <div><span style={MT.label}>TTP repli %</span><input style={{...MT.input,width:100}} type="number" step="0.05" value={edit.ttp_trail_pct} disabled={edit.ttp_off} onChange={e=>setEdit({...edit,ttp_trail_pct:e.target.value})}/></div>
               <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={edit.ttp_off} onChange={e=>setEdit({...edit,ttp_off:e.target.checked})}/>sans TTP</label>
