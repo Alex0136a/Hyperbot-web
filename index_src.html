@@ -1004,11 +1004,11 @@ function ManualOpenCard({ t, token, onDone }) {
           <span style={{background:t.mode==="live"?"#2d0a0a":"#1e293b",color:t.mode==="live"?"#fca5a5":"#94a3b8",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>{t.mode==="live"?"LIVE":"PAPER"}</span>
           {t.strategy_label && <span style={{color:"#64748b",fontSize:9}}>source : {t.strategy_label}</span>}
         </div>
-        <span style={{color:up==null?"#94a3b8":(up?"#34d399":"#f87171"),fontWeight:700,fontSize:13}}>{fmtUsd(pnl)}{t.move_pct!=null && <span style={{fontSize:10,marginLeft:6}}>({t.move_pct>=0?"+":""}{Number(t.move_pct).toFixed(2)} % prix)</span>}</span>
+        <span style={{color:up==null?"#94a3b8":(up?"#34d399":"#f87171"),fontWeight:700,fontSize:13}}>{fmtUsd(pnl)}{t.move_pct!=null && <span style={{fontSize:10,marginLeft:6}} title="% de marge comme sur Hyperliquid (mouvement de prix x levier)">({_roe(t.move_pct,t.leverage)>=0?"+":""}{Number(_roe(t.move_pct,t.leverage)).toFixed(2)} %)</span>}</span>
       </div>
       <div style={{display:"flex",gap:14,flexWrap:"wrap",fontSize:10,color:"#94a3b8",marginTop:6}}>
         <span>Entrée {fmtP(t.entry_price)}</span><span>Prix {fmtP(t.current_price)}</span>
-        <span style={{color:"#f87171"}}>SL {fmtP(t.sl_price)}</span>{t.tp_price ? <span style={{color:"#34d399"}}>TP {fmtP(t.tp_price)}</span> : null}<span style={{color:"#fbbf24"}}>pic +{peak.toFixed(2)} %{peakPx!=null?` (${fmtP(peakPx)}${peakUsd!=null?` · ${fmtUsd(peakUsd)}`:""})`:""}</span>
+        <span style={{color:"#f87171"}}>SL {fmtP(t.sl_price)}</span>{t.tp_price ? <span style={{color:"#34d399"}}>TP {fmtP(t.tp_price)}</span> : null}<span style={{color:"#fbbf24"}}>🏔️ pic {peakUsd!=null?`${fmtUsd(peakUsd)} `:""}(+{Number(_roe(peak,t.leverage)).toFixed(2)} %){peakPx!=null?` · prix ${fmtP(peakPx)}`:""}</span>
         <span>{Number(t.notional_usd).toFixed(2)} $</span>{age!=null && <span>{age < 120 ? `${age} min` : `${Math.round(age/60)} h`}</span>}
       </div>
       <div style={{display:"flex",gap:8,alignItems:"center",marginTop:8,flexWrap:"wrap"}}>
@@ -1318,7 +1318,7 @@ function ManualTradingTab({ token }) {
               <b>#{p.id} {p.ticker}</b>{dirBadge(p.direction)}
               <span>{p.market.toUpperCase()} · <span style={{color:p.mode==="live"?"#ef4444":"#22c55e"}}>{p.mode.toUpperCase()}</span> · x{p.leverage}</span>
               <span>Entrée {fmtP(p.entry_price)} → {fmtP(p.current_price)}</span>
-              <span style={{color:(p.pnl||0)>=0?"#22c55e":"#ef4444",fontWeight:800}}>{p.move_pct!=null?`${p.move_pct>=0?"+":""}${p.move_pct.toFixed(2)} %`:""} {fmtUsd(p.pnl)}</span>
+              <span style={{color:(p.pnl||0)>=0?"#22c55e":"#ef4444",fontWeight:800}}>{fmtUsd(p.pnl)} {p.move_pct!=null?`(${_roe(p.move_pct,p.leverage)>=0?"+":""}${Number(_roe(p.move_pct,p.leverage)).toFixed(2)} %)`:""}</span>
               <span style={{color:"#94a3b8"}}>SL {fmtP(p.sl_price)} · TP {p.tp_price?fmtP(p.tp_price):"—"} · TTP {p.ttp_arm_pct?`+${p.ttp_arm_pct}%/${p.ttp_trail_pct}%${p.armed?" (armé)":""}`:"—"} · pic +{(p.peak_pct||0).toFixed(2)} %
                 {p.lock_arm_pct ? ` · SL dynamique : ${Math.round(p.lock_fraction*100)}% du pic dès +${p.lock_arm_pct}%${p.lock_active?" (actif)":""}` : ""}
                 {(p.trend_entry||p.trend_exit) ? ` · tendance H4 : ${p.trend_entry?`entrée ${TREND_LBL[p.trend_entry]}`:""}${p.trend_entry&&p.trend_exit?", ":""}${p.trend_exit?`sortie ${p.trend_exit==="opposee"?"si opposée":"si perdue"}`:""}` : ""}</span>
@@ -4991,7 +4991,7 @@ Confirmer ?`
                               {x.status!=="open" && <span style={{color:"#fbbf24",marginLeft:6}}>{x.status==="opening"?"ouverture…":"fermeture…"}</span>}
                             </span>
                             <span>entrée {x.entry_price!=null?Number(x.entry_price).toPrecision(6):"—"} · stop {x.sl_price!=null?Number(x.sl_price).toPrecision(6):"—"}{x.tp_price?` · objectif ${Number(x.tp_price).toPrecision(6)}`:""} · {x.notional_usd!=null?`${Number(x.notional_usd).toFixed(1)} $`:""} x{x.leverage||1}</span>
-                            <span style={{color:(x.pnl||0)>=0?"#86efac":"#fca5a5"}}>{x.move_pct!=null?`${x.move_pct>=0?"+":""}${x.move_pct.toFixed(2)} % · `:""}PnL ouvert {(x.pnl||0)>=0?"+":""}{(x.pnl||0).toFixed(3)} $</span>
+                            <span style={{color:(x.pnl||0)>=0?"#86efac":"#fca5a5"}}>PnL ouvert {(x.pnl||0)>=0?"+":""}{(x.pnl||0).toFixed(3)} ${x.move_pct!=null?` (${_roe(x.move_pct,x.leverage)>=0?"+":""}${Number(_roe(x.move_pct,x.leverage)).toFixed(2)} %)`:""}</span>
                           </div>))}
                         <div style={{fontSize:9,color:"#64748b",marginTop:2}}>Ils se gèrent dans l'onglet « Trading manuel » ; leurs résultats fermés apparaissent dans l'historique ci-dessous avec le badge ✋ MANUEL et ne sont pas comptés dans les tuiles du mode.</div>
                       </div>);

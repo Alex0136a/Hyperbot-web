@@ -876,3 +876,11 @@ Fichiers : `bot_engine.py`, `api.py`, `README.md`.
 - **Nouveau verrou en %** (`MTF_PCT_LOCK_ON`, 1 par défaut) : dès que le meilleur gain atteint `MTF_PCT_LOCK_ARM_PCT` (1 % du prix), le SL monte pour garantir 60 % du pic (`MTF_PCT_LOCK_FRACTION`), 75 % au-delà d'un pic de 3 % (`MTF_PCT_LOCK_BIG_PCT` / `MTF_PCT_LOCK_BIG_FRACTION`), et jamais moins que +0,15 % de l'entrée (`MTF_PCT_LOCK_FLOOR_PCT`, frais couverts). Il ne fait que monter (long) / descendre (short), se combine avec le verrou en R et le suiveur existants (le plus favorable l'emporte), et marque la position « SL remonté » : la sortie s'appelle « STOP SUIVEUR (top-down) ». En live, le SL natif est mis à jour par le mécanisme existant.
 - **Estimation sur l'export du 12/10** (82 trades top-down Spot-Accum / Accumulation, net actuel −12,6 $) : armement à 1 % et 60 % du pic ≈ +4 $ ; armement à 0,8 % ≈ +4,6 $ ; à 0,6 % ≈ +6,9 $. C'est une **borne haute** : l'export donne le pic et la sortie, pas le chemin ; un stop plus serré peut aussi couper des trades qui seraient repartis, et les frais ne sont pas retranchés.
 - Tous les moteurs top-down sont concernés (pas seulement le profil Swing). Pour désactiver : `MTF_PCT_LOCK_ON = 0`.
+
+## v4.394 — Affichage du PnL des trades manuels : « $ (%) » comme sur Hyperliquid
+
+Fichiers : `index.html`, `index_src.html`, `README.md`.
+
+- Dans les trades manuels ouverts (onglet Trading Manuel, onglet « Tous » et volet du mode), le PnL s'affiche désormais **d'abord en $, puis en % entre parenthèses**, comme sur Hyperliquid : « +0,351 $ (+2,06 %) ». Avant, l'onglet Trading Manuel affichait le % avant le $ et le volet du mode aussi.
+- Le % est maintenant le **% de marge (ROE = mouvement de prix × levier)**, comme Hyperliquid et comme les trades du bot ; à levier ×1 il est identique au mouvement de prix. Le pic affiché suit la même règle : « 🏔️ pic +0,41 $ (+1,44 %) · prix … ».
+- Les trades du bot et les historiques étaient déjà au format « $ (%) » : inchangés.
