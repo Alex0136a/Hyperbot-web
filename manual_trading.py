@@ -295,6 +295,25 @@ class ManualTrading:
             raise ManualError("Regle de sortie sur la tendance invalide.")
         p["trend_entry"], p["trend_exit"] = te, tx
 
+    def _validate_tp1(self, p, tp):
+        """v4.404 : TP1 = cloture partielle a un premier objectif ; le TP existant devient le TP2 (le reste)."""
+        t1 = p.get("tp1_pct")
+        if t1 in (None, "", 0):
+            p["tp1_pct"] = None
+            return
+        t1 = float(t1)
+        if tp in (None, "", 0):
+            raise ManualError("TP1 : un TP2 (take profit final) est necessaire.")
+        if not 0.05 <= t1 < float(tp):
+            raise ManualError("TP1 : doit etre compris entre 0,05 % et le TP2 (exclu).")
+        cp = float(p.get("tp1_close_pct") or 50)
+        if not 5 <= cp <= 95:
+            raise ManualError("TP1 : la part a cloturer doit etre comprise entre 5 % et 95 %.")
+        if p.get("mode") == "live" and p.get("market") == "spot":
+            raise ManualError("TP1 (cloture partielle) n est pas disponible en spot LIVE.")
+        p["tp1_pct"], p["tp1_close_pct"] = t1, cp
+        p["tp1_be"] = bool(p.get("tp1_be", True))
+
     def _propose_swing_support(self, ticker, direction, market):
         """v4.381 : ticket prepare depuis une alerte Swing Support (n importe quel actif crypto). Memes stop / objectif / levier
         / taille que le mode Swing Support, tout reste modifiable ; aucune opportunite du bot n est requise."""
@@ -454,6 +473,7 @@ class ManualTrading:
             lk, tr_ = float(p.get("tp_run_lock_pct") or 0), float(p.get("tp_run_trail_pct") or 0)
             if not (0 <= lk < float(tp)) or not 0.05 <= tr_ <= 50:
                 raise ManualError("Laisser courir : le gain verrouille doit etre inferieur au TP (en %) et le suiveur compris entre 0,05 et 50 %.")
+        self._validate_tp1(p, p.get("tp_pct"))
         arm, trail = float(p.get("ttp_arm_pct") or 0), float(p.get("ttp_trail_pct") or 0)
         if arm and not (0.05 <= arm <= 500 and 0.02 <= trail <= 100):
             raise ManualError("Trailing TP invalide (armement 0,05-500 %, repli 0,02-100 %).")
@@ -494,6 +514,10 @@ class ManualTrading:
                 "tp_run": bool(p.get("tp_run")) and p.get("tp_pct") not in (None, "", 0),
                 "tp_run_lock_pct": float(p.get("tp_run_lock_pct") or 0), "tp_run_trail_pct": float(p.get("tp_run_trail_pct") or 0.5),
                 "tp_run_armed": False,
+                # v4.404 — TP1 : cloture partielle ; le reste continue vers le TP2 (tp_pct)
+                "tp1_pct": float(p["tp1_pct"]) if p.get("tp1_pct") not in (None, "", 0) else None,
+                "tp1_close_pct": float(p.get("tp1_close_pct") or 50), "tp1_be": bool(p.get("tp1_be", True)),
+                "tp1_done": False, "realized_pnl": 0.0, "realized_fees": 0.0,
                 # v4.343 — verrou progressif du SL + criteres de tendance (choix manuels)
                 "lock_arm_pct": p.get("lock_arm_pct"), "lock_fraction": p.get("lock_fraction"), "lock_active": False,
                 "trend_entry": p.get("trend_entry"), "trend_exit": p.get("trend_exit"),
@@ -559,6 +583,7 @@ class ManualTrading:
             "notional_usd": qty * entry,
             "sl_price": entry * (1 - item["sl_pct"] / 100) if is_long else entry * (1 + item["sl_pct"] / 100),
             "tp_price": (entry * (1 + item["tp_pct"] / 100) if is_long else entry * (1 - item["tp_pct"] / 100)) if item["tp_pct"] else None,
+            "tp1_price": (entry * (1 + item["tp1_pct"] / 100) if is_long else entry * (1 - item["tp1_pct"] / 100)) if item.get("tp1_pct") else None,
             "peak_pct": 0.0, "armed": False, "last_price": price, "lock_active": False,
             "entry_verified": bool(item["mode"] == "live" and market == "perp"),   # v4.344 : position constatee sur Hyperliquid
         })
@@ -581,6 +606,7 @@ class ManualTrading:
             print(f"[MANUEL] Ecriture historique #{item['id']} impossible : {e}")
         self._log(f"#{item['id']} OUVERT : {item['direction'].upper()} {ticker} {market.upper()} ({item['mode']}) @ {entry:.6g} | "
                   f"{item['notional_usd']:.2f} $ x{item['leverage']} | SL {item['sl_price']:.6g}"
+                  + (f" | TP1 {item['tp1_price']:.6g} ({item['tp1_close_pct']:.0f} %)" if item.get("tp1_price") else "")
                   + (f" | TP {item['tp_price']:.6g}" if item["tp_price"] else "")
                   + (f" | TTP +{item['ttp_arm_pct']}%/-{item['ttp_trail_pct']}%" if item["ttp_arm_pct"] else "")
                   + (f" | verrou {round(item['lock_fraction'] * 100)}% des +{item['lock_arm_pct']}%" if item.get("lock_arm_pct") else "")
@@ -684,8 +710,8 @@ class ManualTrading:
                     exit_price, source = float(status["filled"]["avgPx"]), "hyperliquid"
             sign = 1 if item["direction"] == "long" else -1
             move_pct = sign * (exit_price - item["entry_price"]) / item["entry_price"] * 100
-            pnl = item["qty"] * (exit_price - item["entry_price"]) * sign
-            fees = item["notional_usd"] * FEE_ROUND_TRIP
+            pnl = item["qty"] * (exit_price - item["entry_price"]) * sign + float(item.get("realized_pnl") or 0)    # v4.404 : + partie deja encaissee au TP1
+            fees = item["notional_usd"] * FEE_ROUND_TRIP + float(item.get("realized_fees") or 0)
             item.update({"status": "closed", "closed_at": time.time(), "exit_price": exit_price,
                          "pnl": pnl, "fees_est": fees, "reason": reason, "exit_source": source, "error": None})
             self._save(item)
@@ -698,6 +724,57 @@ class ManualTrading:
             except Exception as e:
                 print(f"[MANUEL] Cloture historique #{item['id']} impossible : {e}")
             self._log(f"#{item['id']} FERME ({reason}) : {item['ticker']} @ {exit_price:.6g} | {move_pct:+.2f}% | PnL {pnl:+.2f} $", "win" if pnl > 0 else "loss")
+
+    def _partial_close(self, item, price):
+        """v4.404 : TP1 atteint -> cloture partielle au marche, puis SL au seuil de rentabilite (option)."""
+        if item["id"] in self._busy:
+            return
+        self._busy.add(item["id"])
+        try:
+            self._partial_close_impl(item, price)
+        except Exception as e:
+            item["error"] = f"TP1 : {type(e).__name__}: {e}"
+            self._log(f"#{item['id']} {item['ticker']} : cloture partielle TP1 impossible ({e}) — position inchangee, nouvel essai dans 60 s", "error")
+        finally:
+            self._busy.discard(item["id"])
+
+    def _partial_close_impl(self, item, price):
+        sign = 1 if item["direction"] == "long" else -1
+        entry = item["entry_price"]
+        qty_part = item["qty"] * float(item.get("tp1_close_pct") or 50) / 100
+        exit_price, source = price, "simulation"
+        if item["mode"] == "live":
+            if item["market"] != "perp":
+                raise ManualError("TP1 non disponible en spot live")
+            perp_map, _ = be._get_sz_decimals_map(self.bot.info)
+            sz = be.format_size_hl(qty_part, perp_map.get(item["ticker"], 4))
+            if not sz or sz <= 0:
+                raise ManualError("taille de cloture partielle nulle")
+            result = self.bot.exchange.market_close(item["ticker"], sz)
+            status = be._order_first_status(result) if result else None
+            if not (status and "filled" in status):
+                raise ManualError(f"ordre non execute : {str(result)[:150]}")
+            exit_price, source = float(status["filled"]["avgPx"]), "hyperliquid"
+            qty_part = float(status["filled"].get("totalSz") or sz)
+        pnl_part = qty_part * (exit_price - entry) * sign
+        item["realized_pnl"] = float(item.get("realized_pnl") or 0) + pnl_part
+        item["realized_fees"] = float(item.get("realized_fees") or 0) + qty_part * entry * FEE_ROUND_TRIP
+        item["qty"] = max(item["qty"] - qty_part, 0.0)
+        item["notional_usd"] = item["qty"] * entry
+        item["tp1_done"], item["error"] = True, None
+        be_txt = ""
+        if item.get("tp1_be", True):
+            be_sl = entry * (1 + sign * FEE_ROUND_TRIP)
+            better = be_sl > item["sl_price"] if sign > 0 else be_sl < item["sl_price"]
+            on_side = be_sl < price if sign > 0 else be_sl > price
+            if better and on_side:
+                item["sl_price"] = be_sl
+                be_txt = f" | SL remonte au seuil de rentabilite {be_sl:.6g}"
+        self._save(item)
+        item["lock_pushed"] = None
+        self._maybe_push_sl(item, item["sl_price"])        # live : la taille du SL natif change dans tous les cas
+        self._log(f"#{item['id']} {item['ticker']} TP1 atteint @ {exit_price:.6g} ({source}) : {item['tp1_close_pct']:.0f} % cloture, PnL partiel {pnl_part:+.2f} $"
+                  + be_txt + " — le reste continue vers le TP2", "win")
 
     def _cancel_native_orders(self, ticker):
         try:
@@ -732,7 +809,7 @@ class ManualTrading:
                         self._check_live_perp_allowed(item["ticker"], exclude_id=item["id"])
                 for k in ("sl_pct", "tp_pct", "ttp_arm_pct", "ttp_trail_pct", "trigger_price", "trigger_time", "notional_usd", "leverage",
                           "lock_arm_pct", "lock_fraction", "trend_entry", "trend_exit",
-                          "tp_run", "tp_run_lock_pct", "tp_run_trail_pct"):
+                          "tp_run", "tp_run_lock_pct", "tp_run_trail_pct", "tp1_pct", "tp1_close_pct", "tp1_be"):
                     if k in changes:
                         p[k] = changes[k]
                 try:
@@ -754,6 +831,8 @@ class ManualTrading:
                 if tp is not None and not 0.05 <= tp <= 500:
                     raise ManualError("Take profit invalide (0,05 % a 500 %, ou vide).")
                 p["tp_pct"] = tp
+                p["mode"], p["market"] = new_mode, item["market"]
+                self._validate_tp1(p, tp)      # v4.404
                 arm, trail = float(p.get("ttp_arm_pct") or 0), float(p.get("ttp_trail_pct") or 0)
                 if arm and not (0.05 <= arm <= 500 and 0.02 <= trail <= 100):
                     raise ManualError("Trailing TP invalide (armement 0,05-500 %, repli 0,02-100 %).")
@@ -766,19 +845,29 @@ class ManualTrading:
                     if not (0 <= lk < tp) or not 0.05 <= tr_ <= 50:
                         raise ManualError("Laisser courir : le gain verrouille doit etre inferieur au TP (en %) et le suiveur compris entre 0,05 et 50 %.")
                     p["tp_run_lock_pct"], p["tp_run_trail_pct"] = lk, tr_
-                if item.get("execution") in ("price_above", "price_below"):
-                    if not float(p.get("trigger_price") or 0) > 0:
+                new_ex = changes.get("execution") or item["execution"]
+                if new_ex not in ("price_above", "price_below", "time"):
+                    raise ManualError("Type de declenchement invalide.")
+                if new_ex in ("price_above", "price_below"):
+                    try:
+                        _tp_ = float(p.get("trigger_price") or 0)
+                    except (TypeError, ValueError):
+                        _tp_ = 0
+                    if not _tp_ > 0:
                         raise ManualError("Prix de declenchement invalide.")
-                    p["trigger_price"] = float(p["trigger_price"])
-                elif item.get("execution") == "time" and "trigger_time" in changes:
-                    if not float(p.get("trigger_time") or 0) > time.time():
+                    p["trigger_price"], p["trigger_time"] = _tp_, None
+                else:
+                    if ("trigger_time" in changes or new_ex != item["execution"]) and not float(p.get("trigger_time") or 0) > time.time():
                         raise ManualError("L heure de declenchement doit etre dans le futur.")
-                    p["trigger_time"] = float(p["trigger_time"])
+                    p["trigger_time"], p["trigger_price"] = float(p["trigger_time"]), None
                 probe = {k: p.get(k) for k in ("lock_arm_pct", "lock_fraction", "trend_entry", "trend_exit")}
                 self._validate_lock_trend(probe)      # v4.343 : memes regles qu a la creation
                 for k in ("sl_pct", "tp_pct", "ttp_arm_pct", "ttp_trail_pct", "notional_usd", "leverage", "tp_run",
-                          "tp_run_lock_pct", "tp_run_trail_pct", "trigger_price", "trigger_time"):
+                          "tp_run_lock_pct", "tp_run_trail_pct", "trigger_price", "trigger_time", "tp1_pct", "tp1_close_pct", "tp1_be"):
                     item[k] = p.get(k)
+                item["execution"] = new_ex
+                if "require_valid" in changes and changes["require_valid"] is not None:
+                    item["require_valid"] = bool(changes["require_valid"])
                 item.update(probe)
                 if new_dir != item["direction"]:
                     # le sens ne correspond plus a l opportunite du bot : l ordre devient un ordre libre
@@ -816,6 +905,35 @@ class ManualTrading:
                     if (is_long and tp <= price) or (not is_long and tp >= price):
                         raise ManualError("Le TP doit rester du bon cote du prix actuel.")
                 item["tp_price"] = tp or None
+            # v4.404 — TP1 (cloture partielle) d une position ouverte
+            if any(k in changes for k in ("tp1_price", "tp1_close_pct", "tp1_be")):
+                if item.get("tp1_done"):
+                    raise ManualError("TP1 deja execute : plus modifiable.")
+                if "tp1_close_pct" in changes and changes["tp1_close_pct"] is not None:
+                    cp = float(changes["tp1_close_pct"])
+                    if not 5 <= cp <= 95:
+                        raise ManualError("TP1 : la part a cloturer doit etre comprise entre 5 % et 95 %.")
+                    item["tp1_close_pct"] = cp
+                if "tp1_be" in changes and changes["tp1_be"] is not None:
+                    item["tp1_be"] = bool(changes["tp1_be"])
+                if "tp1_price" in changes:
+                    t1 = changes["tp1_price"]
+                    if t1:
+                        t1 = float(t1)
+                        if item.get("market") == "spot" and item["mode"] == "live":
+                            raise ManualError("TP1 (cloture partielle) n est pas disponible en spot LIVE.")
+                        if not item.get("tp_price"):
+                            raise ManualError("TP1 : un TP2 (take profit final) est necessaire.")
+                        if (is_long and t1 <= price) or (not is_long and t1 >= price):
+                            raise ManualError("Le TP1 doit rester du bon cote du prix actuel.")
+                        item["tp1_price"] = t1
+                        item.setdefault("tp1_close_pct", 50.0)
+                    else:
+                        item["tp1_price"] = None
+            if item.get("tp1_price") and not item.get("tp1_done"):
+                _t2 = item.get("tp_price")
+                if not _t2 or (is_long and item["tp1_price"] >= _t2) or (not is_long and item["tp1_price"] <= _t2):
+                    raise ManualError("Le TP1 doit etre situe entre le prix et le TP2.")
             for k in ("ttp_arm_pct", "ttp_trail_pct"):
                 if k in changes:
                     item[k] = float(changes[k]) if changes[k] else None
@@ -975,9 +1093,17 @@ class ManualTrading:
                         if time.time() - item.get("tp_run_saved_ts", 0) > 60:
                             item["tp_run_saved_ts"] = time.time()
                             self._save(item)
+        # v4.404 — TP1 : cloture partielle (si le SL n est pas touche dans le meme tick)
+        if (item.get("tp1_price") and not item.get("tp1_done") and time.time() - item.get("tp1_try_ts", 0) > 60
+                and ((sign > 0 and price >= item["tp1_price"]) or (sign < 0 and price <= item["tp1_price"]))
+                and not ((sign > 0 and price <= item["sl_price"]) or (sign < 0 and price >= item["sl_price"]))):
+            item["tp1_try_ts"] = time.time()
+            threading.Thread(target=self._partial_close, args=(item, price), daemon=True).start()
+            return
         if (sign > 0 and price <= item["sl_price"]) or (sign < 0 and price >= item["sl_price"]):
             reason = ("TRAILING TAKE PROFIT (manuel)" if item.get("tp_run_armed")
-                      else "STOP DYNAMIQUE (manuel)" if item.get("lock_active") else "STOP LOSS (manuel)")
+                      else "STOP DYNAMIQUE (manuel)" if item.get("lock_active")
+                      else "STOP APRES TP1 (manuel)" if item.get("tp1_done") else "STOP LOSS (manuel)")
         elif item.get("tp_price") and not item.get("tp_run") and ((sign > 0 and price >= item["tp_price"]) or (sign < 0 and price <= item["tp_price"])):
             reason = "TAKE PROFIT (manuel)"
         elif item.get("ttp_arm_pct"):
@@ -1093,7 +1219,7 @@ class ManualTrading:
             if price:
                 out["current_price"] = price
                 out["move_pct"] = sign * (price - item["entry_price"]) / item["entry_price"] * 100
-                out["pnl"] = item["qty"] * (price - item["entry_price"]) * sign
+                out["pnl"] = item["qty"] * (price - item["entry_price"]) * sign + float(item.get("realized_pnl") or 0)    # v4.404 : inclut le TP1 deja encaisse
         elif item.get("status") == "scheduled":
             out["current_price"] = self.price(item["ticker"], item["market"])
             out["opportunity_valid"] = (True if item.get("strategy_source") in FREE_LIKE

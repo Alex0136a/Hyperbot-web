@@ -932,3 +932,22 @@ Fichiers : `bot_engine.py`, `README.md`.
 - Inverser le sens d'un ordre issu d'une opportunité du bot en fait un ordre libre (il ne suit plus l'opportunité). Le spot reste LONG uniquement.
 - Une position déjà **ouverte** ne peut pas changer de sens ni de mode : la fermer puis ouvrir l'autre.
 - Fichiers : manual_trading.py, api.py, bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.402 — Ordres programmés : critères d'entrée modifiables
+- Dans « Modifier » d'un ordre programmé : type de déclenchement (prix ≥, prix ≤, heure précise) avec son prix ou son heure, **condition de tendance H4 à l'entrée** (aucune / haussière / baissière / neutre), case « annuler si l'opportunité du bot n'est plus valable au déclenchement » (ordres issus d'une opportunité), ainsi que verrou progressif et règle de sortie sur la tendance.
+- Mêmes validations qu'à la création ; en cas d'erreur rien n'est modifié.
+- Fichiers : manual_trading.py, api.py, bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.403 — « Laisser courir au TP » : champs pré-remplis
+- Cocher « laisser courir au TP » remplit automatiquement les champs manquants avec les valeurs par défaut : TP = 1 % (ticket et ordre programmé) ou ±1 % autour du prix pour une position ouverte, gain verrouillé = +0,5 %, suiveur = 0,5 %. Une valeur déjà saisie n'est jamais écrasée.
+- La case n'est plus grisée quand le TP est vide : elle crée le TP par défaut.
+- Fichiers : bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.404 — TP1 / TP2 (clôture partielle) pour les trades manuels
+- **TP1** : à ce niveau, une part de la position (5–95 %, 50 % par défaut) est clôturée au marché ; le **TP existant devient le TP2** (le reste). Option (cochée par défaut) : le SL remonte au seuil de rentabilité (entrée + frais) après le TP1. « Laisser courir au TP » s'applique au TP2.
+- Disponible : ticket (case « TP1 — clôture partielle », pré-remplie à la moitié du TP), ordres programmés (Modifier), positions ouvertes (Modifier ; non modifiable une fois encaissé). Affichage « TP1 … / TP2 … », « TP1 ✔ encaissé +x $ ».
+- Le PnL affiché et le PnL final incluent la part encaissée au TP1 ; frais comptés au prorata. Motif de sortie « STOP APRES TP1 (manuel) » si le stop touche après le TP1.
+- Spot LIVE : refusé (clôture partielle non gérée) ; paper et perp live acceptés.
+- Live perp : la clôture partielle utilise un ordre au marché sur la quantité exacte et le SL natif est renvoyé avec la nouvelle taille. **À valider d'abord avec une petite position live** (non testé sur Hyperliquid depuis cet environnement).
+- En cas d'échec de la clôture partielle : position inchangée, nouvel essai après 60 s.
+- Fichiers : manual_trading.py, api.py, bot_engine.py (version), index_src.html, index.html, README.md
