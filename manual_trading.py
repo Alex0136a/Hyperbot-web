@@ -717,6 +717,19 @@ class ManualTrading:
             if item["status"] == "scheduled":
                 # v4.400 : un ordre programme est entierement modifiable (memes regles qu a la creation)
                 p = dict(item)
+                new_dir = changes.get("direction") or item["direction"]
+                new_mode = changes.get("mode") or item["mode"]
+                if new_dir not in ("long", "short") or new_mode not in ("paper", "live"):
+                    raise ManualError("Sens ou mode invalide.")
+                if new_dir == "short" and item["market"] == "spot":
+                    raise ManualError("Le spot n autorise que l achat (LONG).")
+                if new_mode == "live" and item["mode"] != "live":
+                    if not changes.get("confirm_live"):
+                        raise ManualError("Confirmation LIVE requise.")
+                    if self.bot.exchange is None or not self._wallet():
+                        raise ManualError("Connexion Hyperliquid indisponible : le live est impossible pour le moment.")
+                    if item["market"] == "perp":
+                        self._check_live_perp_allowed(item["ticker"], exclude_id=item["id"])
                 for k in ("sl_pct", "tp_pct", "ttp_arm_pct", "ttp_trail_pct", "trigger_price", "trigger_time", "notional_usd", "leverage",
                           "lock_arm_pct", "lock_fraction", "trend_entry", "trend_exit",
                           "tp_run", "tp_run_lock_pct", "tp_run_trail_pct"):
@@ -734,7 +747,7 @@ class ManualTrading:
                     raise ManualError(f"Levier hors limites (1 a {self.cfg.get('MANUAL_MAX_LEVERAGE', 20)}).")
                 if p["notional_usd"] <= 0:
                     raise ManualError("Taille invalide.")
-                if item["mode"] == "live" and p["notional_usd"] < 10:
+                if new_mode == "live" and p["notional_usd"] < 10:
                     raise ManualError("Hyperliquid exige au moins 10 $ de notionnel par ordre.")
                 tp = p.get("tp_pct")
                 tp = float(tp) if tp not in (None, "", 0) else None
@@ -767,13 +780,20 @@ class ManualTrading:
                           "tp_run_lock_pct", "tp_run_trail_pct", "trigger_price", "trigger_time"):
                     item[k] = p.get(k)
                 item.update(probe)
+                if new_dir != item["direction"]:
+                    # le sens ne correspond plus a l opportunite du bot : l ordre devient un ordre libre
+                    item["direction"] = new_dir
+                    if item.get("strategy_source") not in FREE_LIKE:
+                        item["strategy_source"] = "libre"
+                    item["require_valid"] = False
+                item["mode"] = new_mode
                 if changes.get("expiry_hours"):
                     h = float(changes["expiry_hours"])
                     if not 0.1 <= h <= 24 * 30:
                         raise ManualError("Expiration : entre 0,1 h et 30 jours.")
                     item["expires_at"] = time.time() + h * 3600
                 self._save(item)
-                self._log(f"Ordre programme #{item['id']} {item['ticker']} modifie — {self._trigger_text(item)} | SL {item['sl_pct']}%"
+                self._log(f"Ordre programme #{item['id']} {item['ticker']} modifie — {item['direction'].upper()} {item['mode'].upper()} — {self._trigger_text(item)} | SL {item['sl_pct']}%"
                           + (f" | TP {item['tp_pct']}%" if item.get("tp_pct") else " | sans TP"), "info")
                 return self.public(item)
             if item["status"] != "open":

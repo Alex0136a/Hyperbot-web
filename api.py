@@ -2783,6 +2783,9 @@ class ManualModifyBody(BaseModel):
     trigger_price: Optional[float] = None
     trigger_time: Optional[float] = None
     expiry_hours: Optional[float] = None
+    direction: Optional[str] = None          # v4.401 : ordre programme, changer le sens ("long"/"short")
+    mode: Optional[str] = None               # v4.401 : ordre programme, "paper"/"live"
+    confirm_live: bool = False
 
 
 def _manual_call(fn, *args):
@@ -2830,7 +2833,7 @@ def manual_modify(item_id: int, body: ManualModifyBody, email: str = Depends(req
         changes["tp_price"] = body.tp_price
     if not body.clear_tp and body.tp_pct:
         changes["tp_pct"] = body.tp_pct
-    for _k in ("sl_pct", "notional_usd", "leverage", "trigger_price", "trigger_time", "expiry_hours"):
+    for _k in ("sl_pct", "notional_usd", "leverage", "trigger_price", "trigger_time", "expiry_hours", "direction", "mode"):
         if getattr(body, _k) is not None:
             changes[_k] = getattr(body, _k)
     if body.clear_ttp:
@@ -2848,6 +2851,8 @@ def manual_modify(item_id: int, body: ManualModifyBody, email: str = Depends(req
             changes["lock_arm_pct"] = body.lock_arm_pct
         if body.lock_fraction:
             changes["lock_fraction"] = body.lock_fraction
+    if body.confirm_live:
+        changes["confirm_live"] = True
     if body.tp_run is not None:
         changes["tp_run"] = body.tp_run
     if body.tp_run_lock_pct is not None:

@@ -925,3 +925,10 @@ Fichiers : `bot_engine.py`, `README.md`.
 - Mêmes validations qu'à la création (SL 0,05–50 %, TP 0,05–500 %, levier max, 10 $ mini en live, heure dans le futur, « laisser courir » exige un TP). En cas d'erreur, rien n'est modifié.
 - Le sens, l'actif, le marché, le mode (paper/live) et le type de déclenchement ne se modifient pas : annuler puis recréer l'ordre.
 - Fichiers : manual_trading.py, api.py, bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.401 — Ordres programmés : changer le sens (LONG/SHORT) et le mode (PAPER/LIVE)
+- Dans « Modifier » d'un ordre programmé : listes **SENS** et **MODE**.
+- Passage à **LIVE** : confirmation obligatoire (fenêtre d'avertissement), connexion Hyperliquid requise, 10 $ de notionnel minimum, et aucune autre position live sur l'actif. Retour à PAPER : sans confirmation.
+- Inverser le sens d'un ordre issu d'une opportunité du bot en fait un ordre libre (il ne suit plus l'opportunité). Le spot reste LONG uniquement.
+- Une position déjà **ouverte** ne peut pas changer de sens ni de mode : la fermer puis ouvrir l'autre.
+- Fichiers : manual_trading.py, api.py, bot_engine.py (version), index_src.html, index.html, README.md

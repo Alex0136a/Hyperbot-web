@@ -1127,11 +1127,14 @@ function ManualTradingTab({ token }) {
     try { await apiCall(`/api/manual/positions/${p.id}/close`,"POST",null,token); load(); } catch(e) { alert("Fermeture : " + e.message); } };
   const toLocalInput = (ts) => { if(!ts) return ""; const d=new Date(ts*1000); const z=n=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`; };
   const openSchedEdit = (o) => { if(schedId===o.id){ setSchedId(null); return; } setSchedId(o.id); setSched({
-    trigger_price:o.trigger_price||"", trigger_time:toLocalInput(o.trigger_time), notional_usd:o.notional_usd, leverage:o.leverage||1,
+    direction:o.direction, mode:o.mode, trigger_price:o.trigger_price||"", trigger_time:toLocalInput(o.trigger_time), notional_usd:o.notional_usd, leverage:o.leverage||1,
     sl_pct:o.sl_pct, tp_pct:o.tp_pct||"", tp_run:!!o.tp_run, tp_run_lock_pct:o.tp_run_lock_pct??0.5, tp_run_trail_pct:o.tp_run_trail_pct??0.5,
     ttp_arm_pct:o.ttp_arm_pct||"", ttp_trail_pct:o.ttp_trail_pct||"", ttp_off:false, expiry_hours:"" }); };
   const saveSched = async (o) => {
     const body = {};
+    if (sched.direction!==o.direction) body.direction = sched.direction;
+    if (sched.mode!==o.mode) { body.mode = sched.mode;
+      if (sched.mode==="live") { if (!window.confirm(`⚠️ PASSER CET ORDRE EN LIVE ?\n\n${sched.direction.toUpperCase()} ${o.ticker} · ${sched.notional_usd} $ x${sched.leverage}\nL'ordre s'exécutera avec de l'argent réel au déclenchement.`)) return; body.confirm_live = true; } }
     if (o.execution==="price_above"||o.execution==="price_below") body.trigger_price = Number(sched.trigger_price);
     if (o.execution==="time" && sched.trigger_time) body.trigger_time = new Date(sched.trigger_time).getTime()/1000;
     body.notional_usd = Number(sched.notional_usd); if (o.market!=="spot") body.leverage = Number(sched.leverage)||1;
@@ -1338,6 +1341,9 @@ function ManualTradingTab({ token }) {
             </tr>
             {schedId===o.id && <tr><td colSpan={10} style={{...MT.td,background:"#0b1222"}}>
               <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end",padding:"6px 0"}}>
+                <div><span style={MT.label}>SENS</span><select style={{...MT.input,width:100}} value={sched.direction} onChange={e=>setSched({...sched,direction:e.target.value})}><option value="long">LONG</option>{o.market!=="spot" && <option value="short">SHORT</option>}</select></div>
+                <div><span style={MT.label}>MODE</span><select style={{...MT.input,width:100}} value={sched.mode} onChange={e=>setSched({...sched,mode:e.target.value})}><option value="paper">PAPER</option><option value="live">🔴 LIVE</option></select></div>
+                {sched.direction!==o.direction && o.strategy_source!=="libre" && o.strategy_source!=="swing_support" && <div style={{fontSize:11,color:"#fbbf24",maxWidth:220}}>Sens inversé : l'ordre ne suit plus l'opportunité du bot, il devient un ordre libre.</div>}
                 {(o.execution==="price_above"||o.execution==="price_below") && <div><span style={MT.label}>{o.execution==="price_above"?"DÉCLENCHE SI PRIX ≥":"DÉCLENCHE SI PRIX ≤"}</span><input style={{...MT.input,width:130}} type="number" step="any" value={sched.trigger_price} onChange={e=>setSched({...sched,trigger_price:e.target.value})}/></div>}
                 {o.execution==="time" && <div><span style={MT.label}>HEURE DE DÉCLENCHEMENT</span><input style={{...MT.input,width:190}} type="datetime-local" value={sched.trigger_time} onChange={e=>setSched({...sched,trigger_time:e.target.value})}/></div>}
                 <div><span style={MT.label}>TAILLE ($)</span><input style={{...MT.input,width:90}} type="number" step="any" value={sched.notional_usd} onChange={e=>setSched({...sched,notional_usd:e.target.value})}/></div>
