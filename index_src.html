@@ -1036,6 +1036,8 @@ function ManualTradingTab({ token }) {
   const [busy, setBusy] = useState(false);
   const [editId, setEditId] = useState(null);
   const [edit, setEdit] = useState({});
+  const [schedId, setSchedId] = useState(null);
+  const [sched, setSched] = useState({});
   const [freeT, setFreeT] = useState("");          // v4.343 — ordre libre : actif
   const [freeDir, setFreeDir] = useState("long");  // v4.343 — ordre libre : sens
 
@@ -1123,11 +1125,27 @@ function ManualTradingTab({ token }) {
   const closePos = async (p) => {
     if (!window.confirm(`${p.mode==="live"?"⚠️ LIVE — ":""}Fermer maintenant ${p.direction.toUpperCase()} ${p.ticker} (PnL actuel ${fmtUsd(p.pnl)}) ?`)) return;
     try { await apiCall(`/api/manual/positions/${p.id}/close`,"POST",null,token); load(); } catch(e) { alert("Fermeture : " + e.message); } };
+  const toLocalInput = (ts) => { if(!ts) return ""; const d=new Date(ts*1000); const z=n=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`; };
+  const openSchedEdit = (o) => { if(schedId===o.id){ setSchedId(null); return; } setSchedId(o.id); setSched({
+    trigger_price:o.trigger_price||"", trigger_time:toLocalInput(o.trigger_time), notional_usd:o.notional_usd, leverage:o.leverage||1,
+    sl_pct:o.sl_pct, tp_pct:o.tp_pct||"", tp_run:!!o.tp_run, tp_run_lock_pct:o.tp_run_lock_pct??0.5, tp_run_trail_pct:o.tp_run_trail_pct??0.5,
+    ttp_arm_pct:o.ttp_arm_pct||"", ttp_trail_pct:o.ttp_trail_pct||"", ttp_off:false, expiry_hours:"" }); };
+  const saveSched = async (o) => {
+    const body = {};
+    if (o.execution==="price_above"||o.execution==="price_below") body.trigger_price = Number(sched.trigger_price);
+    if (o.execution==="time" && sched.trigger_time) body.trigger_time = new Date(sched.trigger_time).getTime()/1000;
+    body.notional_usd = Number(sched.notional_usd); if (o.market!=="spot") body.leverage = Number(sched.leverage)||1;
+    body.sl_pct = Number(sched.sl_pct);
+    if (sched.tp_pct==="" ) body.clear_tp = true; else body.tp_pct = Number(sched.tp_pct);
+    body.tp_run = !!sched.tp_run && sched.tp_pct!==""; body.tp_run_lock_pct = Number(sched.tp_run_lock_pct)||0; body.tp_run_trail_pct = Number(sched.tp_run_trail_pct)||0.5;
+    if (sched.ttp_off) body.clear_ttp = true; else { if (sched.ttp_arm_pct) body.ttp_arm_pct = Number(sched.ttp_arm_pct); if (sched.ttp_trail_pct) body.ttp_trail_pct = Number(sched.ttp_trail_pct); }
+    if (sched.expiry_hours) body.expiry_hours = Number(sched.expiry_hours);
+    try { await apiCall(`/api/manual/positions/${o.id}`,"PUT",body,token); setSchedId(null); load(); } catch(e) { alert(e.message); } };
   const saveEdit = async (p) => {
     const body = {};
     if (edit.sl_price) body.sl_price = Number(edit.sl_price);
     if (edit.tp_price === "") body.clear_tp = true; else if (edit.tp_price) body.tp_price = Number(edit.tp_price);
-    if (edit.tp_run !== undefined) { body.tp_run = !!edit.tp_run && edit.tp_price !== ""; body.tp_run_lock_pct = Number(edit.tp_run_lock_pct) || 0; body.tp_run_trail_pct = Number(edit.tp_run_trail_pct) || 0.5; }
+    if (edit.tp_run !== undefined) { body.tp_run = !!edit.tp_run && edit.tp_price !== "" && edit.tp_price != null; body.tp_run_lock_pct = Number(edit.tp_run_lock_pct) || 0; body.tp_run_trail_pct = Number(edit.tp_run_trail_pct) || 0.5; }
     if (edit.ttp_off) body.clear_ttp = true;
     else { if (edit.ttp_arm_pct) body.ttp_arm_pct = Number(edit.ttp_arm_pct); if (edit.ttp_trail_pct) body.ttp_trail_pct = Number(edit.ttp_trail_pct); }
     if (edit.lock_off) body.clear_lock = true;
@@ -1309,15 +1327,34 @@ function ManualTradingTab({ token }) {
         {st.scheduled.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucun ordre en attente.</div> : (
           <div style={{overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%"}}>
             <thead><tr>{["#","Actif","Sens","Marché","Mode","Déclenchement","Prix actuel","Opportunité","Expire",""].map(h=><th key={h} style={MT.th}>{h}</th>)}</tr></thead>
-            <tbody>{st.scheduled.map(o=><tr key={o.id}>
+            <tbody>{st.scheduled.map(o=><React.Fragment key={o.id}><tr>
               <td style={MT.td}>{o.id}</td><td style={{...MT.td,fontWeight:800}}>{o.ticker}</td><td style={MT.td}>{dirBadge(o.direction)}</td>
               <td style={MT.td}>{o.market.toUpperCase()}</td><td style={{...MT.td,color:o.mode==="live"?"#ef4444":"#22c55e"}}>{o.mode.toUpperCase()}</td>
               <td style={MT.td}>{o.execution==="price_above"?`prix ≥ ${fmtP(o.trigger_price)}`:o.execution==="price_below"?`prix ≤ ${fmtP(o.trigger_price)}`:`à ${fmtTime(o.trigger_time)}`}</td>
               <td style={MT.td}>{fmtP(o.current_price)}</td>
               <td style={{...MT.td,color:o.opportunity_valid?"#22c55e":"#fbbf24"}}>{o.strategy_source==="libre"?"ordre libre":(o.strategy_source==="swing_support"?"Swing Support":(o.opportunity_valid?"valable":"non confirmée"))}</td>
               <td style={MT.td}>{fmtTime(o.expires_at)}</td>
-              <td style={MT.td}><button style={MT.btn("#1e2d4a","#fca5a5")} onClick={()=>cancelOrder(o.id)}>Annuler</button></td>
-            </tr>)}</tbody>
+              <td style={MT.td}><button style={MT.btn("#1e2d4a","#93c5fd")} onClick={()=>openSchedEdit(o)}>Modifier</button> <button style={MT.btn("#1e2d4a","#fca5a5")} onClick={()=>cancelOrder(o.id)}>Annuler</button></td>
+            </tr>
+            {schedId===o.id && <tr><td colSpan={10} style={{...MT.td,background:"#0b1222"}}>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end",padding:"6px 0"}}>
+                {(o.execution==="price_above"||o.execution==="price_below") && <div><span style={MT.label}>{o.execution==="price_above"?"DÉCLENCHE SI PRIX ≥":"DÉCLENCHE SI PRIX ≤"}</span><input style={{...MT.input,width:130}} type="number" step="any" value={sched.trigger_price} onChange={e=>setSched({...sched,trigger_price:e.target.value})}/></div>}
+                {o.execution==="time" && <div><span style={MT.label}>HEURE DE DÉCLENCHEMENT</span><input style={{...MT.input,width:190}} type="datetime-local" value={sched.trigger_time} onChange={e=>setSched({...sched,trigger_time:e.target.value})}/></div>}
+                <div><span style={MT.label}>TAILLE ($)</span><input style={{...MT.input,width:90}} type="number" step="any" value={sched.notional_usd} onChange={e=>setSched({...sched,notional_usd:e.target.value})}/></div>
+                {o.market!=="spot" && <div><span style={MT.label}>LEVIER</span><input style={{...MT.input,width:70}} type="number" min="1" step="1" value={sched.leverage} onChange={e=>setSched({...sched,leverage:e.target.value})}/></div>}
+                <div><span style={MT.label}>SL (%)</span><input style={{...MT.input,width:80}} type="number" step="0.05" value={sched.sl_pct} onChange={e=>setSched({...sched,sl_pct:e.target.value})}/></div>
+                <div><span style={MT.label}>TP (%, vide = aucun)</span><input style={{...MT.input,width:110}} type="number" step="0.05" value={sched.tp_pct} onChange={e=>setSched({...sched,tp_pct:e.target.value})}/></div>
+                <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={!!sched.tp_run} disabled={sched.tp_pct===""} onChange={e=>setSched({...sched,tp_run:e.target.checked})}/>laisser courir au TP{sched.tp_pct===""?<span style={{color:"#fbbf24"}}> (saisis d'abord un TP)</span>:null}</label>
+                {sched.tp_run && <><div><span style={MT.label}>VERROU (+%)</span><input style={{...MT.input,width:80}} type="number" step="0.05" value={sched.tp_run_lock_pct} onChange={e=>setSched({...sched,tp_run_lock_pct:e.target.value})}/></div>
+                <div><span style={MT.label}>SUIVEUR (%)</span><input style={{...MT.input,width:80}} type="number" step="0.05" value={sched.tp_run_trail_pct} onChange={e=>setSched({...sched,tp_run_trail_pct:e.target.value})}/></div></>}
+                <div><span style={MT.label}>TTP armement %</span><input style={{...MT.input,width:90}} type="number" step="0.05" value={sched.ttp_arm_pct} disabled={sched.ttp_off} onChange={e=>setSched({...sched,ttp_arm_pct:e.target.value})}/></div>
+                <div><span style={MT.label}>TTP repli %</span><input style={{...MT.input,width:90}} type="number" step="0.05" value={sched.ttp_trail_pct} disabled={sched.ttp_off} onChange={e=>setSched({...sched,ttp_trail_pct:e.target.value})}/></div>
+                <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={sched.ttp_off} onChange={e=>setSched({...sched,ttp_off:e.target.checked})}/>sans TTP</label>
+                <div><span style={MT.label}>EXPIRE DANS (h, vide = inchangé)</span><input style={{...MT.input,width:90}} type="number" step="any" value={sched.expiry_hours} onChange={e=>setSched({...sched,expiry_hours:e.target.value})}/></div>
+                <button style={MT.btn("#60a5fa")} onClick={()=>saveSched(o)}>Enregistrer</button>
+              </div>
+            </td></tr>}
+            </React.Fragment>)}</tbody>
           </table></div>)}
       </div>
 
@@ -1344,7 +1381,7 @@ function ManualTradingTab({ token }) {
             {editId===p.id && <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:8,alignItems:"flex-end"}}>
               <div><span style={MT.label}>SL (prix)</span><input style={{...MT.input,width:120}} type="number" step="any" value={edit.sl_price} onChange={e=>setEdit({...edit,sl_price:e.target.value})}/></div>
               <div><span style={MT.label}>TP (prix, vide = aucun)</span><input style={{...MT.input,width:140}} type="number" step="any" value={edit.tp_price} onChange={e=>setEdit({...edit,tp_price:e.target.value})}/></div>
-              <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={!!edit.tp_run} onChange={e=>setEdit({...edit,tp_run:e.target.checked})}/>laisser courir au TP</label>
+              <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={!!edit.tp_run} disabled={edit.tp_price===""||edit.tp_price==null} onChange={e=>setEdit({...edit,tp_run:e.target.checked})}/>laisser courir au TP{(edit.tp_price===""||edit.tp_price==null)?<span style={{color:"#fbbf24"}}> (saisis d'abord un TP)</span>:null}</label>
               {edit.tp_run && <><div><span style={MT.label}>VERROU (+%)</span><input style={{...MT.input,width:90}} type="number" step="0.05" value={edit.tp_run_lock_pct} onChange={e=>setEdit({...edit,tp_run_lock_pct:e.target.value})}/></div>
               <div><span style={MT.label}>SUIVEUR (%)</span><input style={{...MT.input,width:90}} type="number" step="0.05" value={edit.tp_run_trail_pct} onChange={e=>setEdit({...edit,tp_run_trail_pct:e.target.value})}/></div></>}
               <div><span style={MT.label}>TTP armement %</span><input style={{...MT.input,width:100}} type="number" step="0.05" value={edit.ttp_arm_pct} disabled={edit.ttp_off} onChange={e=>setEdit({...edit,ttp_arm_pct:e.target.value})}/></div>

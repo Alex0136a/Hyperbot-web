@@ -2775,6 +2775,14 @@ class ManualModifyBody(BaseModel):
     tp_run: Optional[bool] = None            # v4.395 : laisser courir au TP
     tp_run_lock_pct: Optional[float] = None
     tp_run_trail_pct: Optional[float] = None
+    # v4.400 : modification d'un ordre PROGRAMME (pourcentages, comme a la creation)
+    sl_pct: Optional[float] = None
+    tp_pct: Optional[float] = None
+    notional_usd: Optional[float] = None
+    leverage: Optional[int] = None
+    trigger_price: Optional[float] = None
+    trigger_time: Optional[float] = None
+    expiry_hours: Optional[float] = None
 
 
 def _manual_call(fn, *args):
@@ -2817,8 +2825,14 @@ def manual_modify(item_id: int, body: ManualModifyBody, email: str = Depends(req
         changes["sl_price"] = body.sl_price
     if body.clear_tp:
         changes["tp_price"] = None
+        changes["tp_pct"] = None
     elif body.tp_price:
         changes["tp_price"] = body.tp_price
+    if not body.clear_tp and body.tp_pct:
+        changes["tp_pct"] = body.tp_pct
+    for _k in ("sl_pct", "notional_usd", "leverage", "trigger_price", "trigger_time", "expiry_hours"):
+        if getattr(body, _k) is not None:
+            changes[_k] = getattr(body, _k)
     if body.clear_ttp:
         changes["ttp_arm_pct"] = changes["ttp_trail_pct"] = None
     else:

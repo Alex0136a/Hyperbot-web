@@ -715,15 +715,66 @@ class ManualTrading:
             if not item:
                 raise ManualError("Element introuvable.")
             if item["status"] == "scheduled":
-                for k in ("sl_pct", "tp_pct", "ttp_arm_pct", "ttp_trail_pct", "trigger_price", "notional_usd", "leverage",
+                # v4.400 : un ordre programme est entierement modifiable (memes regles qu a la creation)
+                p = dict(item)
+                for k in ("sl_pct", "tp_pct", "ttp_arm_pct", "ttp_trail_pct", "trigger_price", "trigger_time", "notional_usd", "leverage",
                           "lock_arm_pct", "lock_fraction", "trend_entry", "trend_exit",
                           "tp_run", "tp_run_lock_pct", "tp_run_trail_pct"):
                     if k in changes:
-                        item[k] = changes[k]
-                probe = {k: item.get(k) for k in ("lock_arm_pct", "lock_fraction", "trend_entry", "trend_exit")}
+                        p[k] = changes[k]
+                try:
+                    p["sl_pct"] = float(p.get("sl_pct") or 0)
+                    p["notional_usd"] = float(p.get("notional_usd") or 0)
+                    p["leverage"] = 1 if item["market"] == "spot" else int(p.get("leverage") or 1)
+                except (TypeError, ValueError):
+                    raise ManualError("Valeur numerique invalide.")
+                if not 0.05 <= p["sl_pct"] <= 50:
+                    raise ManualError("Le stop loss doit etre compris entre 0,05 % et 50 % du prix d entree.")
+                if not 1 <= p["leverage"] <= int(self.cfg.get("MANUAL_MAX_LEVERAGE", 20)):
+                    raise ManualError(f"Levier hors limites (1 a {self.cfg.get('MANUAL_MAX_LEVERAGE', 20)}).")
+                if p["notional_usd"] <= 0:
+                    raise ManualError("Taille invalide.")
+                if item["mode"] == "live" and p["notional_usd"] < 10:
+                    raise ManualError("Hyperliquid exige au moins 10 $ de notionnel par ordre.")
+                tp = p.get("tp_pct")
+                tp = float(tp) if tp not in (None, "", 0) else None
+                if tp is not None and not 0.05 <= tp <= 500:
+                    raise ManualError("Take profit invalide (0,05 % a 500 %, ou vide).")
+                p["tp_pct"] = tp
+                arm, trail = float(p.get("ttp_arm_pct") or 0), float(p.get("ttp_trail_pct") or 0)
+                if arm and not (0.05 <= arm <= 500 and 0.02 <= trail <= 100):
+                    raise ManualError("Trailing TP invalide (armement 0,05-500 %, repli 0,02-100 %).")
+                p["ttp_arm_pct"], p["ttp_trail_pct"] = (arm or None), (trail or None)
+                p["tp_run"] = bool(p.get("tp_run"))
+                if p["tp_run"]:
+                    if tp is None:
+                        raise ManualError("Laisser courir au TP : un take profit est necessaire.")
+                    lk, tr_ = float(p.get("tp_run_lock_pct") or 0), float(p.get("tp_run_trail_pct") or 0)
+                    if not (0 <= lk < tp) or not 0.05 <= tr_ <= 50:
+                        raise ManualError("Laisser courir : le gain verrouille doit etre inferieur au TP (en %) et le suiveur compris entre 0,05 et 50 %.")
+                    p["tp_run_lock_pct"], p["tp_run_trail_pct"] = lk, tr_
+                if item.get("execution") in ("price_above", "price_below"):
+                    if not float(p.get("trigger_price") or 0) > 0:
+                        raise ManualError("Prix de declenchement invalide.")
+                    p["trigger_price"] = float(p["trigger_price"])
+                elif item.get("execution") == "time" and "trigger_time" in changes:
+                    if not float(p.get("trigger_time") or 0) > time.time():
+                        raise ManualError("L heure de declenchement doit etre dans le futur.")
+                    p["trigger_time"] = float(p["trigger_time"])
+                probe = {k: p.get(k) for k in ("lock_arm_pct", "lock_fraction", "trend_entry", "trend_exit")}
                 self._validate_lock_trend(probe)      # v4.343 : memes regles qu a la creation
+                for k in ("sl_pct", "tp_pct", "ttp_arm_pct", "ttp_trail_pct", "notional_usd", "leverage", "tp_run",
+                          "tp_run_lock_pct", "tp_run_trail_pct", "trigger_price", "trigger_time"):
+                    item[k] = p.get(k)
                 item.update(probe)
+                if changes.get("expiry_hours"):
+                    h = float(changes["expiry_hours"])
+                    if not 0.1 <= h <= 24 * 30:
+                        raise ManualError("Expiration : entre 0,1 h et 30 jours.")
+                    item["expires_at"] = time.time() + h * 3600
                 self._save(item)
+                self._log(f"Ordre programme #{item['id']} {item['ticker']} modifie — {self._trigger_text(item)} | SL {item['sl_pct']}%"
+                          + (f" | TP {item['tp_pct']}%" if item.get("tp_pct") else " | sans TP"), "info")
                 return self.public(item)
             if item["status"] != "open":
                 raise ManualError("Position non modifiable dans son etat actuel.")
@@ -754,7 +805,9 @@ class ManualTrading:
                 if "tp_run_trail_pct" in changes and changes["tp_run_trail_pct"] is not None:
                     item["tp_run_trail_pct"] = float(changes["tp_run_trail_pct"])
                 if "tp_run" in changes and changes["tp_run"] is not None:
-                    item["tp_run"] = bool(changes["tp_run"]) and bool(item.get("tp_price"))
+                    if changes["tp_run"] and not item.get("tp_price"):
+                        raise ManualError("Laisser courir au TP : ce trade n'a pas de take profit. Saisis d'abord un prix de TP, puis coche l'option.")
+                    item["tp_run"] = bool(changes["tp_run"])
                 if item.get("tp_run") and item.get("tp_price"):
                     _d = abs(item["tp_price"] - item["entry_price"]) / item["entry_price"] * 100
                     if not (0 <= float(item.get("tp_run_lock_pct") or 0) < _d) or not 0.05 <= float(item.get("tp_run_trail_pct") or 0) <= 50:

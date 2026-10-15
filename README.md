@@ -919,3 +919,9 @@ Fichiers : `bot_engine.py`, `README.md`.
 - Ne touche ni l'entrée, ni le suiveur, ni le stop dynamique, ni les autres modes. Version affichée par /health : 4.399.
 - À mesurer : comparer, après ~1–2 semaines, le net des sorties « FOREX SANS PROGRES » à celui des anciens trades > 2 h sans armement. Le gain réel n'est pas chiffrable à l'avance (l'export n'a pas le prix pendant le trade).
 - Fichiers : bot_engine.py, api.py, README.md
+
+## v4.400 — Ordres programmés modifiables
+- Bouton **Modifier** sur chaque ligne de « ⏰ Ordres programmés » (Trading Manuel) : prix ou heure de déclenchement, taille, levier, SL %, TP %, « laisser courir au TP » (verrou + suiveur), TTP, et prolongation de l'expiration (« expire dans … h »).
+- Mêmes validations qu'à la création (SL 0,05–50 %, TP 0,05–500 %, levier max, 10 $ mini en live, heure dans le futur, « laisser courir » exige un TP). En cas d'erreur, rien n'est modifié.
+- Le sens, l'actif, le marché, le mode (paper/live) et le type de déclenchement ne se modifient pas : annuler puis recréer l'ordre.
+- Fichiers : manual_trading.py, api.py, bot_engine.py (version), index_src.html, index.html, README.md
