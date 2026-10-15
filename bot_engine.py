@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.397"
+BOT_VERSION = "4.399"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -265,6 +265,9 @@ CONFIG = {
     # max(marge ATR, fraction du gain maximal). Valeurs en % de mouvement de PRIX.
     "FOREX_DYNAMIC_SL": 1,
     "FOREX_DSL_FEE_PAD_PCT": 0.10,        # plancher apres armement : entree + frais aller-retour (~0.09 % en taker)
+    "FOREX_STALE_ENABLED": 1,             # v4.399 : sortie "sans progres" Forex (1/0)
+    "FOREX_STALE_MIN": 90,                # ... apres N minutes
+    "FOREX_STALE_PEAK_PCT": 0.15,         # ... si le pic de gain est reste sous N % du prix
     "FOREX_DSL_TRAIL_FRACTION": 0.40,     # distance du suiveur >= 40 % du gain maximal (jamais plus serre que la marge ATR)
     "FOREX_DSL_FALLBACK_TOL_PCT": 0.08,   # marge de repli si l ATR n est pas encore disponible
     "FOREX_DSL_EXCHANGE_MIN_STEP_PCT": 0.03,  # live : ne met a jour le SL natif Hyperliquid que si le SL a bouge d au moins ce %
@@ -8440,6 +8443,28 @@ class BotEngine:
             _forex_dsl_on = pos.get("strategy") == "forex" and bool(cfg.get("FOREX_DYNAMIC_SL", 1))
             if pos.get("strategy") == "forex":      # v4.388 : suivi du chemin du PnL (lecture seule) ; seuil = armement du trailing Forex
                 self._funding_pnl_track(state, pos, pnl_pct, touch_pct=cfg.get("FOREX_TTP_ARM_PCT", 0.15))
+            # v4.399 : SANS PROGRES (Forex). Export 15/10 : 48 trades restes > 2 h sans jamais atteindre +0.15 % de pic
+            # finissent a -0.21 % en moyenne (-3.5 $ bruts). On les coupe apres N minutes si le pic reste sous le seuil.
+            if pos.get("strategy") == "forex" and cfg.get("FOREX_STALE_ENABLED", 1):
+                _pk = max(pos.get("dsl_peak") or 0.0, pnl_pct)
+                pos["dsl_peak"] = _pk
+                if _pk < cfg.get("FOREX_STALE_PEAK_PCT", 0.15):
+                    try:
+                        _age = (datetime.now() - datetime.strptime(pos.get("opened_at", ""), "%d/%m/%Y %H:%M:%S")).total_seconds() / 60.0
+                    except (ValueError, TypeError):
+                        _age = 0.0
+                    if _age >= cfg.get("FOREX_STALE_MIN", 90):
+                        _result = self._safe_close_position(state, price, "FOREX SANS PROGRES", ticker, pos, symbol, mode)
+                        if _result is None:
+                            return
+                        pnl, _, trade = _result
+                        self.emit("trade", trade)
+                        if pnl > 0:
+                            self._register_win(ticker)
+                        self.emit("log", {"msg": f"[{ticker}] ⚡ Forex : sans progres apres {_age:.0f} min (pic +{_pk:.2f}% sous +{cfg.get('FOREX_STALE_PEAK_PCT', 0.15)}%) @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+                        self._save_open_positions()
+                        self._persist_capital_snapshot()
+                        return
             if _forex_dsl_on and self._forex_dynamic_sl(state, pos, price, pnl_pct, ticker, symbol, mode):
                 return
 

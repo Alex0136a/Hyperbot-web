@@ -908,3 +908,14 @@ Fichiers : `bot_engine.py`, `README.md`.
 
 - `BOT_VERSION` (4.299 jusque-là, jamais mis à jour) et `BOT_BUILD` reflètent désormais la version déployée : `GET /health` renvoie `"version": "4.397"` et `"build": "2026-10-14-a"`. Ouvrir `https://<ton-app>/health` permet de confirmer que Railway fait bien tourner le dernier code (utile quand une nouveauté de l'interface ne semble pas prise en compte côté serveur).
 - Vérifié de bout en bout (requête HTTP simulée, route `PUT /api/manual/positions/{id}`) : « laisser courir au TP » est bien enregistré et renvoyé par le serveur de la v4.395 ; si ce n'est pas le cas chez toi, c'est que le serveur déployé n'est pas à jour.
+
+## v4.398 — « Laisser courir au TP » : message clair quand il n'y a pas de TP
+- Cette option n'a de sens qu'avec un TP. Sans TP, le serveur refuse avec un message explicite (avant : option ignorée en silence) et la case est grisée dans le formulaire (« saisis d'abord un TP »).
+- Fichiers : manual_trading.py, bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.399 — Forex : sortie « SANS PROGRES »
+- Constat (export 15/10, 248 trades Forex) : 48 trades restés > 2 h sans jamais atteindre +0,15 % de pic finissent à −0,21 % en moyenne (−3,55 $ bruts). Les frais estimés (6,8 $) dépassent le PnL brut (−0,64 $).
+- Nouveau : si, après `FOREX_STALE_MIN` (90 min), le pic du trade reste sous `FOREX_STALE_PEAK_PCT` (0,15 %, = seuil d'armement du suiveur), le trade est fermé. Motif affiché : « FOREX SANS PROGRES ». Interrupteur `FOREX_STALE_ENABLED` (1/0) dans les réglages (libellés « Forex · SANS PROGRES »).
+- Ne touche ni l'entrée, ni le suiveur, ni le stop dynamique, ni les autres modes. Version affichée par /health : 4.399.
+- À mesurer : comparer, après ~1–2 semaines, le net des sorties « FOREX SANS PROGRES » à celui des anciens trades > 2 h sans armement. Le gain réel n'est pas chiffrable à l'avance (l'export n'a pas le prix pendant le trade).
+- Fichiers : bot_engine.py, api.py, README.md
