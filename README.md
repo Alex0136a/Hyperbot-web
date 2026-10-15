@@ -951,3 +951,9 @@ Fichiers : `bot_engine.py`, `README.md`.
 - Live perp : la clôture partielle utilise un ordre au marché sur la quantité exacte et le SL natif est renvoyé avec la nouvelle taille. **À valider d'abord avec une petite position live** (non testé sur Hyperliquid depuis cet environnement).
 - En cas d'échec de la clôture partielle : position inchangée, nouvel essai après 60 s.
 - Fichiers : manual_trading.py, api.py, bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.405 — TP1/TP2 : saisie en prix
+- Ticket : le TP1 a maintenant un champ « prix » à côté du « % » (comme le SL et le TP), les deux se convertissent l'un en l'autre.
+- Ordre programmé (Modifier) : SL, TP/TP2 et TP1 acceptent le prix ou le %. Référence du calcul : le prix de déclenchement (ordres sur prix) ou le prix actuel (ordres sur heure).
+- Les niveaux restent stockés en % de l'entrée : si l'ordre s'exécute au marché à un prix légèrement différent du déclenchement, les prix réels de SL/TP/TP1 sont décalés d'autant.
+- Fichiers : bot_engine.py (version), index_src.html, index.html, README.md
