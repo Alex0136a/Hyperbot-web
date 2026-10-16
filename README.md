@@ -957,3 +957,11 @@ Fichiers : `bot_engine.py`, `README.md`.
 - Ordre programmé (Modifier) : SL, TP/TP2 et TP1 acceptent le prix ou le %. Référence du calcul : le prix de déclenchement (ordres sur prix) ou le prix actuel (ordres sur heure).
 - Les niveaux restent stockés en % de l'entrée : si l'ordre s'exécute au marché à un prix légèrement différent du déclenchement, les prix réels de SL/TP/TP1 sont décalés d'autant.
 - Fichiers : bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.406 — Résumé instantané d'un actif (fenêtre)
+- **Clic sur un actif** (tuiles « Prix en temps réel », position du tableau de bord, tickers de Trading Manuel : opportunités, positions, ordres programmés, historique, bouton « 📊 Résumé de l'actif » de l'ordre libre) → **fenêtre** avec bouton **✕ Fermer** (clic à l'extérieur ou Échap aussi).
+- Contenu, actualisé toutes les 15 s : prix, variations 1 h / 4 h / 24 h / 7 j, plages 24 h et 7 j, et pour **H1, H4 et H24 (D1)** : tendance (EMA50/200 + prix live), RSI, ATR, **support et résistance** les plus proches (distance en %, « dans la zone » si le prix y est). Contexte : tendance BTC H4, funding annualisé.
+- **Conseil LONG / SHORT / ATTENDRE** : score à règles explicites (tendance H4 ×2, D1 ×1, H1 ×1, RSI H4 en surachat/survente, prix sur support/résistance H4/H1, BTC, funding extrême). ≥ +3 → LONG, ≤ −3 → SHORT, sinon ATTENDRE (avec le côté vers lequel ça penche). Les raisons sont listées, avec repères de SL/objectif/gain-risque tirés des zones H4. **Indicatif, pas une garantie.**
+- Boutons **▲ Préparer un LONG / ▼ Préparer un SHORT** : ouvrent Trading Manuel avec un ticket libre pré-rempli (valeurs par défaut, rien n'est envoyé tant que vous ne validez pas) et **ferment la fenêtre**.
+- Nouvelle route lecture seule : `GET /api/asset/summary?ticker=…`.
+- Fichiers : manual_trading.py, api.py, bot_engine.py (version), index_src.html, index.html, README.md

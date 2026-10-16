@@ -2901,6 +2901,18 @@ def manual_trend(ticker: str, email: str = Depends(require_user)):
     return bot.manual.trend_info(_norm_ticker(ticker))
 
 
+@app.get("/api/asset/summary")
+def asset_summary_ep(ticker: str, email: str = Depends(require_user)):
+    """v4.406 — resume instantane d un actif (tendance, supports / resistances H1-H4-D1, conseil). Lecture seule."""
+    t = _norm_ticker(ticker)
+    if not t:
+        raise HTTPException(status_code=400, detail="actif manquant")
+    try:
+        return bot.manual.asset_summary(t)
+    except Exception as e:
+        return {"ok": False, "why": f"{type(e).__name__}: {e}"}
+
+
 @app.post("/api/manual/positions/{item_id}/close")
 def manual_close(item_id: int, email: str = Depends(require_user)):
     return _manual_call(bot.manual.close, item_id)

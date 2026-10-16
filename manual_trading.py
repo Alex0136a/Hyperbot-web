@@ -241,6 +241,151 @@ class ManualTrading:
         return {"ok": True, "trend": mv["trend"], "data_fresh": bool(mv.get("data_fresh", True)),
                 "last_closed_t": mv.get("last_closed_t"), "major_tf": mv.get("major_tf")}
 
+    # ─────────────────── v4.406 — RESUME INSTANTANE D UN ACTIF ───────────────────
+    def asset_summary(self, ticker):
+        """Lecture seule : etat d un actif en un coup d oeil (prix, variations, tendance / RSI / ATR /
+        support / resistance en H1, H4 et D1) + conseil LONG / SHORT / ATTENDRE fonde sur des regles
+        simples et explicites (indicatif, aucune garantie). Utilise les bougies Hyperliquid deja mises en
+        cache par le moteur (rechargees une fois par bougie)."""
+        import mtf_analysis as mtf
+        price = self.price(ticker, "perp")
+        if not price:
+            return {"ok": False, "why": "prix indisponible (actif non suivi en perp ?)"}
+        bot = self.bot
+        spec = (("h1", "1h", 220), ("h4", "4h", 260), ("d1", "1d", 230))
+        tfs, cands = {}, {}
+        for key, tf, cnt in spec:
+            try:
+                c = bot._mtf_candles(ticker, tf, cnt)
+            except Exception:
+                c = []
+            cands[key] = c
+            if len(c) < 30:
+                tfs[key] = {"ok": False, "why": f"historique {tf} insuffisant ({len(c)} bougies)"}
+                continue
+            series = c + [{**c[-1], "c": float(price)}]          # prix live = cloture provisoire
+            tr, ef, es = mtf.trend(series)
+            a = mtf.atr(c) or 0
+            closes = [x["c"] for x in series]
+            try:
+                rsi = be.calc_rsi(closes)
+            except Exception:
+                rsi = None
+            lb = 120 if key != "h1" else 150
+            zones = mtf.find_zones(c, lookback=lb, max_width_atr=3)
+            sup, res = mtf.nearest_zones(zones, price)
+            tol = a * 0.25
+            tfs[key] = {"ok": True, "trend": tr, "rsi": rsi, "atr": a, "atr_pct": (a / price * 100) if price else None,
+                        "support": sup, "resistance": res,
+                        "sup_dist_pct": ((price - sup["high"]) / price * 100) if sup else None,
+                        "res_dist_pct": ((res["low"] - price) / price * 100) if res else None,
+                        "in_support": bool(mtf.in_zone(price, sup, tol)), "in_resistance": bool(mtf.in_zone(price, res, tol)),
+                        "fresh": True}
+        def chg(key, n):
+            c = cands.get(key) or []
+            return ((price / c[-n]["c"] - 1) * 100) if len(c) >= n and c[-n]["c"] else None
+        # extremes 24 h (H1) et 7 j (D1)
+        h1 = cands.get("h1") or []
+        d1 = cands.get("d1") or []
+        hi24 = max([x["h"] for x in h1[-24:]] + [price]) if h1 else None
+        lo24 = min([x["l"] for x in h1[-24:]] + [price]) if h1 else None
+        hi7 = max([x["h"] for x in d1[-7:]] + [price]) if d1 else None
+        lo7 = min([x["l"] for x in d1[-7:]] + [price]) if d1 else None
+        out = {"ok": True, "ticker": ticker, "price": price, "ts": time.time(),
+               "chg_1h": chg("h1", 1), "chg_4h": chg("h1", 4), "chg_24h": chg("h1", 24), "chg_7d": chg("d1", 7),
+               "hi24": hi24, "lo24": lo24, "hi7": hi7, "lo7": lo7, "tf": tfs}
+        # contexte : BTC (tendance H4) et funding
+        btc = None
+        if ticker != "BTC":
+            try:
+                bc = bot._mtf_candles("BTC", "4h", 260, cache_only=True)
+                bp = self.price("BTC", "perp")
+                if len(bc) >= 60 and bp:
+                    btc = mtf.trend(bc + [{**bc[-1], "c": float(bp)}])[0]
+            except Exception:
+                btc = None
+        out["btc_trend"] = btc
+        try:
+            fr = (getattr(bot, "funding_rates", None) or {}).get(ticker)
+            out["funding_hourly_pct"] = (float(fr) * 100) if fr is not None else None
+            out["funding_annual_pct"] = (float(fr) * 24 * 365 * 100) if fr is not None else None
+        except Exception:
+            out["funding_hourly_pct"] = out["funding_annual_pct"] = None
+        out["advice"] = self._asset_advice(out)
+        return out
+
+    @staticmethod
+    def _asset_advice(o):
+        tf = o["tf"]
+        pts, why = 0.0, []
+        def T(k):
+            return (tf.get(k) or {}).get("trend") if (tf.get(k) or {}).get("ok") else None
+        for key, w, lbl in (("h4", 2.0, "H4"), ("d1", 1.0, "D1"), ("h1", 1.0, "H1")):
+            t = T(key)
+            if t == "haussiere":
+                pts += w; why.append((w, f"Tendance {lbl} haussière"))
+            elif t == "baissiere":
+                pts -= w; why.append((-w, f"Tendance {lbl} baissière"))
+            elif t:
+                why.append((0, f"Tendance {lbl} neutre"))
+        h4 = tf.get("h4") or {}
+        if h4.get("ok"):
+            r = h4.get("rsi")
+            if r is not None:
+                if r >= 70:
+                    pts -= 1; why.append((-1, f"RSI H4 {r:.0f} : surachat (risque de repli)"))
+                elif r <= 30:
+                    pts += 1; why.append((1, f"RSI H4 {r:.0f} : survente (rebond possible)"))
+            if h4.get("in_support"):
+                pts += 1; why.append((1, "Prix sur un support H4"))
+            if h4.get("in_resistance"):
+                pts -= 1; why.append((-1, "Prix sur une résistance H4"))
+        h1 = tf.get("h1") or {}
+        if h1.get("ok"):
+            if h1.get("in_support"):
+                pts += 0.5; why.append((0.5, "Prix sur un support H1"))
+            if h1.get("in_resistance"):
+                pts -= 0.5; why.append((-0.5, "Prix sur une résistance H1"))
+        bt = o.get("btc_trend")
+        if bt == "haussiere":
+            pts += 0.5; why.append((0.5, "BTC haussier (H4)"))
+        elif bt == "baissiere":
+            pts -= 0.5; why.append((-0.5, "BTC baissier (H4)"))
+        fa = o.get("funding_annual_pct")
+        if fa is not None and abs(fa) >= 30:
+            if fa > 0:
+                pts -= 0.5; why.append((-0.5, f"Funding {fa:+.0f} %/an : les longs paient (foule longue)"))
+            else:
+                pts += 0.5; why.append((0.5, f"Funding {fa:+.0f} %/an : les shorts paient (foule short)"))
+        if pts >= 3:
+            side, label = "long", "LONG"
+        elif pts <= -3:
+            side, label = "short", "SHORT"
+        else:
+            side, label = None, "ATTENDRE"
+        lean = "long" if pts > 0 else ("short" if pts < 0 else None)
+        conf = "forte" if abs(pts) >= 4.5 else ("moyenne" if abs(pts) >= 3 else "faible")
+        # niveaux de reference (structure H4) pour le sens penche
+        plan = None
+        side_plan = side or lean
+        if side_plan and h4.get("ok"):
+            price, a = o["price"], h4.get("atr") or 0
+            sup, res = h4.get("support"), h4.get("resistance")
+            if side_plan == "long":
+                sl = (sup["low"] - 0.15 * a) if sup else price - 1.5 * a
+                tp = res["low"] if res else price + 2 * a
+            else:
+                sl = (res["high"] + 0.15 * a) if res else price + 1.5 * a
+                tp = sup["high"] if sup else price - 2 * a
+            risk, gain = abs(price - sl), abs(tp - price)
+            if risk > 0:
+                plan = {"side": side_plan, "sl": sl, "tp": tp, "sl_pct": risk / price * 100, "tp_pct": gain / price * 100,
+                        "rr": gain / risk}
+        why.sort(key=lambda x: -abs(x[0]))
+        return {"verdict": label, "side": side, "lean": lean, "score": round(pts, 1), "confidence": conf,
+                "reasons": [t for _, t in why], "plan": plan,
+                "note": "Conseil indicatif fondé sur des règles (tendance, RSI, zones, BTC, funding) — pas une garantie."}
+
     def _check_trend_entry(self, ticker, required):
         """Condition d entree sur la tendance H4 : leve ManualError si elle n est pas remplie
         (ou si la tendance est indisponible / perimee : on n ouvre jamais a l aveugle)."""

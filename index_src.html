@@ -998,7 +998,7 @@ function ManualOpenCard({ t, token, onDone }) {
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
           <span style={{background:t.direction==="long"?"#052e16":"#2d0a0a",color:t.direction==="long"?"#34d399":"#f87171",padding:"2px 8px",borderRadius:4,fontSize:11,fontWeight:700}}>{String(t.direction).toUpperCase()}</span>
-          <span style={{color:"#f1f5f9",fontWeight:700}}>{t.ticker}{t.market==="spot"?" (spot)":"/USDC"}</span>
+          <span data-tk={t.ticker} title="Résumé de l'actif" style={{color:"#f1f5f9",fontWeight:700,cursor:"pointer"}}>{t.ticker}{t.market==="spot"?" (spot)":"/USDC"}</span>
           <span style={{color:"#94a3b8",fontSize:10}}>x{t.leverage}</span>
           <span style={{background:"#0c2a3a",color:"#7dd3fc",border:"1px solid #38bdf8",padding:"1px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>✋ MANUEL</span>
           <span style={{background:t.mode==="live"?"#2d0a0a":"#1e293b",color:t.mode==="live"?"#fca5a5":"#94a3b8",padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700}}>{t.mode==="live"?"LIVE":"PAPER"}</span>
@@ -1028,7 +1028,97 @@ function ManualOpenCard({ t, token, onDone }) {
 
 const RUN_DEF = {tp_pct:1.0, lock:0.5, trail:0.5};   // v4.403 : valeurs par defaut de « laisser courir au TP »
 const TREND_LBL = {haussiere:"haussière", baissiere:"baissière", neutre:"neutre"};   // v4.343
-function ManualTradingTab({ token }) {
+
+// v4.406 — FENETRE « RESUME DE L'ACTIF » : etat instantane (rafraichi toutes les 15 s), conseil indicatif, envoi vers le ticket manuel.
+const TREND_ICON = {haussiere:["▲ Haussière","#34d399"], baissiere:["▼ Baissière","#f87171"], neutre:["◆ Neutre","#fbbf24"], inconnue:["? Inconnue","#64748b"]};
+function AssetSummaryModal({ ticker, token, onClose, onPrepare }) {
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let alive = true, first = true;
+    const load = async () => {
+      try {
+        const r = await apiCall(`/api/asset/summary?ticker=${encodeURIComponent(ticker)}`, "GET", null, token);
+        if (!alive) return;
+        if (r && r.ok) { setD(r); setErr(""); } else setErr((r && (r.why || r.detail)) || "Résumé indisponible");
+      } catch (e) { if (alive) setErr(String(e && e.message || e)); }
+      if (alive) setLoading(false);
+      first = false;
+    };
+    setD(null); setLoading(true); load();
+    const iv = setInterval(load, 15000);
+    const esc = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", esc);
+    return () => { alive = false; clearInterval(iv); window.removeEventListener("keydown", esc); };
+  }, [ticker]);
+  const fp = (v) => v == null ? "—" : (Math.abs(v) >= 100 ? v.toFixed(2) : Math.abs(v) >= 1 ? v.toFixed(4) : v.toPrecision(4));
+  const fc = (v) => v == null ? <span style={{color:"#64748b"}}>—</span> : <span style={{color:v>=0?"#34d399":"#f87171",fontWeight:700}}>{v>=0?"+":""}{v.toFixed(2)} %</span>;
+  const adv = d && d.advice;
+  const vcol = adv ? (adv.verdict==="LONG"?"#34d399":adv.verdict==="SHORT"?"#f87171":"#fbbf24") : "#94a3b8";
+  const zone = (z) => z ? `${fp(z.low)} – ${fp(z.high)}${z.touches>1?` (${z.touches}×)`:""}` : "—";
+  const cell = {padding:"6px 8px",borderTop:"1px solid #1e2d4a",fontSize:11,color:"#cbd5e1"};
+  const th = {padding:"4px 8px",fontSize:9,color:"#64748b",textAlign:"left",letterSpacing:1};
+  const row = (lbl, k) => { const t = d && d.tf && d.tf[k]; if (!t || !t.ok) return <tr key={k}><td style={cell}><b>{lbl}</b></td><td style={cell} colSpan={5}><span style={{color:"#64748b"}}>{(t&&t.why)||"…"}</span></td></tr>;
+    const ti = TREND_ICON[t.trend] || TREND_ICON.inconnue;
+    return <tr key={k}>
+      <td style={cell}><b>{lbl}</b></td>
+      <td style={{...cell,color:ti[1],fontWeight:700}}>{ti[0]}</td>
+      <td style={{...cell,color:t.rsi>=70?"#f87171":t.rsi<=30?"#34d399":"#cbd5e1"}}>{t.rsi!=null?t.rsi.toFixed(0):"—"}</td>
+      <td style={cell}>{t.atr_pct!=null?t.atr_pct.toFixed(2)+" %":"—"}</td>
+      <td style={{...cell,color:t.in_support?"#34d399":"#cbd5e1"}}>{zone(t.support)}{t.sup_dist_pct!=null && <div style={{fontSize:9,color:"#64748b"}}>à {t.sup_dist_pct.toFixed(2)} % sous le prix{t.in_support?" · DANS la zone":""}</div>}</td>
+      <td style={{...cell,color:t.in_resistance?"#f87171":"#cbd5e1"}}>{zone(t.resistance)}{t.res_dist_pct!=null && <div style={{fontSize:9,color:"#64748b"}}>à {t.res_dist_pct.toFixed(2)} % au-dessus{t.in_resistance?" · DANS la zone":""}</div>}</td>
+    </tr>; };
+  return (
+    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(2,6,23,0.8)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:12}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#0f1629",border:"1px solid #334155",borderRadius:12,width:"100%",maxWidth:720,maxHeight:"92vh",overflowY:"auto",padding:16,color:"#e2e8f0"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <div style={{fontSize:16,fontWeight:800}}>📊 {ticker} <span style={{fontSize:11,color:"#64748b",fontWeight:400}}>résumé instantané · actualisé toutes les 15 s</span></div>
+          <button onClick={onClose} style={{background:"#1e293b",border:"1px solid #334155",color:"#e2e8f0",borderRadius:6,padding:"5px 12px",cursor:"pointer",fontWeight:700}}>✕ Fermer</button>
+        </div>
+        {loading && !d && <div style={{fontSize:12,color:"#94a3b8",padding:20}}>Chargement des bougies H1 / H4 / D1…</div>}
+        {err && !d && <div style={{fontSize:12,color:"#fca5a5",padding:10}}>{err}</div>}
+        {d && <>
+          <div style={{display:"flex",gap:14,flexWrap:"wrap",alignItems:"baseline",marginBottom:10}}>
+            <span style={{fontSize:24,fontWeight:800,color:"#f1f5f9"}}>{fp(d.price)}</span>
+            <span style={{fontSize:11}}>1h {fc(d.chg_1h)}</span><span style={{fontSize:11}}>4h {fc(d.chg_4h)}</span>
+            <span style={{fontSize:11}}>24h {fc(d.chg_24h)}</span><span style={{fontSize:11}}>7j {fc(d.chg_7d)}</span>
+          </div>
+          <div style={{fontSize:10,color:"#94a3b8",marginBottom:10}}>
+            Plage 24 h : {fp(d.lo24)} → {fp(d.hi24)} · Plage 7 j : {fp(d.lo7)} → {fp(d.hi7)}
+            {d.btc_trend && <> · BTC (H4) : <b style={{color:(TREND_ICON[d.btc_trend]||[])[1]}}>{(TREND_ICON[d.btc_trend]||[d.btc_trend])[0]}</b></>}
+            {d.funding_annual_pct!=null && <> · Funding : <b>{d.funding_annual_pct>=0?"+":""}{d.funding_annual_pct.toFixed(0)} %/an</b></>}
+          </div>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",minWidth:560}}>
+              <thead><tr><th style={th}>UNITÉ</th><th style={th}>TENDANCE</th><th style={th}>RSI</th><th style={th}>ATR</th><th style={th}>SUPPORT</th><th style={th}>RÉSISTANCE</th></tr></thead>
+              <tbody>{row("H1","h1")}{row("H4","h4")}{row("H24 (D1)","d1")}</tbody>
+            </table>
+          </div>
+          {adv && <div style={{marginTop:12,background:"#0a0e1a",border:`1px solid ${vcol}`,borderRadius:10,padding:12}}>
+            <div style={{display:"flex",gap:10,alignItems:"baseline",flexWrap:"wrap"}}>
+              <span style={{fontSize:10,color:"#94a3b8",letterSpacing:1}}>CONSEIL</span>
+              <span style={{fontSize:20,fontWeight:800,color:vcol}}>{adv.verdict}</span>
+              <span style={{fontSize:11,color:"#94a3b8"}}>score {adv.score>0?"+":""}{adv.score} · conviction {adv.confidence}{adv.verdict==="ATTENDRE" && adv.lean ? ` · penche ${adv.lean==="long"?"LONG":"SHORT"}` : ""}</span>
+            </div>
+            <ul style={{margin:"8px 0 0 16px",padding:0,fontSize:11,color:"#cbd5e1",lineHeight:1.6}}>{adv.reasons.map((r,i)=><li key={i}>{r}</li>)}</ul>
+            {adv.plan && <div style={{marginTop:8,fontSize:11,color:"#94a3b8"}}>
+              Repères de structure H4 pour un {adv.plan.side.toUpperCase()} : SL ≈ <b style={{color:"#f87171"}}>{fp(adv.plan.sl)}</b> (−{adv.plan.sl_pct.toFixed(2)} %) · objectif ≈ <b style={{color:"#34d399"}}>{fp(adv.plan.tp)}</b> (+{adv.plan.tp_pct.toFixed(2)} %) · gain/risque <b style={{color:adv.plan.rr>=1.5?"#34d399":adv.plan.rr>=1?"#fbbf24":"#f87171"}}>{adv.plan.rr.toFixed(2)}</b>{adv.plan.rr<1?" (défavorable)":""}
+            </div>}
+            <div style={{fontSize:9,color:"#64748b",marginTop:8}}>{adv.note} Les niveaux du ticket sont ceux par défaut ; ajustez-les avant de valider.</div>
+          </div>}
+          <div style={{display:"flex",gap:10,marginTop:12,flexWrap:"wrap"}}>
+            <button onClick={()=>onPrepare("long")} style={{flex:1,minWidth:150,background:"#052e16",border:"1px solid #22c55e",color:"#34d399",borderRadius:8,padding:"10px 14px",fontWeight:800,cursor:"pointer",boxShadow:adv&&adv.side==="long"?"0 0 0 2px #22c55e55":"none"}}>▲ Préparer un LONG</button>
+            <button onClick={()=>onPrepare("short")} style={{flex:1,minWidth:150,background:"#2d0a0a",border:"1px solid #ef4444",color:"#f87171",borderRadius:8,padding:"10px 14px",fontWeight:800,cursor:"pointer",boxShadow:adv&&adv.side==="short"?"0 0 0 2px #ef444455":"none"}}>▼ Préparer un SHORT</button>
+          </div>
+          <div style={{fontSize:9,color:"#64748b",marginTop:6}}>Le bouton ouvre Trading Manuel avec un ticket libre pré-rempli (rien n'est envoyé à Hyperliquid tant que vous ne validez pas) et ferme cette fenêtre.</div>
+        </>}
+      </div>
+    </div>
+  );
+}
+
+function ManualTradingTab({ token, prep, onPrepDone }) {
   const [st, setSt] = useState(null);
   const [err, setErr] = useState("");
   const [sel, setSel] = useState(null);          // opportunite choisie
@@ -1069,6 +1159,10 @@ function ManualTradingTab({ token }) {
   };
   const choose = (opp) => { setSel(opp); setF(null); loadProposal(opp, "perp"); setTimeout(() => { const el = document.getElementById("manual-ticket"); if (el) el.scrollIntoView({behavior:"smooth", block:"start"}); }, 700); };
   // v4.381 : prepare un ticket depuis une alerte. Opportunite encore valable -> ticket de son mode ; sinon ticket libre (Swing Support : ses propres niveaux).
+  useEffect(() => {      // v4.406 : ticket prepare depuis la fenetre « resume de l'actif »
+    if (prep && prep.ticker) { choose({strategy:"libre", ticker:prep.ticker, direction:prep.direction}); if (onPrepDone) onPrepDone(); }
+    // eslint-disable-next-line
+  }, [prep && prep.nonce]);
   const prepareFromAlert = (o) => {
     const live = st && st.opportunities.some(x => x.strategy===o.strategy && x.ticker===o.ticker && x.direction===o.direction);
     if (o.strategy === "swing_support" || live) choose({strategy:o.strategy, ticker:o.ticker, direction:o.direction});
@@ -1199,6 +1293,7 @@ function ManualTradingTab({ token }) {
               <button style={MT.seg(freeDir==="short","#ef4444")} onClick={()=>setFreeDir("short")}>SHORT</button>
             </div></div>
           <button style={{...MT.btn("#60a5fa"),opacity:freeT.trim()?1:0.5}} disabled={!freeT.trim()} onClick={()=>choose({strategy:"libre",ticker:freeT.trim(),direction:freeDir})}>Préparer l'ordre</button>
+          <button style={{...MT.btn("#a78bfa"),opacity:freeT.trim()?1:0.5}} disabled={!freeT.trim()} data-tk={freeT.trim()}>📊 Résumé de l'actif</button>
         </div>
         <div style={{fontSize:10,color:"#64748b",marginTop:8}}>Le ticket s'ouvre avec des valeurs par défaut : tout est modifiable (taille, levier, entrée, SL, TP, trailing, SL dynamique, critères de tendance, paper ou live).</div>
       </div>
@@ -1212,7 +1307,7 @@ function ManualTradingTab({ token }) {
             <tbody>{st.opportunities.map(o => {
               const active = sel && sel.strategy===o.strategy && sel.ticker===o.ticker && sel.direction===o.direction;
               return <tr key={o.strategy+o.ticker+o.direction} style={{background:active?"#60a5fa14":"transparent"}}>
-                <td style={MT.td}>{o.strategy_label}</td><td style={{...MT.td,fontWeight:800}}>{o.ticker}</td>
+                <td style={MT.td}>{o.strategy_label}</td><td data-tk={o.ticker} title="Résumé de l'actif" style={{...MT.td,fontWeight:800,cursor:"pointer",textDecoration:"underline dotted"}}>{o.ticker}</td>
                 <td style={MT.td}>{dirBadge(o.direction)}</td><td style={MT.td}>{o.confidence!=null?`${Math.round(o.confidence)} %`:"—"}</td>
                 <td style={MT.td}>{fmtP(o.current_price||o.price)}</td><td style={MT.td}>{fmtAgo(o.age_sec)}</td>
                 <td style={MT.td}>{o.spot_available?"✓":"—"}</td>
@@ -1353,7 +1448,7 @@ function ManualTradingTab({ token }) {
           <div style={{overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%"}}>
             <thead><tr>{["#","Actif","Sens","Marché","Mode","Déclenchement","Prix actuel","Opportunité","Expire",""].map(h=><th key={h} style={MT.th}>{h}</th>)}</tr></thead>
             <tbody>{st.scheduled.map(o=><React.Fragment key={o.id}><tr>
-              <td style={MT.td}>{o.id}</td><td style={{...MT.td,fontWeight:800}}>{o.ticker}</td><td style={MT.td}>{dirBadge(o.direction)}</td>
+              <td style={MT.td}>{o.id}</td><td data-tk={o.ticker} title="Résumé de l'actif" style={{...MT.td,fontWeight:800,cursor:"pointer",textDecoration:"underline dotted"}}>{o.ticker}</td><td style={MT.td}>{dirBadge(o.direction)}</td>
               <td style={MT.td}>{o.market.toUpperCase()}</td><td style={{...MT.td,color:o.mode==="live"?"#ef4444":"#22c55e"}}>{o.mode.toUpperCase()}</td>
               <td style={MT.td}>{o.execution==="price_above"?`prix ≥ ${fmtP(o.trigger_price)}`:o.execution==="price_below"?`prix ≤ ${fmtP(o.trigger_price)}`:`à ${fmtTime(o.trigger_time)}`}</td>
               <td style={MT.td}>{fmtP(o.current_price)}</td>
@@ -1405,7 +1500,7 @@ function ManualTradingTab({ token }) {
         {st.positions.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucune position manuelle.</div> : st.positions.map(p=>(
           <div key={p.id} style={{borderBottom:"1px solid #131d33",padding:"10px 0"}}>
             <div style={{display:"flex",flexWrap:"wrap",gap:14,alignItems:"center",fontSize:12,color:"#e2e8f0"}}>
-              <b>#{p.id} {p.ticker}</b>{dirBadge(p.direction)}
+              <b>#{p.id} <span data-tk={p.ticker} title="Résumé de l'actif" style={{cursor:"pointer",textDecoration:"underline dotted"}}>{p.ticker}</span></b>{dirBadge(p.direction)}
               <span>{p.market.toUpperCase()} · <span style={{color:p.mode==="live"?"#ef4444":"#22c55e"}}>{p.mode.toUpperCase()}</span> · x{p.leverage}</span>
               <span>Entrée {fmtP(p.entry_price)} → {fmtP(p.current_price)}</span>
               <span style={{color:(p.pnl||0)>=0?"#22c55e":"#ef4444",fontWeight:800}}>{fmtUsd(p.pnl)} {p.move_pct!=null?`(${_roe(p.move_pct,p.leverage)>=0?"+":""}${Number(_roe(p.move_pct,p.leverage)).toFixed(2)} %)`:""}</span>
@@ -1451,7 +1546,7 @@ function ManualTradingTab({ token }) {
           <div style={{overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%"}}>
             <thead><tr>{["#","Actif","Sens","Marché","Mode","Source","Ouverture","Fermeture","Entrée","Sortie","PnL","Statut / motif"].map(h=><th key={h} style={MT.th}>{h}</th>)}</tr></thead>
             <tbody>{st.history.map(h=><tr key={h.id}>
-              <td style={MT.td}>{h.id}</td><td style={{...MT.td,fontWeight:800}}>{h.ticker}</td><td style={MT.td}>{dirBadge(h.direction)}</td>
+              <td style={MT.td}>{h.id}</td><td data-tk={h.ticker} title="Résumé de l'actif" style={{...MT.td,fontWeight:800,cursor:"pointer",textDecoration:"underline dotted"}}>{h.ticker}</td><td style={MT.td}>{dirBadge(h.direction)}</td>
               <td style={MT.td}>{(h.market||"").toUpperCase()}</td><td style={{...MT.td,color:h.mode==="live"?"#ef4444":"#22c55e"}}>{(h.mode||"").toUpperCase()}</td>
               <td style={MT.td}>{h.strategy_label}</td><td style={MT.td}>{fmtTime(h.opened_at||h.created_at)}</td><td style={MT.td}>{fmtTime(h.closed_at)}</td>
               <td style={MT.td}>{fmtP(h.entry_price)}</td><td style={MT.td}>{fmtP(h.exit_price)}</td>
@@ -1474,6 +1569,13 @@ function App() {
   const [stats, setStats] = useState({});
   const [positions, setPositions] = useState([]);
   const [tab, setTab] = useState(() => { try { const t = new URLSearchParams(window.location.search).get("tab"); return t === "manuel" ? "manuel" : "dashboard"; } catch(_) { return "dashboard"; } });
+  const [assetSym, setAssetSym] = useState(null);   // v4.406 : actif dont on affiche le resume
+  const [prep, setPrep] = useState(null);           // v4.406 : ticket a preparer dans Trading Manuel
+  useEffect(() => {
+    const h = (e) => { const el = e.target && e.target.closest ? e.target.closest("[data-tk]") : null; if (el && el.getAttribute("data-tk")) setAssetSym(el.getAttribute("data-tk")); };
+    document.addEventListener("click", h);
+    return () => document.removeEventListener("click", h);
+  }, []);
   useEffect(() => {      // v4.381 : toucher une alerte d'opportunite ouvre Trading Manuel (app deja ouverte)
     if (!("serviceWorker" in navigator)) return;
     const h = (e) => { if (e.data && e.data.tab === "manuel") setTab("manuel"); };
@@ -2211,7 +2313,7 @@ Confirmer ?`
             <div style={{fontSize:10,color:"#94a3b8",marginBottom:10,letterSpacing:1}}>PRIX EN TEMPS RÉEL</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:7}}>
               {ALL_COINS.filter(c=>prices[c]).map(coin=>(
-                <div key={coin} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:5,padding:"5px 10px",display:"flex",gap:7,alignItems:"center"}}>
+                <div key={coin} data-tk={coin} title="Résumé de l'actif" style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:5,padding:"5px 10px",display:"flex",gap:7,alignItems:"center",cursor:"pointer"}}>
                   <span style={{color:"#94a3b8",fontSize:10}}>{coin}</span>
                   <span style={{color:"#e2e8f0",fontWeight:700,fontSize:12}}>${prices[coin]?.toLocaleString("en-US",{maximumFractionDigits:2})}</span>
                 </div>
@@ -3106,7 +3208,7 @@ Confirmer ?`
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
                   <div style={{display:"flex",gap:7,alignItems:"center"}}>
                     <span style={{background:p.action==="LONG"?"#052e16":"#2d0a0a",color:p.action==="LONG"?"#34d399":"#f87171",padding:"2px 7px",borderRadius:4,fontSize:10,fontWeight:700}}>{p.action}</span>
-                    <span style={{fontSize:14,fontWeight:700,color:"#f1f5f9"}}>{p.coin}/USDC</span>
+                    <span data-tk={p.coin} title="Résumé de l'actif" style={{fontSize:14,fontWeight:700,color:"#f1f5f9",cursor:"pointer"}}>{p.coin}/USDC</span>
                     <span style={{fontSize:9,color:"#94a3b8",background:"#0a0e1a",padding:"2px 6px",borderRadius:4}}>x{p.leverage||1}</span>
                     {p.strategy==="accumulation" && <span style={{background:"#1a0a2e",color:"#c084fc",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>🎯 ACCUMULATION</span>}
                     {p.strategy==="funding_contrarian" && <span style={{background:"#3d2e05",color:"#fbbf24",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>💰 FUNDING</span>}{p.strategy==="forex_scalp" && <span style={{background:"#3a3205",color:"#facc15",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>⚡ SCALP</span>}{p.swing && <span style={{background:"#0c2a3a",color:"#38bdf8",border:"1px solid #38bdf8",padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:700}}>🌊 SWING</span>}
@@ -3960,7 +4062,8 @@ Confirmer ?`
       )}
 
       {/* v4.273 — TRADING MANUEL */}
-      {tab==="manuel" && <ManualTradingTab token={token}/>}
+      {tab==="manuel" && <ManualTradingTab token={token} prep={prep} onPrepDone={()=>setPrep(null)}/>}
+      {assetSym && <AssetSummaryModal ticker={assetSym} token={token} onClose={()=>setAssetSym(null)} onPrepare={(side)=>{ setPrep({ticker:assetSym, direction:side, nonce:Date.now()}); setTab("manuel"); setAssetSym(null); }}/>}
 
       {/* PAPER TRADING */}
       {tab==="paper" && (
