@@ -1105,7 +1105,21 @@ function AssetSummaryModal({ ticker, token, onClose, onPrepare }) {
             {adv.plan && <div style={{marginTop:8,fontSize:11,color:"#94a3b8"}}>
               Repères de structure H4 pour un {adv.plan.side.toUpperCase()} : SL ≈ <b style={{color:"#f87171"}}>{fp(adv.plan.sl)}</b> (−{adv.plan.sl_pct.toFixed(2)} %) · objectif ≈ <b style={{color:"#34d399"}}>{fp(adv.plan.tp)}</b> (+{adv.plan.tp_pct.toFixed(2)} %) · gain/risque <b style={{color:adv.plan.rr>=1.5?"#34d399":adv.plan.rr>=1?"#fbbf24":"#f87171"}}>{adv.plan.rr.toFixed(2)}</b>{adv.plan.rr<1?" (défavorable)":""}
             </div>}
+            {adv.wait && adv.wait.length>0 && <div style={{marginTop:8,fontSize:11,color:"#fbbf24",lineHeight:1.5}}>{adv.wait.map((w,i)=><div key={i}>⏳ {w}</div>)}</div>}
             <div style={{fontSize:9,color:"#64748b",marginTop:8}}>{adv.note} Les niveaux du ticket sont ceux par défaut ; ajustez-les avant de valider.</div>
+          </div>}
+          {d.scenarios && d.scenarios.length>0 && <div style={{marginTop:12}}>
+            <div style={{fontSize:10,color:"#94a3b8",letterSpacing:1,marginBottom:6}}>⏱ SITUATIONS À ATTENDRE — PROGRAMMABLES (ordre déclenché sur le prix)</div>
+            {d.scenarios.map(sc=>{ const lc = sc.side==="long"?"#34d399":"#f87171"; return (
+              <div key={sc.id} style={{background:"#0a0e1a",border:`1px solid ${sc.aligned?"#334155":"#3f3f46"}`,borderLeft:`3px solid ${lc}`,borderRadius:8,padding:"8px 10px",marginBottom:6,opacity:sc.aligned?1:0.75}}>
+                <div style={{display:"flex",justifyContent:"space-between",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                  <div style={{fontSize:12,fontWeight:700,color:lc}}>{sc.label}{!sc.aligned && <span style={{marginLeft:6,fontSize:9,color:"#fbbf24",fontWeight:600}}>⚠ contre-tendance</span>}</div>
+                  <button onClick={()=>onPrepare(sc.side,{execution:sc.execution,trigger_price:sc.trigger,sl_pct:sc.sl_pct,tp_pct:sc.tp_pct,expiry_hours:72})} style={{background:"#1e293b",border:`1px solid ${lc}`,color:lc,borderRadius:6,padding:"4px 10px",cursor:"pointer",fontWeight:700,fontSize:11}}>⏱ Programmer</button>
+                </div>
+                <div style={{fontSize:11,color:"#cbd5e1",marginTop:3}}>Attendre {sc.wait} ({sc.trigger_dist_pct>=0?"+":""}{sc.trigger_dist_pct.toFixed(2)} % du prix actuel) → entrée {sc.execution==="price_below"?"si prix ≤":"si prix ≥"} <b>{fp(sc.trigger)}</b></div>
+                <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>SL <b style={{color:"#f87171"}}>{fp(sc.sl)}</b> (−{sc.sl_pct.toFixed(2)} %) · objectif <b style={{color:"#34d399"}}>{fp(sc.tp)}</b> (+{sc.tp_pct.toFixed(2)} %) · gain/risque <b style={{color:sc.rr>=1.5?"#34d399":sc.rr>=1?"#fbbf24":"#f87171"}}>{sc.rr.toFixed(2)}</b> · {sc.note}</div>
+              </div>); })}
+            <div style={{fontSize:9,color:"#64748b"}}>« Programmer » ouvre le ticket avec déclenchement, stop et objectif déjà remplis (validité 72 h, paper par défaut) : vérifiez puis validez.</div>
           </div>}
           <div style={{display:"flex",gap:10,marginTop:12,flexWrap:"wrap"}}>
             <button onClick={()=>onPrepare("long")} style={{flex:1,minWidth:150,background:"#052e16",border:"1px solid #22c55e",color:"#34d399",borderRadius:8,padding:"10px 14px",fontWeight:800,cursor:"pointer",boxShadow:adv&&adv.side==="long"?"0 0 0 2px #22c55e55":"none"}}>▲ Préparer un LONG</button>
@@ -1138,7 +1152,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
   }, [token]);
   useEffect(() => { load(); const t = setInterval(load, 4000); return () => clearInterval(t); }, [load]);
 
-  const loadProposal = async (opp, market) => {
+  const loadProposal = async (opp, market, preset) => {
     try {
       const q = new URLSearchParams({strategy:opp.strategy, ticker:opp.ticker, direction:opp.direction, market});
       const p = await apiCall(`/api/manual/proposal?${q}`,"GET",null,token);
@@ -1154,13 +1168,14 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
         tp1_on: false, tp1_pct: "", tp1_close_pct: 50, tp1_be: true,
         lock_on: !!p.free, lock_arm_pct: p.lock_arm_pct ?? p.sl_pct, lock_fraction_pct: Math.round((p.lock_fraction ?? 0.5)*100),
         trend_entry: prev?.trend_entry || "", trend_exit: prev?.trend_exit || "",
+        ...(preset ? {execution: preset.execution, trigger_price: String(Number(Number(preset.trigger_price).toPrecision(6))), sl_pct: Number(preset.sl_pct.toFixed(2)), tp_on: true, tp_pct: Number(preset.tp_pct.toFixed(2)), expiry_hours: preset.expiry_hours || 72} : {}),
       }));
     } catch(e) { alert(e.message); setSel(null); setProp(null); setF(null); }
   };
-  const choose = (opp) => { setSel(opp); setF(null); loadProposal(opp, "perp"); setTimeout(() => { const el = document.getElementById("manual-ticket"); if (el) el.scrollIntoView({behavior:"smooth", block:"start"}); }, 700); };
+  const choose = (opp, preset) => { setSel(opp); setF(null); loadProposal(opp, "perp", preset); setTimeout(() => { const el = document.getElementById("manual-ticket"); if (el) el.scrollIntoView({behavior:"smooth", block:"start"}); }, 700); };
   // v4.381 : prepare un ticket depuis une alerte. Opportunite encore valable -> ticket de son mode ; sinon ticket libre (Swing Support : ses propres niveaux).
   useEffect(() => {      // v4.406 : ticket prepare depuis la fenetre « resume de l'actif »
-    if (prep && prep.ticker) { choose({strategy:"libre", ticker:prep.ticker, direction:prep.direction}); if (onPrepDone) onPrepDone(); }
+    if (prep && prep.ticker) { choose({strategy:"libre", ticker:prep.ticker, direction:prep.direction}, prep.preset); if (onPrepDone) onPrepDone(); }
     // eslint-disable-next-line
   }, [prep && prep.nonce]);
   const prepareFromAlert = (o) => {
@@ -4063,7 +4078,7 @@ Confirmer ?`
 
       {/* v4.273 — TRADING MANUEL */}
       {tab==="manuel" && <ManualTradingTab token={token} prep={prep} onPrepDone={()=>setPrep(null)}/>}
-      {assetSym && <AssetSummaryModal ticker={assetSym} token={token} onClose={()=>setAssetSym(null)} onPrepare={(side)=>{ setPrep({ticker:assetSym, direction:side, nonce:Date.now()}); setTab("manuel"); setAssetSym(null); }}/>}
+      {assetSym && <AssetSummaryModal ticker={assetSym} token={token} onClose={()=>setAssetSym(null)} onPrepare={(side, preset)=>{ setPrep({ticker:assetSym, direction:side, nonce:Date.now(), preset:preset||null}); setTab("manuel"); setAssetSym(null); }}/>}
 
       {/* PAPER TRADING */}
       {tab==="paper" && (

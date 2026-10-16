@@ -965,3 +965,10 @@ Fichiers : `bot_engine.py`, `README.md`.
 - Boutons **▲ Préparer un LONG / ▼ Préparer un SHORT** : ouvrent Trading Manuel avec un ticket libre pré-rempli (valeurs par défaut, rien n'est envoyé tant que vous ne validez pas) et **ferment la fenêtre**.
 - Nouvelle route lecture seule : `GET /api/asset/summary?ticker=…`.
 - Fichiers : manual_trading.py, api.py, bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.407 — Résumé d'actif : « ATTENDRE » expliqué + situations programmables
+- Le conseil **ATTENDRE** dit maintenant **pourquoi** (signaux partagés, score insuffisant, ou bonne direction mais entrée immédiate trop chère).
+- **Nouveau critère** : un LONG/SHORT dont le gain/risque d'une entrée immédiate (stop et objectif sur les zones H4) est < 1,2 devient ATTENDRE. Seuil de score inchangé (±3).
+- Bloc **« Situations à attendre »** (zones H4) : LONG sur rebond du support, SHORT sur rejet de la résistance, LONG sur cassure de la résistance, SHORT sur cassure du support. Chacune : prix de déclenchement (et distance), stop au-delà de la zone, objectif sur la zone suivante, gain/risque, mention « contre-tendance » si elle va contre la tendance H4.
+- Bouton **⏱ Programmer** : ouvre le ticket libre avec déclenchement (prix ≤ / ≥), SL et TP déjà remplis, validité 72 h. Rien n'est envoyé avant votre validation.
+- Fichiers : manual_trading.py, bot_engine.py (version), index_src.html, index.html, README.md

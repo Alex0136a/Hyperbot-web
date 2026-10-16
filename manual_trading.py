@@ -253,7 +253,7 @@ class ManualTrading:
             return {"ok": False, "why": "prix indisponible (actif non suivi en perp ?)"}
         bot = self.bot
         spec = (("h1", "1h", 220), ("h4", "4h", 260), ("d1", "1d", 230))
-        tfs, cands = {}, {}
+        tfs, cands, zs = {}, {}, {}
         for key, tf, cnt in spec:
             try:
                 c = bot._mtf_candles(ticker, tf, cnt)
@@ -274,6 +274,7 @@ class ManualTrading:
             lb = 120 if key != "h1" else 150
             zones = mtf.find_zones(c, lookback=lb, max_width_atr=3)
             sup, res = mtf.nearest_zones(zones, price)
+            zs[key] = zones
             tol = a * 0.25
             tfs[key] = {"ok": True, "trend": tr, "rsi": rsi, "atr": a, "atr_pct": (a / price * 100) if price else None,
                         "support": sup, "resistance": res,
@@ -312,6 +313,72 @@ class ManualTrading:
         except Exception:
             out["funding_hourly_pct"] = out["funding_annual_pct"] = None
         out["advice"] = self._asset_advice(out)
+        try:
+            out["scenarios"] = self._asset_scenarios(out, zs.get("h4") or [])
+        except Exception:
+            out["scenarios"] = []
+        return out
+
+    @staticmethod
+    def _asset_scenarios(o, zones):
+        """Situations a attendre (a programmer en ordre sur prix) a partir des zones H4 : rebond sur support,
+        rejet de resistance, cassure haussiere, cassure baissiere. Chaque scenario donne le prix de
+        declenchement, un stop au-dela de la zone, un objectif sur la zone suivante et le gain/risque."""
+        h4 = (o.get("tf") or {}).get("h4") or {}
+        if not h4.get("ok"):
+            return []
+        price, a = o["price"], h4.get("atr") or 0
+        if a <= 0:
+            return []
+        sup, res = h4.get("support"), h4.get("resistance")
+        tr = h4.get("trend")
+        d1 = ((o.get("tf") or {}).get("d1") or {}).get("trend")
+        lean = (o.get("advice") or {}).get("lean")
+        zs = sorted(zones or [], key=lambda z: z["low"])
+        out = []
+        def add(side, kind, label, wait_txt, trig, sl, tp, ex, aligned, note):
+            risk, gain = abs(trig - sl), abs(tp - trig)
+            if risk <= 0 or gain <= 0:
+                return
+            out.append({"id": kind, "side": side, "label": label, "wait": wait_txt, "execution": ex,
+                        "trigger": trig, "trigger_dist_pct": (trig / price - 1) * 100,
+                        "sl": sl, "tp": tp, "sl_pct": risk / trig * 100, "tp_pct": gain / trig * 100,
+                        "rr": gain / risk, "aligned": bool(aligned), "note": note})
+        # 1) LONG : rebond sur support (le prix doit redescendre vers la zone)
+        if sup:
+            trig = sup["high"] + 0.1 * a
+            if trig < price:
+                tp = res["low"] if res and res["low"] > trig else trig + 2 * a
+                add("long", "bounce_support", "LONG sur rebond du support H4",
+                    f"que le prix redescende vers le support {sup['low']:.6g}–{sup['high']:.6g}", trig, sup["low"] - 0.15 * a, tp,
+                    "price_below", tr != "baissiere", "Pertinent tant que la tendance H4 n'est pas baissière." if tr != "baissiere" else "Contre la tendance H4 baissière : risque de cassure du support.")
+        # 2) SHORT : rejet sous la resistance (le prix doit remonter vers la zone)
+        if res:
+            trig = res["low"] - 0.1 * a
+            if trig > price:
+                tp = sup["high"] if sup and sup["high"] < trig else trig - 2 * a
+                add("short", "reject_resistance", "SHORT sur rejet de la résistance H4",
+                    f"que le prix remonte vers la résistance {res['low']:.6g}–{res['high']:.6g}", trig, res["high"] + 0.15 * a, tp,
+                    "price_above", tr != "haussiere", "Pertinent tant que la tendance H4 n'est pas haussière." if tr != "haussiere" else "Contre la tendance H4 haussière : risque de cassure de la résistance.")
+        # 3) LONG : cassure de la resistance
+        if res:
+            trig = res["high"] + 0.1 * a
+            nxt = [z for z in zs if z["low"] > res["high"] + 0.5 * a]
+            tp = nxt[0]["low"] if nxt else trig + 2 * a
+            add("long", "breakout_up", "LONG sur cassure de la résistance H4",
+                f"que le prix dépasse {res['high']:.6g} (cassure)", trig, res["low"] - 0.15 * a, tp,
+                "price_above", tr == "haussiere" or (tr == "neutre" and d1 != "baissiere"),
+                "Cassure dans le sens de la tendance." if tr == "haussiere" else "Cassure sans tendance H4 haussière : risque de fausse cassure.")
+        # 4) SHORT : cassure du support
+        if sup:
+            trig = sup["low"] - 0.1 * a
+            nxt = [z for z in reversed(zs) if z["high"] < sup["low"] - 0.5 * a]
+            tp = nxt[0]["high"] if nxt else trig - 2 * a
+            add("short", "breakout_down", "SHORT sur cassure du support H4",
+                f"que le prix passe sous {sup['low']:.6g} (cassure)", trig, sup["high"] + 0.15 * a, tp,
+                "price_below", tr == "baissiere" or (tr == "neutre" and d1 != "haussiere"),
+                "Cassure dans le sens de la tendance." if tr == "baissiere" else "Cassure sans tendance H4 baissière : risque de fausse cassure.")
+        out.sort(key=lambda x: (not x["aligned"], 0 if x["side"] == lean else 1, -x["rr"]))
         return out
 
     @staticmethod
@@ -357,14 +424,17 @@ class ManualTrading:
                 pts -= 0.5; why.append((-0.5, f"Funding {fa:+.0f} %/an : les longs paient (foule longue)"))
             else:
                 pts += 0.5; why.append((0.5, f"Funding {fa:+.0f} %/an : les shorts paient (foule short)"))
-        if pts >= 3:
+        SEUIL, RR_MIN = 3.0, 1.2          # score minimal ; gain/risque minimal d une entree immediate
+        wait = []
+        if pts >= SEUIL:
             side, label = "long", "LONG"
-        elif pts <= -3:
+        elif pts <= -SEUIL:
             side, label = "short", "SHORT"
         else:
             side, label = None, "ATTENDRE"
+            wait.append(f"Signaux insuffisants ou partagés (score {pts:+.1f}, il faut au moins ±{SEUIL:.0f}).")
         lean = "long" if pts > 0 else ("short" if pts < 0 else None)
-        conf = "forte" if abs(pts) >= 4.5 else ("moyenne" if abs(pts) >= 3 else "faible")
+        conf = "forte" if abs(pts) >= 4.5 else ("moyenne" if abs(pts) >= SEUIL else "faible")
         # niveaux de reference (structure H4) pour le sens penche
         plan = None
         side_plan = side or lean
@@ -381,8 +451,14 @@ class ManualTrading:
             if risk > 0:
                 plan = {"side": side_plan, "sl": sl, "tp": tp, "sl_pct": risk / price * 100, "tp_pct": gain / price * 100,
                         "rr": gain / risk}
+        # entree immediate trop chere : bonne direction mais gain/risque insuffisant -> ATTENDRE un meilleur prix
+        if side and plan and plan["rr"] < RR_MIN:
+            wait.append(f"Direction {label}, mais entrer maintenant donne un gain/risque de {plan['rr']:.2f} (minimum {RR_MIN}) : mieux vaut attendre un meilleur prix.")
+            side, label, conf = None, "ATTENDRE", "faible"
+        elif not side and plan and plan["rr"] < RR_MIN and lean:
+            wait.append(f"Entrer maintenant dans le sens {lean.upper()} donnerait un gain/risque de {plan['rr']:.2f} seulement.")
         why.sort(key=lambda x: -abs(x[0]))
-        return {"verdict": label, "side": side, "lean": lean, "score": round(pts, 1), "confidence": conf,
+        return {"wait": wait, "verdict": label, "side": side, "lean": lean, "score": round(pts, 1), "confidence": conf,
                 "reasons": [t for _, t in why], "plan": plan,
                 "note": "Conseil indicatif fondé sur des règles (tendance, RSI, zones, BTC, funding) — pas une garantie."}
 
