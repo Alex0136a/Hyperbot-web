@@ -1118,6 +1118,11 @@ function AssetSummaryModal({ ticker, token, onClose, onPrepare }) {
                 </div>
                 <div style={{fontSize:11,color:"#cbd5e1",marginTop:3}}>Attendre {sc.wait} ({sc.trigger_dist_pct>=0?"+":""}{sc.trigger_dist_pct.toFixed(2)} % du prix actuel) → entrée {sc.execution==="price_below"?"si prix ≤":"si prix ≥"} <b>{fp(sc.trigger)}</b></div>
                 <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>SL <b style={{color:"#f87171"}}>{fp(sc.sl)}</b> (−{sc.sl_pct.toFixed(2)} %) · objectif <b style={{color:"#34d399"}}>{fp(sc.tp)}</b> (+{sc.tp_pct.toFixed(2)} %) · gain/risque <b style={{color:sc.rr>=1.5?"#34d399":sc.rr>=1?"#fbbf24":"#f87171"}}>{sc.rr.toFixed(2)}</b> · {sc.note}</div>
+                {((sc.pros&&sc.pros.length)||(sc.cons&&sc.cons.length)) && <div style={{marginTop:5,fontSize:10,lineHeight:1.5}}>
+                  <div style={{color:"#64748b"}}>Bilan : <b style={{color:"#34d399"}}>{(sc.pros||[]).length} pour</b> · <b style={{color:"#f87171"}}>{(sc.cons||[]).length} contre</b></div>
+                  {(sc.pros||[]).map((t,i)=><div key={"p"+i} style={{color:"#86efac"}}>✔ {t}</div>)}
+                  {(sc.cons||[]).map((t,i)=><div key={"c"+i} style={{color:"#fca5a5"}}>✘ {t}</div>)}
+                </div>}
               </div>); })}
             <div style={{fontSize:9,color:"#64748b"}}>« Programmer » ouvre le ticket avec déclenchement, stop et objectif déjà remplis (validité 72 h, paper par défaut) : vérifiez puis validez.</div>
           </div>}

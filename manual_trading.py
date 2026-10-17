@@ -314,13 +314,13 @@ class ManualTrading:
             out["funding_hourly_pct"] = out["funding_annual_pct"] = None
         out["advice"] = self._asset_advice(out)
         try:
-            out["scenarios"] = self._asset_scenarios(out, zs.get("h4") or [])
+            out["scenarios"] = self._asset_scenarios(out, zs.get("h4") or [], cands)
         except Exception:
             out["scenarios"] = []
         return out
 
     @staticmethod
-    def _asset_scenarios(o, zones):
+    def _asset_scenarios(o, zones, cands=None):
         """Situations a attendre (a programmer en ordre sur prix) a partir des zones H4 : rebond sur support,
         rejet de resistance, cassure haussiere, cassure baissiere. Chaque scenario donne le prix de
         declenchement, un stop au-dela de la zone, un objectif sur la zone suivante et le gain/risque."""
@@ -378,8 +378,107 @@ class ManualTrading:
                 f"que le prix passe sous {sup['low']:.6g} (cassure)", trig, sup["high"] + 0.15 * a, tp,
                 "price_below", tr == "baissiere" or (tr == "neutre" and d1 != "haussiere"),
                 "Cassure dans le sens de la tendance." if tr == "baissiere" else "Cassure sans tendance H4 baissière : risque de fausse cassure.")
+        zmap = {"bounce_support": sup, "breakout_down": sup, "reject_resistance": res, "breakout_up": res}
+        for sc in out:
+            try:
+                sc["pros"], sc["cons"] = ManualTrading._scenario_args(sc["id"], sc["side"], zmap.get(sc["id"]), o, cands or {})
+            except Exception:
+                sc["pros"], sc["cons"] = [], []
         out.sort(key=lambda x: (not x["aligned"], 0 if x["side"] == lean else 1, -x["rr"]))
         return out
+
+    @staticmethod
+    def _scenario_args(kind, side, z, o, cands):
+        """Arguments POUR / CONTRE un scenario (regles usuelles d analyse technique, non validees statistiquement)."""
+        import mtf_analysis as mtf
+        tf = o.get("tf") or {}
+        h4 = tf.get("h4") or {}
+        a = h4.get("atr") or 0
+        pros, cons = [], []
+        P, C = pros.append, cons.append
+        long = side == "long"
+        bounce = kind in ("bounce_support", "reject_resistance")
+        names = {"haussiere": "haussière", "baissiere": "baissière"}
+        for key, lbl in (("h4", "H4"), ("d1", "D1")):
+            t = (tf.get(key) or {}).get("trend") if (tf.get(key) or {}).get("ok") else None
+            if t in names:
+                if (t == "haussiere") == long:
+                    P(f"Tendance {lbl} {names[t]} : dans le sens du trade")
+                else:
+                    C(f"Tendance {lbl} {names[t]} : à contre-courant")
+        r = h4.get("rsi")
+        if r is not None:
+            if bounce and long:
+                (P if r <= 40 else C if r >= 65 else (lambda x: None))(f"RSI H4 {r:.0f} : {'survente, rebond plausible' if r <= 40 else 'encore haut pour un rebond'}")
+            elif bounce and not long:
+                (P if r >= 60 else C if r <= 35 else (lambda x: None))(f"RSI H4 {r:.0f} : {'surachat, repli plausible' if r >= 60 else 'déjà bas pour un repli'}")
+            elif long:
+                (P if 50 <= r < 72 else C if (r >= 75 or r < 45) else (lambda x: None))(f"RSI H4 {r:.0f} : {'élan haussier sans excès' if 50 <= r < 72 else 'trop étiré, cassure essoufflée' if r >= 75 else 'pas d élan haussier'}")
+            else:
+                (P if 28 < r <= 50 else C if (r <= 25 or r > 55) else (lambda x: None))(f"RSI H4 {r:.0f} : {'élan baissier sans excès' if 28 < r <= 50 else 'déjà très bas, risque de rebond' if r <= 25 else 'pas d élan baissier'}")
+        if z:
+            tc = z.get("touches", 1)
+            if bounce:
+                if 2 <= tc <= 4:
+                    P(f"Zone confirmée ({tc} contacts) et encore solide")
+                elif tc <= 1:
+                    C("Zone peu testée (1 contact) : fiabilité faible")
+                else:
+                    C(f"Zone très sollicitée ({tc} contacts) : elle s'use et finit souvent par céder")
+            else:
+                if tc >= 5:
+                    P(f"Zone très testée ({tc} contacts) : elle s'use, la cassure devient plus probable")
+            # confluence sur les autres unites de temps
+            role = "support" if kind in ("bounce_support", "breakout_down") else "resistance"
+            conf = []
+            for key, lbl in (("h1", "H1"), ("d1", "D1")):
+                zz = (tf.get(key) or {}).get(role) if (tf.get(key) or {}).get("ok") else None
+                if zz and a and zz["low"] <= z["high"] + 0.5 * a and zz["high"] >= z["low"] - 0.5 * a:
+                    conf.append(lbl)
+            if conf:
+                if bounce:
+                    P(f"Même zone retrouvée en {' et '.join(conf)} : niveau confirmé sur plusieurs échelles")
+                else:
+                    C(f"Zone renforcée en {' et '.join(conf)} : plus difficile à franchir")
+            # bougie de rejet (rebonds uniquement)
+            c4 = (cands or {}).get("h4") or []
+            if bounce and c4 and a:
+                c = c4[-1]
+                rng = c["h"] - c["l"]
+                if rng > 0:
+                    if long and (min(c["o"], c["c"]) - c["l"]) / rng >= 0.5 and c["l"] <= z["high"] + 0.3 * a:
+                        P("Dernière bougie H4 : longue mèche basse près de la zone (rejet acheteur)")
+                    if (not long) and (c["h"] - max(c["o"], c["c"])) / rng >= 0.5 and c["h"] >= z["low"] - 0.3 * a:
+                        P("Dernière bougie H4 : longue mèche haute près de la zone (rejet vendeur)")
+            # volume et compression (cassures)
+            if not bounce and len(c4) >= 25:
+                base = sum(x.get("v", 0) for x in c4[-21:-1]) / 20.0
+                if base > 0:
+                    vr = c4[-1].get("v", 0) / base
+                    if vr >= 1.3:
+                        P(f"Volume H4 récent ×{vr:.1f} la moyenne : participation en hausse")
+                    elif vr <= 0.7:
+                        C(f"Volume H4 récent faible (×{vr:.1f}) : cassure peu appuyée")
+                a_short, a_long = mtf.atr(c4[-7:]) or 0, mtf.atr(c4[-31:]) or 0
+                if a_long > 0:
+                    cr = a_short / a_long
+                    if cr < 0.85:
+                        P("Volatilité en compression : une cassure sort souvent plus franche")
+                    elif cr > 1.3:
+                        C("Volatilité déjà élevée : une partie du mouvement est peut-être consommée")
+        bt = o.get("btc_trend")
+        if bt in names and o.get("ticker") != "BTC":
+            if (bt == "haussiere") == long:
+                P(f"BTC {names[bt]} (H4) : contexte favorable")
+            else:
+                C(f"BTC {names[bt]} (H4) : contexte défavorable")
+        fa = o.get("funding_annual_pct")
+        if fa is not None and abs(fa) >= 30:
+            if (fa < 0) == long:
+                P(f"Funding {fa:+.0f} %/an : la foule est de l'autre côté")
+            else:
+                C(f"Funding {fa:+.0f} %/an : la foule est déjà dans ce sens")
+        return pros, cons
 
     @staticmethod
     def _asset_advice(o):

@@ -972,3 +972,9 @@ Fichiers : `bot_engine.py`, `README.md`.
 - Bloc **« Situations à attendre »** (zones H4) : LONG sur rebond du support, SHORT sur rejet de la résistance, LONG sur cassure de la résistance, SHORT sur cassure du support. Chacune : prix de déclenchement (et distance), stop au-delà de la zone, objectif sur la zone suivante, gain/risque, mention « contre-tendance » si elle va contre la tendance H4.
 - Bouton **⏱ Programmer** : ouvre le ticket libre avec déclenchement (prix ≤ / ≥), SL et TP déjà remplis, validité 72 h. Rien n'est envoyé avant votre validation.
 - Fichiers : manual_trading.py, bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.408 — Résumé d'actif : arguments « pour / contre » par scénario
+- Chaque situation à attendre (rebond de support, rejet de résistance, cassure haussière, cassure baissière) affiche un **bilan « n pour · n contre »** et la liste des arguments.
+- Critères : tendance H4 et D1 (dans le sens ou à contre-courant), RSI H4 (survente/surachat pour un rebond, élan sans excès pour une cassure), nombre de contacts de la zone (confirmée 2–4, usée ≥ 5), même zone retrouvée en H1/D1, bougie de rejet H4 (mèche) pour les rebonds, volume H4 récent et compression de volatilité pour les cassures, tendance BTC H4, funding extrême.
+- Règles usuelles d'analyse technique, **non validées statistiquement** ; elles n'entrent pas dans le score du conseil. À confronter aux résultats réels des trades programmés. Le retest d'une zone cassée n'est pas détecté.
+- Fichiers : manual_trading.py, bot_engine.py (version), index_src.html, index.html, README.md
