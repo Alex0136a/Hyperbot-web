@@ -801,10 +801,10 @@ class ManualTrading:
         p["tp1_pct"], p["tp1_close_pct"] = t1, cp
         p["tp1_be"] = bool(p.get("tp1_be", True))
 
-    def _propose_swing_support(self, ticker, direction, market):
+    def _propose_swing_support(self, ticker, direction, market, mirror=False):
         """v4.381 : ticket prepare depuis une alerte Swing Support (n importe quel actif crypto). Memes stop / objectif / levier
         / taille que le mode Swing Support, tout reste modifiable ; aucune opportunite du bot n est requise."""
-        if direction != "long":
+        if direction != "long" and not mirror:
             raise ManualError("Swing Support : achat (LONG) uniquement.")
         p = self._propose_free(ticker, direction, market)
         cfg = self.cfg
@@ -818,12 +818,20 @@ class ManualTrading:
                   "tp_run_lock_pct": float(cfg.get("SUPSW_TRAIL_LOCK_PCT", 0.5)), "tp_run_trail_pct": float(cfg.get("SUPSW_TRAIL_PCT", 0.5)), "leverage": lev, "notional_usd": round(notional, 2),
                   "margin_usd": round(notional / lev, 2), "sl_pct": round(sl, 3), "sl_basis": "stop Swing Support (selon le levier)" if int(cfg.get("SUPSW_LEVER_SCALE", 0)) == 1 else "stop fixe Swing Support",
                   "tp_pct": round(tp, 3), "tp_basis": "objectif Swing Support",
-                  "reasons": ["Ticket prepare depuis une alerte Swing Support : stop, objectif, levier et taille du mode (modifiables). "
+                  "reasons": ["Reglages par defaut du mode Swing Support : stop, objectif, levier, taille et « laisser courir » (tout est modifiable). "
                               "La sortie anticipee du mode ne s applique pas aux trades manuels."]})
         return p
 
     def propose(self, strategy, ticker, direction, market="perp"):
         if strategy == "libre":
+            # v4.415 : par defaut, tout ticket manuel (crypto) s ouvre avec les reglages du mode Swing Support
+            # (stop, objectif, levier, taille, laisser courir). Les marches Forex (xyz:) gardent les reglages libres.
+            if int(self.cfg.get("MANUAL_DEFAULT_SWING", 1)) == 1 and not str(ticker).startswith("xyz:"):
+                p = self._propose_swing_support(ticker, direction, market, mirror=True)
+                if direction != "long":
+                    p["strategy"] = "libre"       # le mode Swing Support n achete que : un SHORT garde l etiquette libre
+                    p["reasons"] = ["Reglages par defaut du mode Swing Support appliques a un SHORT (stop, objectif, levier, taille, laisser courir) : tout est modifiable."]
+                return p
             return self._propose_free(ticker, direction, market)
         if strategy == "swing_support":
             return self._propose_swing_support(ticker, direction, market)
@@ -1101,10 +1109,28 @@ class ManualTrading:
 
     def _open_live_perp(self, item, price, is_long):
         ex, ticker, lev = self.bot.exchange, item["ticker"], item["leverage"]
+        want = lev
+        is_cross = not ticker.startswith("xyz:")
         try:
-            ex.update_leverage(lev, ticker, is_cross=not ticker.startswith("xyz:"))
+            resp = ex.update_leverage(lev, ticker, is_cross=is_cross)
         except Exception as e:
             raise ManualError(f"levier x{lev} refuse par Hyperliquid ({e})")
+        # v4.412 : le SDK ne leve pas d exception quand Hyperliquid REFUSE le levier, il renvoie {"status": "err", ...}.
+        # Avant, la refus passait inapercu : l ordre partait avec le levier deja en place sur Hyperliquid, mais le suivi
+        # gardait le levier demande (marge, % de marge, PnL faux).
+        if isinstance(resp, dict) and resp.get("status") not in (None, "ok"):
+            why = str(resp.get("response") or resp)[:160]
+            self._log(f"#{item['id']} {ticker} : levier x{want} REFUSE par Hyperliquid ({why})", "warn")
+            item["leverage_note"] = f"levier x{want} refusé par Hyperliquid : {why}"
+            mx = self._asset_max_leverage(ticker)
+            if mx and mx < lev:
+                try:
+                    r2 = ex.update_leverage(mx, ticker, is_cross=is_cross)
+                    if not (isinstance(r2, dict) and r2.get("status") not in (None, "ok")):
+                        lev = mx
+                        self._log(f"#{item['id']} {ticker} : levier ramene au maximum de l actif (x{mx})", "warn")
+                except Exception:
+                    pass
         sl_price = price * (1 - item["sl_pct"] / 100) if is_long else price * (1 + item["sl_pct"] / 100)
         margin = item["notional_usd"] / max(lev, 1)
         ok, err, fill = be.place_order(ex, ticker, is_long, margin, price, self.cfg, sl_price=sl_price,
@@ -1119,7 +1145,28 @@ class ManualTrading:
             time.sleep(0.7)
         if not ep or ep["szi"] == 0:
             raise ManualError("ordre accepte mais aucune position constatee sur Hyperliquid")
+        # v4.412 : le levier REEL de la position fait foi (marge, % de marge, affichage)
+        real = ep.get("leverage")
+        try:
+            real = int(float(real)) if real else None
+        except (TypeError, ValueError):
+            real = None
+        final = real or lev
+        if final != want:
+            item["leverage_requested"] = want
+            item.setdefault("leverage_note", f"levier x{want} demandé, x{final} appliqué par Hyperliquid")
+            self._log(f"#{item['id']} {ticker} : levier REEL x{final} (demande x{want}) — suivi mis a jour", "warn")
+        item["leverage"] = final
         return (fill or ep["entry"] or price), abs(ep["szi"])
+
+    def _asset_max_leverage(self, ticker):
+        try:
+            for u in (self.bot.info.meta() or {}).get("universe", []):
+                if u.get("name") == ticker:
+                    return int(u.get("maxLeverage") or 0) or None
+        except Exception:
+            pass
+        return None
 
     def _spot_available(self, token):
         state = self.bot.info.spot_user_state(self._wallet()) or {}
@@ -1184,6 +1231,13 @@ class ManualTrading:
                         return
                     fill = be.pop_last_close_fill(item["ticker"])
                     exit_price, source = (fill, "hyperliquid") if fill else (price, "bot")
+                    if not fill:
+                        # v4.411 : position deja fermee sur Hyperliquid (stop natif declenche) -> le vrai prix de sortie
+                        # est dans les remplissages du compte, pas besoin de l estimer
+                        real = self._hl_exit_fill(item, time.time())
+                        if real:
+                            exit_price, source = real["px"], "hyperliquid"
+                            item["fees_real"] = real["fee"]
                     self._cancel_native_orders(item["ticker"])
                 else:
                     sp = self.spot_pair(item["ticker"])
@@ -1211,6 +1265,212 @@ class ManualTrading:
             except Exception as e:
                 print(f"[MANUEL] Cloture historique #{item['id']} impossible : {e}")
             self._log(f"#{item['id']} FERME ({reason}) : {item['ticker']} @ {exit_price:.6g} | {move_pct:+.2f}% | PnL {pnl:+.2f} $", "win" if pnl > 0 else "loss")
+
+    def _hl_exit_fill(self, item, ref_ts, tries=3):
+        """v4.411 — prix moyen REEL de la derniere sortie de ce trade, lu dans les remplissages Hyperliquid
+        (dernier groupe de remplissages de cloture sur l actif, a 60 s pres). None si introuvable."""
+        wallet = self._wallet()
+        if not wallet or item.get("market") != "perp":
+            return None
+        opened = float(item.get("opened_at") or item.get("created_at") or ref_ts - 86400)
+        for k in range(tries):
+            try:
+                fills = self.bot.info.user_fills_by_time(wallet, int(opened * 1000) - 5_000, int(ref_ts * 1000) + 120_000) or []
+            except Exception:
+                fills = []
+            cl = [f for f in fills if f.get("coin") == item["ticker"] and str(f.get("dir", "")).startswith("Close")]
+            if cl:
+                last_t = max(int(f.get("time") or 0) for f in cl)
+                grp = [f for f in cl if int(f.get("time") or 0) >= last_t - 60_000]
+                sz = sum(abs(float(f.get("sz") or 0)) for f in grp)
+                if sz > 0:
+                    px = sum(float(f["px"]) * abs(float(f.get("sz") or 0)) for f in grp) / sz
+                    return {"px": px, "fee": sum(float(f.get("fee") or 0) for f in grp),
+                            "closed_pnl": sum(float(f.get("closedPnl") or 0) for f in grp), "ts": last_t / 1000.0}
+            if k < tries - 1:
+                time.sleep(1.0)
+        return None
+
+    def leverage_check(self):
+        """v4.414 — diagnostic + resynchronisation immediate : pour chaque position manuelle live (perp), ce que
+        Hyperliquid renvoie VRAIMENT (objet levier brut, marge utilisee, valeur de position, levier effectif =
+        valeur / marge) face au levier suivi par le bot. Applique ensuite l alignement."""
+        items = [i for i in list(self.items.values()) if i.get("status") == "open" and i.get("mode") == "live" and i.get("market") == "perp"]
+        out = {"positions": [], "account": {}, "aligned": 0}
+        if not items:
+            out["note"] = "aucune position manuelle live ouverte"
+            return out
+        wallet = self._wallet()
+        for it in items:
+            row = {"id": it["id"], "ticker": it["ticker"], "tracked_leverage": it.get("leverage")}
+            try:
+                dex = be._dex_of(it["ticker"])
+                state = self.bot.info.user_state(wallet, dex) if dex else self.bot.info.user_state(wallet)
+                if not out["account"]:
+                    ms = (state or {}).get("crossMarginSummary") or (state or {}).get("marginSummary") or {}
+                    out["account"] = {k: ms.get(k) for k in ("accountValue", "totalNtlPos", "totalMarginUsed")}
+                for ap in (state or {}).get("assetPositions", []):
+                    p = ap.get("position", {}) or {}
+                    if p.get("coin") == it["ticker"]:
+                        row["raw_position"] = {k: p.get(k) for k in ("coin", "szi", "entryPx", "leverage", "marginUsed", "positionValue", "liquidationPx", "unrealizedPnl", "returnOnEquity", "maxLeverage")}
+                        row["hl_leverage"] = p.get("leverage")
+                        row["marginUsed"] = p.get("marginUsed")
+                        row["positionValue"] = p.get("positionValue")
+                        try:
+                            row["effective_leverage"] = round(float(p["positionValue"]) / float(p["marginUsed"]), 2)
+                        except Exception:
+                            row["effective_leverage"] = None
+            except Exception as e:
+                row["error"] = f"{type(e).__name__}: {e}"
+            row["max_leverage_meta"] = self._asset_max_leverage(it["ticker"])
+            try:       # reglage de levier de l actif cote Hyperliquid (source officielle du levier applique)
+                aad = self.bot.info.post("/info", {"type": "activeAssetData", "user": wallet, "coin": it["ticker"]})
+                row["active_asset_data"] = {k: (aad or {}).get(k) for k in ("leverage", "maxTradeSzs", "availableToTrade", "markPx")}
+            except Exception as e:
+                row["active_asset_data"] = f"indisponible ({type(e).__name__}: {e})"
+            out["positions"].append(row)
+        try:
+            out["aligned"] = self.sync_leverage(force=True)
+        except Exception as e:
+            out["sync_error"] = f"{type(e).__name__}: {e}"
+        for row in out["positions"]:
+            it = self.items.get(row["id"])
+            row["tracked_leverage_after"] = it.get("leverage") if it else None
+            row["note"] = it.get("leverage_note") if it else None
+        return out
+
+    def _enforce_leverage(self, it, want):
+        """v4.415 : tente de remettre sur Hyperliquid le levier voulu (une seule fois par trade, sauf force). Renvoie (ok, reponse)."""
+        ex = self.bot.exchange
+        try:
+            r = ex.update_leverage(int(want), it["ticker"], is_cross=not it["ticker"].startswith("xyz:"))
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}"
+        if isinstance(r, dict) and r.get("status") not in (None, "ok"):
+            return False, str(r.get("response") or r)[:200]
+        return True, "ok"
+
+    def sync_leverage(self, force=False):
+        """v4.413 — le levier REEL de chaque position manuelle live (lu sur Hyperliquid) fait foi : s il differe de celui
+        suivi par le bot (levier refuse / plafonne a l ouverture, ou modifie a la main sur Hyperliquid), on aligne le
+        suivi. Le notionnel ne change pas ; marge, % de marge et PnL en pourcentage sont recalcules. Toutes les 5 min."""
+        items = [i for i in list(self.items.values()) if i.get("status") == "open" and i.get("mode") == "live" and i.get("market") == "perp"]
+        if not items:
+            return 0
+        try:
+            exch = be.fetch_exchange_positions(self.bot.info, self._wallet(), [i["ticker"] for i in items])
+        except Exception:
+            return 0
+        if not exch:
+            return 0
+        n = 0
+        for it in items:
+            ep = exch.get(it["ticker"])
+            if not ep or ep["szi"] == 0 or (ep["szi"] > 0) != (it["direction"] == "long"):
+                continue
+            try:
+                real = int(float(ep.get("leverage") or 0))
+            except (TypeError, ValueError):
+                real = 0
+            # levier effectif = valeur de position / marge utilisee (recoupe le champ « leverage » d Hyperliquid)
+            try:
+                eff = float(ep["position_value"]) / float(ep["margin_used"])
+                if eff > 0 and (real <= 0 or abs(eff - real) / real > 0.3):
+                    self._log(f"#{it['id']} {it['ticker']} : levier annonce x{real} mais marge utilisee => x{eff:.1f} effectif", "warn")
+                    real = max(1, int(round(eff)))
+            except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                pass
+            if real <= 0 or real == it.get("leverage"):
+                continue
+            old = it.get("leverage")
+            want = it.get("leverage_requested") or old
+            # 1) on essaie d abord de remettre le levier VOULU sur Hyperliquid (une fois par trade, ou a la demande)
+            why = None
+            if real != want and (force or not it.get("lev_enforce_tried")):
+                it["lev_enforce_tried"] = True
+                ok, resp = self._enforce_leverage(it, want)
+                if ok:
+                    try:
+                        time.sleep(0.8)
+                        ex2 = be.fetch_exchange_positions(self.bot.info, self._wallet(), [it["ticker"]]) or {}
+                        real2 = int(float((ex2.get(it["ticker"]) or {}).get("leverage") or 0))
+                    except Exception:
+                        real2 = 0
+                    if real2 == want:
+                        it["leverage"] = want
+                        it.pop("leverage_note", None)
+                        self._log(f"#{it['id']} {it['ticker']} : levier x{want} remis sur Hyperliquid", "signal")
+                        self._save(it)
+                        n += 1
+                        continue
+                    real = real2 or real
+                    why = f"Hyperliquid accepte la demande x{want} mais applique x{real}"
+                else:
+                    why = f"Hyperliquid refuse x{want} : {resp}"
+                    mx = self._asset_max_leverage(it["ticker"])
+                    if mx and mx < want and mx != real:       # repli : levier maximal autorise pour cet actif
+                        ok2, _ = self._enforce_leverage(it, mx)
+                        if ok2:
+                            real = mx
+                            why += f" — levier ramené au maximum de l'actif (x{mx})"
+                self._log(f"#{it['id']} {it['ticker']} : {why}", "warn")
+            it.setdefault("leverage_requested", old)
+            it["leverage_note"] = (why + " — " if why else "") + f"levier suivi x{old} corrigé en x{real} d'après Hyperliquid"
+            it["leverage"] = real
+            n += 1
+            self._log(f"#{it['id']} {it['ticker']} : levier reel Hyperliquid x{real} (suivi x{old}) — suivi aligne", "warn")
+            self._save(it)
+            try:
+                if it.get("trade_uid"):
+                    db.set_trade_leverage_by_uid(it["trade_uid"], real, it["notional_usd"] / max(real, 1))
+            except Exception as e:
+                print(f"[MANUEL] Alignement levier historique #{it['id']} impossible : {e}")
+        return n
+
+    def reconcile_exit_sources(self, max_age_days=14, limit=20):
+        """v4.411 — trades manuels LIVE perp deja fermes avec une sortie « estimee par le bot » : si le vrai remplissage
+        Hyperliquid existe (stop natif declenche avant que le bot ne ferme), on corrige prix de sortie, PnL et source.
+        Appel espace (une fois par heure au plus)."""
+        if time.time() - getattr(self, "_recon_exit_ts", 0) < 3600:
+            return 0
+        self._recon_exit_ts = time.time()
+        fixed = 0
+        try:
+            rows = db.manual_history(200)
+        except Exception:
+            return 0
+        done = 0
+        for r in rows:
+            it = r["data"]
+            if (r["status"] != "closed" or it.get("mode") != "live" or it.get("market") != "perp"
+                    or it.get("exit_source") != "bot" or not it.get("closed_at")
+                    or time.time() - it["closed_at"] > max_age_days * 86400 or it.get("exit_fix_tried")):
+                continue
+            if done >= limit:
+                break
+            done += 1
+            it["id"] = r["id"]
+            real = self._hl_exit_fill(it, it["closed_at"], tries=1)
+            it["exit_fix_tried"] = True
+            if real:
+                sign = 1 if it["direction"] == "long" else -1
+                old = it.get("exit_price")
+                it["exit_price"], it["exit_source"] = real["px"], "hyperliquid"
+                it["fees_real"] = real["fee"]
+                it["pnl"] = it["qty"] * (real["px"] - it["entry_price"]) * sign + float(it.get("realized_pnl") or 0)
+                fixed += 1
+                self._log(f"#{r['id']} {it['ticker']} : sortie corrigee d apres Hyperliquid ({old} -> {real['px']:.6g})", "dim")
+                try:
+                    if it.get("trade_uid"):
+                        db.fix_trade_exit_by_uid(it["trade_uid"], real["px"], it["pnl"], "hyperliquid")
+                except Exception as e:
+                    print(f"[MANUEL] Correction historique #{r['id']} impossible : {e}")
+            try:
+                data = {k: v for k, v in it.items() if k not in ("id", "status")}
+                db.manual_update(r["id"], "closed", data)
+            except Exception as e:
+                print(f"[MANUEL] Sauvegarde correction #{r['id']} impossible : {e}")
+        return fixed
 
     def _partial_close(self, item, price):
         """v4.404 : TP1 atteint -> cloture partielle au marche, puis SL au seuil de rentabilite (option)."""
@@ -1484,6 +1744,11 @@ class ManualTrading:
     def on_cycle(self):
         if not self.bot._is_ws_healthy():
             self.on_tick()
+        if time.time() - getattr(self, "_recon_exit_ts", 0) >= 3600:
+            threading.Thread(target=lambda: self.reconcile_exit_sources(), daemon=True).start()
+        if time.time() - getattr(self, "_lev_sync_ts", 0) >= 300:
+            self._lev_sync_ts = time.time()
+            threading.Thread(target=self.sync_leverage, daemon=True).start()
         now = time.time()
         for item in list(self.items.values()):
             if item["status"] == "scheduled" and now > item.get("expires_at", now + 1):

@@ -1159,6 +1159,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
   const [editId, setEditId] = useState(null);
   const [edit, setEdit] = useState({});
   const [schedId, setSchedId] = useState(null);
+  const [levDiag, setLevDiag] = useState("");
   const [sched, setSched] = useState({});
   const [freeT, setFreeT] = useState("");          // v4.343 — ordre libre : actif
   const [freeDir, setFreeDir] = useState("long");  // v4.343 — ordre libre : sens
@@ -1189,7 +1190,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
       }));
     } catch(e) { alert(e.message); setSel(null); setProp(null); setF(null); }
   };
-  const choose = (opp, preset) => { setSel(opp); setF(null); loadProposal(opp, "perp", preset); setTimeout(() => { const el = document.getElementById("manual-ticket"); if (el) el.scrollIntoView({behavior:"smooth", block:"start"}); }, 700); };
+  const choose = (opp0, preset) => { const opp = (opp0.strategy==="libre" && opp0.direction==="long" && !String(opp0.ticker).startsWith("xyz:")) ? {...opp0, strategy:"swing_support"} : opp0;   /* v4.415 : par defaut Swing Support */ setSel(opp); setF(null); loadProposal(opp, "perp", preset); setTimeout(() => { const el = document.getElementById("manual-ticket"); if (el) el.scrollIntoView({behavior:"smooth", block:"start"}); }, 700); };
   // v4.381 : prepare un ticket depuis une alerte. Opportunite encore valable -> ticket de son mode ; sinon ticket libre (Swing Support : ses propres niveaux).
   useEffect(() => {      // v4.406 : ticket prepare depuis la fenetre « resume de l'actif »
     if (prep && prep.ticker) { choose({strategy:"libre", ticker:prep.ticker, direction:prep.direction}, prep.preset); if (onPrepDone) onPrepDone(); }
@@ -1528,12 +1529,15 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
 
       {/* POSITIONS MANUELLES */}
       <div style={MT.card}>
-        <div style={MT.title}>📈 POSITIONS MANUELLES OUVERTES ({st.positions.length})</div>
+        <div style={MT.title}>📈 POSITIONS MANUELLES OUVERTES ({st.positions.length})
+          <button style={{...MT.btn("#a78bfa"),marginLeft:10,padding:"2px 8px",fontSize:10}} onClick={async()=>{ try { const r = await apiCall("/api/manual/leverage-check","GET",null,token); setLevDiag(JSON.stringify(r,null,2)); load && load(); } catch(e) { setLevDiag("Erreur : "+e.message); } }}>🔍 Vérifier le levier réel</button>
+          {levDiag && <div style={{marginTop:8,fontWeight:400}}><div style={{fontSize:10,color:"#94a3b8"}}>Diagnostic (texte sélectionnable) <button style={{...MT.btn("#334155"),padding:"1px 6px",fontSize:9}} onClick={()=>{ try { navigator.clipboard.writeText(levDiag); } catch(_) {} }}>Copier</button> <button style={{...MT.btn("#334155"),padding:"1px 6px",fontSize:9}} onClick={()=>setLevDiag("")}>Fermer</button></div><pre style={{whiteSpace:"pre-wrap",wordBreak:"break-all",userSelect:"text",fontSize:10,color:"#cbd5e1",background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:8,maxHeight:260,overflow:"auto"}}>{levDiag}</pre></div>}</div>
         {st.positions.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucune position manuelle.</div> : st.positions.map(p=>(
           <div key={p.id} style={{borderBottom:"1px solid #131d33",padding:"10px 0"}}>
             <div style={{display:"flex",flexWrap:"wrap",gap:14,alignItems:"center",fontSize:12,color:"#e2e8f0"}}>
               <b>#{p.id} <span data-tk={p.ticker} title="Résumé de l'actif" style={{cursor:"pointer",textDecoration:"underline dotted"}}>{p.ticker}</span></b>{dirBadge(p.direction)}
-              <span>{p.market.toUpperCase()} · <span style={{color:p.mode==="live"?"#ef4444":"#22c55e"}}>{p.mode.toUpperCase()}</span> · x{p.leverage}</span>
+              <span>{p.market.toUpperCase()} · <span style={{color:p.mode==="live"?"#ef4444":"#22c55e"}}>{p.mode.toUpperCase()}</span> · x{p.leverage}{p.leverage_requested ? <span title={p.leverage_note} style={{color:"#fbbf24",marginLeft:4}}>⚠ demandé x{p.leverage_requested}</span> : null}</span>
+              {p.leverage_note && <div style={{width:"100%",fontSize:10,color:"#fbbf24"}}>⚠ {p.leverage_note}</div>}
               <span>Entrée {fmtP(p.entry_price)} → {fmtP(p.current_price)}</span>
               <span style={{color:(p.pnl||0)>=0?"#22c55e":"#ef4444",fontWeight:800}}>{fmtUsd(p.pnl)} {p.move_pct!=null?`(${_roe(p.move_pct,p.leverage)>=0?"+":""}${Number(_roe(p.move_pct,p.leverage)).toFixed(2)} %)`:""}</span>
               <span style={{color:"#94a3b8"}}>SL {fmtP(p.sl_price)} · {p.tp1_price?`TP1 ${fmtP(p.tp1_price)} (${Math.round(p.tp1_close_pct||50)} %${p.tp1_be!==false?" · SL→seuil":""}) · `:""}{p.tp1_done?`TP1 ✔ encaissé ${fmtUsd(p.realized_pnl)} · `:""}{p.tp1_price?"TP2":"TP"} {p.tp_price?fmtP(p.tp_price):"—"}{p.tp_run?` (laisser courir : verrou +${p.tp_run_lock_pct}%, suiveur ${p.tp_run_trail_pct}%${p.tp_run_armed?" — ARMÉ":""})`:""} · TTP {p.ttp_arm_pct?`+${p.ttp_arm_pct}%/${p.ttp_trail_pct}%${p.armed?" (armé)":""}`:"—"} · pic +{(p.peak_pct||0).toFixed(2)} %
@@ -1584,7 +1588,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
               <td style={MT.td}>{fmtP(h.entry_price)}</td><td style={MT.td}>{fmtP(h.exit_price)}</td>
               <td style={{...MT.td,color:(h.pnl||0)>=0?"#22c55e":"#ef4444"}}>{h.pnl!=null?fmtUsd(h.pnl):"—"}</td>
               <td style={{...MT.td,color:"#94a3b8"}}>{h.status==="closed"?h.reason:`${h.status==="cancelled"?"annulé":h.status==="expired"?"expiré":"échec"} — ${h.reason||h.error||""}`}
-                {h.status==="closed" && h.mode==="live" && <div style={{fontSize:10,color:h.exit_source==="hyperliquid"?"#86efac":"#fbbf24"}}>{h.entry_verified?"ouverture constatée sur Hyperliquid · ":""}sortie {h.exit_source==="hyperliquid"?"confirmée par Hyperliquid":"estimée par le bot"}</div>}</td>
+                {h.status==="closed" && h.mode==="live" && <div style={{fontSize:10,color:h.exit_source==="hyperliquid"?"#86efac":"#fbbf24"}}>{h.entry_verified?"ouverture constatée sur Hyperliquid · ":""}sortie {h.exit_source==="hyperliquid"?"confirmée par Hyperliquid":"estimée par le bot (remplissage Hyperliquid introuvable)"}</div>}</td>
             </tr>)}</tbody>
           </table></div>)}
       </div>

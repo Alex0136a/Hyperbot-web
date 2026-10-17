@@ -992,3 +992,41 @@ Fichiers : `bot_engine.py`, `README.md`.
 - **Confirmation récente** : une situation n'est retenue que si son espérance nette n'est pas négative sur la **moitié la plus récente** de la fenêtre (dès 4 cas) ; sinon rejet « le régime a peut-être changé ». Le résultat de la moitié récente est affiché.
 - Le nombre de jours affiché est celui de la fenêtre jugée.
 - Fichiers : manual_trading.py, api.py, bot_engine.py (version + réglage), index_src.html, index.html, README.md
+
+## v4.411 — Sortie manuelle LIVE : vrai prix Hyperliquid retrouvé
+- Constat : quand le **stop natif** Hyperliquid se déclenchait avant que le bot ne ferme, la position était déjà absente → le bot reprenait son propre prix du moment et affichait « sortie estimée par le bot », alors que la sortie avait bien eu lieu sur Hyperliquid.
+- Correctif : à la fermeture, si aucun remplissage n'est renvoyé, le bot lit les **remplissages du compte** (dernier groupe de clôture sur l'actif) : prix moyen réel, frais réels. La sortie est alors « confirmée par Hyperliquid ».
+- **Rattrapage** : une fois par heure, les trades manuels live fermés (14 derniers jours) marqués « estimée » sont recontrôlés ; si le remplissage existe, prix de sortie, PnL et source sont corrigés (fiche manuelle et table des trades). Un seul essai par trade.
+- Si le remplissage reste introuvable, le libellé devient « estimée par le bot (remplissage Hyperliquid introuvable) ».
+- Fichiers : manual_trading.py, db.py, bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.412 — Levier refusé par Hyperliquid : le suivi prend le levier réel
+- Constat : le SDK ne lève pas d erreur quand Hyperliquid refuse un levier, il renvoie un statut « err ». Le refus passait inaperçu : l'ordre partait avec le levier déjà en place sur Hyperliquid, mais le trade restait suivi avec le levier demandé (marge, % de marge et PnL faux).
+- Correctif (trades manuels live perp, ticket et ordres programmés) :
+  1. refus détecté et journalisé avec la raison donnée par Hyperliquid ;
+  2. si le levier demandé dépasse le maximum de l'actif, nouvel essai au **levier maximal** de l'actif ;
+  3. après l'ouverture, le **levier réel de la position** lu sur Hyperliquid devient le levier du trade (le notionnel ne change pas ; la marge utilisée en dépend).
+- Affichage : « ⚠ demandé x5 » à côté du levier réel dans les positions ouvertes (survol = explication).
+- Fichiers : manual_trading.py, bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.413 — Alignement du levier sur les positions déjà ouvertes
+- Cas constaté : #35 TAO suivi en x10 alors que la position Hyperliquid est en x1 (levier refusé à l'ouverture, avant le correctif v4.412).
+- Toutes les 5 minutes, le levier **réel** de chaque position manuelle live (perp) est lu sur Hyperliquid ; s'il diffère du suivi, le suivi est aligné (levier, marge, % de marge, PnL en %), le trade enregistré en base est mis à jour, et un avertissement « ⚠ demandé xN » s'affiche. Le notionnel ne change pas. Couvre aussi un levier modifié à la main sur Hyperliquid.
+- Fichiers : manual_trading.py, db.py, bot_engine.py (version), README.md
+
+## v4.414 — Levier réel : recoupement par la marge utilisée + bouton de vérification
+- La v4.413 ne corrigeait pas le cas #35 TAO : Hyperliquid annonçait peut-être x10 dans le champ « leverage » alors que la marge réellement utilisée correspond à x1. Le levier effectif est maintenant **recoupé** : valeur de position ÷ marge utilisée ; si l'écart dépasse 30 % avec le champ annoncé, le levier effectif fait foi (journal : « levier annoncé xN mais marge utilisée => xM effectif »).
+- Nouveau bouton **🔍 Vérifier le levier réel** (en-tête « Positions manuelles ouvertes ») : affiche pour chaque position ce que renvoie Hyperliquid (objet levier brut, marge utilisée, valeur de position, levier effectif) et la synthèse du compte, puis aligne le suivi immédiatement. Route : `GET /api/manual/leverage-check`.
+- Fichiers : manual_trading.py, api.py, bot_engine.py (version + marge utilisée), index_src.html, index.html, db.py, README.md
+
+## v4.415 — Trades manuels : réglages Swing Support par défaut
+- Tout nouveau ticket manuel **crypto** s'ouvre par défaut avec les réglages du mode Swing Support : levier (`SUPSW_LEVERAGE`), stop et objectif (`SUPSW_SL_PCT` / `SUPSW_TP_PCT`, ou échelle selon le levier si activée), taille (`SUPSW_RISK_PCT`, plafond `SUPSW_MAX_NOTIONAL_USD`), « laisser courir au TP » (verrou et suiveur du mode), sans trailing classique. Tout reste modifiable avant validation.
+- **LONG** : le trade est étiqueté « Swing Support ». **SHORT** : le mode n'achète que ; le SHORT reçoit les mêmes réglages mais garde l'étiquette « Libre ».
+- Valable pour le formulaire « Ordre libre », la fenêtre « résumé d'actif » (Préparer LONG/SHORT, Pré-programmer) et le repli des alertes expirées. Les tickets issus d'une opportunité d'un autre mode (Spot-Accum, Accumulation, Funding) gardent les réglages de ce mode ; les marchés Forex (`xyz:`) gardent les réglages libres.
+- Nouveau réglage `MANUAL_DEFAULT_SWING` (1 = oui, 0 = ancien comportement).
+- Fichiers : manual_trading.py, api.py, bot_engine.py (version + réglage), index_src.html, index.html, README.md
+
+## v4.416 — Levier : remise sur Hyperliquid, raison visible, diagnostic complet
+- Quand le levier réel d'une position manuelle live diffère du levier voulu, le bot **tente d'abord de remettre le levier voulu sur Hyperliquid** (une fois par trade, ou à chaque clic sur « Vérifier le levier réel »). S'il est refusé, la **raison donnée par Hyperliquid** est affichée sous la position (« ⚠ Hyperliquid refuse x10 : … ») ; repli au levier maximal de l'actif ; le suivi s'aligne ensuite sur le levier réellement appliqué.
+- Le diagnostic s'affiche désormais dans la page (texte sélectionnable, boutons Copier / Fermer) et contient : position brute Hyperliquid, réglage de levier de l'actif (`activeAssetData`), levier maximal, levier effectif (valeur ÷ marge), levier suivi avant/après et note.
+- Fichiers : manual_trading.py, bot_engine.py (version), index_src.html, index.html, README.md

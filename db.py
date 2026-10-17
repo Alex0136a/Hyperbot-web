@@ -644,6 +644,21 @@ def insert_orphaned_closed_trade(coin, action, entry_price, exit_price, pnl, rea
         return cur.lastrowid
 
 
+def set_trade_leverage_by_uid(trade_uid, leverage, size_usd):
+    """v4.413 — aligne levier et marge d un trade ouvert sur le levier REEL constate sur Hyperliquid."""
+    with _lock, _connect() as conn:
+        conn.execute("UPDATE trades SET leverage=?, size_usd=? WHERE trade_uid=?", (leverage, size_usd, trade_uid))
+        conn.commit()
+
+
+def fix_trade_exit_by_uid(trade_uid, exit_price, pnl, exit_price_source, fees_paid=None):
+    """v4.411 — corrige le prix de sortie / PnL d un trade deja ferme quand le vrai remplissage Hyperliquid est retrouve."""
+    with _lock, _connect() as conn:
+        conn.execute("UPDATE trades SET exit_price=?, pnl=?, exit_price_source=?, fees_paid=COALESCE(?, fees_paid) WHERE trade_uid=?",
+                     (exit_price, pnl, exit_price_source, fees_paid, trade_uid))
+        conn.commit()
+
+
 def close_trade(trade_id, exit_price, pnl, reason, peak_pnl=None, peak_pnl_pct=None, fees_paid=None,
                 exit_price_source=None, mtf_trend_intact_at_close=None,
                 pnl_min_pct=None, pnl_min_after_touch_pct=None, peak_at_min_after_pct=None,
