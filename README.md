@@ -1049,3 +1049,9 @@ Fichiers : `bot_engine.py`, `README.md`.
 - Fenêtre « résumé d'actif » : les situations **rebond de support** et **rejet de résistance** utilisent désormais ce déclenchement confirmé (0,3 %) ; les cassures restent sur prix. L'historique rejoué (méthode de la v4.409) simule la confirmation : entrée à la clôture de la bougie H4 de confirmation (prudent, évite un biais d'anticipation), pas d'entrée si le niveau du stop cède avant la confirmation. Sur des prix aléatoires, ces situations donnent une espérance proche des seuls frais, comme attendu.
 - Limite : le stop et l'objectif d'un ordre programmé sont des % de l'entrée réelle ; l'entrée étant plus haute que le niveau (de la confirmation), leurs prix s'en trouvent légèrement décalés.
 - Fichiers : manual_trading.py, api.py, bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.420 — TP1 : minimum de 10 $ d'Hyperliquid
+- Cause de l'erreur « Order must have minimum value of $10 » : la clôture partielle TP1 (ex. 50 % d'une position de ~15 $ ≈ 7 $) passait sous le minimum de 10 $ par ordre d'Hyperliquid, même en reduce-only. Le bot retentait toutes les 60 s sans succès.
+- Création/modification : un TP1 est refusé en LIVE perp si la part clôturée ou le reste est < 10 $, avec la taille minimale requise.
+- Exécution : si la situation se présente quand même (prix ayant évolué), le TP1 est ignoré proprement (une seule trace dans le journal), plus de boucle d'essais ; la position continue vers le TP2 et le SL.
+- Fichiers : manual_trading.py, bot_engine.py (version), README.md

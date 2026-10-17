@@ -821,6 +821,12 @@ class ManualTrading:
             raise ManualError("TP1 : la part a cloturer doit etre comprise entre 5 % et 95 %.")
         if p.get("mode") == "live" and p.get("market") == "spot":
             raise ManualError("TP1 (cloture partielle) n est pas disponible en spot LIVE.")
+        if p.get("mode") == "live" and p.get("market") == "perp" and p.get("notional_usd"):
+            nt = float(p["notional_usd"])
+            if nt * cp / 100 < 10.0 or nt * (100 - cp) / 100 < 10.0:
+                need = 10.0 / (min(cp, 100 - cp) / 100)
+                raise ManualError(f"TP1 : Hyperliquid refuse les ordres < 10 $ ; avec {cp:.0f} % cloture il faut une position d au moins {need:.0f} $ "
+                                  f"(actuelle {nt:.0f} $). Augmente la taille, change la part cloturee ou retire le TP1.")
         p["tp1_pct"], p["tp1_close_pct"] = t1, cp
         p["tp1_be"] = bool(p.get("tp1_be", True))
 
@@ -1551,6 +1557,14 @@ class ManualTrading:
             sz = be.format_size_hl(qty_part, perp_map.get(item["ticker"], 4))
             if not sz or sz <= 0:
                 raise ManualError("taille de cloture partielle nulle")
+            # v4.420 : Hyperliquid refuse tout ordre < 10 $ (meme reduce-only) : TP1 abandonne proprement, le TP2 continue
+            ref_px = price or item.get("last_price") or entry
+            if sz * ref_px < 10.0 or (item["qty"] - sz) * ref_px < 10.0:
+                item["tp1_done"], item["tp1_skipped"], item["error"] = True, True, None
+                self._save(item)
+                self._log(f"#{item['id']} {item['ticker']} : TP1 ignore — cloture partielle de {sz * ref_px:.2f} $ (reste {(item['qty'] - sz) * ref_px:.2f} $) "
+                          f"sous le minimum Hyperliquid de 10 $ — la position continue vers le TP2", "warn")
+                return
             result = self.bot.exchange.market_close(item["ticker"], sz)
             status = be._order_first_status(result) if result else None
             if not (status and "filled" in status):
