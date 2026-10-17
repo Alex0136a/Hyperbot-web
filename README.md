@@ -1030,3 +1030,13 @@ Fichiers : `bot_engine.py`, `README.md`.
 - Quand le levier réel d'une position manuelle live diffère du levier voulu, le bot **tente d'abord de remettre le levier voulu sur Hyperliquid** (une fois par trade, ou à chaque clic sur « Vérifier le levier réel »). S'il est refusé, la **raison donnée par Hyperliquid** est affichée sous la position (« ⚠ Hyperliquid refuse x10 : … ») ; repli au levier maximal de l'actif ; le suivi s'aligne ensuite sur le levier réellement appliqué.
 - Le diagnostic s'affiche désormais dans la page (texte sélectionnable, boutons Copier / Fermer) et contient : position brute Hyperliquid, réglage de levier de l'actif (`activeAssetData`), levier maximal, levier effectif (valeur ÷ marge), levier suivi avant/après et note.
 - Fichiers : manual_trading.py, bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.417 — Levier : maximum Hyperliquid vérifié avant l'ordre
+- Constat (#34 PENDLE, #35 TAO) : le levier demandé (x10) dépassait le maximum Hyperliquid de l'actif (x5) → « Invalid leverage value ». Le suivi (v4.416) s'alignait ensuite sur le levier réel, mais l'écart était évitable.
+- Le **levier maximal de l'actif** (méta Hyperliquid, cache 10 min) est maintenant affiché sur le ticket (« maximum Hyperliquid pour PENDLE : x5 », en rouge si dépassé) et **vérifié à la création** d'un ordre et à la modification d'un ordre programmé : message clair « Levier x10 impossible : Hyperliquid limite PENDLE à x5 » au lieu d'un ordre qui part avec un autre levier. Marchés `xyz:` : pas de contrôle (méta d'un autre DEX).
+- Les mécanismes de rattrapage de la v4.416 (repli au maximum, alignement du suivi, raison affichée) restent en place pour les cas résiduels.
+- Fichiers : manual_trading.py, api.py, bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.418 — Libellé du levier simplifié
+- Les deux avertissements (« ⚠ demandé x10 » et « ⚠ Hyperliquid refuse x10 … ») sont remplacés par une seule mention : **« Levier disponible : xN »**. Le détail (raison du refus) reste visible au survol.
+- Fichiers : bot_engine.py (version), index_src.html, index.html, README.md

@@ -1395,7 +1395,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
             <div>
               <span style={MT.label}>TAILLE — NOTIONNEL ($)</span>
               <input style={MT.input} type="number" min="1" step="1" value={f.notional_usd} onChange={e=>set("notional_usd",e.target.value)}/>
-              {f.market==="perp" && <><span style={{...MT.label,marginTop:8}}>LEVIER</span><input style={MT.input} type="number" min="1" max="20" step="1" value={f.leverage} onChange={e=>set("leverage",e.target.value)}/></>}
+              {f.market==="perp" && <><span style={{...MT.label,marginTop:8}}>LEVIER{prop&&prop.max_leverage ? <span style={{color:Number(f.leverage)>prop.max_leverage?"#f87171":"#64748b",fontWeight:400}}> · maximum Hyperliquid pour {sel?.ticker} : x{prop.max_leverage}{Number(f.leverage)>prop.max_leverage?" — dépassé, l'ordre sera refusé":""}</span> : null}</span><input style={MT.input} type="number" min="1" max={prop&&prop.max_leverage?prop.max_leverage:20} step="1" value={f.leverage} onChange={e=>set("leverage",e.target.value)}/></>}
               <div style={{fontSize:11,color:"#94a3b8",marginTop:6}}>Marge engagée : {(notional/lev).toFixed(2)} $ · frais estimés ≈ {feesEst.toFixed(3)} $</div>
               {f.mode==="live" && notional<10 && <div style={{fontSize:11,color:"#fca5a5",marginTop:4}}>Minimum Hyperliquid : 10 $ de notionnel.</div>}
             </div>
@@ -1536,8 +1536,8 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
           <div key={p.id} style={{borderBottom:"1px solid #131d33",padding:"10px 0"}}>
             <div style={{display:"flex",flexWrap:"wrap",gap:14,alignItems:"center",fontSize:12,color:"#e2e8f0"}}>
               <b>#{p.id} <span data-tk={p.ticker} title="Résumé de l'actif" style={{cursor:"pointer",textDecoration:"underline dotted"}}>{p.ticker}</span></b>{dirBadge(p.direction)}
-              <span>{p.market.toUpperCase()} · <span style={{color:p.mode==="live"?"#ef4444":"#22c55e"}}>{p.mode.toUpperCase()}</span> · x{p.leverage}{p.leverage_requested ? <span title={p.leverage_note} style={{color:"#fbbf24",marginLeft:4}}>⚠ demandé x{p.leverage_requested}</span> : null}</span>
-              {p.leverage_note && <div style={{width:"100%",fontSize:10,color:"#fbbf24"}}>⚠ {p.leverage_note}</div>}
+              <span>{p.market.toUpperCase()} · <span style={{color:p.mode==="live"?"#ef4444":"#22c55e"}}>{p.mode.toUpperCase()}</span> · x{p.leverage}</span>
+              {(p.leverage_requested || p.leverage_note) && <div title={p.leverage_note||""} style={{width:"100%",fontSize:10,color:"#fbbf24"}}>Levier disponible : x{p.leverage}</div>}
               <span>Entrée {fmtP(p.entry_price)} → {fmtP(p.current_price)}</span>
               <span style={{color:(p.pnl||0)>=0?"#22c55e":"#ef4444",fontWeight:800}}>{fmtUsd(p.pnl)} {p.move_pct!=null?`(${_roe(p.move_pct,p.leverage)>=0?"+":""}${Number(_roe(p.move_pct,p.leverage)).toFixed(2)} %)`:""}</span>
               <span style={{color:"#94a3b8"}}>SL {fmtP(p.sl_price)} · {p.tp1_price?`TP1 ${fmtP(p.tp1_price)} (${Math.round(p.tp1_close_pct||50)} %${p.tp1_be!==false?" · SL→seuil":""}) · `:""}{p.tp1_done?`TP1 ✔ encaissé ${fmtUsd(p.realized_pnl)} · `:""}{p.tp1_price?"TP2":"TP"} {p.tp_price?fmtP(p.tp_price):"—"}{p.tp_run?` (laisser courir : verrou +${p.tp_run_lock_pct}%, suiveur ${p.tp_run_trail_pct}%${p.tp_run_armed?" — ARMÉ":""})`:""} · TTP {p.ttp_arm_pct?`+${p.ttp_arm_pct}%/${p.ttp_trail_pct}%${p.armed?" (armé)":""}`:"—"} · pic +{(p.peak_pct||0).toFixed(2)} %
