@@ -1247,6 +1247,7 @@ ADVANCED_SETTINGS = {
     "FOREX_DSL_FEE_PAD_PCT":     {"label": "Forex - SL dynamique : plancher apres armement = entree + frais (%)", "default": 0.10},
     "FOREX_STALE_ENABLED":       {"label": "Forex · SANS PROGRES - sortir un trade qui n'a jamais pris de gain apres un delai (1 = oui, 0 = non)", "default": 1},
     "FOREX_STALE_MIN":           {"label": "Forex · SANS PROGRES - delai avant de verifier (minutes)", "default": 90},
+    "ASSET_BT_DAYS":             {"label": "Resume d actif - profondeur de l historique rejoue pour choisir la pre-programmation (jours, 30 a 180)", "default": 90},
     "FOREX_STALE_PEAK_PCT":      {"label": "Forex · SANS PROGRES - sort si le pic de gain est reste sous ce seuil (% du prix)", "default": 0.15},
     "FOREX_DSL_TRAIL_FRACTION":  {"label": "Forex - SL dynamique : distance du suiveur (fraction du gain maximal)", "default": 0.40},
     "FOREX_TTP_FLOW_REVERSAL_MIN_PEAK_PCT": {"label": "Forex - pic minimal pour sortie sur retournement de flux (%)", "default": 0.12},
@@ -1494,6 +1495,8 @@ def _coerce_advanced_value(key: str, value):
         return False, "1 (oui) ou 0 (non)"
     if key == "FUNDING_MAX_ANNUAL_PCT" and not 0 <= value <= 1000:
         return False, "entre 0 (sans plafond) et 1000 %"
+    if key == "ASSET_BT_DAYS" and not 30 <= value <= 180:
+        return False, "entre 30 et 180 jours"
     if key == "FOREX_STALE_MIN" and not 10 <= value <= 720:
         return False, "entre 10 et 720 minutes"
     if key == "FOREX_STALE_PEAK_PCT" and not 0 <= value <= 1:

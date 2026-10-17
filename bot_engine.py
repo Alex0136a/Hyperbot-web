@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.408"
+BOT_VERSION = "4.410"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -268,6 +268,7 @@ CONFIG = {
     "FOREX_STALE_ENABLED": 1,             # v4.399 : sortie "sans progres" Forex (1/0)
     "FOREX_STALE_MIN": 90,                # ... apres N minutes
     "FOREX_STALE_PEAK_PCT": 0.15,         # ... si le pic de gain est reste sous N % du prix
+    "ASSET_BT_DAYS": 90,                  # v4.410 : profondeur (jours) de l historique rejoue pour la pre-programmation
     "FOREX_DSL_TRAIL_FRACTION": 0.40,     # distance du suiveur >= 40 % du gain maximal (jamais plus serre que la marge ATR)
     "FOREX_DSL_FALLBACK_TOL_PCT": 0.08,   # marge de repli si l ATR n est pas encore disponible
     "FOREX_DSL_EXCHANGE_MIN_STEP_PCT": 0.03,  # live : ne met a jour le SL natif Hyperliquid que si le SL a bouge d au moins ce %

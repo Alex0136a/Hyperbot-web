@@ -317,7 +317,174 @@ class ManualTrading:
             out["scenarios"] = self._asset_scenarios(out, zs.get("h4") or [], cands)
         except Exception:
             out["scenarios"] = []
+        # v4.409 — historique propre a l actif : chaque situation rejouee sur ses bougies H4 passees
+        try:
+            bt = self._scenario_backtest(ticker)
+        except Exception as e:
+            bt = {"ok": False, "why": f"{type(e).__name__}: {e}"}
+        out["backtest"] = {k: v for k, v in bt.items() if k != "stats"}
+        for sc in out["scenarios"]:
+            sc["hist"] = (bt.get("stats") or {}).get(sc["id"])
+        out["best_scenario"] = self._pick_best_scenario(out["scenarios"], bt)
         return out
+
+    # ───────── v4.409 — PRE-PROGRAMMATION : la situation au meilleur historique sur CET actif ─────────
+    _BT_KINDS = ("bounce_support", "reject_resistance", "breakout_up", "breakout_down")
+    _BT_ARM_BARS, _BT_HOLD_BARS, _BT_MIN_N = 18, 24, 8        # validite 72 h, tenue max 96 h, echantillon minimal
+    _BT_FEE = 0.0009                                          # aller-retour (2 x 0,045 %)
+
+    @staticmethod
+    def _levels(kind, price, a, sup, res, zs):
+        """Prix de declenchement / stop / objectif d une situation (meme regle pour le direct et l historique)."""
+        if a <= 0:
+            return None
+        if kind == "bounce_support" and sup:
+            trig = sup["high"] + 0.1 * a
+            if trig >= price:
+                return None
+            tp = res["low"] if res and res["low"] > trig else trig + 2 * a
+            side, ex, sl = "long", "price_below", sup["low"] - 0.15 * a
+        elif kind == "reject_resistance" and res:
+            trig = res["low"] - 0.1 * a
+            if trig <= price:
+                return None
+            tp = sup["high"] if sup and sup["high"] < trig else trig - 2 * a
+            side, ex, sl = "short", "price_above", res["high"] + 0.15 * a
+        elif kind == "breakout_up" and res:
+            trig = res["high"] + 0.1 * a
+            nxt = [z for z in zs if z["low"] > res["high"] + 0.5 * a]
+            tp = nxt[0]["low"] if nxt else trig + 2 * a
+            side, ex, sl = "long", "price_above", res["low"] - 0.15 * a
+        elif kind == "breakout_down" and sup:
+            trig = sup["low"] - 0.1 * a
+            nxt = [z for z in reversed(zs) if z["high"] < sup["low"] - 0.5 * a]
+            tp = nxt[0]["high"] if nxt else trig - 2 * a
+            side, ex, sl = "short", "price_below", sup["high"] + 0.15 * a
+        else:
+            return None
+        risk, gain = abs(trig - sl), abs(tp - trig)
+        if risk <= 0 or gain <= 0:
+            return None
+        return {"side": side, "ex": ex, "trig": trig, "sl": sl, "tp": tp, "risk": risk, "gain": gain}
+
+    def _hist_h4(self, ticker, n=1000):
+        end_ms = int(time.time() * 1000)
+        sec = 14400
+        raw = self.bot.info.post("/info", {"type": "candleSnapshot", "req": {
+            "coin": ticker, "interval": "4h", "startTime": end_ms - (n + 1) * sec * 1000, "endTime": end_ms}})
+        if not isinstance(raw, list):
+            return []
+        return [{"t": int(c["t"]), "o": float(c["o"]), "h": float(c["h"]), "l": float(c["l"]), "c": float(c["c"]),
+                 "v": float(c.get("v", 0))} for c in raw if int(c.get("T", 0)) <= end_ms]
+
+    def _scenario_backtest(self, ticker):
+        """Rejoue chaque situation sur l historique H4 de l actif (jusqu a ~6 mois) : declenchement dans les 72 h,
+        puis stop / objectif / sortie apres 96 h, frais aller-retour deduits. Un meme episode n est compte qu une fois.
+        Resultat en multiples du risque (R). Cache par bougie H4."""
+        import mtf_analysis as mtf
+        cache = getattr(self, "_bt_cache", None)
+        if cache is None:
+            cache = self._bt_cache = {}
+        try:
+            days_cfg = max(30, min(180, int(self.cfg.get("ASSET_BT_DAYS", 90))))
+        except Exception:
+            days_cfg = 90
+        bucket = int(time.time() // 14400)
+        hit = cache.get((ticker, days_cfg))
+        if hit and hit[0] == bucket:
+            return hit[1]
+        c = self._hist_h4(ticker, days_cfg * 6 + 150)           # + 150 bougies de chauffe pour les zones
+        if len(c) < 220:
+            res_ = {"ok": False, "why": f"historique H4 trop court ({len(c)} bougies)"}
+            cache[(ticker, days_cfg)] = (bucket, res_)
+            return res_
+        i_start = max(120, len(c) - days_cfg * 6)               # on ne juge que la fenetre voulue
+        i_half = len(c) - days_cfg * 3                          # seconde moitie = la plus recente
+        # niveaux a chaque bougie cloturee (zones recalculees avec les seules donnees connues a ce moment)
+        lv = {}
+        for i in range(i_start, len(c) - 1):
+            win = c[max(0, i - 149): i + 1]
+            a = mtf.atr(win) or 0
+            zones = mtf.find_zones(win, lookback=120, max_width_atr=3)
+            price = c[i]["c"]
+            sup, res = mtf.nearest_zones(zones, price)
+            zs = sorted(zones, key=lambda z: z["low"])
+            lv[i] = {k: self._levels(k, price, a, sup, res, zs) for k in self._BT_KINDS}
+        stats = {}
+        for kind in self._BT_KINDS:
+            n_arm = 0
+            rs, rrec, wins, losses, tos = [], [], 0, 0, 0
+            i = i_start
+            while i < len(c) - 1:
+                L = (lv.get(i) or {}).get(kind)
+                if not L:
+                    i += 1
+                    continue
+                n_arm += 1
+                trig, sl, tp, long = L["trig"], L["sl"], L["tp"], L["side"] == "long"
+                below = L["ex"] == "price_below"
+                j0 = None
+                for j in range(i + 1, min(i + 1 + self._BT_ARM_BARS, len(c))):
+                    if (c[j]["l"] <= trig) if below else (c[j]["h"] >= trig):
+                        j0 = j
+                        break
+                if j0 is None:
+                    i += 6
+                    continue
+                fee_r = self._BT_FEE * trig / L["risk"]
+                r, end = None, j0
+                if (c[j0]["l"] <= sl) if long else (c[j0]["h"] >= sl):       # stop touche dans la bougie de declenchement
+                    r, losses = -1.0, losses + 1
+                else:
+                    last = min(j0 + self._BT_HOLD_BARS, len(c) - 1)
+                    for j in range(j0 + 1, last + 1):
+                        hit_sl = (c[j]["l"] <= sl) if long else (c[j]["h"] >= sl)
+                        hit_tp = (c[j]["h"] >= tp) if long else (c[j]["l"] <= tp)
+                        if hit_sl:                                            # stop prioritaire (hypothese prudente)
+                            r, losses, end = -1.0, losses + 1, j
+                            break
+                        if hit_tp:
+                            r, wins, end = L["gain"] / L["risk"], wins + 1, j
+                            break
+                    if r is None:
+                        end = last
+                        r = ((c[last]["c"] - trig) if long else (trig - c[last]["c"])) / L["risk"]
+                        tos += 1
+                rs.append(r - fee_r)
+                if j0 >= i_half:
+                    rrec.append(r - fee_r)
+                i = max(i + 1, end + 1)
+            n = len(rs)
+            stats[kind] = {"armed": n_arm, "n": n, "wins": wins, "losses": losses, "timeouts": tos,
+                           "p_tp": (wins / n) if n else None, "exp_r": (sum(rs) / n) if n else None,
+                           "sum_r": sum(rs) if n else 0.0,
+                           "n_recent": len(rrec), "exp_r_recent": (sum(rrec) / len(rrec)) if rrec else None}
+        days = (c[-1]["t"] - c[i_start]["t"]) / 86400000.0
+        res_ = {"ok": True, "bars": len(c), "days": round(days), "stats": stats}
+        cache[(ticker, days_cfg)] = (bucket, res_)
+        return res_
+
+    @classmethod
+    def _pick_best_scenario(cls, scenarios, bt):
+        """Retient LA situation la plus favorable : esperance nette historique positive, echantillon suffisant,
+        gain/risque actuel >= 1 ; classement par esperance ponderee par la taille de l echantillon."""
+        best, best_score = None, None
+        for sc in scenarios:
+            h = sc.get("hist") or {}
+            n, e = h.get("n") or 0, h.get("exp_r")
+            er, nr = h.get("exp_r_recent"), h.get("n_recent") or 0
+            recent_bad = bool(er is not None and nr >= 4 and er <= 0)      # la moitie la plus recente doit confirmer
+            sc["eligible"] = bool(e is not None and n >= cls._BT_MIN_N and e > 0 and sc["rr"] >= 1.0 and not recent_bad)
+            if not sc["eligible"]:
+                sc["reject"] = ("défavorable sur la moitié la plus récente (" + format(er, "+.2f") + " R sur " + str(nr) + " cas) : le régime a peut-être changé") if (recent_bad and e is not None and e > 0 and n >= cls._BT_MIN_N) else ("échantillon trop faible (" + str(n) + " cas)") if n < cls._BT_MIN_N else \
+                    ("historique défavorable (espérance nette " + format(e, "+.2f") + " R)") if (e is not None and e <= 0) else \
+                    ("gain/risque actuel trop faible (" + format(sc["rr"], ".2f") + ")")
+                continue
+            score = e * n / (n + 10.0) + 0.02 * (len(sc.get("pros") or []) - len(sc.get("cons") or []))
+            sc["score"] = round(score, 3)
+            if best_score is None or score > best_score:
+                best, best_score = sc["id"], score
+        return best
 
     @staticmethod
     def _asset_scenarios(o, zones, cands=None):

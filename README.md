@@ -978,3 +978,17 @@ Fichiers : `bot_engine.py`, `README.md`.
 - Critères : tendance H4 et D1 (dans le sens ou à contre-courant), RSI H4 (survente/surachat pour un rebond, élan sans excès pour une cassure), nombre de contacts de la zone (confirmée 2–4, usée ≥ 5), même zone retrouvée en H1/D1, bougie de rejet H4 (mèche) pour les rebonds, volume H4 récent et compression de volatilité pour les cassures, tendance BTC H4, funding extrême.
 - Règles usuelles d'analyse technique, **non validées statistiquement** ; elles n'entrent pas dans le score du conseil. À confronter aux résultats réels des trades programmés. Le retest d'une zone cassée n'est pas détecté.
 - Fichiers : manual_trading.py, bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.409 — Pré-programmation unique, choisie sur l'historique de l'actif
+- La fenêtre « résumé d'actif » ne met plus les quatre situations au même niveau : elle **retient la plus favorable** (carte ⭐) avec un bouton **⏱ Pré-programmer** (ticket rempli : déclenchement, SL, TP, 72 h). Les autres sont repliées avec la raison de leur non-sélection.
+- **Méthode** : chaque situation (rebond de support, rejet de résistance, cassure haussière, cassure baissière) est rejouée sur jusqu'à ~1000 bougies H4 (~6 mois) de l'actif : zones recalculées à chaque bougie avec les seules données connues alors, déclenchement dans les 72 h, puis stop / objectif / sortie à 96 h (stop prioritaire si les deux sont touchés dans la même bougie), frais 0,09 % déduits. Un même épisode n'est compté qu'une fois. Résultat : nombre de cas, % d'objectifs atteints, espérance nette en R.
+- **Sélection** : espérance nette > 0, ≥ 8 cas, gain/risque actuel ≥ 1 ; classement par espérance pondérée par la taille de l'échantillon (+ léger bonus au contexte pour/contre). Sinon : « Aucune situation ne ressort — ne rien programmer est un choix valable ».
+- Calcul mis en cache par bougie H4 ; mêmes règles de niveaux pour le direct et l'historique (`_levels`).
+- Limites : échantillon souvent petit, le passé ne garantit rien, l'historique est propre à l'actif (pas de filtre de tendance).
+- Fichiers : manual_trading.py, bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.410 — Pré-programmation : historique plus court (90 j) et confirmation récente
+- Profondeur de l'historique rejoué ramenée de ~6 mois à **90 jours par défaut**, réglable (réglage `ASSET_BT_DAYS`, 30 à 180 jours). Les 150 bougies H4 précédentes ne servent qu'à calculer les zones.
+- **Confirmation récente** : une situation n'est retenue que si son espérance nette n'est pas négative sur la **moitié la plus récente** de la fenêtre (dès 4 cas) ; sinon rejet « le régime a peut-être changé ». Le résultat de la moitié récente est affiché.
+- Le nombre de jours affiché est celui de la fenêtre jugée.
+- Fichiers : manual_trading.py, api.py, bot_engine.py (version + réglage), index_src.html, index.html, README.md

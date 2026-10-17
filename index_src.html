@@ -1108,24 +1108,36 @@ function AssetSummaryModal({ ticker, token, onClose, onPrepare }) {
             {adv.wait && adv.wait.length>0 && <div style={{marginTop:8,fontSize:11,color:"#fbbf24",lineHeight:1.5}}>{adv.wait.map((w,i)=><div key={i}>⏳ {w}</div>)}</div>}
             <div style={{fontSize:9,color:"#64748b",marginTop:8}}>{adv.note} Les niveaux du ticket sont ceux par défaut ; ajustez-les avant de valider.</div>
           </div>}
-          {d.scenarios && d.scenarios.length>0 && <div style={{marginTop:12}}>
-            <div style={{fontSize:10,color:"#94a3b8",letterSpacing:1,marginBottom:6}}>⏱ SITUATIONS À ATTENDRE — PROGRAMMABLES (ordre déclenché sur le prix)</div>
-            {d.scenarios.map(sc=>{ const lc = sc.side==="long"?"#34d399":"#f87171"; return (
-              <div key={sc.id} style={{background:"#0a0e1a",border:`1px solid ${sc.aligned?"#334155":"#3f3f46"}`,borderLeft:`3px solid ${lc}`,borderRadius:8,padding:"8px 10px",marginBottom:6,opacity:sc.aligned?1:0.75}}>
+          {d.scenarios && d.scenarios.length>0 && (() => {
+            const bt = d.backtest || {};
+            const best = d.scenarios.find(x=>x.id===d.best_scenario);
+            const others = d.scenarios.filter(x=>x.id!==d.best_scenario);
+            const histTxt = (sc) => { const h = sc.hist; if (!h || !h.n) return <span style={{color:"#64748b"}}>Historique : aucun cas exploitable.</span>;
+              return <span>Historique de {ticker} (H4, {bt.days} j) : <b>{h.n}</b> déclenchements · objectif atteint avant le stop dans <b style={{color:h.p_tp>=0.5?"#34d399":"#fbbf24"}}>{Math.round(h.p_tp*100)} %</b> · espérance nette <b style={{color:h.exp_r>0?"#34d399":"#f87171"}}>{h.exp_r>=0?"+":""}{h.exp_r.toFixed(2)} R</b> par trade (frais inclus){h.exp_r_recent!=null && h.n_recent>=3 && <span style={{color:"#94a3b8"}}> · moitié récente : {h.n_recent} cas, {h.exp_r_recent>=0?"+":""}{h.exp_r_recent.toFixed(2)} R</span>}</span>; };
+            const scCard = (sc, isBest) => { const lc = sc.side==="long"?"#34d399":"#f87171"; return (
+              <div key={sc.id} style={{background:"#0a0e1a",border:`1px solid ${isBest?lc:"#334155"}`,borderLeft:`3px solid ${lc}`,borderRadius:8,padding:"8px 10px",marginBottom:6,opacity:isBest||sc.aligned?1:0.8}}>
                 <div style={{display:"flex",justifyContent:"space-between",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-                  <div style={{fontSize:12,fontWeight:700,color:lc}}>{sc.label}{!sc.aligned && <span style={{marginLeft:6,fontSize:9,color:"#fbbf24",fontWeight:600}}>⚠ contre-tendance</span>}</div>
-                  <button onClick={()=>onPrepare(sc.side,{execution:sc.execution,trigger_price:sc.trigger,sl_pct:sc.sl_pct,tp_pct:sc.tp_pct,expiry_hours:72})} style={{background:"#1e293b",border:`1px solid ${lc}`,color:lc,borderRadius:6,padding:"4px 10px",cursor:"pointer",fontWeight:700,fontSize:11}}>⏱ Programmer</button>
+                  <div style={{fontSize:12,fontWeight:700,color:lc}}>{isBest && "⭐ "}{sc.label}{!sc.aligned && <span style={{marginLeft:6,fontSize:9,color:"#fbbf24",fontWeight:600}}>⚠ contre-tendance</span>}</div>
+                  <button onClick={()=>onPrepare(sc.side,{execution:sc.execution,trigger_price:sc.trigger,sl_pct:sc.sl_pct,tp_pct:sc.tp_pct,expiry_hours:72})} style={{background:isBest?lc:"#1e293b",border:`1px solid ${lc}`,color:isBest?"#0a0e1a":lc,borderRadius:6,padding:"4px 10px",cursor:"pointer",fontWeight:700,fontSize:11}}>⏱ Pré-programmer</button>
                 </div>
                 <div style={{fontSize:11,color:"#cbd5e1",marginTop:3}}>Attendre {sc.wait} ({sc.trigger_dist_pct>=0?"+":""}{sc.trigger_dist_pct.toFixed(2)} % du prix actuel) → entrée {sc.execution==="price_below"?"si prix ≤":"si prix ≥"} <b>{fp(sc.trigger)}</b></div>
-                <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>SL <b style={{color:"#f87171"}}>{fp(sc.sl)}</b> (−{sc.sl_pct.toFixed(2)} %) · objectif <b style={{color:"#34d399"}}>{fp(sc.tp)}</b> (+{sc.tp_pct.toFixed(2)} %) · gain/risque <b style={{color:sc.rr>=1.5?"#34d399":sc.rr>=1?"#fbbf24":"#f87171"}}>{sc.rr.toFixed(2)}</b> · {sc.note}</div>
+                <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>SL <b style={{color:"#f87171"}}>{fp(sc.sl)}</b> (−{sc.sl_pct.toFixed(2)} %) · objectif <b style={{color:"#34d399"}}>{fp(sc.tp)}</b> (+{sc.tp_pct.toFixed(2)} %) · gain/risque <b style={{color:sc.rr>=1.5?"#34d399":sc.rr>=1?"#fbbf24":"#f87171"}}>{sc.rr.toFixed(2)}</b></div>
+                <div style={{fontSize:10,color:"#cbd5e1",marginTop:3}}>{histTxt(sc)}</div>
+                {!isBest && sc.reject && <div style={{fontSize:10,color:"#fbbf24",marginTop:2}}>Non retenue : {sc.reject}.</div>}
                 {((sc.pros&&sc.pros.length)||(sc.cons&&sc.cons.length)) && <div style={{marginTop:5,fontSize:10,lineHeight:1.5}}>
-                  <div style={{color:"#64748b"}}>Bilan : <b style={{color:"#34d399"}}>{(sc.pros||[]).length} pour</b> · <b style={{color:"#f87171"}}>{(sc.cons||[]).length} contre</b></div>
+                  <div style={{color:"#64748b"}}>Contexte actuel : <b style={{color:"#34d399"}}>{(sc.pros||[]).length} pour</b> · <b style={{color:"#f87171"}}>{(sc.cons||[]).length} contre</b></div>
                   {(sc.pros||[]).map((t,i)=><div key={"p"+i} style={{color:"#86efac"}}>✔ {t}</div>)}
                   {(sc.cons||[]).map((t,i)=><div key={"c"+i} style={{color:"#fca5a5"}}>✘ {t}</div>)}
                 </div>}
-              </div>); })}
-            <div style={{fontSize:9,color:"#64748b"}}>« Programmer » ouvre le ticket avec déclenchement, stop et objectif déjà remplis (validité 72 h, paper par défaut) : vérifiez puis validez.</div>
-          </div>}
+              </div>); };
+            return <div style={{marginTop:12}}>
+              <div style={{fontSize:10,color:"#94a3b8",letterSpacing:1,marginBottom:6}}>⏱ PRÉ-PROGRAMMATION — LA SITUATION AU MEILLEUR HISTORIQUE SUR {ticker}</div>
+              {!bt.ok && <div style={{fontSize:11,color:"#fbbf24",marginBottom:6}}>Historique indisponible ({bt.why||"?"}) : aucune situation ne peut être classée.</div>}
+              {bt.ok && !best && <div style={{fontSize:11,color:"#fbbf24",background:"#2d2305",border:"1px solid #854d0e",borderRadius:8,padding:8,marginBottom:6}}>Aucune situation ne ressort sur l'historique de cet actif ({bt.bars} bougies H4, {bt.days} jours) : espérance nette négative ou échantillon trop faible. <b>Ne rien programmer est un choix valable.</b></div>}
+              {best && scCard(best, true)}
+              {others.length>0 && <details style={{marginTop:4}}><summary style={{fontSize:10,color:"#94a3b8",cursor:"pointer"}}>Autres situations ({others.length}) — non retenues ou moins favorables</summary><div style={{marginTop:6}}>{others.map(x=>scCard(x,false))}</div></details>}
+              <div style={{fontSize:9,color:"#64748b",marginTop:4}}>Méthode : chaque situation est rejouée sur les ~{bt.days||"?"} derniers jours de {ticker} (zones recalculées à chaque bougie H4, déclenchement sous 72 h, stop/objectif ensuite, stop prioritaire si les deux sont touchés dans la même bougie, frais 0,09 % déduits). Retenue : espérance nette &gt; 0 (et non négative sur la moitié la plus récente), au moins 8 cas, gain/risque actuel ≥ 1. Profondeur réglable (réglage « ASSET_BT_DAYS », 90 j par défaut). Le passé ne garantit rien ; échantillon souvent petit. Le bouton ouvre le ticket (72 h, paper par défaut) : vérifiez puis validez.</div>
+            </div>; })()}
           <div style={{display:"flex",gap:10,marginTop:12,flexWrap:"wrap"}}>
             <button onClick={()=>onPrepare("long")} style={{flex:1,minWidth:150,background:"#052e16",border:"1px solid #22c55e",color:"#34d399",borderRadius:8,padding:"10px 14px",fontWeight:800,cursor:"pointer",boxShadow:adv&&adv.side==="long"?"0 0 0 2px #22c55e55":"none"}}>▲ Préparer un LONG</button>
             <button onClick={()=>onPrepare("short")} style={{flex:1,minWidth:150,background:"#2d0a0a",border:"1px solid #ef4444",color:"#f87171",borderRadius:8,padding:"10px 14px",fontWeight:800,cursor:"pointer",boxShadow:adv&&adv.side==="short"?"0 0 0 2px #ef444455":"none"}}>▼ Préparer un SHORT</button>
