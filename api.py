@@ -2753,6 +2753,7 @@ class ManualOrderBody(BaseModel):
     ttp_trail_pct: Optional[float] = None
     trigger_price: Optional[float] = None
     trigger_time: Optional[float] = None
+    confirm_pct: Optional[float] = None      # v4.419 : rebond / repli confirme (% depuis le point bas / haut)
     expiry_hours: Optional[float] = None
     require_valid: bool = True
     confirm_live: bool = False
@@ -2791,6 +2792,7 @@ class ManualModifyBody(BaseModel):
     leverage: Optional[int] = None
     trigger_price: Optional[float] = None
     trigger_time: Optional[float] = None
+    confirm_pct: Optional[float] = None      # v4.419 : rebond / repli confirme
     expiry_hours: Optional[float] = None
     direction: Optional[str] = None          # v4.401 : ordre programme, changer le sens ("long"/"short")
     mode: Optional[str] = None               # v4.401 : ordre programme, "paper"/"live"
@@ -2826,7 +2828,14 @@ def manual_leverage_check(email: str = Depends(require_user)):
 @app.get("/api/manual/proposal")
 def manual_proposal(strategy: str, ticker: str, direction: str, market: str = "perp",
                     email: str = Depends(require_user)):
-    return _manual_call(bot.manual.propose, strategy, _norm_ticker(ticker), direction, market)
+    t = _norm_ticker(ticker)
+    p = _manual_call(bot.manual.propose, strategy, t, direction, market)
+    try:       # v4.417 : levier maximal Hyperliquid de l actif, affiche sur le ticket
+        if isinstance(p, dict) and market != "spot":
+            p["max_leverage"] = bot.manual._asset_max_leverage(t)
+    except Exception:
+        pass
+    return p
 
 
 @app.post("/api/manual/orders")
@@ -2856,7 +2865,7 @@ def manual_modify(item_id: int, body: ManualModifyBody, email: str = Depends(req
         changes["tp_price"] = body.tp_price
     if not body.clear_tp and body.tp_pct:
         changes["tp_pct"] = body.tp_pct
-    for _k in ("sl_pct", "notional_usd", "leverage", "trigger_price", "trigger_time", "expiry_hours", "direction", "mode"):
+    for _k in ("sl_pct", "notional_usd", "leverage", "trigger_price", "trigger_time", "confirm_pct", "expiry_hours", "direction", "mode"):
         if getattr(body, _k) is not None:
             changes[_k] = getattr(body, _k)
     if body.clear_ttp:

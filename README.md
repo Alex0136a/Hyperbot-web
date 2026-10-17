@@ -1040,3 +1040,12 @@ Fichiers : `bot_engine.py`, `README.md`.
 ## v4.418 — Libellé du levier simplifié
 - Les deux avertissements (« ⚠ demandé x10 » et « ⚠ Hyperliquid refuse x10 … ») sont remplacés par une seule mention : **« Levier disponible : xN »**. Le détail (raison du refus) reste visible au survol.
 - Fichiers : bot_engine.py (version), index_src.html, index.html, README.md
+
+## v4.419 — Programmation : ouvrir au rebond (ou au recul) confirmé, pas pendant la chute
+- Deux nouveaux types de déclenchement, pour le ticket et la modification d'un ordre programmé :
+  - **« Descend à…, puis REBONDIT »** (`bounce_up`) : quand le prix atteint le niveau, l'ordre est **armé** ; le bot suit le **point bas** et n'ouvre que lorsque le prix a **remonté** de X % depuis ce point bas (défaut 0,3 %, réglable 0,05–10 %). Aucune ouverture pendant que le prix continue de descendre.
+  - **« Monte à…, puis RECULE »** (`bounce_down`) : symétrique (point haut, recul de X %), pour un SHORT sous une résistance.
+- L'état armé et le point extrême sont mémorisés (survivent à un redémarrage) et affichés dans le tableau des ordres programmés (« ARMÉ (bas …) »).
+- Fenêtre « résumé d'actif » : les situations **rebond de support** et **rejet de résistance** utilisent désormais ce déclenchement confirmé (0,3 %) ; les cassures restent sur prix. L'historique rejoué (méthode de la v4.409) simule la confirmation : entrée à la clôture de la bougie H4 de confirmation (prudent, évite un biais d'anticipation), pas d'entrée si le niveau du stop cède avant la confirmation. Sur des prix aléatoires, ces situations donnent une espérance proche des seuls frais, comme attendu.
+- Limite : le stop et l'objectif d'un ordre programmé sont des % de l'entrée réelle ; l'entrée étant plus haute que le niveau (de la confirmation), leurs prix s'en trouvent légèrement décalés.
+- Fichiers : manual_trading.py, api.py, bot_engine.py (version), index_src.html, index.html, README.md

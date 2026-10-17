@@ -332,6 +332,7 @@ class ManualTrading:
     _BT_KINDS = ("bounce_support", "reject_resistance", "breakout_up", "breakout_down")
     _BT_ARM_BARS, _BT_HOLD_BARS, _BT_MIN_N = 18, 24, 8        # validite 72 h, tenue max 96 h, echantillon minimal
     _BT_FEE = 0.0009                                          # aller-retour (2 x 0,045 %)
+    _BT_CONFIRM_PCT = 0.3                                     # v4.419 : rebond / repli de confirmation par defaut (%)
 
     @staticmethod
     def _levels(kind, price, a, sup, res, zs):
@@ -431,27 +432,47 @@ class ManualTrading:
                 if j0 is None:
                     i += 6
                     continue
-                fee_r = self._BT_FEE * trig / L["risk"]
-                r, end = None, j0
-                if (c[j0]["l"] <= sl) if long else (c[j0]["h"] >= sl):       # stop touche dans la bougie de declenchement
+                entry, risk, gain, ek = trig, L["risk"], L["gain"], j0
+                confirm_mode = kind in ("bounce_support", "reject_resistance")
+                if confirm_mode:
+                    # v4.419 : on n ouvre pas au contact du niveau : il faut un rebond (ou un recul) de confirmation depuis le
+                    # point extreme. Le point extreme est suivi bougie apres bougie ; l entree se fait a extreme x (1 +/- confirmation).
+                    cf = self._BT_CONFIRM_PCT / 100.0
+                    ext = c[j0]["l"] if long else c[j0]["h"]
+                    ek, entered = None, False
+                    for k in range(j0 + 1, min(i + 1 + self._BT_ARM_BARS, len(c))):
+                        ext = min(ext, c[k]["l"]) if long else max(ext, c[k]["h"])
+                        if (c[k]["l"] <= sl) if long else (c[k]["h"] >= sl):       # le niveau a cede avant la confirmation : pas d entree
+                            break
+                        lvl = ext * (1 + cf) if long else ext * (1 - cf)
+                        if (c[k]["c"] >= lvl) if long else (c[k]["c"] <= lvl):
+                            entry, ek, entered = c[k]["c"], k, True      # entree au CLOTURE de la bougie de confirmation (prudent : evite le biais d anticipation)
+                            break
+                    risk, gain = abs(entry - sl), abs(tp - entry)
+                    if not entered or risk <= 0 or ((tp <= entry) if long else (tp >= entry)):
+                        i += 6
+                        continue
+                fee_r = self._BT_FEE * entry / risk
+                r, end = None, ek
+                if (not confirm_mode) and ((c[ek]["l"] <= sl) if long else (c[ek]["h"] >= sl)):       # stop touche dans la bougie de declenchement
                     r, losses = -1.0, losses + 1
                 else:
-                    last = min(j0 + self._BT_HOLD_BARS, len(c) - 1)
-                    for j in range(j0 + 1, last + 1):
+                    last = min(ek + self._BT_HOLD_BARS, len(c) - 1)
+                    for j in range(ek + 1, last + 1):
                         hit_sl = (c[j]["l"] <= sl) if long else (c[j]["h"] >= sl)
                         hit_tp = (c[j]["h"] >= tp) if long else (c[j]["l"] <= tp)
                         if hit_sl:                                            # stop prioritaire (hypothese prudente)
                             r, losses, end = -1.0, losses + 1, j
                             break
                         if hit_tp:
-                            r, wins, end = L["gain"] / L["risk"], wins + 1, j
+                            r, wins, end = gain / risk, wins + 1, j
                             break
                     if r is None:
                         end = last
-                        r = ((c[last]["c"] - trig) if long else (trig - c[last]["c"])) / L["risk"]
+                        r = ((c[last]["c"] - entry) if long else (entry - c[last]["c"])) / risk
                         tos += 1
                 rs.append(r - fee_r)
-                if j0 >= i_half:
+                if ek >= i_half:
                     rrec.append(r - fee_r)
                 i = max(i + 1, end + 1)
             n = len(rs)
@@ -507,7 +528,9 @@ class ManualTrading:
             risk, gain = abs(trig - sl), abs(tp - trig)
             if risk <= 0 or gain <= 0:
                 return
-            out.append({"id": kind, "side": side, "label": label, "wait": wait_txt, "execution": ex,
+            ent = {"bounce_support": "bounce_up", "reject_resistance": "bounce_down"}.get(kind, ex)    # v4.419 : on n ouvre qu apres confirmation
+            out.append({"id": kind, "side": side, "label": label, "wait": wait_txt, "execution": ex, "entry_execution": ent,
+                        "confirm_pct": ManualTrading._BT_CONFIRM_PCT if ent != ex else None,
                         "trigger": trig, "trigger_dist_pct": (trig / price - 1) * 100,
                         "sl": sl, "tp": tp, "sl_pct": risk / trig * 100, "tp_pct": gain / trig * 100,
                         "rr": gain / risk, "aligned": bool(aligned), "note": note})
@@ -950,6 +973,7 @@ class ManualTrading:
         lev = int(p.get("leverage") or 1)
         if not 1 <= lev <= int(self.cfg.get("MANUAL_MAX_LEVERAGE", 20)):
             raise ManualError(f"Levier hors limites (1 a {self.cfg.get('MANUAL_MAX_LEVERAGE', 20)}).")
+        self._check_leverage_cap(p["ticker"], p.get("market", "perp"), lev)
         p["leverage"] = lev
         notional = float(p.get("notional_usd") or 0)
         if notional <= 0:
@@ -972,10 +996,18 @@ class ManualTrading:
         arm, trail = float(p.get("ttp_arm_pct") or 0), float(p.get("ttp_trail_pct") or 0)
         if arm and not (0.05 <= arm <= 500 and 0.02 <= trail <= 100):
             raise ManualError("Trailing TP invalide (armement 0,05-500 %, repli 0,02-100 %).")
-        if p["execution"] not in ("now", "price_above", "price_below", "time"):
+        if p["execution"] not in ("now", "price_above", "price_below", "time", "bounce_up", "bounce_down"):
             raise ManualError("Type d execution invalide.")
-        if p["execution"] in ("price_above", "price_below") and not float(p.get("trigger_price") or 0) > 0:
+        if p["execution"] in ("price_above", "price_below", "bounce_up", "bounce_down") and not float(p.get("trigger_price") or 0) > 0:
             raise ManualError("Prix de declenchement manquant.")
+        if p["execution"] in ("bounce_up", "bounce_down"):
+            try:
+                cf = float(p.get("confirm_pct") if p.get("confirm_pct") not in (None, "") else 0.3)
+            except (TypeError, ValueError):
+                raise ManualError("Confirmation du rebond invalide.")
+            if not 0.05 <= cf <= 10:
+                raise ManualError("Confirmation du rebond : entre 0,05 % et 10 %.")
+            p["confirm_pct"] = cf
         if p["execution"] == "time" and not float(p.get("trigger_time") or 0) > time.time():
             raise ManualError("L heure de declenchement doit etre dans le futur.")
         if p["mode"] == "live":
@@ -1019,6 +1051,8 @@ class ManualTrading:
                 "execution": p["execution"],
                 "trigger_price": float(p["trigger_price"]) if p.get("trigger_price") else None,
                 "trigger_time": float(p["trigger_time"]) if p.get("trigger_time") else None,
+                "confirm_pct": float(p["confirm_pct"]) if p.get("confirm_pct") else None,      # v4.419 : rebond / repli confirme
+                "bounce_ext": None,
                 "expires_at": now + float(p.get("expiry_hours") or self.cfg.get("MANUAL_ORDER_EXPIRY_HOURS", 24)) * 3600,
                 "require_valid": bool(p.get("require_valid", True)),
                 "confidence": opp.get("confidence"), "reasons": opp.get("reasons", []),
@@ -1035,6 +1069,12 @@ class ManualTrading:
         return self.public(item)
 
     def _trigger_text(self, item):
+        if item["execution"] == "bounce_up":
+            return (f"si le prix descend a {item['trigger_price']:.6g}, puis rebondit de {item.get('confirm_pct') or 0.3:g} % depuis son point bas"
+                    + (f" (arme, point bas {item['bounce_ext']:.6g})" if item.get("bounce_ext") else ""))
+        if item["execution"] == "bounce_down":
+            return (f"si le prix monte a {item['trigger_price']:.6g}, puis recule de {item.get('confirm_pct') or 0.3:g} % depuis son point haut"
+                    + (f" (arme, point haut {item['bounce_ext']:.6g})" if item.get("bounce_ext") else ""))
         if item["execution"] == "price_above":
             return f"si le prix monte a {item['trigger_price']:.6g}"
         if item["execution"] == "price_below":
@@ -1160,13 +1200,27 @@ class ManualTrading:
         return (fill or ep["entry"] or price), abs(ep["szi"])
 
     def _asset_max_leverage(self, ticker):
-        try:
-            for u in (self.bot.info.meta() or {}).get("universe", []):
-                if u.get("name") == ticker:
-                    return int(u.get("maxLeverage") or 0) or None
-        except Exception:
-            pass
-        return None
+        """Levier maximal Hyperliquid de l actif (meta natif, cache 10 min). None si inconnu (ex. marches xyz:)."""
+        cache = getattr(self, "_maxlev_cache", None)
+        if cache is None or time.time() - cache[0] > 600:
+            m = {}
+            try:
+                for u in (self.bot.info.meta() or {}).get("universe", []):
+                    if u.get("name") and u.get("maxLeverage"):
+                        m[u["name"]] = int(u["maxLeverage"])
+            except Exception:
+                if cache:
+                    return cache[1].get(ticker)
+            cache = self._maxlev_cache = (time.time(), m)
+        return cache[1].get(ticker)
+
+    def _check_leverage_cap(self, ticker, market, lev):
+        """v4.417 : refuse un levier superieur au maximum Hyperliquid de l actif (sinon l ordre part avec un autre levier)."""
+        if market == "spot":
+            return
+        mx = self._asset_max_leverage(ticker)
+        if mx and lev > mx:
+            raise ManualError(f"Levier x{lev} impossible : Hyperliquid limite {ticker} a x{mx}.")
 
     def _spot_available(self, token):
         state = self.bot.info.spot_user_state(self._wallet()) or {}
@@ -1569,6 +1623,7 @@ class ManualTrading:
                     raise ManualError("Le stop loss doit etre compris entre 0,05 % et 50 % du prix d entree.")
                 if not 1 <= p["leverage"] <= int(self.cfg.get("MANUAL_MAX_LEVERAGE", 20)):
                     raise ManualError(f"Levier hors limites (1 a {self.cfg.get('MANUAL_MAX_LEVERAGE', 20)}).")
+                self._check_leverage_cap(item["ticker"], item["market"], p["leverage"])
                 if p["notional_usd"] <= 0:
                     raise ManualError("Taille invalide.")
                 if new_mode == "live" and p["notional_usd"] < 10:
@@ -1593,9 +1648,17 @@ class ManualTrading:
                         raise ManualError("Laisser courir : le gain verrouille doit etre inferieur au TP (en %) et le suiveur compris entre 0,05 et 50 %.")
                     p["tp_run_lock_pct"], p["tp_run_trail_pct"] = lk, tr_
                 new_ex = changes.get("execution") or item["execution"]
-                if new_ex not in ("price_above", "price_below", "time"):
+                if new_ex not in ("price_above", "price_below", "time", "bounce_up", "bounce_down"):
                     raise ManualError("Type de declenchement invalide.")
-                if new_ex in ("price_above", "price_below"):
+                if new_ex in ("bounce_up", "bounce_down"):
+                    try:
+                        cf = float(changes.get("confirm_pct") if changes.get("confirm_pct") not in (None, "") else (item.get("confirm_pct") or 0.3))
+                    except (TypeError, ValueError):
+                        raise ManualError("Confirmation du rebond invalide.")
+                    if not 0.05 <= cf <= 10:
+                        raise ManualError("Confirmation du rebond : entre 0,05 % et 10 %.")
+                    p["confirm_pct"] = cf
+                if new_ex in ("price_above", "price_below", "bounce_up", "bounce_down"):
                     try:
                         _tp_ = float(p.get("trigger_price") or 0)
                     except (TypeError, ValueError):
@@ -1612,6 +1675,10 @@ class ManualTrading:
                 for k in ("sl_pct", "tp_pct", "ttp_arm_pct", "ttp_trail_pct", "notional_usd", "leverage", "tp_run",
                           "tp_run_lock_pct", "tp_run_trail_pct", "trigger_price", "trigger_time", "tp1_pct", "tp1_close_pct", "tp1_be"):
                     item[k] = p.get(k)
+                if new_ex in ("bounce_up", "bounce_down"):
+                    item["confirm_pct"] = p["confirm_pct"]
+                if new_ex != item["execution"] or "trigger_price" in changes:
+                    item["bounce_ext"] = None           # le suivi du point bas / haut repart de zero
                 item["execution"] = new_ex
                 if "require_valid" in changes and changes["require_valid"] is not None:
                     item["require_valid"] = bool(changes["require_valid"])
@@ -1763,9 +1830,14 @@ class ManualTrading:
         if price is None:
             return
         ex = item["execution"]
-        fire = ((ex == "price_above" and price >= item["trigger_price"])
-                or (ex == "price_below" and price <= item["trigger_price"])
-                or (ex == "time" and time.time() >= item["trigger_time"]))
+        if ex in ("bounce_up", "bounce_down"):
+            fire = self._bounce_step(item, price)
+            if not fire:
+                return
+        else:
+            fire = ((ex == "price_above" and price >= item["trigger_price"])
+                    or (ex == "price_below" and price <= item["trigger_price"])
+                    or (ex == "time" and time.time() >= item["trigger_time"]))
         if not fire:
             return
         if (item.get("require_valid", True) and item.get("strategy_source") not in FREE_LIKE
@@ -1775,6 +1847,29 @@ class ManualTrading:
         self._log(f"Ordre programme #{item['id']} declenche ({self._trigger_text(item)}) — ouverture", "signal")
         self._fire_busy.add(item["id"])
         threading.Thread(target=self._fire, args=(item,), daemon=True).start()
+
+    def _bounce_step(self, item, price):
+        """v4.419 — REBOND / REPLI CONFIRME. bounce_up : une fois le niveau atteint (prix <= niveau), on suit le point
+        bas ; l ordre part quand le prix a remonte de confirm_pct depuis ce point bas (donc pas pendant la chute).
+        bounce_down : symetrique (prix >= niveau, point haut, recul de confirm_pct). Etat persiste (survit au redemarrage)."""
+        up = item["execution"] == "bounce_up"
+        cf = float(item.get("confirm_pct") or 0.3) / 100.0
+        ext = item.get("bounce_ext")
+        if ext is None:
+            if (price <= item["trigger_price"]) if up else (price >= item["trigger_price"]):
+                item["bounce_ext"], item["bounce_saved_ts"] = price, time.time()
+                self._log(f"Ordre programme #{item['id']} {item['ticker']} : niveau {item['trigger_price']:.6g} atteint — arme, on attend "
+                          f"{'le rebond' if up else 'le recul'} de {cf * 100:g} %", "signal")
+                self._save(item)
+            return False
+        moved = (price < ext) if up else (price > ext)
+        if moved:
+            item["bounce_ext"] = ext = price
+            if time.time() - item.get("bounce_saved_ts", 0) > 60:
+                item["bounce_saved_ts"] = time.time()
+                self._save(item)
+            return False
+        return (price >= ext * (1 + cf)) if up else (price <= ext * (1 - cf))
 
     def _fire(self, item):
         """v4.343 — declenchement : controle de tendance H4 (si demande) puis ouverture. Execute dans un

@@ -1118,9 +1118,9 @@ function AssetSummaryModal({ ticker, token, onClose, onPrepare }) {
               <div key={sc.id} style={{background:"#0a0e1a",border:`1px solid ${isBest?lc:"#334155"}`,borderLeft:`3px solid ${lc}`,borderRadius:8,padding:"8px 10px",marginBottom:6,opacity:isBest||sc.aligned?1:0.8}}>
                 <div style={{display:"flex",justifyContent:"space-between",gap:8,flexWrap:"wrap",alignItems:"center"}}>
                   <div style={{fontSize:12,fontWeight:700,color:lc}}>{isBest && "⭐ "}{sc.label}{!sc.aligned && <span style={{marginLeft:6,fontSize:9,color:"#fbbf24",fontWeight:600}}>⚠ contre-tendance</span>}</div>
-                  <button onClick={()=>onPrepare(sc.side,{execution:sc.execution,trigger_price:sc.trigger,sl_pct:sc.sl_pct,tp_pct:sc.tp_pct,expiry_hours:72})} style={{background:isBest?lc:"#1e293b",border:`1px solid ${lc}`,color:isBest?"#0a0e1a":lc,borderRadius:6,padding:"4px 10px",cursor:"pointer",fontWeight:700,fontSize:11}}>⏱ Pré-programmer</button>
+                  <button onClick={()=>onPrepare(sc.side,{execution:sc.entry_execution||sc.execution,confirm_pct:sc.confirm_pct||0.3,trigger_price:sc.trigger,sl_pct:sc.sl_pct,tp_pct:sc.tp_pct,expiry_hours:72})} style={{background:isBest?lc:"#1e293b",border:`1px solid ${lc}`,color:isBest?"#0a0e1a":lc,borderRadius:6,padding:"4px 10px",cursor:"pointer",fontWeight:700,fontSize:11}}>⏱ Pré-programmer</button>
                 </div>
-                <div style={{fontSize:11,color:"#cbd5e1",marginTop:3}}>Attendre {sc.wait} ({sc.trigger_dist_pct>=0?"+":""}{sc.trigger_dist_pct.toFixed(2)} % du prix actuel) → entrée {sc.execution==="price_below"?"si prix ≤":"si prix ≥"} <b>{fp(sc.trigger)}</b></div>
+                <div style={{fontSize:11,color:"#cbd5e1",marginTop:3}}>Attendre {sc.wait} ({sc.trigger_dist_pct>=0?"+":""}{sc.trigger_dist_pct.toFixed(2)} % du prix actuel) → entrée {sc.entry_execution==="bounce_up"?"si prix ≤":sc.entry_execution==="bounce_down"?"si prix ≥":sc.execution==="price_below"?"si prix ≤":"si prix ≥"} <b>{fp(sc.trigger)}</b>{sc.entry_execution==="bounce_up" ? <span> <b style={{color:"#34d399"}}>puis REBOND de {sc.confirm_pct} %</b> avant d'ouvrir (pas pendant la chute)</span> : sc.entry_execution==="bounce_down" ? <span> <b style={{color:"#f87171"}}>puis RECUL de {sc.confirm_pct} %</b> avant d'ouvrir</span> : null}</div>
                 <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>SL <b style={{color:"#f87171"}}>{fp(sc.sl)}</b> (−{sc.sl_pct.toFixed(2)} %) · objectif <b style={{color:"#34d399"}}>{fp(sc.tp)}</b> (+{sc.tp_pct.toFixed(2)} %) · gain/risque <b style={{color:sc.rr>=1.5?"#34d399":sc.rr>=1?"#fbbf24":"#f87171"}}>{sc.rr.toFixed(2)}</b></div>
                 <div style={{fontSize:10,color:"#cbd5e1",marginTop:3}}>{histTxt(sc)}</div>
                 {!isBest && sc.reject && <div style={{fontSize:10,color:"#fbbf24",marginTop:2}}>Non retenue : {sc.reject}.</div>}
@@ -1186,7 +1186,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
         tp1_on: false, tp1_pct: "", tp1_close_pct: 50, tp1_be: true,
         lock_on: !!p.free, lock_arm_pct: p.lock_arm_pct ?? p.sl_pct, lock_fraction_pct: Math.round((p.lock_fraction ?? 0.5)*100),
         trend_entry: prev?.trend_entry || "", trend_exit: prev?.trend_exit || "",
-        ...(preset ? {execution: preset.execution, trigger_price: String(Number(Number(preset.trigger_price).toPrecision(6))), sl_pct: Number(preset.sl_pct.toFixed(2)), tp_on: true, tp_pct: Number(preset.tp_pct.toFixed(2)), expiry_hours: preset.expiry_hours || 72} : {}),
+        ...(preset ? {execution: preset.execution, confirm_pct: preset.confirm_pct || 0.3, trigger_price: String(Number(Number(preset.trigger_price).toPrecision(6))), sl_pct: Number(preset.sl_pct.toFixed(2)), tp_on: true, tp_pct: Number(preset.tp_pct.toFixed(2)), expiry_hours: preset.expiry_hours || 72} : {}),
       }));
     } catch(e) { alert(e.message); setSel(null); setProp(null); setF(null); }
   };
@@ -1203,7 +1203,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
   };
 
   const oppStillValid = sel && ((sel.strategy==="libre" || sel.strategy==="swing_support") || (st && st.opportunities.some(o => o.strategy===sel.strategy && o.ticker===sel.ticker && o.direction===sel.direction)));
-  const refPrice = f && prop ? ((f.execution==="price_above"||f.execution==="price_below") && Number(f.trigger_price)>0 ? Number(f.trigger_price) : prop.price) : null;
+  const refPrice = f && prop ? ((f.execution==="price_above"||f.execution==="price_below"||f.execution==="bounce_up"||f.execution==="bounce_down") && Number(f.trigger_price)>0 ? Number(f.trigger_price) : prop.price) : null;
   const isLong = sel?.direction === "long";
   const pxFromPct = (pct, side) => refPrice ? refPrice * (1 + (side==="sl" ? (isLong?-1:1) : (isLong?1:-1)) * pct/100) : null;
   const pctFromPx = (px, side) => refPrice ? Math.abs(px - refPrice) / refPrice * 100 : null;
@@ -1218,7 +1218,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
       ttp_arm_pct: f.ttp_on ? Number(f.ttp_arm_pct) : null, ttp_trail_pct: f.ttp_on ? Number(f.ttp_trail_pct) : null,
       tp_run: !!(f.tp_on && f.tp_run), tp_run_lock_pct: Number(f.tp_run_lock_pct) || 0, tp_run_trail_pct: Number(f.tp_run_trail_pct) || 0.5,
       tp1_pct: (f.tp_on && f.tp1_on && Number(f.tp1_pct) > 0) ? Number(f.tp1_pct) : null, tp1_close_pct: Number(f.tp1_close_pct) || 50, tp1_be: !!f.tp1_be,
-      trigger_price: (f.execution==="price_above"||f.execution==="price_below") ? Number(f.trigger_price) : null,
+      trigger_price: (f.execution==="price_above"||f.execution==="price_below"||f.execution==="bounce_up"||f.execution==="bounce_down") ? Number(f.trigger_price) : null, confirm_pct: (f.execution==="bounce_up"||f.execution==="bounce_down") ? (Number(f.confirm_pct)||0.3) : null,
       trigger_time: f.execution==="time" && f.trigger_time ? new Date(f.trigger_time).getTime()/1000 : null,
       expiry_hours: Number(f.expiry_hours) || 24, require_valid: !!f.require_valid, confirm_live: false,
       lock_arm_pct: f.lock_on ? Number(f.lock_arm_pct) : null, lock_fraction: f.lock_on ? Number(f.lock_fraction_pct)/100 : null,
@@ -1258,10 +1258,10 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
     try { await apiCall(`/api/manual/positions/${p.id}/close`,"POST",null,token); load(); } catch(e) { alert("Fermeture : " + e.message); } };
   const toLocalInput = (ts) => { if(!ts) return ""; const d=new Date(ts*1000); const z=n=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`; };
   const openSchedEdit = (o) => { if(schedId===o.id){ setSchedId(null); return; } setSchedId(o.id); setSched({
-    execution:o.execution, trend_entry:o.trend_entry||"", trend_exit:o.trend_exit||"", require_valid:o.require_valid!==false, lock_arm_pct:o.lock_arm_pct||"", lock_fraction_pct:o.lock_fraction?Math.round(o.lock_fraction*100):"", lock_off:false, direction:o.direction, mode:o.mode, trigger_price:o.trigger_price||"", trigger_time:toLocalInput(o.trigger_time), notional_usd:o.notional_usd, leverage:o.leverage||1,
+    execution:o.execution, confirm_pct:o.confirm_pct||0.3, trend_entry:o.trend_entry||"", trend_exit:o.trend_exit||"", require_valid:o.require_valid!==false, lock_arm_pct:o.lock_arm_pct||"", lock_fraction_pct:o.lock_fraction?Math.round(o.lock_fraction*100):"", lock_off:false, direction:o.direction, mode:o.mode, trigger_price:o.trigger_price||"", trigger_time:toLocalInput(o.trigger_time), notional_usd:o.notional_usd, leverage:o.leverage||1,
     sl_pct:o.sl_pct, tp_pct:o.tp_pct||"", tp1_pct:o.tp1_pct||"", tp1_close_pct:o.tp1_close_pct??50, tp1_be:o.tp1_be!==false, tp_run:!!o.tp_run, tp_run_lock_pct:o.tp_run_lock_pct??0.5, tp_run_trail_pct:o.tp_run_trail_pct??0.5,
     ttp_arm_pct:o.ttp_arm_pct||"", ttp_trail_pct:o.ttp_trail_pct||"", ttp_off:false, expiry_hours:"" }); };
-  const sRef = (o) => ((sched.execution==="price_above"||sched.execution==="price_below") && Number(sched.trigger_price)>0) ? Number(sched.trigger_price) : (Number(o.current_price)||null);
+  const sRef = (o) => ((sched.execution==="price_above"||sched.execution==="price_below"||sched.execution==="bounce_up"||sched.execution==="bounce_down") && Number(sched.trigger_price)>0) ? Number(sched.trigger_price) : (Number(o.current_price)||null);
   const sPx = (o, pct, side) => { const r=sRef(o); if(!r||!(Number(pct)>0)) return ""; const L=sched.direction==="long"; return Number((r*(1+(side==="sl"?(L?-1:1):(L?1:-1))*Number(pct)/100)).toPrecision(6)); };
   const sPct = (o, px) => { const r=sRef(o); return (r&&Number(px)>0) ? Number((Math.abs(Number(px)-r)/r*100).toFixed(3)) : ""; };
   const saveSched = async (o) => {
@@ -1270,7 +1270,8 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
     if (sched.mode!==o.mode) { body.mode = sched.mode;
       if (sched.mode==="live") { if (!window.confirm(`⚠️ PASSER CET ORDRE EN LIVE ?\n\n${sched.direction.toUpperCase()} ${o.ticker} · ${sched.notional_usd} $ x${sched.leverage}\nL'ordre s'exécutera avec de l'argent réel au déclenchement.`)) return; body.confirm_live = true; } }
     body.execution = sched.execution;
-    if (sched.execution==="price_above"||sched.execution==="price_below") body.trigger_price = Number(sched.trigger_price);
+    if (sched.execution==="price_above"||sched.execution==="price_below"||sched.execution==="bounce_up"||sched.execution==="bounce_down") body.trigger_price = Number(sched.trigger_price);
+    if (sched.execution==="bounce_up"||sched.execution==="bounce_down") body.confirm_pct = Number(sched.confirm_pct)||0.3;
     if (sched.execution==="time" && sched.trigger_time) body.trigger_time = new Date(sched.trigger_time).getTime()/1000;
     body.trend_entry = sched.trend_entry || "";
     body.require_valid = !!sched.require_valid;
@@ -1381,9 +1382,12 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
                 <option value="now">Maintenant (au marché)</option>
                 <option value="price_above">Programmée : si le prix monte à…</option>
                 <option value="price_below">Programmée : si le prix descend à…</option>
+                <option value="bounce_up">Programmée : descend à…, puis REBONDIT (ouvre à la remontée)</option>
+                <option value="bounce_down">Programmée : monte à…, puis RECULE (ouvre à la baisse)</option>
                 <option value="time">Programmée : à une heure donnée</option>
               </select>
-              {(f.execution==="price_above"||f.execution==="price_below") && <><span style={{...MT.label,marginTop:8}}>PRIX DE DÉCLENCHEMENT</span><input style={MT.input} type="number" step="any" value={f.trigger_price} onChange={e=>set("trigger_price",e.target.value)} placeholder={fmtP(prop.price)}/></>}
+              {(f.execution==="price_above"||f.execution==="price_below"||f.execution==="bounce_up"||f.execution==="bounce_down") && <><span style={{...MT.label,marginTop:8}}>{f.execution==="bounce_up"?"NIVEAU À ATTEINDRE (en descendant)":f.execution==="bounce_down"?"NIVEAU À ATTEINDRE (en montant)":"PRIX DE DÉCLENCHEMENT"}</span><input style={MT.input} type="number" step="any" value={f.trigger_price} onChange={e=>set("trigger_price",e.target.value)} placeholder={fmtP(prop.price)}/></>}
+              {(f.execution==="bounce_up"||f.execution==="bounce_down") && <><span style={{...MT.label,marginTop:8}}>{f.execution==="bounce_up"?"REBOND DE CONFIRMATION (%) depuis le point bas":"RECUL DE CONFIRMATION (%) depuis le point haut"}</span><input style={MT.input} type="number" step="0.05" min="0.05" max="10" value={f.confirm_pct??0.3} onChange={e=>set("confirm_pct",e.target.value)}/><div style={{fontSize:10,color:"#94a3b8",marginTop:3}}>{f.execution==="bounce_up"?"L'ordre ne part pas quand le niveau est touché : le bot suit le point bas, puis ouvre quand le prix a remonté de ce pourcentage (pas pendant la chute).":"L'ordre ne part pas quand le niveau est touché : le bot suit le point haut, puis ouvre quand le prix a reculé de ce pourcentage."}</div></>}
               {f.execution==="time" && <><span style={{...MT.label,marginTop:8}}>DATE ET HEURE</span><input style={MT.input} type="datetime-local" value={f.trigger_time} onChange={e=>set("trigger_time",e.target.value)}/></>}
               {f.execution!=="now" && <>
                 <span style={{...MT.label,marginTop:8}}>EXPIRATION (HEURES)</span><input style={MT.input} type="number" min="0.1" step="0.5" value={f.expiry_hours} onChange={e=>set("expiry_hours",e.target.value)}/>
@@ -1483,7 +1487,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
             <tbody>{st.scheduled.map(o=><React.Fragment key={o.id}><tr>
               <td style={MT.td}>{o.id}</td><td data-tk={o.ticker} title="Résumé de l'actif" style={{...MT.td,fontWeight:800,cursor:"pointer",textDecoration:"underline dotted"}}>{o.ticker}</td><td style={MT.td}>{dirBadge(o.direction)}</td>
               <td style={MT.td}>{o.market.toUpperCase()}</td><td style={{...MT.td,color:o.mode==="live"?"#ef4444":"#22c55e"}}>{o.mode.toUpperCase()}</td>
-              <td style={MT.td}>{o.execution==="price_above"?`prix ≥ ${fmtP(o.trigger_price)}`:o.execution==="price_below"?`prix ≤ ${fmtP(o.trigger_price)}`:`à ${fmtTime(o.trigger_time)}`}</td>
+              <td style={MT.td}>{o.execution==="price_above"?`prix ≥ ${fmtP(o.trigger_price)}`:o.execution==="price_below"?`prix ≤ ${fmtP(o.trigger_price)}`:o.execution==="bounce_up"?`↘ ${fmtP(o.trigger_price)} puis rebond +${o.confirm_pct||0.3} %${o.bounce_ext?` · ARMÉ (bas ${fmtP(o.bounce_ext)})`:""}`:o.execution==="bounce_down"?`↗ ${fmtP(o.trigger_price)} puis recul −${o.confirm_pct||0.3} %${o.bounce_ext?` · ARMÉ (haut ${fmtP(o.bounce_ext)})`:""}`:`à ${fmtTime(o.trigger_time)}`}</td>
               <td style={MT.td}>{fmtP(o.current_price)}</td>
               <td style={{...MT.td,color:o.opportunity_valid?"#22c55e":"#fbbf24"}}>{o.strategy_source==="libre"?"ordre libre":(o.strategy_source==="swing_support"?"Swing Support":(o.opportunity_valid?"valable":"non confirmée"))}</td>
               <td style={MT.td}>{fmtTime(o.expires_at)}</td>
@@ -1494,8 +1498,9 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
                 <div><span style={MT.label}>SENS</span><select style={{...MT.input,width:100}} value={sched.direction} onChange={e=>setSched({...sched,direction:e.target.value})}><option value="long">LONG</option>{o.market!=="spot" && <option value="short">SHORT</option>}</select></div>
                 <div><span style={MT.label}>MODE</span><select style={{...MT.input,width:100}} value={sched.mode} onChange={e=>setSched({...sched,mode:e.target.value})}><option value="paper">PAPER</option><option value="live">🔴 LIVE</option></select></div>
                 {sched.direction!==o.direction && o.strategy_source!=="libre" && o.strategy_source!=="swing_support" && <div style={{fontSize:11,color:"#fbbf24",maxWidth:220}}>Sens inversé : l'ordre ne suit plus l'opportunité du bot, il devient un ordre libre.</div>}
-                <div><span style={MT.label}>DÉCLENCHEMENT</span><select style={{...MT.input,width:150}} value={sched.execution} onChange={e=>setSched({...sched,execution:e.target.value})}><option value="price_above">Prix ≥ (monte à)</option><option value="price_below">Prix ≤ (descend à)</option><option value="time">À une heure précise</option></select></div>
-                {(sched.execution==="price_above"||sched.execution==="price_below") && <div><span style={MT.label}>PRIX DE DÉCLENCHEMENT</span><input style={{...MT.input,width:130}} type="number" step="any" value={sched.trigger_price} onChange={e=>setSched({...sched,trigger_price:e.target.value})}/></div>}
+                <div><span style={MT.label}>DÉCLENCHEMENT</span><select style={{...MT.input,width:150}} value={sched.execution} onChange={e=>setSched({...sched,execution:e.target.value})}><option value="price_above">Prix ≥ (monte à)</option><option value="price_below">Prix ≤ (descend à)</option><option value="bounce_up">Descend à… puis REBONDIT</option><option value="bounce_down">Monte à… puis RECULE</option><option value="time">À une heure précise</option></select></div>
+                {(sched.execution==="price_above"||sched.execution==="price_below"||sched.execution==="bounce_up"||sched.execution==="bounce_down") && <div><span style={MT.label}>{sched.execution==="bounce_up"?"NIVEAU (en descendant)":sched.execution==="bounce_down"?"NIVEAU (en montant)":"PRIX DE DÉCLENCHEMENT"}</span><input style={{...MT.input,width:130}} type="number" step="any" value={sched.trigger_price} onChange={e=>setSched({...sched,trigger_price:e.target.value})}/></div>}
+                {(sched.execution==="bounce_up"||sched.execution==="bounce_down") && <div><span style={MT.label}>{sched.execution==="bounce_up"?"REBOND DE CONFIRMATION (%)":"RECUL DE CONFIRMATION (%)"}</span><input style={{...MT.input,width:90}} type="number" step="0.05" min="0.05" max="10" value={sched.confirm_pct} onChange={e=>setSched({...sched,confirm_pct:e.target.value})}/></div>}
                 {sched.execution==="time" && <div><span style={MT.label}>HEURE DE DÉCLENCHEMENT</span><input style={{...MT.input,width:190}} type="datetime-local" value={sched.trigger_time} onChange={e=>setSched({...sched,trigger_time:e.target.value})}/></div>}
                 <div><span style={MT.label}>TENDANCE H4 — CONDITION D'ENTRÉE</span><select style={{...MT.input,width:150}} value={sched.trend_entry} onChange={e=>setSched({...sched,trend_entry:e.target.value})}><option value="">Aucune</option><option value="haussiere">Haussière</option><option value="baissiere">Baissière</option><option value="neutre">Neutre</option></select></div>
                 {o.strategy_source!=="libre" && o.strategy_source!=="swing_support" && sched.direction===o.direction && <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={!!sched.require_valid} onChange={e=>setSched({...sched,require_valid:e.target.checked})}/>annuler si l'opportunité du bot n'est plus valable au déclenchement</label>}
