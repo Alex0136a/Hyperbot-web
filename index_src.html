@@ -1169,8 +1169,8 @@ function ScalpPanel({ token }) {
   const S = live ? d.stats_live : d.stats_paper;
   const pr = (a) => a && a.n ? `${a.n} trades · ${a.win_rate.toFixed(0)} % gagnants · ${fmtUsd(a.pnl)}` : "aucun trade";
   const LBL = {SCALP_LEVERAGE:"Levier",SCALP_NOTIONAL_USD:"Taille ($)",SCALP_SL_PCT:"Stop (% prix)",SCALP_TP_PCT:"Objectif (% prix)",SCALP_TOP_N:"Nb d'actifs (top volume)",
-    SCALP_MIN_SCORE:"Note minimale (0-100)",SCALP_MIN_ATR15_PCT:"Volatilité 15 min min (%)",SCALP_MIN_ROOM_PCT:"Place min avant zone suivante (%)",
-    SCALP_BREAK_VOL_MULT:"Cassure : volume ×",SCALP_MAX_CHASE_PCT:"Cassure : ne pas poursuivre au-delà (%)",SCALP_MAX_OPEN:"Positions simultanées max",
+    SCALP_MIN_SCORE:"Filtre note min (0 = aucun)",SCALP_MIN_ATR15_PCT:"Filtre volatilité 15 min min % (0 = aucun)",SCALP_MIN_ROOM_PCT:"Filtre place min avant zone % (0 = aucun)",
+    SCALP_BREAK_VOL_MULT:"Cassure : volume ×",SCALP_MAX_CHASE_PCT:"Cassure : ne pas poursuivre au-delà (%)",SCALP_MAX_OPEN:"Positions simultanées max (0 = illimité ; en live le capital limite)",
     SCALP_MAX_PER_DAY:"Trades max par jour",SCALP_DAILY_LOSS_USD:"Perte journalière max ($)",SCALP_PAUSE_AFTER_LOSSES:"Pause après X pertes de suite",
     SCALP_PAUSE_MIN:"Durée de la pause (min)",SCALP_COOLDOWN_MIN:"Attente par actif (min)",SCALP_MAX_HOLD_MIN:"Durée max d'un trade (min)"};
   return (
@@ -1186,7 +1186,7 @@ function ScalpPanel({ token }) {
       </div>
       <div style={{fontSize:12,color:"#cbd5e1",margin:"6px 0"}}>
         {d.enabled ? (d.window_open ? <span style={{color:"#22c55e"}}>● à l'écoute</span> : <span style={{color:"#fbbf24"}}>● en attente : {d.window_reason}</span>) : <span style={{color:"#94a3b8"}}>○ désactivé (rien ne s'ouvre)</span>}
-        {" · "}mode <b style={{color:live?"#ef4444":"#60a5fa"}}>{live?"LIVE":"PAPER"}</b> · positions {d.open}/{d.max_open} · actifs : {(d.universe||[]).join(", ")||"—"}
+        {" · "}mode <b style={{color:live?"#ef4444":"#60a5fa"}}>{live?"LIVE":"PAPER"}</b> · positions {d.open}{d.max_open>0?`/${d.max_open}`:""} · actifs : {(d.universe||[]).join(", ")||"—"}
       </div>
       <div style={{display:"flex",gap:18,flexWrap:"wrap",fontSize:12,color:"#e2e8f0"}}>
         <div><span style={MT.label}>AUJOURD'HUI (UTC) · {live?"LIVE":"PAPER"}</span>{pr(S.today)}</div>

@@ -1071,3 +1071,19 @@ Fichiers : `scalp_crypto.py` (nouveau), `manual_trading.py`, `api.py`, `bot_engi
 - **Interface** : carte « ⚡ SCALP CRYPTO » en haut de l'onglet Trading manuel : ACTIF/ARRÊTÉ, PAPER/LIVE (confirmation obligatoire), résultats du jour/total, rebond vs cassure, résultats par heure, journal des signaux, tous les réglages. **Désactivé par défaut** : à activer depuis la carte.
 - Les trades passent par le moteur manuel (stratégie « Scalp ») : SL natif en live, historique, prix de sortie réels.
 - Limite : testé sur données simulées uniquement (pas d'accès au marché ici) ; aucune performance réelle n'est garantie.
+
+## v4.422 — Scalp : plus de plafond de positions, doubles ouvertures bloquées par mode, capital en live
+Fichiers : `scalp_crypto.py`, `bot_engine.py` (version, `SCALP_MAX_OPEN` = 0), `api.py`, `index_src.html`, `index.html`, `README.md`.
+
+- **Plus de limite de positions simultanées** (`SCALP_MAX_OPEN` = 0 : illimité). Si ce réglage avait été enregistré à 4 depuis la carte, le remettre à 0.
+- **Doublons bloqués seulement dans le même mode** : une position paper sur un actif n'empêche plus d'ouvrir le même actif en live, et inversement. L'attente par actif (30 min) est aussi séparée par mode.
+- **En live, le capital limite** : avant chaque ouverture, le bot lit la marge libre d'Hyperliquid et n'ouvre pas si elle est inférieure à la marge requise (60 $ / levier). Le refus apparaît dans le journal des signaux. Les autres garde-fous (perte journalière, série de pertes, trades/jour, tranches horaires) restent actifs.
+
+## v4.423 — Scalp : les données passées motivent (note) au lieu de bloquer
+Fichiers : `scalp_crypto.py`, `bot_engine.py`, `index_src.html`, `index.html`, `README.md`.
+
+- **Ne bloquent plus** : volatilité 15 min minimale, place minimale avant la zone suivante, note minimale (réglages `SCALP_MIN_ATR15_PCT`, `SCALP_MIN_ROOM_PCT`, `SCALP_MIN_SCORE` = **0 = désactivés** par défaut ; restent disponibles comme filtres facultatifs).
+- **Ils comptent dans la note** (affichée dans le journal et enregistrée sur chaque trade) : marché calme −4 / actif +4, peu de place avant la zone suivante −8 / beaucoup de place +5.
+- **Ce qui décide l'entrée** : le type de signal (rebond sur support, rejet de résistance, cassure haussière ou baissière), la zone support/résistance H1 et l'emplacement de l'entrée (bougie 5 min de confirmation ; cassure : au plus 0,4 % du niveau cassé, volume de la bougie de cassure).
+- Conservés : l'historique minimal de bougies (technique), la marge libre en live (capital), les garde-fous de perte et de tranches horaires.
+- Si les anciens seuils (62 / 0,15 / 0,9) ont été enregistrés depuis la carte Scalp, les remettre à 0.

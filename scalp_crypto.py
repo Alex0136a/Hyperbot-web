@@ -135,6 +135,12 @@ def evaluate(c5, c15, c1h, btc_chg, K):
         rm = room(side, z)
         if rm >= 1.5:
             s += 5
+        elif rm < 0.9:
+            s -= 8; why.append("peu de place avant la zone suivante")     # v4.423 : motivation, plus un blocage
+        if atr15_pct >= 0.15:
+            s += 4
+        else:
+            s -= 4; why.append(f"marche calme (ATR 15 min {atr15_pct:.2f} %)")
         why.append(f"place avant la zone suivante : {'>3' if rm > 3 else f'{rm:.1f}'} %")
         s += extra
         return max(0, min(100, s)), why, rm
@@ -207,9 +213,9 @@ class ScalpEngine:
 
     def thresholds(self):
         c = self.cfg
-        return {"min_atr_pct": float(c.get("SCALP_MIN_ATR15_PCT", 0.15)), "min_room_pct": float(c.get("SCALP_MIN_ROOM_PCT", 0.9)),
+        return {"min_atr_pct": float(c.get("SCALP_MIN_ATR15_PCT", 0.0)), "min_room_pct": float(c.get("SCALP_MIN_ROOM_PCT", 0.0)),
                 "vol_mult": float(c.get("SCALP_BREAK_VOL_MULT", 1.5)), "max_chase_pct": float(c.get("SCALP_MAX_CHASE_PCT", 0.4)),
-                "min_score": float(c.get("SCALP_MIN_SCORE", 62))}
+                "min_score": float(c.get("SCALP_MIN_SCORE", 0))}
 
     # ── univers : top N par volume 24 h parmi les actifs suivis ──
     def universe(self):
@@ -348,15 +354,16 @@ class ScalpEngine:
                 return
             K = self.thresholds()
             btc = self._btc_change()
-            maxo = int(self.cfg.get("SCALP_MAX_OPEN", 4))
+            maxo = int(self.cfg.get("SCALP_MAX_OPEN", 0))       # v4.422 : 0 = pas de plafond (en live, c est le capital qui limite)
+            mode = "live" if self.cfg.get("SCALP_MODE") == "live" else "paper"
             for t in self.universe():
-                if self._open_count() >= maxo:
+                if maxo > 0 and self._open_count() >= maxo:
                     break
                 bucket = int(time.time() // 300)
                 if self._seen.get(t) == bucket:
                     continue
                 self._seen[t] = bucket
-                if time.time() < self._cool.get(t, 0) or self.manual.ticker_busy(t):
+                if time.time() < self._cool.get((t, mode), 0) or self._busy_same_mode(t, mode):
                     continue
                 try:
                     c5 = self.bot._mtf_candles(t, "5m", 60)
@@ -377,9 +384,46 @@ class ScalpEngine:
         finally:
             self._busy = False
 
+    def _busy_same_mode(self, ticker, mode):
+        """v4.422 : une double ouverture n est bloquee que dans le MEME mode (une position paper n empeche pas un live, et inversement)."""
+        for it in list(self.manual.items.values()):
+            if it.get("ticker") == ticker and it.get("mode") == mode and it.get("status") in ("scheduled", "opening", "open", "closing"):
+                return True
+        if mode == "live":
+            try:
+                return bool(self.manual._bot_live_position_on(ticker))
+            except Exception:
+                return False
+        return False
+
+    def _free_margin(self):
+        """Marge libre du compte Hyperliquid (cache 10 s) ; None si illisible (Hyperliquid refusera alors lui-meme)."""
+        ts, val = getattr(self, "_fm", (0, None))
+        if time.time() - ts < 10:
+            return val
+        val = None
+        try:
+            w = self.manual._wallet()
+            st = self.bot.info.user_state(w)
+            ms = st["marginSummary"]
+            val = float(ms["accountValue"]) - float(ms["totalMarginUsed"])
+            wd = st.get("withdrawable")
+            if wd is not None:
+                val = min(val, float(wd)) if float(wd) > 0 else val
+        except Exception as e:
+            self.last_error = f"marge libre : {type(e).__name__}: {e}"
+        self._fm = (time.time(), val)
+        return val
+
     def _take(self, t, sig):
         c = self.cfg
         mode = "live" if c.get("SCALP_MODE") == "live" else "paper"
+        if mode == "live":
+            need = float(c.get("SCALP_NOTIONAL_USD", 60.0)) / max(int(c.get("SCALP_LEVERAGE", 3)), 1)
+            free = self._free_margin()
+            if free is not None and free < need * 1.05 + 0.5:
+                self._ev("refus", t, f"{sig['kind']} {sig['side']} non ouvert : marge libre insuffisante ({free:.2f} $ < {need:.2f} $ requis)")
+                return
         params = {"strategy": STRATEGY, "ticker": t, "direction": sig["side"], "market": "perp", "mode": mode,
                   "execution": "now", "leverage": int(c.get("SCALP_LEVERAGE", 3)),
                   "notional_usd": float(c.get("SCALP_NOTIONAL_USD", 60.0)),
@@ -389,9 +433,9 @@ class ScalpEngine:
             res = self.manual.submit(params)
         except Exception as e:
             self._ev("erreur", t, f"{sig['kind']} {sig['side']} non ouvert : {e}")
-            self._cool[t] = time.time() + 300
+            self._cool[(t, mode)] = time.time() + 300
             return
-        self._cool[t] = time.time() + float(c.get("SCALP_COOLDOWN_MIN", 30)) * 60
+        self._cool[(t, mode)] = time.time() + float(c.get("SCALP_COOLDOWN_MIN", 30)) * 60
         try:
             with self.manual.lock:
                 it = self.manual.items.get(res["id"])
@@ -411,7 +455,7 @@ class ScalpEngine:
         c = self.cfg
         ok, why = self.window_state() if int(c.get("SCALP_ENABLED", 0)) else (False, "desactive")
         return {"enabled": bool(int(c.get("SCALP_ENABLED", 0))), "mode": c.get("SCALP_MODE", "paper"), "window_open": ok, "window_reason": why,
-                "universe": list(self._uni), "open": self._open_count(), "max_open": int(c.get("SCALP_MAX_OPEN", 4)),
+                "universe": list(self._uni), "open": self._open_count(), "max_open": int(c.get("SCALP_MAX_OPEN", 0)),
                 "params": {k: c.get(k) for k in ("SCALP_LEVERAGE", "SCALP_NOTIONAL_USD", "SCALP_SL_PCT", "SCALP_TP_PCT", "SCALP_HOURS_UTC",
                                                  "SCALP_MIN_SCORE", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),
