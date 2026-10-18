@@ -1093,3 +1093,10 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py` (version), `README.md`.
 
 - Cause : la liste des actifs suivis contient des **clés de slot** (`BTC_0`, `ETH_2`…). Le Scalp les utilisait telles quelles : le classement par volume Hyperliquid ne trouvait aucun actif et les bougies de `BTC_0` ne pouvaient pas être chargées, donc aucun signal n'était évalué.
 - Correction : extraction du vrai ticker (`BTC`), suppression des doublons, exclusion de PAXG (or, pas une crypto) et des actifs `xyz:`, puis classement par volume 24 h : les 15 plus échangés.
+
+## v4.425 — Historique manuel : onglets LIVE et PAPER séparés
+Fichiers : `manual_trading.py`, `bot_engine.py` (version), `index_src.html`, `index.html`, `README.md`.
+
+- L'historique du Trading manuel (qui contient aussi les trades du Scalp) est divisé en deux onglets **LIVE** et **PAPER**, avec le nombre de trades de chacun.
+- Chaque onglet affiche son propre résumé : trades clôturés, % gagnants, PnL.
+- Le serveur renvoie les **100 derniers par mode** (avant : 50 au total), pour que le volume du paper Scalp ne repousse pas les trades live.

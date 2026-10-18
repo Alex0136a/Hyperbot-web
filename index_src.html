@@ -1229,6 +1229,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
   const [sched, setSched] = useState({});
   const [freeT, setFreeT] = useState("");          // v4.343 — ordre libre : actif
   const [freeDir, setFreeDir] = useState("long");  // v4.343 — ordre libre : sens
+  const [histTab, setHistTab] = useState("live");     // v4.425 — historique : onglet LIVE / PAPER
 
   const load = useCallback(async () => {
     try { setSt(await apiCall("/api/manual/state","GET",null,token)); setErr(""); }
@@ -1370,6 +1371,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
 
   if (!st) return <div style={{padding:16,color:"#94a3b8"}}>{err || "Chargement..."}</div>;
 
+  const histRows = st.history.filter(h=>(h.mode==="live"?"live":"paper")===histTab);
   const notional = f ? Number(f.notional_usd)||0 : 0;
   const lev = f ? (f.market==="spot" ? 1 : Number(f.leverage)||1) : 1;
   const feesEst = notional * 0.0009;
@@ -1650,11 +1652,18 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
 
       {/* HISTORIQUE */}
       <div style={MT.card}>
-        <div style={MT.title}>📜 HISTORIQUE MANUEL (50 derniers)</div>
-        {st.history.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucun historique.</div> : (
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:10}}>
+          <div style={{...MT.title,marginBottom:0}}>📜 HISTORIQUE MANUEL (100 derniers par mode)</div>
+          <div style={{display:"flex",gap:6}}>
+            {[["live","LIVE","#ef4444"],["paper","PAPER","#22c55e"]].map(([k,l,c])=>{ const n=st.history.filter(h=>(h.mode==="live"?"live":"paper")===k).length; return <button key={k} style={{...MT.seg(histTab===k,c),flex:"none",padding:"6px 14px"}} onClick={()=>setHistTab(k)}>{l} ({n})</button>; })}
+          </div>
+        </div>
+        {(()=>{ const cl=histRows.filter(h=>h.status==="closed"); const w=cl.filter(h=>(h.pnl||0)>0).length; const pn=cl.reduce((s,h)=>s+(h.pnl||0),0);
+          return cl.length ? <div style={{fontSize:12,color:"#cbd5e1",marginBottom:8}}>{cl.length} trades clôturés · <b>{(w/cl.length*100).toFixed(0)} %</b> gagnants · PnL <b style={{color:pn>=0?"#22c55e":"#ef4444"}}>{fmtUsd(pn)}</b></div> : null; })()}
+        {histRows.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucun historique {histTab==="live"?"LIVE":"PAPER"}.</div> : (
           <div style={{overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%"}}>
             <thead><tr>{["#","Actif","Sens","Marché","Mode","Source","Ouverture","Fermeture","Entrée","Sortie","PnL","Statut / motif"].map(h=><th key={h} style={MT.th}>{h}</th>)}</tr></thead>
-            <tbody>{st.history.map(h=><tr key={h.id}>
+            <tbody>{histRows.map(h=><tr key={h.id}>
               <td style={MT.td}>{h.id}</td><td data-tk={h.ticker} title="Résumé de l'actif" style={{...MT.td,fontWeight:800,cursor:"pointer",textDecoration:"underline dotted"}}>{h.ticker}</td><td style={MT.td}>{dirBadge(h.direction)}</td>
               <td style={MT.td}>{(h.market||"").toUpperCase()}</td><td style={{...MT.td,color:h.mode==="live"?"#ef4444":"#22c55e"}}>{(h.mode||"").toUpperCase()}</td>
               <td style={MT.td}>{h.strategy_label}</td><td style={MT.td}>{fmtTime(h.opened_at||h.created_at)}</td><td style={MT.td}>{fmtTime(h.closed_at)}</td>

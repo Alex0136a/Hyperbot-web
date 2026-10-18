@@ -2098,8 +2098,13 @@ class ManualTrading:
         with self.lock:
             items = [self.public(i) for i in self.items.values()]
         history = []
-        for row in db.manual_history(50):
+        cnt = {"live": 0, "paper": 0}        # v4.425 : 100 derniers PAR MODE (le paper du Scalp ne doit pas noyer le live)
+        for row in db.manual_history(800):
             d = row["data"]
+            md = "live" if d.get("mode") == "live" else "paper"
+            if cnt[md] >= 100:
+                continue
+            cnt[md] += 1
             d.update({"id": row["id"], "status": row["status"]})
             d["strategy_label"] = STRATEGY_LABELS.get(d.get("strategy_source"), d.get("strategy_source"))
             history.append(d)
