@@ -1117,6 +1117,18 @@ def manual_list(statuses):
         return [{"id": r["id"], "status": r["status"], "data": json.loads(r["data"])} for r in rows]
 
 
+def manual_delete_finished(ids):
+    """v4.426 : supprime de l historique manuel des elements TERMINES (closed / cancelled / expired / failed). Les positions ouvertes
+    ou programmees ne sont jamais touchees. Retourne le nombre de lignes supprimees."""
+    ids = [int(i) for i in ids if str(i).lstrip("-").isdigit()]
+    if not ids:
+        return 0
+    with _lock, _connect() as conn:
+        cur = conn.execute(f"DELETE FROM manual_trades WHERE status IN ('closed','cancelled','expired','failed') AND id IN ({','.join('?' * len(ids))})", tuple(ids))
+        conn.commit()
+        return cur.rowcount
+
+
 def manual_history(limit=50):
     with _lock, _connect() as conn:
         rows = conn.execute("SELECT id, status, data FROM manual_trades WHERE status IN ('closed','cancelled','expired','failed') "

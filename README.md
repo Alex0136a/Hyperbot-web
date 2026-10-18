@@ -1100,3 +1100,10 @@ Fichiers : `manual_trading.py`, `bot_engine.py` (version), `index_src.html`, `in
 - L'historique du Trading manuel (qui contient aussi les trades du Scalp) est divisé en deux onglets **LIVE** et **PAPER**, avec le nombre de trades de chacun.
 - Chaque onglet affiche son propre résumé : trades clôturés, % gagnants, PnL.
 - Le serveur renvoie les **100 derniers par mode** (avant : 50 au total), pour que le volume du paper Scalp ne repousse pas les trades live.
+
+## v4.426 — Historique manuel : suppression des trades terminés après sélection
+Fichiers : `db.py`, `api.py`, `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
+
+- Dans l'historique du Trading manuel (onglets LIVE / PAPER) : case à cocher par ligne, « Tout sélectionner » et bouton **🗑 Supprimer la sélection (n)** avec confirmation.
+- Ne peuvent être supprimés que les éléments **terminés** (clôturés, annulés, expirés, échoués) : une position ouverte ou un ordre programmé n'est jamais touché (contrôle côté serveur).
+- La suppression est définitive et retire les lignes de l'historique manuel ; les statistiques du Scalp (calculées depuis cet historique) sont recalculées. L'historique général des trades (tableau de bord / export) n'est pas modifié.

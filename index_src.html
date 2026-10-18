@@ -1230,6 +1230,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
   const [freeT, setFreeT] = useState("");          // v4.343 — ordre libre : actif
   const [freeDir, setFreeDir] = useState("long");  // v4.343 — ordre libre : sens
   const [histTab, setHistTab] = useState("live");     // v4.425 — historique : onglet LIVE / PAPER
+  const [histSel, setHistSel] = useState({});            // v4.426 — lignes cochees pour suppression
 
   const load = useCallback(async () => {
     try { setSt(await apiCall("/api/manual/state","GET",null,token)); setErr(""); }
@@ -1660,10 +1661,18 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
         </div>
         {(()=>{ const cl=histRows.filter(h=>h.status==="closed"); const w=cl.filter(h=>(h.pnl||0)>0).length; const pn=cl.reduce((s,h)=>s+(h.pnl||0),0);
           return cl.length ? <div style={{fontSize:12,color:"#cbd5e1",marginBottom:8}}>{cl.length} trades clôturés · <b>{(w/cl.length*100).toFixed(0)} %</b> gagnants · PnL <b style={{color:pn>=0?"#22c55e":"#ef4444"}}>{fmtUsd(pn)}</b></div> : null; })()}
+        {histRows.length>0 && (()=>{ const ids=histRows.filter(h=>histSel[h.id]).map(h=>h.id); const all=ids.length===histRows.length;
+          return <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:8}}>
+            <button style={MT.btn("#334155","#e2e8f0")} onClick={()=>setHistSel(all?{}:Object.fromEntries(histRows.map(h=>[h.id,true])))}>{all?"Tout désélectionner":"Tout sélectionner"}</button>
+            <button style={{...MT.btn("#ef4444","#fff"),opacity:ids.length?1:0.4}} disabled={!ids.length} onClick={async()=>{
+              if(!window.confirm(`Supprimer définitivement ${ids.length} élément(s) de l'historique ${histTab==="live"?"LIVE":"PAPER"} ?\n\nCette action est irréversible. Elle retire ces lignes de l'historique manuel (et des statistiques du Scalp). Les positions ouvertes ne sont pas touchées.`)) return;
+              try { const r = await apiCall("/api/manual/history/delete","POST",{ids},token); setHistSel({}); load(); alert(`${r.deleted} élément(s) supprimé(s).`); } catch(e) { alert(e.message); } }}>🗑 Supprimer la sélection ({ids.length})</button>
+          </div>; })()}
         {histRows.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucun historique {histTab==="live"?"LIVE":"PAPER"}.</div> : (
           <div style={{overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%"}}>
-            <thead><tr>{["#","Actif","Sens","Marché","Mode","Source","Ouverture","Fermeture","Entrée","Sortie","PnL","Statut / motif"].map(h=><th key={h} style={MT.th}>{h}</th>)}</tr></thead>
+            <thead><tr><th style={MT.th}></th>{["#","Actif","Sens","Marché","Mode","Source","Ouverture","Fermeture","Entrée","Sortie","PnL","Statut / motif"].map(h=><th key={h} style={MT.th}>{h}</th>)}</tr></thead>
             <tbody>{histRows.map(h=><tr key={h.id}>
+              <td style={MT.td}><input type="checkbox" checked={!!histSel[h.id]} onChange={e=>setHistSel({...histSel,[h.id]:e.target.checked})}/></td>
               <td style={MT.td}>{h.id}</td><td data-tk={h.ticker} title="Résumé de l'actif" style={{...MT.td,fontWeight:800,cursor:"pointer",textDecoration:"underline dotted"}}>{h.ticker}</td><td style={MT.td}>{dirBadge(h.direction)}</td>
               <td style={MT.td}>{(h.market||"").toUpperCase()}</td><td style={{...MT.td,color:h.mode==="live"?"#ef4444":"#22c55e"}}>{(h.mode||"").toUpperCase()}</td>
               <td style={MT.td}>{h.strategy_label}</td><td style={MT.td}>{fmtTime(h.opened_at||h.created_at)}</td><td style={MT.td}>{fmtTime(h.closed_at)}</td>
