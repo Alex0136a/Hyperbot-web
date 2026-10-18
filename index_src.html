@@ -1169,7 +1169,7 @@ function ScalpPanel({ token }) {
   const S = live ? d.stats_live : d.stats_paper;
   const pr = (a) => a && a.n ? `${a.n} trades · ${a.win_rate.toFixed(0)} % gagnants · ${fmtUsd(a.pnl)}` : "aucun trade";
   const LBL = {SCALP_LEVERAGE:"Levier",SCALP_NOTIONAL_USD:"Taille ($)",SCALP_SL_PCT:"Stop (% prix)",SCALP_TP_PCT:"Objectif (% prix)",SCALP_TOP_N:"Nb d'actifs (top volume)",
-    SCALP_MIN_SCORE:"Filtre note min LONG (0 = aucun)",SCALP_SHORT_MIN_SCORE:"Exigence SHORT : note min (0 = aucune)",SCALP_MIN_ATR15_PCT:"Filtre volatilité 15 min min % (0 = aucun)",SCALP_MIN_ROOM_PCT:"Filtre place min avant zone % (0 = aucun)",
+    SCALP_MIN_SCORE:"Filtre note min LONG (0 = aucun)",SCALP_SHORT_MIN_SCORE:"Exigence SHORT : note min (0 = aucune)",SCALP_TREND_MODE:"Sans contre-tendance (1 = oui, 0 = non)",SCALP_CONFIRM_BARS:"Rebond : bougies 5 min pour confirmer (0 = entrer tout de suite)",SCALP_NOISE_ATR:"Bruit toléré à contre-sens (× ATR 5 min)",SCALP_MIN_ATR15_PCT:"Filtre volatilité 15 min min % (0 = aucun)",SCALP_MIN_ROOM_PCT:"Filtre place min avant zone % (0 = aucun)",
     SCALP_BREAK_VOL_MULT:"Cassure : volume ×",SCALP_MAX_CHASE_PCT:"Cassure : ne pas poursuivre au-delà (%)",SCALP_MAX_OPEN:"Positions simultanées max (0 = illimité ; en live le capital limite)",
     SCALP_MAX_PER_DAY:"Trades max par jour",SCALP_DAILY_LOSS_USD:"Perte journalière max ($)",SCALP_PAUSE_AFTER_LOSSES:"Pause après X pertes de suite",
     SCALP_PAUSE_MIN:"Durée de la pause (min)",SCALP_COOLDOWN_MIN:"Attente par actif (min)",SCALP_MAX_HOLD_MIN:"Durée max d'un trade (min)"};

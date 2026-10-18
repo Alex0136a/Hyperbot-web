@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.428"
+BOT_VERSION = "4.429"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -275,7 +275,8 @@ CONFIG = {
     "SCALP_SL_PCT": 1.0, "SCALP_TP_PCT": 0.6,            # % du PRIX ; TP fixe (pas de laisser courir)
     "SCALP_TOP_N": 15,                                   # actifs : les N plus echanges (volume 24 h) parmi les actifs suivis
     "SCALP_HOURS_UTC": "7-11,13-21",                     # tranches horaires UTC (vide = toujours)
-    "SCALP_MIN_SCORE": 0, "SCALP_SHORT_MIN_SCORE": 62, "SCALP_MIN_ATR15_PCT": 0.0,  # v4.423 : filtres OPTIONNELS (0 = desactive) ; ces donnees comptent dans la NOTE, elles ne bloquent plus
+    "SCALP_MIN_SCORE": 0, "SCALP_SHORT_MIN_SCORE": 62,
+    "SCALP_TREND_MODE": 1, "SCALP_CONFIRM_BARS": 3, "SCALP_NOISE_ATR": 0.5,   # v4.429 : pas de contre-tendance ; entree seulement apres confirmation du mouvement "SCALP_MIN_ATR15_PCT": 0.0,  # v4.423 : filtres OPTIONNELS (0 = desactive) ; ces donnees comptent dans la NOTE, elles ne bloquent plus
     "SCALP_MIN_ROOM_PCT": 0.0, "SCALP_BREAK_VOL_MULT": 1.5, "SCALP_MAX_CHASE_PCT": 0.4,
     "SCALP_MAX_OPEN": 0, "SCALP_MAX_PER_DAY": 40, "SCALP_DAILY_LOSS_USD": 3.0,
     "SCALP_PAUSE_AFTER_LOSSES": 3, "SCALP_PAUSE_MIN": 60, "SCALP_COOLDOWN_MIN": 30, "SCALP_MAX_HOLD_MIN": 90,

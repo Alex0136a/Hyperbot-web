@@ -180,6 +180,18 @@ def evaluate(c5, c15, c1h, btc_chg, K):
                           "reasons": [f"cassure confirmee de {zl:.6g} (5 min, corps fort)"] + why, "level": zl})
     if not cands:
         return None, "aucun signal"
+    if K.get("trend_mode", 1):
+        # v4.429 : le Scalp ne traite pas les contre-tendances : sens du trade = sens de la tendance H1 (si H1 neutre : tendance 15 min)
+        def with_trend(c):
+            want = "haussiere" if c["side"] == "long" else "baissiere"
+            if t1h in ("haussiere", "baissiere"):
+                return t1h == want
+            return m15 in ("haussiere", "baissiere") and m15 == want
+        aligned = [c for c in cands if with_trend(c)]
+        if not aligned:
+            b0 = max(cands, key=lambda c: c["score"])
+            return None, f"{b0['kind']} {b0['side']} refuse : contre-tendance (H1 {t1h}, 15 min {m15})"
+        cands = aligned
     good = [c for c in cands if c["room"] >= K["min_room_pct"]]
     if not good:
         best = max(cands, key=lambda c: c["score"])
@@ -194,6 +206,7 @@ def evaluate(c5, c15, c1h, btc_chg, K):
     best["price"] = price
     best["atr15_pct"] = atr15_pct
     best["volume_ratio"] = vr
+    best["sig_high"], best["sig_low"], best["atr5"] = last["h"], last["l"], a5
     return best, "ok"
 
 
@@ -206,6 +219,7 @@ class ScalpEngine:
         self._seen = {}                      # ticker -> derniere tranche 5 min evaluee
         self._cool = {}                      # ticker -> fin de pause
         self._busy = False
+        self.pending = {}                    # v4.429 : signaux de rebond en attente de confirmation (ticker -> dict)
         self._last_tick = 0
         self._stats_cache = (0, None, None)
         self.paused_until = 0
@@ -223,7 +237,8 @@ class ScalpEngine:
         return {"min_atr_pct": float(c.get("SCALP_MIN_ATR15_PCT", 0.0)), "min_room_pct": float(c.get("SCALP_MIN_ROOM_PCT", 0.0)),
                 "vol_mult": float(c.get("SCALP_BREAK_VOL_MULT", 1.5)), "max_chase_pct": float(c.get("SCALP_MAX_CHASE_PCT", 0.4)),
                 "min_score": float(c.get("SCALP_MIN_SCORE", 0)),
-                "min_score_short": float(c.get("SCALP_SHORT_MIN_SCORE", 62))}
+                "min_score_short": float(c.get("SCALP_SHORT_MIN_SCORE", 62)),
+                "trend_mode": int(c.get("SCALP_TREND_MODE", 1))}
 
     # ── univers : top N par volume 24 h parmi les actifs suivis ──
     def universe(self):
@@ -367,6 +382,7 @@ class ScalpEngine:
             if not ok:
                 return
             K = self.thresholds()
+            self._check_pending(K)
             btc = self._btc_change()
             maxo = int(self.cfg.get("SCALP_MAX_OPEN", 0))       # v4.422 : 0 = pas de plafond (en live, c est le capital qui limite)
             mode = "live" if self.cfg.get("SCALP_MODE") == "live" else "paper"
@@ -377,7 +393,7 @@ class ScalpEngine:
                 if self._seen.get(t) == bucket:
                     continue
                 self._seen[t] = bucket
-                if time.time() < self._cool.get((t, mode), 0) or self._busy_same_mode(t, mode):
+                if time.time() < self._cool.get((t, mode), 0) or self._busy_same_mode(t, mode) or t in self.pending:
                     continue
                 try:
                     c5 = self.bot._mtf_candles(t, "5m", 60)
@@ -391,12 +407,50 @@ class ScalpEngine:
                     if "refuse" in motif:
                         self._ev("refus", t, motif)
                     continue
-                self._take(t, sig)
+                nb = int(self.cfg.get("SCALP_CONFIRM_BARS", 3))
+                if nb > 0 and sig["kind"] == "rebond":
+                    self._arm(t, sig, nb)
+                else:
+                    self._take(t, sig)
         except Exception as e:
             self.last_error = f"scan : {type(e).__name__}: {e}"
             print(f"[SCALP] {self.last_error}")
         finally:
             self._busy = False
+
+    def _arm(self, t, sig, nb):
+        """v4.429 : un rebond n ouvre PAS tout de suite. On attend que le prix confirme le sens choisi : un SHORT entre quand le prix passe sous le
+        plus bas de la bougie de rejet, un LONG quand il passe au-dessus du plus haut de la bougie de rebond. Tant que le prix va a contre-sens, c est du
+        bruit s il reste sous la limite (extreme de la bougie signal + marge de bruit) ; au-dela, ou sans confirmation en N bougies, le signal est abandonne."""
+        noise = float(self.cfg.get("SCALP_NOISE_ATR", 0.5)) * sig["atr5"]
+        if sig["side"] == "short":
+            trig, inval = sig["sig_low"], sig["sig_high"] + noise
+        else:
+            trig, inval = sig["sig_high"], sig["sig_low"] - noise
+        self.pending[t] = {"sig": sig, "trigger": trig, "invalid": inval, "armed": time.time(), "expires": time.time() + nb * 300}
+        self._ev("attente", t, f"{sig['side'].upper()} {sig['kind']} note {sig['score']:.0f} : entrée si le prix {'passe sous' if sig['side'] == 'short' else 'repasse au-dessus de'} {trig:.6g} "
+                               f"(abandon au-delà de {inval:.6g}, ou sans confirmation en {nb} bougies)")
+
+    def _check_pending(self, K):
+        now = time.time()
+        mode = "live" if self.cfg.get("SCALP_MODE") == "live" else "paper"
+        for t, p in list(self.pending.items()):
+            sig = p["sig"]
+            px = self.manual.price(t, "perp")
+            if not px:
+                continue
+            short = sig["side"] == "short"
+            if now > p["expires"]:
+                del self.pending[t]; self._ev("abandon", t, f"{sig['side'].upper()} : pas de confirmation du mouvement dans le délai"); continue
+            if (short and px > p["invalid"]) or ((not short) and px < p["invalid"]):
+                del self.pending[t]; self._ev("abandon", t, f"{sig['side'].upper()} : le prix va à contre-sens au-delà du bruit ({px:.6g}) — signal annulé"); continue
+            if (short and px <= p["trigger"]) or ((not short) and px >= p["trigger"]):
+                del self.pending[t]
+                if self._busy_same_mode(t, mode):
+                    continue
+                sig = dict(sig); sig["price"] = px
+                sig["reasons"] = list(sig["reasons"]) + [f"mouvement confirmé au prix {px:.6g}"]
+                self._take(t, sig)
 
     def _busy_same_mode(self, ticker, mode):
         """v4.422 : une double ouverture n est bloquee que dans le MEME mode (une position paper n empeche pas un live, et inversement)."""
@@ -471,6 +525,7 @@ class ScalpEngine:
         return {"enabled": bool(int(c.get("SCALP_ENABLED", 0))), "mode": c.get("SCALP_MODE", "paper"), "window_open": ok, "window_reason": why,
                 "universe": list(self._uni), "open": self._open_count(), "max_open": int(c.get("SCALP_MAX_OPEN", 0)),
                 "params": {k: c.get(k) for k in ("SCALP_LEVERAGE", "SCALP_NOTIONAL_USD", "SCALP_SL_PCT", "SCALP_TP_PCT", "SCALP_HOURS_UTC",
-                                                 "SCALP_MIN_SCORE", "SCALP_SHORT_MIN_SCORE", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
+                                                 "SCALP_MIN_SCORE", "SCALP_SHORT_MIN_SCORE", "SCALP_TREND_MODE", "SCALP_CONFIRM_BARS", "SCALP_NOISE_ATR", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),
+                "pending": [{"ticker": t, "side": p["sig"]["side"], "trigger": p["trigger"], "expires": p["expires"]} for t, p in self.pending.items()],
                 "events": list(self.events)[:40], "error": self.last_error}

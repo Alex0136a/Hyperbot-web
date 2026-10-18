@@ -1118,3 +1118,12 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 - Un SHORT pris **contre une tendance H1 haussière** perd en plus 8 points.
 - Les refus apparaissent dans le journal des signaux (« refuse : note X < 62 (exigence SHORT) »).
 - Décision prise sur 3 shorts perdus pour 1 long gagné : échantillon minuscule, à réévaluer avec les résultats rebond/cassure et le pic de gain.
+
+## v4.429 — Scalp : pas de contre-tendance, entrée seulement quand le mouvement se confirme
+Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `index.html`, `README.md`.
+
+- **Sans contre-tendance** (`SCALP_TREND_MODE` = 1, défaut) : le sens du trade doit être celui de la tendance H1 (si H1 est neutre : celui de la tendance 15 min). Un long contre une tendance baissière, ou un short contre une tendance haussière, est refusé (« refuse : contre-tendance », visible dans le journal).
+- **Confirmation avant d'entrer (rebonds)** (`SCALP_CONFIRM_BARS` = 3 bougies de 5 min, 0 = entrer tout de suite) : le signal est mis en attente. Un SHORT entre quand le prix passe **sous le plus bas** de la bougie de rejet ; un LONG quand il repasse **au-dessus du plus haut** de la bougie de rebond.
+- **Mouvement contraire = bruit, mais borné** (`SCALP_NOISE_ATR` = 0,5 × ATR 5 min) : tant que le prix reste sous l'extrême de la bougie signal + cette marge, on attend ; au-delà, ou sans confirmation dans le délai, le signal est abandonné (événements « attente » / « abandon » dans le journal).
+- Les cassures confirmées (déjà basées sur une bougie de mouvement) entrent comme avant, mais passent aussi le filtre de tendance.
+- Cause du changement : 4 shorts de rebond ouverts ensemble ont tous perdu avec un pic de gain de 0,00 à 0,16 % (le prix est parti à contre-sens dès l'entrée).

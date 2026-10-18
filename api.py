@@ -2822,7 +2822,7 @@ def manual_state(email: str = Depends(require_user)):
 # ── v4.421 — Mode Scalp crypto ──────────────────────────────────────────────
 _SCALP_NUM = {   # cle : (min, max, entier ?)
     "SCALP_LEVERAGE": (1, 10, True), "SCALP_NOTIONAL_USD": (10, 5000, False), "SCALP_SL_PCT": (0.2, 10, False),
-    "SCALP_TP_PCT": (0.1, 10, False), "SCALP_TOP_N": (3, 40, True), "SCALP_MIN_SCORE": (0, 100, False), "SCALP_SHORT_MIN_SCORE": (0, 100, False),
+    "SCALP_TP_PCT": (0.1, 10, False), "SCALP_TOP_N": (3, 40, True), "SCALP_MIN_SCORE": (0, 100, False), "SCALP_SHORT_MIN_SCORE": (0, 100, False), "SCALP_TREND_MODE": (0, 1, True), "SCALP_CONFIRM_BARS": (0, 12, True), "SCALP_NOISE_ATR": (0, 5, False),
     "SCALP_MIN_ATR15_PCT": (0, 2, False), "SCALP_MIN_ROOM_PCT": (0, 10, False), "SCALP_BREAK_VOL_MULT": (1, 10, False),
     "SCALP_MAX_CHASE_PCT": (0.05, 3, False), "SCALP_MAX_OPEN": (0, 100, True), "SCALP_MAX_PER_DAY": (0, 500, True),
     "SCALP_DAILY_LOSS_USD": (0, 10000, False), "SCALP_PAUSE_AFTER_LOSSES": (0, 20, True), "SCALP_PAUSE_MIN": (1, 1440, True),
