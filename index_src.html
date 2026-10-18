@@ -1169,7 +1169,7 @@ function ScalpPanel({ token }) {
   const S = live ? d.stats_live : d.stats_paper;
   const pr = (a) => a && a.n ? `${a.n} trades · ${a.win_rate.toFixed(0)} % gagnants · ${fmtUsd(a.pnl)}` : "aucun trade";
   const LBL = {SCALP_LEVERAGE:"Levier",SCALP_NOTIONAL_USD:"Taille ($)",SCALP_SL_PCT:"Stop (% prix)",SCALP_TP_PCT:"Objectif (% prix)",SCALP_TOP_N:"Nb d'actifs (top volume)",
-    SCALP_MIN_SCORE:"Filtre note min (0 = aucun)",SCALP_MIN_ATR15_PCT:"Filtre volatilité 15 min min % (0 = aucun)",SCALP_MIN_ROOM_PCT:"Filtre place min avant zone % (0 = aucun)",
+    SCALP_MIN_SCORE:"Filtre note min LONG (0 = aucun)",SCALP_SHORT_MIN_SCORE:"Exigence SHORT : note min (0 = aucune)",SCALP_MIN_ATR15_PCT:"Filtre volatilité 15 min min % (0 = aucun)",SCALP_MIN_ROOM_PCT:"Filtre place min avant zone % (0 = aucun)",
     SCALP_BREAK_VOL_MULT:"Cassure : volume ×",SCALP_MAX_CHASE_PCT:"Cassure : ne pas poursuivre au-delà (%)",SCALP_MAX_OPEN:"Positions simultanées max (0 = illimité ; en live le capital limite)",
     SCALP_MAX_PER_DAY:"Trades max par jour",SCALP_DAILY_LOSS_USD:"Perte journalière max ($)",SCALP_PAUSE_AFTER_LOSSES:"Pause après X pertes de suite",
     SCALP_PAUSE_MIN:"Durée de la pause (min)",SCALP_COOLDOWN_MIN:"Attente par actif (min)",SCALP_MAX_HOLD_MIN:"Durée max d'un trade (min)"};
@@ -1679,6 +1679,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
               <td style={MT.td}>{fmtP(h.entry_price)}</td><td style={MT.td}>{fmtP(h.exit_price)}</td>
               <td style={{...MT.td,color:(h.pnl||0)>=0?"#22c55e":"#ef4444"}}>{h.pnl!=null?fmtUsd(h.pnl):"—"}</td>
               <td style={{...MT.td,color:"#94a3b8"}}>{h.status==="closed"?h.reason:`${h.status==="cancelled"?"annulé":h.status==="expired"?"expiré":"échec"} — ${h.reason||h.error||""}`}
+                {h.scalp && <div style={{fontSize:10,color:"#93c5fd"}}>⚡ {h.scalp.kind} · note {Math.round(h.scalp.score)} · pic de gain {(h.peak_pct||0).toFixed(2)} % (objectif {h.tp_pct} %){h.scalp.reasons&&h.scalp.reasons[0]?` · ${h.scalp.reasons[0]}`:""}</div>}
                 {h.status==="closed" && h.mode==="live" && <div style={{fontSize:10,color:h.exit_source==="hyperliquid"?"#86efac":"#fbbf24"}}>{h.entry_verified?"ouverture constatée sur Hyperliquid · ":""}sortie {h.exit_source==="hyperliquid"?"confirmée par Hyperliquid":"estimée par le bot (remplissage Hyperliquid introuvable)"}</div>}</td>
             </tr>)}</tbody>
           </table></div>)}

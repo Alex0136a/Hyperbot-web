@@ -1107,3 +1107,14 @@ Fichiers : `db.py`, `api.py`, `index_src.html`, `index.html`, `bot_engine.py` (v
 - Dans l'historique du Trading manuel (onglets LIVE / PAPER) : case à cocher par ligne, « Tout sélectionner » et bouton **🗑 Supprimer la sélection (n)** avec confirmation.
 - Ne peuvent être supprimés que les éléments **terminés** (clôturés, annulés, expirés, échoués) : une position ouverte ou un ordre programmé n'est jamais touché (contrôle côté serveur).
 - La suppression est définitive et retire les lignes de l'historique manuel ; les statistiques du Scalp (calculées depuis cet historique) sont recalculées. L'historique général des trades (tableau de bord / export) n'est pas modifié.
+
+## v4.427 — Historique : détail Scalp de chaque trade
+Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
+- Sous le motif de chaque trade Scalp de l'historique : type de signal (rebond / cassure), note, **pic de gain atteint** par rapport à l'objectif, et la raison principale du signal. Sert à voir si les pertes viennent d'entrées qui n'ont jamais progressé (signal à revoir) ou de trades qui ont approché l'objectif avant de retomber (objectif ou stop à revoir).
+
+## v4.428 — Scalp : exigence renforcée pour les SHORT
+Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `index.html`, `README.md`.
+- Nouveau réglage **`SCALP_SHORT_MIN_SCORE`** (défaut **62**, 0 = aucune exigence) : un SHORT n'est ouvert que si la note du signal atteint ce seuil ; les LONG gardent le seuil général (`SCALP_MIN_SCORE`, 0 = aucun). Une note de base à ~51 ne passe donc plus pour un short : il lui faut des appuis réels (tendance H1 baissière +12, tendance 15 min +8, volume +10, BTC en baisse +8, zone testée plusieurs fois +6/+10…).
+- Un SHORT pris **contre une tendance H1 haussière** perd en plus 8 points.
+- Les refus apparaissent dans le journal des signaux (« refuse : note X < 62 (exigence SHORT) »).
+- Décision prise sur 3 shorts perdus pour 1 long gagné : échantillon minuscule, à réévaluer avec les résultats rebond/cassure et le pic de gain.

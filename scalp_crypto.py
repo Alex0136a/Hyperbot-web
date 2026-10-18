@@ -143,6 +143,8 @@ def evaluate(c5, c15, c1h, btc_chg, K):
         else:
             s -= 4; why.append(f"marche calme (ATR 15 min {atr15_pct:.2f} %)")
         why.append(f"place avant la zone suivante : {'>3' if rm > 3 else f'{rm:.1f}'} %")
+        if side == "short" and t1h == "haussiere":
+            s -= 8; why.append("SHORT contre une tendance H1 haussiere")      # v4.428
         s += extra
         return max(0, min(100, s)), why, rm
 
@@ -182,9 +184,13 @@ def evaluate(c5, c15, c1h, btc_chg, K):
     if not good:
         best = max(cands, key=lambda c: c["score"])
         return None, f"{best['kind']} {best['side']} refuse : place insuffisante avant la zone suivante ({best['room']:.1f} % < {K['min_room_pct']} %)"
-    best = max(good, key=lambda c: c["score"])
-    if best["score"] < K["min_score"]:
-        return None, f"{best['kind']} {best['side']} refuse : note {best['score']} < {K['min_score']}"
+    # v4.428 : exigence propre aux SHORT (seuil de note distinct) ; les LONG gardent le seuil general
+    ok = [c for c in good if c["score"] >= (K.get("min_score_short", 0) if c["side"] == "short" else K["min_score"])]
+    if not ok:
+        best = max(good, key=lambda c: c["score"])
+        need = K.get("min_score_short", 0) if best["side"] == "short" else K["min_score"]
+        return None, f"{best['kind']} {best['side']} refuse : note {best['score']} < {need}" + (" (exigence SHORT)" if best["side"] == "short" else "")
+    best = max(ok, key=lambda c: c["score"])
     best["price"] = price
     best["atr15_pct"] = atr15_pct
     best["volume_ratio"] = vr
@@ -216,7 +222,8 @@ class ScalpEngine:
         c = self.cfg
         return {"min_atr_pct": float(c.get("SCALP_MIN_ATR15_PCT", 0.0)), "min_room_pct": float(c.get("SCALP_MIN_ROOM_PCT", 0.0)),
                 "vol_mult": float(c.get("SCALP_BREAK_VOL_MULT", 1.5)), "max_chase_pct": float(c.get("SCALP_MAX_CHASE_PCT", 0.4)),
-                "min_score": float(c.get("SCALP_MIN_SCORE", 0))}
+                "min_score": float(c.get("SCALP_MIN_SCORE", 0)),
+                "min_score_short": float(c.get("SCALP_SHORT_MIN_SCORE", 62))}
 
     # ── univers : top N par volume 24 h parmi les actifs suivis ──
     def universe(self):
@@ -464,6 +471,6 @@ class ScalpEngine:
         return {"enabled": bool(int(c.get("SCALP_ENABLED", 0))), "mode": c.get("SCALP_MODE", "paper"), "window_open": ok, "window_reason": why,
                 "universe": list(self._uni), "open": self._open_count(), "max_open": int(c.get("SCALP_MAX_OPEN", 0)),
                 "params": {k: c.get(k) for k in ("SCALP_LEVERAGE", "SCALP_NOTIONAL_USD", "SCALP_SL_PCT", "SCALP_TP_PCT", "SCALP_HOURS_UTC",
-                                                 "SCALP_MIN_SCORE", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
+                                                 "SCALP_MIN_SCORE", "SCALP_SHORT_MIN_SCORE", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),
                 "events": list(self.events)[:40], "error": self.last_error}
