@@ -18,6 +18,7 @@ from collections import deque
 from datetime import datetime, timezone
 
 import db
+import bot_engine as be
 import mtf_analysis as mtf
 
 STRATEGY = "scalp_crypto"
@@ -223,7 +224,13 @@ class ScalpEngine:
         if self._uni and now - self._uni_ts < 1800:
             return self._uni
         n = max(int(self.cfg.get("SCALP_TOP_N", 15)), 1)
-        tracked = [t for t in self.cfg.get("SYMBOLS", []) if not str(t).startswith("xyz:") and t != "PAXG"]
+        # v4.424 : cfg["SYMBOLS"] contient des cles de slot ("BTC_0", "PAXG_1"...) : on en extrait le vrai ticker
+        tracked, seen = [], set()
+        for raw in self.cfg.get("SYMBOLS", []):
+            t = be.ticker_from_slot_key(str(raw))
+            if t in seen or t.startswith("xyz:") or t == "PAXG":
+                continue
+            seen.add(t); tracked.append(t)
         try:
             meta, ctxs = self.bot.info.meta_and_asset_ctxs()
             vol = {}

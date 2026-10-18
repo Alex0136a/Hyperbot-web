@@ -1087,3 +1087,9 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `index_src.html`, `index.html`, `
 - **Ce qui décide l'entrée** : le type de signal (rebond sur support, rejet de résistance, cassure haussière ou baissière), la zone support/résistance H1 et l'emplacement de l'entrée (bougie 5 min de confirmation ; cassure : au plus 0,4 % du niveau cassé, volume de la bougie de cassure).
 - Conservés : l'historique minimal de bougies (technique), la marge libre en live (capital), les garde-fous de perte et de tranches horaires.
 - Si les anciens seuils (62 / 0,15 / 0,9) ont été enregistrés depuis la carte Scalp, les remettre à 0.
+
+## v4.424 — FIX : le Scalp analysait des noms d'actifs invalides (« BTC_0 »…) et ne pouvait donc jamais ouvrir de trade
+Fichiers : `scalp_crypto.py`, `bot_engine.py` (version), `README.md`.
+
+- Cause : la liste des actifs suivis contient des **clés de slot** (`BTC_0`, `ETH_2`…). Le Scalp les utilisait telles quelles : le classement par volume Hyperliquid ne trouvait aucun actif et les bougies de `BTC_0` ne pouvaient pas être chargées, donc aucun signal n'était évalué.
+- Correction : extraction du vrai ticker (`BTC`), suppression des doublons, exclusion de PAXG (or, pas une crypto) et des actifs `xyz:`, puis classement par volume 24 h : les 15 plus échangés.
