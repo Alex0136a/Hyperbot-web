@@ -1055,3 +1055,19 @@ Fichiers : `bot_engine.py`, `README.md`.
 - Création/modification : un TP1 est refusé en LIVE perp si la part clôturée ou le reste est < 10 $, avec la taille minimale requise.
 - Exécution : si la situation se présente quand même (prix ayant évolué), le TP1 est ignoré proprement (une seule trace dans le journal), plus de boucle d'essais ; la position continue vers le TP2 et le SL.
 - Fichiers : manual_trading.py, bot_engine.py (version), README.md
+
+## v4.421 — Mode SCALP CRYPTO (paper par défaut, passage en live par bouton)
+Fichiers : `scalp_crypto.py` (nouveau), `manual_trading.py`, `api.py`, `bot_engine.py`, `index_src.html`, `index.html` (généré), `README.md`.
+
+- **Principe** : beaucoup de petits gains — **x3, taille 60 $, TP fixe 0,6 % du prix, stop 1 %** (≈ +0,31 $ net par trade gagnant, ≈ −0,65 $ par stop). Seuil de rentabilité ≈ 66 % de trades gagnants.
+- **Actifs** : les **15 plus échangés** (volume 24 h Hyperliquid) parmi les actifs suivis, réévalués toutes les 30 min.
+- **Entrées rapides** (bougies 5 min, zones support/résistance H1) :
+  - **Rebond** : le prix touche une zone et une bougie de retournement se confirme (avalement, marteau/étoile).
+  - **Cassure confirmée** : clôture 5 min au-delà de la zone, corps fort, volume ≥ 1,5× la moyenne, entrée au plus à 0,4 % du niveau (on ne court pas après le mouvement).
+  - **Note 0-100** (tendance H1 et 15 min, volume, contacts de la zone, BTC, place avant la zone suivante) ; seuil 62. La note n'est **pas calibrée** : c'est le paper qui mesure le vrai taux de réussite.
+  - **Signaux propices** : volatilité 15 min minimale (0,6 % atteignable), au moins 0,9 % de place avant la zone opposée.
+- **Tranches horaires UTC** réglables (défaut 7-11 et 13-21) ; statistiques par heure pour affiner.
+- **Garde-fous** : 4 positions max, 40 trades/jour, perte journalière max 3 $, pause 60 min après 3 pertes de suite, attente 30 min par actif, durée max 90 min par trade.
+- **Interface** : carte « ⚡ SCALP CRYPTO » en haut de l'onglet Trading manuel : ACTIF/ARRÊTÉ, PAPER/LIVE (confirmation obligatoire), résultats du jour/total, rebond vs cassure, résultats par heure, journal des signaux, tous les réglages. **Désactivé par défaut** : à activer depuis la carte.
+- Les trades passent par le moteur manuel (stratégie « Scalp ») : SL natif en live, historique, prix de sortie réels.
+- Limite : testé sur données simulées uniquement (pas d'accès au marché ici) ; aucune performance réelle n'est garantie.

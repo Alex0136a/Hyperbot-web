@@ -2819,6 +2819,69 @@ def manual_state(email: str = Depends(require_user)):
     return bot.manual.snapshot()
 
 
+# ── v4.421 — Mode Scalp crypto ──────────────────────────────────────────────
+_SCALP_NUM = {   # cle : (min, max, entier ?)
+    "SCALP_LEVERAGE": (1, 10, True), "SCALP_NOTIONAL_USD": (10, 5000, False), "SCALP_SL_PCT": (0.2, 10, False),
+    "SCALP_TP_PCT": (0.1, 10, False), "SCALP_TOP_N": (3, 40, True), "SCALP_MIN_SCORE": (0, 100, False),
+    "SCALP_MIN_ATR15_PCT": (0, 2, False), "SCALP_MIN_ROOM_PCT": (0, 10, False), "SCALP_BREAK_VOL_MULT": (1, 10, False),
+    "SCALP_MAX_CHASE_PCT": (0.05, 3, False), "SCALP_MAX_OPEN": (1, 20, True), "SCALP_MAX_PER_DAY": (0, 500, True),
+    "SCALP_DAILY_LOSS_USD": (0, 10000, False), "SCALP_PAUSE_AFTER_LOSSES": (0, 20, True), "SCALP_PAUSE_MIN": (1, 1440, True),
+    "SCALP_COOLDOWN_MIN": (0, 1440, True), "SCALP_MAX_HOLD_MIN": (0, 1440, True),
+}
+
+
+class ScalpConfigBody(BaseModel):
+    enabled: Optional[bool] = None
+    mode: Optional[str] = None            # "paper" / "live"
+    confirm_live: bool = False
+    hours_utc: Optional[str] = None
+    values: Optional[dict] = None
+
+
+@app.get("/api/scalp")
+def scalp_status(email: str = Depends(require_user)):
+    out = bot.manual.scalp.snapshot()
+    out["config"] = {k: cfg.get(k) for k in list(_SCALP_NUM) + ["SCALP_HOURS_UTC", "SCALP_ENABLED", "SCALP_MODE"]}
+    out["live_available"] = bot.exchange is not None
+    return out
+
+
+@app.post("/api/scalp/config")
+def scalp_config(body: ScalpConfigBody, email: str = Depends(require_user)):
+    import scalp_crypto as _sc
+    if body.mode is not None:
+        if body.mode not in ("paper", "live"):
+            raise HTTPException(400, "Mode invalide (paper ou live).")
+        if body.mode == "live":
+            if not body.confirm_live:
+                raise HTTPException(400, "Confirmation LIVE requise.")
+            if bot.exchange is None:
+                raise HTTPException(400, "Connexion Hyperliquid indisponible : le live est impossible pour le moment.")
+        _apply_and_persist("SCALP_MODE", body.mode)
+        bot.manual.scalp._stats_cache = (0, None, None)
+        bot.manual.scalp.paused_until = 0
+    if body.enabled is not None:
+        _apply_and_persist("SCALP_ENABLED", 1 if body.enabled else 0)
+    if body.hours_utc is not None:
+        txt = body.hours_utc.strip()
+        if txt and not _sc.parse_hours(txt):
+            raise HTTPException(400, "Tranches horaires invalides (exemple : 7-11,13-21, heures UTC).")
+        _apply_and_persist("SCALP_HOURS_UTC", txt)
+    for k, v in (body.values or {}).items():
+        if k not in _SCALP_NUM:
+            raise HTTPException(400, f"Reglage inconnu : {k}")
+        lo, hi, as_int = _SCALP_NUM[k]
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{k} : nombre attendu.")
+        if not lo <= x <= hi:
+            raise HTTPException(400, f"{k} : entre {lo} et {hi}.")
+        _apply_and_persist(k, int(round(x)) if as_int else x)
+    bot.manual.scalp._uni_ts = 0
+    return scalp_status(email)
+
+
 @app.get("/api/manual/leverage-check")
 def manual_leverage_check(email: str = Depends(require_user)):
     """v4.414 — diagnostic du levier reel (ce que renvoie Hyperliquid) + alignement immediat du suivi."""

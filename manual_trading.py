@@ -32,17 +32,19 @@ from datetime import datetime
 
 import db
 import bot_engine as be
+import scalp_crypto                  # v4.421 : mode Scalp crypto (paper / live)
 import swing_support as sups     # v4.381 : niveaux Swing Support (ticket prepare depuis une alerte)
 
 STRATEGY_LABELS = {
     "libre": "Ordre libre",
     "swing_support": "Swing Support",
+    "scalp_crypto": "Scalp",
     "forex": "Forex",
     "accumulation": "Accumulation",
     "spot_accumulation": "Spot-Accum",
     "funding_contrarian": "Funding",
 }
-FREE_LIKE = ("libre", "swing_support")     # tickets sans opportunite du bot a confirmer
+FREE_LIKE = ("libre", "swing_support", "scalp_crypto")     # tickets sans opportunite du bot a confirmer
 OPEN_STATUSES = ("scheduled", "opening", "open", "closing")
 TREND_FR = {"haussiere": "haussière", "baissiere": "baissière", "neutre": "neutre"}  # v4.343
 FEE_ROUND_TRIP = be.FEE_RATE_TAKER_ESTIMATE * 2
@@ -64,6 +66,7 @@ class ManualTrading:
         self._trend_last = {}     # v4.343 : id -> derniere verification de la regle de sortie sur tendance
         self._last_persist = {}
         self._load()
+        self.scalp = scalp_crypto.ScalpEngine(bot, self)      # v4.421
 
     # ─────────────────────────────── outils ──────────────────────────────
     @property
@@ -1823,6 +1826,10 @@ class ManualTrading:
                 print(f"[MANUEL] Erreur suivi #{item.get('id')} : {type(e).__name__}: {e}")
 
     def on_cycle(self):
+        try:
+            self.scalp.on_cycle()      # v4.421
+        except Exception as e:
+            print(f"[SCALP] cycle ignore : {type(e).__name__}: {e}")
         if not self.bot._is_ws_healthy():
             self.on_tick()
         if time.time() - getattr(self, "_recon_exit_ts", 0) >= 3600:

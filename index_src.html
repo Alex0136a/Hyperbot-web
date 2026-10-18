@@ -1149,6 +1149,72 @@ function AssetSummaryModal({ ticker, token, onClose, onPrepare }) {
   );
 }
 
+
+// v4.421 — Mode Scalp crypto : activation, paper / live, réglages, statistiques et journal des signaux
+function ScalpPanel({ token }) {
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState("");
+  const [open, setOpen] = useState(false);
+  const [vals, setVals] = useState({});
+  const [hours, setHours] = useState("");
+  const load = useCallback(async () => {
+    try { const r = await apiCall("/api/scalp","GET",null,token); setD(r); setErr("");
+      setVals(v => Object.keys(v).length ? v : Object.fromEntries(Object.entries(r.config||{}).filter(([k])=>k!=="SCALP_HOURS_UTC"&&k!=="SCALP_ENABLED"&&k!=="SCALP_MODE")));
+      setHours(h => h===""&&r.config ? (r.config.SCALP_HOURS_UTC||"") : h);
+    } catch(e) { setErr(e.message); } }, [token]);
+  useEffect(() => { load(); const t = setInterval(load, 6000); return () => clearInterval(t); }, [load]);
+  const send = async (body, okMsg) => { try { await apiCall("/api/scalp/config","POST",body,token); if (okMsg) alert(okMsg); load(); } catch(e) { alert(e.message); } };
+  if (!d) return <div style={MT.card}><div style={MT.title}>⚡ SCALP CRYPTO</div><div style={{color:"#94a3b8",fontSize:12}}>{err || "Chargement…"}</div></div>;
+  const live = d.mode === "live";
+  const S = live ? d.stats_live : d.stats_paper;
+  const pr = (a) => a && a.n ? `${a.n} trades · ${a.win_rate.toFixed(0)} % gagnants · ${fmtUsd(a.pnl)}` : "aucun trade";
+  const LBL = {SCALP_LEVERAGE:"Levier",SCALP_NOTIONAL_USD:"Taille ($)",SCALP_SL_PCT:"Stop (% prix)",SCALP_TP_PCT:"Objectif (% prix)",SCALP_TOP_N:"Nb d'actifs (top volume)",
+    SCALP_MIN_SCORE:"Note minimale (0-100)",SCALP_MIN_ATR15_PCT:"Volatilité 15 min min (%)",SCALP_MIN_ROOM_PCT:"Place min avant zone suivante (%)",
+    SCALP_BREAK_VOL_MULT:"Cassure : volume ×",SCALP_MAX_CHASE_PCT:"Cassure : ne pas poursuivre au-delà (%)",SCALP_MAX_OPEN:"Positions simultanées max",
+    SCALP_MAX_PER_DAY:"Trades max par jour",SCALP_DAILY_LOSS_USD:"Perte journalière max ($)",SCALP_PAUSE_AFTER_LOSSES:"Pause après X pertes de suite",
+    SCALP_PAUSE_MIN:"Durée de la pause (min)",SCALP_COOLDOWN_MIN:"Attente par actif (min)",SCALP_MAX_HOLD_MIN:"Durée max d'un trade (min)"};
+  return (
+    <div style={{...MT.card,borderColor:d.enabled?(live?"#ef4444":"#22c55e"):"#1e2d4a"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+        <div style={MT.title}>⚡ SCALP CRYPTO <span style={{fontWeight:400,color:"#64748b"}}>— x{d.config.SCALP_LEVERAGE} · TP {d.config.SCALP_TP_PCT} % · SL {d.config.SCALP_SL_PCT} % · {d.config.SCALP_NOTIONAL_USD} $ · départ de support / résistance H1, rebond ou cassure confirmée (bougies 5 min)</span></div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          <button style={MT.seg(d.enabled,"#22c55e")} onClick={()=>send({enabled:!d.enabled})}>{d.enabled?"● ACTIF":"○ ARRÊTÉ"}</button>
+          <button style={MT.seg(!live,"#60a5fa")} onClick={()=>live && send({mode:"paper"})}>PAPER</button>
+          <button style={MT.seg(live,"#ef4444")} onClick={()=>{ if(live) return; if(!d.live_available){ alert("Connexion Hyperliquid indisponible."); return; }
+            if(window.confirm("Passer le Scalp en LIVE ?\n\nLes prochains signaux ouvriront de VRAIS ordres sur Hyperliquid ("+d.config.SCALP_NOTIONAL_USD+" $ par trade, x"+d.config.SCALP_LEVERAGE+").\nLes positions paper déjà ouvertes restent en paper.")) send({mode:"live",confirm_live:true}); }}>LIVE</button>
+        </div>
+      </div>
+      <div style={{fontSize:12,color:"#cbd5e1",margin:"6px 0"}}>
+        {d.enabled ? (d.window_open ? <span style={{color:"#22c55e"}}>● à l'écoute</span> : <span style={{color:"#fbbf24"}}>● en attente : {d.window_reason}</span>) : <span style={{color:"#94a3b8"}}>○ désactivé (rien ne s'ouvre)</span>}
+        {" · "}mode <b style={{color:live?"#ef4444":"#60a5fa"}}>{live?"LIVE":"PAPER"}</b> · positions {d.open}/{d.max_open} · actifs : {(d.universe||[]).join(", ")||"—"}
+      </div>
+      <div style={{display:"flex",gap:18,flexWrap:"wrap",fontSize:12,color:"#e2e8f0"}}>
+        <div><span style={MT.label}>AUJOURD'HUI (UTC) · {live?"LIVE":"PAPER"}</span>{pr(S.today)}</div>
+        <div><span style={MT.label}>TOTAL · {live?"LIVE":"PAPER"}</span>{pr(S.total)}</div>
+        <div><span style={MT.label}>REBOND</span>{pr(S.by_kind.rebond)}</div>
+        <div><span style={MT.label}>CASSURE</span>{pr(S.by_kind.cassure)}</div>
+        <div><span style={MT.label}>PAPER (rappel)</span>{pr(d.stats_paper.total)}</div>
+      </div>
+      <div style={{fontSize:10,color:"#64748b",marginTop:6}}>Seuil de rentabilité : environ 66 % de trades gagnants avec TP 0,6 % / SL 1 % (frais inclus). Reste en PAPER jusqu'à ce que ce taux soit confirmé sur plusieurs dizaines de trades.</div>
+      <button style={{...MT.btn("#334155","#e2e8f0"),marginTop:8}} onClick={()=>setOpen(!open)}>{open?"Masquer":"Réglages, résultats par heure et journal"}</button>
+      {open && <div style={{marginTop:10}}>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))",gap:10}}>
+          <div><span style={MT.label}>TRANCHES HORAIRES UTC (ex. 7-11,13-21 · vide = tout le temps)</span><input style={MT.input} value={hours} onChange={e=>setHours(e.target.value)}/></div>
+          {Object.keys(LBL).map(k=><div key={k}><span style={MT.label}>{LBL[k]}</span><input style={MT.input} value={vals[k]??""} onChange={e=>setVals({...vals,[k]:e.target.value})}/></div>)}
+        </div>
+        <button style={{...MT.btn("#60a5fa"),marginTop:10}} onClick={()=>send({hours_utc:hours,values:vals},"Réglages enregistrés.")}>Enregistrer les réglages</button>
+        <div style={{...MT.title,marginTop:14}}>RÉSULTATS PAR HEURE (UTC, {live?"live":"paper"})</div>
+        {Object.keys(S.by_hour).length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Pas encore de trade clôturé.</div> :
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{Object.entries(S.by_hour).map(([h,a])=><div key={h} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"4px 8px",fontSize:11,color:a.pnl>=0?"#22c55e":"#ef4444"}}>{h} h · {a.n} · {a.win_rate.toFixed(0)} % · {fmtUsd(a.pnl)}</div>)}</div>}
+        <div style={{...MT.title,marginTop:14}}>JOURNAL DES SIGNAUX</div>
+        {(d.events||[]).length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucun signal pour l'instant.</div> :
+          <div style={{maxHeight:240,overflowY:"auto",fontSize:11,color:"#cbd5e1"}}>{d.events.map((e,i)=><div key={i} style={{padding:"3px 0",borderBottom:"1px solid #131d33"}}><span style={{color:"#64748b"}}>{fmtTime(e.ts)}</span> <b style={{color:e.kind==="entree"?"#22c55e":e.kind==="refus"?"#fbbf24":e.kind==="erreur"?"#ef4444":"#94a3b8"}}>{e.kind}</b> {e.ticker} — {e.text}</div>)}</div>}
+        {d.error && <div style={{fontSize:11,color:"#fca5a5",marginTop:6}}>Dernière erreur technique : {d.error}</div>}
+      </div>}
+    </div>
+  );
+}
+
 function ManualTradingTab({ token, prep, onPrepDone }) {
   const [st, setSt] = useState(null);
   const [err, setErr] = useState("");
@@ -1313,6 +1379,8 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
       {err && <div style={{...MT.card,borderColor:"#7f1d1d",color:"#fca5a5"}}>⚠️ {err}</div>}
 
       <PushPanel token={token} onPrepare={prepareFromAlert}/>
+
+      <ScalpPanel token={token}/>
 
       {/* ORDRE LIBRE — v4.343 */}
       <div style={MT.card}>
