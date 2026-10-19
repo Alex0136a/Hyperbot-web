@@ -706,6 +706,9 @@ const MT = {
 const fmtP = v => v==null||isNaN(v) ? "—" : (Math.abs(v)>=1000 ? Number(v).toFixed(2) : Number(v).toPrecision(6));
 const fmtUsd = v => v==null||isNaN(v) ? "—" : `${v>=0?"+":""}${Number(v).toFixed(2)} $`;
 const fmtAgo = s => s<60?`${s}s`:s<3600?`${Math.floor(s/60)} min`:`${Math.floor(s/3600)} h ${Math.floor(s%3600/60)} min`;
+// v4.435 — heure d'ouverture + durée écoulée d'un trade ouvert (heure locale de l'appareil)
+const fmtDur = sec => { sec = Math.max(0, Math.floor(sec)); const d = Math.floor(sec/86400), h = Math.floor(sec%86400/3600), m = Math.floor(sec%3600/60); return d ? `${d} j ${h} h` : h ? `${h} h ${String(m).padStart(2,"0")} min` : `${m} min`; };
+const openedTxt = ts => ts ? `🕒 ouvert à ${new Date(ts*1000).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}${new Date(ts*1000).toDateString()!==new Date().toDateString()?" ("+new Date(ts*1000).toLocaleDateString("fr-FR",{day:"2-digit",month:"2-digit"})+")":""} · depuis ${fmtDur(Date.now()/1000-ts)}` : null;
 const fmtTime = ts => ts ? new Date(ts*1000).toLocaleString([], {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) : "—";
 const dirBadge = d => <span style={{color:d==="long"?"#22c55e":"#ef4444",fontWeight:800}}>{d==="long"?"▲ LONG":"▼ SHORT"}</span>;
 
@@ -1009,7 +1012,7 @@ function ManualOpenCard({ t, token, onDone }) {
       <div style={{display:"flex",gap:14,flexWrap:"wrap",fontSize:10,color:"#94a3b8",marginTop:6}}>
         <span>Entrée {fmtP(t.entry_price)}</span><span>Prix {fmtP(t.current_price)}</span>
         <span style={{color:"#f87171"}}>SL {fmtP(t.sl_price)}</span>{t.tp1_price ? <span style={{color:"#34d399"}}>{t.tp1_done?"TP1 ✔ encaissé":`TP1 ${fmtP(t.tp1_price)} (${Math.round(t.tp1_close_pct||50)} %)`}</span> : null}{t.tp_price ? <span style={{color:"#34d399"}}>{t.tp1_price?"TP2":"TP"} {fmtP(t.tp_price)}{t.tp_run?(t.tp_run_armed?" · on laisse courir (armé)":" · laisser courir"):""}</span> : null}<span style={{color:"#fbbf24"}}>🏔️ pic {peakUsd!=null?`${fmtUsd(peakUsd)} `:""}(+{Number(_roe(peak,t.leverage)).toFixed(2)} %){peakPx!=null?` · prix ${fmtP(peakPx)}`:""}</span>
-        <span>{Number(t.notional_usd).toFixed(2)} $</span>{age!=null && <span>{age < 120 ? `${age} min` : `${Math.round(age/60)} h`}</span>}
+        <span>{Number(t.notional_usd).toFixed(2)} $</span>{t.opened_at && <span style={{color:"#fbbf24"}}>{openedTxt(t.opened_at)}</span>}
       </div>
       <div style={{display:"flex",gap:8,alignItems:"center",marginTop:8,flexWrap:"wrap"}}>
         <button style={{background:"#450a0a",border:"1px solid #ef4444",color:"#fca5a5",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer",fontFamily:"inherit"}} onClick={close}>Fermer</button>
@@ -1617,6 +1620,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
               <span>{p.market.toUpperCase()} · <span style={{color:p.mode==="live"?"#ef4444":"#22c55e"}}>{p.mode.toUpperCase()}</span> · x{p.leverage}</span>
               {(p.leverage_requested || p.leverage_note) && <div title={p.leverage_note||""} style={{width:"100%",fontSize:10,color:"#fbbf24"}}>Levier disponible : x{p.leverage}</div>}
               <span>Entrée {fmtP(p.entry_price)} → {fmtP(p.current_price)}</span>
+              {p.status==="open" && p.opened_at && <span style={{color:"#fbbf24"}}>{openedTxt(p.opened_at)}</span>}
               <span style={{color:(p.pnl||0)>=0?"#22c55e":"#ef4444",fontWeight:800}}>{fmtUsd(p.pnl)} {p.move_pct!=null?`(${_roe(p.move_pct,p.leverage)>=0?"+":""}${Number(_roe(p.move_pct,p.leverage)).toFixed(2)} %)`:""}</span>
               <span style={{color:"#94a3b8"}}>SL {fmtP(p.sl_price)} · {p.tp1_price?`TP1 ${fmtP(p.tp1_price)} (${Math.round(p.tp1_close_pct||50)} %${p.tp1_be!==false?" · SL→seuil":""}) · `:""}{p.tp1_done?`TP1 ✔ encaissé ${fmtUsd(p.realized_pnl)} · `:""}{p.tp1_price?"TP2":"TP"} {p.tp_price?fmtP(p.tp_price):"—"}{p.tp_run?` (laisser courir : verrou +${p.tp_run_lock_pct}%, suiveur ${p.tp_run_trail_pct}%${p.tp_run_armed?" — ARMÉ":""})`:""} · TTP {p.ttp_arm_pct?`+${p.ttp_arm_pct}%/${p.ttp_trail_pct}%${p.armed?" (armé)":""}`:"—"} · pic +{(p.peak_pct||0).toFixed(2)} %
                 {p.lock_arm_pct ? ` · SL dynamique : ${Math.round(p.lock_fraction*100)}% du pic dès +${p.lock_arm_pct}%${p.lock_active?" (actif)":""}` : ""}

@@ -1161,3 +1161,7 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 - **La durée max (`SCALP_MAX_HOLD_MIN`) ne s'applique plus** dès que l'objectif est atteint et le laisser courir armé ; elle reste valable avant l'objectif.
 - Mettre `SCALP_RUN_ENABLED` à 0 rétablit la fermeture nette à l'objectif. Ne concerne que les nouveaux trades.
 - Gain minimal garanti après l'objectif ≈ 0,4 % du prix (avant frais) ; pas de plafond de gain.
+
+## v4.435 — Heure d'ouverture et durée écoulée sur les trades manuels/Scalp ouverts
+Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
+- Chaque position ouverte (liste « Positions » du trading manuel et carte du trade dans l'onglet « Tous ») affiche « 🕒 ouvert à HH:MM · depuis X h YY min » (la date s'ajoute si l'ouverture date d'un autre jour). Heure locale de l'appareil. Le temps écoulé se rafraîchit à chaque actualisation de l'écran.
