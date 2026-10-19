@@ -1133,3 +1133,10 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py` (version), `README.md`.
 - Cause : les statistiques du Scalp lisaient le statut « closed » dans le contenu JSON des trades, alors que le statut est une colonne de la base (absent du JSON). Résultat : « aucun trade » partout dans la carte.
 - Conséquence cachée corrigée en même temps : les **garde-fous qui reposent sur ces statistiques ne fonctionnaient pas** (perte journalière max, pause après X pertes de suite, nombre max de trades par jour). Ils s'appliquent désormais.
 - Vérifié sur une base de test avec des trades sans clé « status », comme en réel.
+
+## v4.431 — Scalp : plusieurs positions paper sur un même actif
+Fichiers : `scalp_crypto.py`, `bot_engine.py` (version), `README.md`.
+- **Paper** : plus aucun blocage « actif déjà ouvert » — le même actif peut être ouvert plusieurs fois.
+- **Live** : un actif déjà tenu en live (par le Scalp, un trade manuel ou le bot) n'est pas rouvert (Hyperliquid ne tient qu'une position par actif).
+- Un trade paper n'empêche jamais un live, et inversement.
+- Reste actif : l'attente par actif (`SCALP_COOLDOWN_MIN`, 30 min), qui évite d'empiler le même signal à chaque bougie ; la mettre à 0 pour la supprimer.

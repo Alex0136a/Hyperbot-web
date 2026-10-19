@@ -454,7 +454,10 @@ class ScalpEngine:
                 self._take(t, sig)
 
     def _busy_same_mode(self, ticker, mode):
-        """v4.422 : une double ouverture n est bloquee que dans le MEME mode (une position paper n empeche pas un live, et inversement)."""
+        """v4.431 : seul le LIVE interdit d ouvrir deux fois le meme actif (Hyperliquid ne tient qu une position par actif). En PAPER, rien ne
+        bloque : le meme actif peut etre ouvert plusieurs fois, et une position paper n empeche jamais un live (ni l inverse)."""
+        if mode != "live":
+            return False
         for it in list(self.manual.items.values()):
             if it.get("ticker") == ticker and it.get("mode") == mode and it.get("status") in ("scheduled", "opening", "open", "closing"):
                 return True
