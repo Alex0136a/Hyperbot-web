@@ -66,7 +66,7 @@ def hour_allowed(hours, utc_hour):
     return False
 
 
-def evaluate(c5, c15, c1h, btc_chg, K):
+def evaluate(c5, c15, c1h, btc_chg, K, flow=None):
     """Retourne le meilleur signal {side, kind, zone, score, reasons, level} ou (None, motif).
     c5 / c15 / c1h : bougies CLOTUREES (dicts t,o,h,l,c,v), les plus anciennes d abord.
     K : seuils (min_atr_pct, min_room_pct, vol_mult, max_chase_pct, min_score)."""
@@ -156,41 +156,70 @@ def evaluate(c5, c15, c1h, btc_chg, K):
             if nm and last["c"] > last["o"] and last["c"] > zl and (rsi5 is None or rsi5 < 55):
                 sc, why, rm = score_of("long", "rebond", z, 6)
                 cands.append({"side": "long", "kind": "rebond", "zone": (zl, zh), "score": sc, "room": rm,
-                              "reasons": [f"rebond sur support {zl:.6g}-{zh:.6g} ({nm} 5 min)"] + why, "level": zh})
+                              "touches": int(z.get("touches") or 1), "reasons": [f"rebond sur support {zl:.6g}-{zh:.6g} ({nm} 5 min)"] + why, "level": zh})
         # ── REBOND sur resistance (SHORT) ──
         if zh + tol >= price and price >= zl - 1.2 * a15 and max(c["h"] for c in c5[-3:]) >= zl - tol:
             nm, _ = mtf.candle_signal(c5, "short")
             if nm and last["c"] < last["o"] and last["c"] < zh and (rsi5 is None or rsi5 > 45):
                 sc, why, rm = score_of("short", "rebond", z, 6)
                 cands.append({"side": "short", "kind": "rebond", "zone": (zl, zh), "score": sc, "room": rm,
-                              "reasons": [f"rejet de la resistance {zl:.6g}-{zh:.6g} ({nm} 5 min)"] + why, "level": zl})
+                              "touches": int(z.get("touches") or 1), "reasons": [f"rejet de la resistance {zl:.6g}-{zh:.6g} ({nm} 5 min)"] + why, "level": zl})
         # ── CASSURE haussiere confirmee ──
         strong_up = rng > 0 and body >= 0.5 * a5 and last["c"] > last["o"] and (last["c"] - last["l"]) / rng >= 0.7
         if (strong_up and last["c"] > zh + 0.1 * a15 and min(prev["c"], prev2["c"]) <= zh and vr >= K["vol_mult"]
                 and (last["c"] - zh) / zh * 100 <= K["max_chase_pct"] and (rsi5 is None or rsi5 < 80)):
             sc, why, rm = score_of("long", "cassure", z, 8)
             cands.append({"side": "long", "kind": "cassure", "zone": (zl, zh), "score": sc, "room": rm,
-                          "reasons": [f"cassure confirmee de {zh:.6g} (5 min, corps fort)"] + why, "level": zh})
+                          "touches": int(z.get("touches") or 1), "reasons": [f"cassure confirmee de {zh:.6g} (5 min, corps fort)"] + why, "level": zh})
         # ── CASSURE baissiere confirmee ──
         strong_dn = rng > 0 and body >= 0.5 * a5 and last["c"] < last["o"] and (last["h"] - last["c"]) / rng >= 0.7
         if (strong_dn and last["c"] < zl - 0.1 * a15 and max(prev["c"], prev2["c"]) >= zl and vr >= K["vol_mult"]
                 and (zl - last["c"]) / zl * 100 <= K["max_chase_pct"] and (rsi5 is None or rsi5 > 20)):
             sc, why, rm = score_of("short", "cassure", z, 8)
             cands.append({"side": "short", "kind": "cassure", "zone": (zl, zh), "score": sc, "room": rm,
-                          "reasons": [f"cassure confirmee de {zl:.6g} (5 min, corps fort)"] + why, "level": zl})
+                          "touches": int(z.get("touches") or 1), "reasons": [f"cassure confirmee de {zl:.6g} (5 min, corps fort)"] + why, "level": zl})
     if not cands:
         return None, "aucun signal"
     if K.get("trend_mode", 1):
-        # v4.429 : le Scalp ne traite pas les contre-tendances : sens du trade = sens de la tendance H1 (si H1 neutre : tendance 15 min)
+        # v4.429 : sens du trade = sens de la tendance H1 (si H1 neutre : tendance 15 min)
+        # v4.433 : une CONTRE-TENDANCE est autorisee (SCALP_COUNTER_ENABLED) si TOUTES les securites sont reunies :
+        # rebond (pas de cassure) sur zone testee >= 2 fois, flux agressif dans le sens du trade, BTC pas contre, note >= seuil contre-tendance.
         def with_trend(c):
             want = "haussiere" if c["side"] == "long" else "baissiere"
             if t1h in ("haussiere", "baissiere"):
                 return t1h == want
             return m15 in ("haussiere", "baissiere") and m15 == want
-        aligned = [c for c in cands if with_trend(c)]
+        aligned = []
+        refus = None
+        for c in cands:
+            if with_trend(c):
+                c["counter"] = False
+                aligned.append(c)
+                continue
+            if not K.get("counter_enabled", 1):
+                refus = refus or f"{c['kind']} {c['side']} refuse : contre-tendance (H1 {t1h}, 15 min {m15}) ; contre-tendance sécurisée désactivée"
+                continue
+            why_no = None
+            if c["kind"] != "rebond":
+                why_no = "cassure à contre-tendance non admise"
+            elif c["touches"] < 2:
+                why_no = f"zone testée {c['touches']} fois (< 2)"
+            elif flow is None or flow.get("n", 0) < K.get("counter_min_trades", 30):
+                why_no = f"flux insuffisant ({0 if not flow else flow.get('n', 0)} transactions)"
+            elif (c["side"] == "long" and flow["buy_ratio"] < K.get("counter_flow", 0.58)) or (c["side"] == "short" and flow["buy_ratio"] > 1 - K.get("counter_flow", 0.58)):
+                why_no = f"flux pas dans le sens ({flow['buy_ratio'] * 100:.0f} % d'achats agressifs)"
+            elif btc_chg is not None and ((c["side"] == "long" and btc_chg <= -0.2) or (c["side"] == "short" and btc_chg >= 0.2)):
+                why_no = f"BTC contre ({btc_chg:+.2f} % / 1 h)"
+            elif c["score"] < K.get("counter_min_score", 65):
+                why_no = f"note {c['score']:.0f} < {K.get('counter_min_score', 65):.0f} (exigence contre-tendance)"
+            if why_no:
+                refus = refus or f"{c['kind']} {c['side']} refuse : contre-tendance (H1 {t1h}, 15 min {m15}) — {why_no}"
+                continue
+            c["counter"] = True
+            c["reasons"] = [f"CONTRE-TENDANCE sécurisée : flux {flow['buy_ratio'] * 100:.0f} % acheteurs agressifs ({flow['n']} transactions), zone testée {c['touches']} fois"] + c["reasons"]
+            aligned.append(c)
         if not aligned:
-            b0 = max(cands, key=lambda c: c["score"])
-            return None, f"{b0['kind']} {b0['side']} refuse : contre-tendance (H1 {t1h}, 15 min {m15})"
+            return None, refus or "contre-tendance refusée"
         cands = aligned
     good = [c for c in cands if c["room"] >= K["min_room_pct"]]
     if not good:
@@ -239,7 +268,9 @@ class ScalpEngine:
                 "vol_mult": float(c.get("SCALP_BREAK_VOL_MULT", 1.5)), "max_chase_pct": float(c.get("SCALP_MAX_CHASE_PCT", 0.4)),
                 "min_score": float(c.get("SCALP_MIN_SCORE", 0)),
                 "min_score_short": float(c.get("SCALP_SHORT_MIN_SCORE", 62)),
-                "trend_mode": int(c.get("SCALP_TREND_MODE", 1))}
+                "trend_mode": int(c.get("SCALP_TREND_MODE", 1)),
+                "counter_enabled": int(c.get("SCALP_COUNTER_ENABLED", 1)), "counter_min_score": float(c.get("SCALP_COUNTER_MIN_SCORE", 65)),
+                "counter_flow": float(c.get("SCALP_COUNTER_FLOW_MIN", 0.58)), "counter_min_trades": int(c.get("SCALP_COUNTER_MIN_TRADES", 30))}
 
     # ── univers : top N par volume 24 h parmi les actifs suivis ──
     def universe(self):
@@ -305,11 +336,13 @@ class ScalpEngine:
         by_kind = {}
         for k in ("rebond", "cassure"):
             by_kind[k] = agg([d for d in rows if (d.get("scalp") or {}).get("kind") == k])
+        by_trend = {"avec": agg([d for d in rows if not (d.get("scalp") or {}).get("counter")]),
+                    "contre": agg([d for d in rows if (d.get("scalp") or {}).get("counter")])}
         by_hour = {}
         for d in rows:
             h = datetime.fromtimestamp(float(d.get("opened_at") or d.get("closed_at") or 0), timezone.utc).hour
             by_hour.setdefault(h, []).append(d)
-        out = {"mode": mode, "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind,
+        out = {"mode": mode, "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend,
                "by_hour": {h: agg(v) for h, v in sorted(by_hour.items())}, "last_closed": rows[0].get("closed_at") if rows else None}
         self._stats_cache = (time.time(), mode, out)
         return out
@@ -404,7 +437,7 @@ class ScalpEngine:
                 except Exception as e:
                     self.last_error = f"bougies {t} : {type(e).__name__}: {e}"
                     continue
-                sig, motif = evaluate(c5, c15, c1h, btc, K)
+                sig, motif = evaluate(c5, c15, c1h, btc, K, self._flow(t))
                 if not sig:
                     if "refuse" in motif:
                         self._ev("refus", t, motif)
@@ -422,6 +455,46 @@ class ScalpEngine:
             print(f"[SCALP] {self.last_error}")
         finally:
             self._busy = False
+
+    def _flow(self, t, minutes=10):
+        """v4.433 : part des achats agressifs sur les N dernieres minutes (flux WebSocket du bot). S abonne a la volee aux actifs hors liste du bot.
+        Retourne {buy_ratio, n} ou None si aucun flux."""
+        bot = self.bot
+        try:
+            sub = getattr(self, "_flow_sub", None)
+            if sub is None or sub[0] != getattr(bot, "_ws_trades_subscribed_at", None):
+                sub = self._flow_sub = (getattr(bot, "_ws_trades_subscribed_at", None), set())
+            buffers = getattr(bot, "_ws_trades_buffer", None)
+            if buffers is None:
+                return None
+            if t not in sub[1] and t not in buffers and getattr(bot, "info", None) is not None:
+                sub[1].add(t)
+                try:
+                    bot.info.subscribe({"type": "trades", "coin": t}, bot._on_ws_trades)
+                except Exception as e:
+                    self.last_error = f"flux {t} : {type(e).__name__}: {e}"
+                return None
+            buf = list(buffers.get(t) or [])
+            lim = (time.time() - minutes * 60) * 1000
+            b = a = 0.0
+            n = 0
+            for x in buf:
+                if x.get("t", 0) < lim:
+                    continue
+                sz = float(x.get("sz") or 0)
+                if x.get("side") == "B":
+                    b += sz
+                elif x.get("side") == "A":
+                    a += sz
+                else:
+                    continue
+                n += 1
+            if n == 0 or b + a <= 0:
+                return None
+            return {"buy_ratio": b / (b + a), "n": n}
+        except Exception as e:
+            self.last_error = f"flux : {type(e).__name__}: {e}"
+            return None
 
     def _zone_blocked(self, t, mode, level):
         """v4.432 : apres un stop sur une zone (support/resistance), on n y re-entre pas pendant SCALP_ZONE_COOLDOWN_MIN (0 = off).
@@ -547,7 +620,7 @@ class ScalpEngine:
                 if it is not None:
                     it["scalp"] = {"kind": sig["kind"], "score": sig["score"], "level": sig["level"], "room": round(sig["room"], 2),
                                    "reasons": sig["reasons"], "volume_ratio": round(sig["volume_ratio"], 2),
-                                   "atr15_pct": round(sig["atr15_pct"], 3)}
+                                   "atr15_pct": round(sig["atr15_pct"], 3), "counter": bool(sig.get("counter"))}
                     it["reasons"] = sig["reasons"]
                     self.manual._save(it)
         except Exception as e:
@@ -562,7 +635,7 @@ class ScalpEngine:
         return {"enabled": bool(int(c.get("SCALP_ENABLED", 0))), "mode": c.get("SCALP_MODE", "paper"), "window_open": ok, "window_reason": why,
                 "universe": list(self._uni), "open": self._open_count(), "max_open": int(c.get("SCALP_MAX_OPEN", 0)),
                 "params": {k: c.get(k) for k in ("SCALP_LEVERAGE", "SCALP_NOTIONAL_USD", "SCALP_SL_PCT", "SCALP_TP_PCT", "SCALP_HOURS_UTC",
-                                                 "SCALP_MIN_SCORE", "SCALP_SHORT_MIN_SCORE", "SCALP_TREND_MODE", "SCALP_CONFIRM_BARS", "SCALP_NOISE_ATR", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
+                                                 "SCALP_MIN_SCORE", "SCALP_SHORT_MIN_SCORE", "SCALP_TREND_MODE", "SCALP_COUNTER_ENABLED", "SCALP_COUNTER_MIN_SCORE", "SCALP_COUNTER_FLOW_MIN", "SCALP_COUNTER_MIN_TRADES", "SCALP_CONFIRM_BARS", "SCALP_NOISE_ATR", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),
                 "pending": [{"ticker": t, "side": p["sig"]["side"], "trigger": p["trigger"], "expires": p["expires"]} for t, p in self.pending.items()],
                 "events": list(self.events)[:40], "error": self.last_error}

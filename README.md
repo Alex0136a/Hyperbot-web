@@ -1146,3 +1146,11 @@ Fichiers : `scalp_crypto.py`, `manual_trading.py`, `bot_engine.py`, `api.py`, `i
 - **PnL net de frais** : l'historique affiche sous chaque PnL la valeur « net » (frais estimés ≈ 0,09 % du notionnel par aller-retour), le résumé donne brut + net, et la carte Scalp affiche brut / net.
 - **Pause sur une zone après un stop** (`SCALP_ZONE_COOLDOWN_MIN`, défaut 60, 0 = off) : après une perte (hors sortie « durée max ») sur un support/résistance, le Scalp ne re-entre pas sur la même zone (±0,3 %) pendant ce délai. Les autres zones du même actif restent ouvertes.
 - **Stop par défaut 0,65 %** (avant 1,0 %), objectif 0,6 % : risque ≈ gain. Seuil de rentabilité ≈ 58 % de trades gagnants. Compromis : le stop tombe plus souvent (bruit). Les valeurs déjà enregistrées dans la carte ne changent pas : ajuster « Stop » si besoin.
+
+## v4.433 — Scalp : contre-tendance sécurisée (flux + zone solide + BTC)
+Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `index.html`, `README.md`.
+- Un trade **contre la tendance** (H1, sinon 15 min) est de nouveau possible, **Paper et Live**, seulement si TOUT est réuni : **rebond** (jamais une cassure) sur une zone **testée au moins 2 fois** ; **flux agressif dans le sens du trade** (long : ≥ 58 % d'achats agressifs sur 10 min ; short : ≥ 58 % de ventes), avec au moins 30 transactions ; **BTC pas contre** (±0,2 % / 1 h) ; **note ≥ 65**. Le rebond garde sa confirmation par le prix. Flux absent ou insuffisant = refus.
+- Le flux utilise le WebSocket des transactions du bot ; le Scalp s'abonne tout seul aux actifs du top 15 qui ne sont pas dans la liste du bot (abonnement refait après reconnexion du bot).
+- **Réglages** (carte Scalp) : `SCALP_COUNTER_ENABLED` (1 = autorisée, **0 = bloquée**, retour au comportement v4.432), `SCALP_COUNTER_MIN_SCORE` (65), `SCALP_COUNTER_FLOW_MIN` (0,58), `SCALP_COUNTER_MIN_TRADES` (30).
+- La carte sépare les résultats **AVEC TENDANCE** / **CONTRE-TENDANCE** ; l'historique marque « CONTRE-TENDANCE ».
+- Test sur marchés simulés : sans flux ou flux contraire = 0 contre-tendance ; flux favorable = quelques longs contre-tendance ; réglage à 0 = aucun. Seuils non calibrés sur le vrai marché : juger sur ≥ 30 trades.

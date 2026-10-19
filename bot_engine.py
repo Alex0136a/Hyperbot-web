@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.432"
+BOT_VERSION = "4.433"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -272,7 +272,8 @@ CONFIG = {
     # v4.421 — MODE SCALP CRYPTO (scalp_crypto.py) : paper par defaut, desactive tant que l utilisateur ne l active pas
     "SCALP_ENABLED": 0, "SCALP_MODE": "paper",           # paper / live (le passage en live se fait par bouton, avec confirmation)
     "SCALP_LEVERAGE": 3, "SCALP_NOTIONAL_USD": 60.0,     # 60 $ x 0,6 % - frais ~ 0,31 $ net par trade gagnant
-    "SCALP_SL_PCT": 0.65, "SCALP_ZONE_COOLDOWN_MIN": 60, "SCALP_TP_PCT": 0.6,            # % du PRIX ; TP fixe (pas de laisser courir)
+    "SCALP_SL_PCT": 0.65, "SCALP_ZONE_COOLDOWN_MIN": 60,
+    "SCALP_COUNTER_ENABLED": 1, "SCALP_COUNTER_MIN_SCORE": 65, "SCALP_COUNTER_FLOW_MIN": 0.58, "SCALP_COUNTER_MIN_TRADES": 30,   # v4.433 contre-tendance securisee "SCALP_TP_PCT": 0.6,            # % du PRIX ; TP fixe (pas de laisser courir)
     "SCALP_TOP_N": 15,                                   # actifs : les N plus echanges (volume 24 h) parmi les actifs suivis
     "SCALP_HOURS_UTC": "7-11,13-21",                     # tranches horaires UTC (vide = toujours)
     "SCALP_MIN_SCORE": 0, "SCALP_SHORT_MIN_SCORE": 62,

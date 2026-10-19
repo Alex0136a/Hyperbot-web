@@ -1172,7 +1172,7 @@ function ScalpPanel({ token }) {
     SCALP_MIN_SCORE:"Filtre note min LONG (0 = aucun)",SCALP_SHORT_MIN_SCORE:"Exigence SHORT : note min (0 = aucune)",SCALP_TREND_MODE:"Sans contre-tendance (1 = oui, 0 = non)",SCALP_CONFIRM_BARS:"Rebond : bougies 5 min pour confirmer (0 = entrer tout de suite)",SCALP_NOISE_ATR:"Bruit toléré à contre-sens (× ATR 5 min)",SCALP_MIN_ATR15_PCT:"Filtre volatilité 15 min min % (0 = aucun)",SCALP_MIN_ROOM_PCT:"Filtre place min avant zone % (0 = aucun)",
     SCALP_BREAK_VOL_MULT:"Cassure : volume ×",SCALP_MAX_CHASE_PCT:"Cassure : ne pas poursuivre au-delà (%)",SCALP_MAX_OPEN:"Positions simultanées max (0 = illimité ; en live le capital limite)",
     SCALP_MAX_PER_DAY:"Trades max par jour",SCALP_DAILY_LOSS_USD:"Perte journalière max ($)",SCALP_PAUSE_AFTER_LOSSES:"Pause après X pertes de suite",
-    SCALP_PAUSE_MIN:"Durée de la pause (min)",SCALP_ZONE_COOLDOWN_MIN:"Pause sur une zone après un stop (min, 0 = non)",SCALP_COOLDOWN_MIN:"Attente par actif (min)",SCALP_MAX_HOLD_MIN:"Durée max d'un trade (min)"};
+    SCALP_PAUSE_MIN:"Durée de la pause (min)",SCALP_COUNTER_ENABLED:"Contre-tendance sécurisée (1 = autorisée, 0 = bloquée)",SCALP_COUNTER_MIN_SCORE:"Contre-tendance : note min",SCALP_COUNTER_FLOW_MIN:"Contre-tendance : part min d'achats/ventes agressifs (0,58 = 58 %)",SCALP_COUNTER_MIN_TRADES:"Contre-tendance : nb min de transactions du flux",SCALP_ZONE_COOLDOWN_MIN:"Pause sur une zone après un stop (min, 0 = non)",SCALP_COOLDOWN_MIN:"Attente par actif (min)",SCALP_MAX_HOLD_MIN:"Durée max d'un trade (min)"};
   return (
     <div style={{...MT.card,borderColor:d.enabled?(live?"#ef4444":"#22c55e"):"#1e2d4a"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
@@ -1193,6 +1193,8 @@ function ScalpPanel({ token }) {
         <div><span style={MT.label}>TOTAL · {live?"LIVE":"PAPER"}</span>{pr(S.total)}</div>
         <div><span style={MT.label}>REBOND</span>{pr(S.by_kind.rebond)}</div>
         <div><span style={MT.label}>CASSURE</span>{pr(S.by_kind.cassure)}</div>
+        <div><span style={MT.label}>AVEC TENDANCE</span>{S.by_trend?pr(S.by_trend.avec):"—"}</div>
+        <div><span style={MT.label}>CONTRE-TENDANCE</span>{S.by_trend?pr(S.by_trend.contre):"—"}</div>
         <div><span style={MT.label}>PAPER (rappel)</span>{pr(d.stats_paper.total)}</div>
       </div>
       <div style={{fontSize:10,color:"#64748b",marginTop:6}}>Seuil de rentabilité : environ 58 % de trades gagnants avec TP 0,6 % / SL 0,65 % (frais inclus) ; plus le stop est serré, plus il tombe souvent (bruit). Reste en PAPER jusqu'à ce que ce taux soit confirmé sur plusieurs dizaines de trades.</div>
@@ -1679,7 +1681,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
               <td style={MT.td}>{fmtP(h.entry_price)}</td><td style={MT.td}>{fmtP(h.exit_price)}</td>
               <td style={{...MT.td,color:(h.pnl||0)>=0?"#22c55e":"#ef4444"}}>{h.pnl!=null?fmtUsd(h.pnl):"—"}{h.pnl_net!=null && h.status==="closed" ? <div style={{fontSize:10,color:"#94a3b8"}}>net {fmtUsd(h.pnl_net)}</div> : null}</td>
               <td style={{...MT.td,color:"#94a3b8"}}>{h.status==="closed"?h.reason:`${h.status==="cancelled"?"annulé":h.status==="expired"?"expiré":"échec"} — ${h.reason||h.error||""}`}
-                {h.scalp && <div style={{fontSize:10,color:"#93c5fd"}}>⚡ {h.scalp.kind} · note {Math.round(h.scalp.score)} · pic de gain {(h.peak_pct||0).toFixed(2)} % (objectif {h.tp_pct} %){h.scalp.reasons&&h.scalp.reasons[0]?` · ${h.scalp.reasons[0]}`:""}</div>}
+                {h.scalp && <div style={{fontSize:10,color:"#93c5fd"}}>⚡ {h.scalp.kind}{h.scalp.counter?" · CONTRE-TENDANCE":""} · note {Math.round(h.scalp.score)} · pic de gain {(h.peak_pct||0).toFixed(2)} % (objectif {h.tp_pct} %){h.scalp.reasons&&h.scalp.reasons[0]?` · ${h.scalp.reasons[0]}`:""}</div>}
                 {h.status==="closed" && h.mode==="live" && <div style={{fontSize:10,color:h.exit_source==="hyperliquid"?"#86efac":"#fbbf24"}}>{h.entry_verified?"ouverture constatée sur Hyperliquid · ":""}sortie {h.exit_source==="hyperliquid"?"confirmée par Hyperliquid":"estimée par le bot (remplissage Hyperliquid introuvable)"}</div>}</td>
             </tr>)}</tbody>
           </table></div>)}
