@@ -1154,3 +1154,10 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 - **Réglages** (carte Scalp) : `SCALP_COUNTER_ENABLED` (1 = autorisée, **0 = bloquée**, retour au comportement v4.432), `SCALP_COUNTER_MIN_SCORE` (65), `SCALP_COUNTER_FLOW_MIN` (0,58), `SCALP_COUNTER_MIN_TRADES` (30).
 - La carte sépare les résultats **AVEC TENDANCE** / **CONTRE-TENDANCE** ; l'historique marque « CONTRE-TENDANCE ».
 - Test sur marchés simulés : sans flux ou flux contraire = 0 contre-tendance ; flux favorable = quelques longs contre-tendance ; réglage à 0 = aucun. Seuils non calibrés sur le vrai marché : juger sur ≥ 30 trades.
+
+## v4.434 — Scalp : laisser courir après l'objectif
+Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `index.html`, `README.md`.
+- Nouveau réglage **`SCALP_RUN_ENABLED`** (défaut 1) : à l'objectif (TP 0,6 %), le trade n'est plus fermé ; son stop remonte à 0,2 % sous le prix, puis suit chaque nouveau plus haut (plus bas pour un short). Sortie quand le prix recule de plus de **`SCALP_RUN_TRAIL_PCT`** (défaut **0,2 %**) depuis son meilleur niveau. Motif de sortie : « TRAILING TAKE PROFIT ». En Live, le stop natif Hyperliquid est mis à jour à chaque palier (mécanisme « laisser courir au TP » existant).
+- **La durée max (`SCALP_MAX_HOLD_MIN`) ne s'applique plus** dès que l'objectif est atteint et le laisser courir armé ; elle reste valable avant l'objectif.
+- Mettre `SCALP_RUN_ENABLED` à 0 rétablit la fermeture nette à l'objectif. Ne concerne que les nouveaux trades.
+- Gain minimal garanti après l'objectif ≈ 0,4 % du prix (avant frais) ; pas de plafond de gain.
