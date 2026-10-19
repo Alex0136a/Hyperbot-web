@@ -1140,3 +1140,9 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py` (version), `README.md`.
 - **Live** : un actif déjà tenu en live (par le Scalp, un trade manuel ou le bot) n'est pas rouvert (Hyperliquid ne tient qu'une position par actif).
 - Un trade paper n'empêche jamais un live, et inversement.
 - Reste actif : l'attente par actif (`SCALP_COOLDOWN_MIN`, 30 min), qui évite d'empiler le même signal à chaque bougie ; la mettre à 0 pour la supprimer.
+
+## v4.432 — Scalp : PnL net de frais, pause sur une zone après un stop, stop réduit
+Fichiers : `scalp_crypto.py`, `manual_trading.py`, `bot_engine.py`, `api.py`, `index_src.html`, `index.html`, `README.md`.
+- **PnL net de frais** : l'historique affiche sous chaque PnL la valeur « net » (frais estimés ≈ 0,09 % du notionnel par aller-retour), le résumé donne brut + net, et la carte Scalp affiche brut / net.
+- **Pause sur une zone après un stop** (`SCALP_ZONE_COOLDOWN_MIN`, défaut 60, 0 = off) : après une perte (hors sortie « durée max ») sur un support/résistance, le Scalp ne re-entre pas sur la même zone (±0,3 %) pendant ce délai. Les autres zones du même actif restent ouvertes.
+- **Stop par défaut 0,65 %** (avant 1,0 %), objectif 0,6 % : risque ≈ gain. Seuil de rentabilité ≈ 58 % de trades gagnants. Compromis : le stop tombe plus souvent (bruit). Les valeurs déjà enregistrées dans la carte ne changent pas : ajuster « Stop » si besoin.

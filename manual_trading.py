@@ -2107,6 +2107,11 @@ class ManualTrading:
             cnt[md] += 1
             d.update({"id": row["id"], "status": row["status"]})
             d["strategy_label"] = STRATEGY_LABELS.get(d.get("strategy_source"), d.get("strategy_source"))
+            try:    # v4.432 : PnL net de frais (le pnl stocke est brut)
+                fe = float(d.get("fees_est") or 0) or float(d.get("notional_usd") or 0) * 0.0009
+                d["pnl_net"] = (float(d.get("pnl") or 0) - fe) if d.get("pnl") is not None else None
+            except Exception:
+                d["pnl_net"] = None
             history.append(d)
         w = self._wallet() or ""
         return {

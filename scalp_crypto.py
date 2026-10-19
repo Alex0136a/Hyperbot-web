@@ -218,6 +218,7 @@ class ScalpEngine:
         self._uni, self._uni_ts = [], 0
         self._seen = {}                      # ticker -> derniere tranche 5 min evaluee
         self._cool = {}                      # ticker -> fin de pause
+        self._zone_cache = (0, {})           # v4.432 : zones ou un stop vient de tomber
         self._busy = False
         self.pending = {}                    # v4.429 : signaux de rebond en attente de confirmation (ticker -> dict)
         self._last_tick = 0
@@ -293,8 +294,8 @@ class ScalpEngine:
             n = len(lst)
             w = sum(1 for d in lst if float(d.get("pnl") or 0) > 0)
             pnl = sum(float(d.get("pnl") or 0) for d in lst)
-            fees = sum(float(d.get("fees_est") or 0) for d in lst)
-            return {"n": n, "wins": w, "win_rate": (w / n * 100) if n else None, "pnl": pnl, "fees": fees}
+            fees = sum((float(d.get("fees_est") or 0) or float(d.get("notional_usd") or 0) * 0.0009) for d in lst)
+            return {"n": n, "wins": w, "win_rate": (w / n * 100) if n else None, "pnl": pnl, "fees": fees, "pnl_net": pnl - fees}
         streak = 0
         for d in rows:
             if float(d.get("pnl") or 0) <= 0:
@@ -408,6 +409,9 @@ class ScalpEngine:
                     if "refuse" in motif:
                         self._ev("refus", t, motif)
                     continue
+                if self._zone_blocked(t, mode, sig.get("level")):
+                    self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : un stop vient de tomber sur cette zone ({sig['level']:.6g}), pause de zone")
+                    continue
                 nb = int(self.cfg.get("SCALP_CONFIRM_BARS", 3))
                 if nb > 0 and sig["kind"] == "rebond":
                     self._arm(t, sig, nb)
@@ -418,6 +422,35 @@ class ScalpEngine:
             print(f"[SCALP] {self.last_error}")
         finally:
             self._busy = False
+
+    def _zone_blocked(self, t, mode, level):
+        """v4.432 : apres un stop sur une zone (support/resistance), on n y re-entre pas pendant SCALP_ZONE_COOLDOWN_MIN (0 = off).
+        Motivation, pas interdiction du comportement passe : seulement la MEME zone (+-0,3 %), pas le ticker entier."""
+        mins = float(self.cfg.get("SCALP_ZONE_COOLDOWN_MIN", 60))
+        if mins <= 0 or not level:
+            return False
+        ts, zones = self._zone_cache
+        now = time.time()
+        if now - ts > 60:
+            zones = {}
+            try:
+                for r in db.manual_history(300):
+                    d = r["data"]
+                    if d.get("strategy_source") != STRATEGY or r.get("status") != "closed":
+                        continue
+                    if float(d.get("pnl") or 0) >= 0 or "DUREE" in str(d.get("reason") or "").upper():
+                        continue
+                    lv = (d.get("scalp") or {}).get("level")
+                    ca = float(d.get("closed_at") or 0)
+                    if lv and now - ca < 86400:
+                        zones.setdefault((d.get("ticker"), d.get("mode")), []).append((float(lv), ca))
+            except Exception as e:
+                self.last_error = f"zones : {type(e).__name__}: {e}"
+            self._zone_cache = (now, zones)
+        for lv, ca in zones.get((t, mode), []):
+            if now - ca < mins * 60 and abs(level - lv) / lv <= 0.003:
+                return True
+        return False
 
     def _arm(self, t, sig, nb):
         """v4.429 : un rebond n ouvre PAS tout de suite. On attend que le prix confirme le sens choisi : un SHORT entre quand le prix passe sous le
@@ -499,7 +532,7 @@ class ScalpEngine:
         params = {"strategy": STRATEGY, "ticker": t, "direction": sig["side"], "market": "perp", "mode": mode,
                   "execution": "now", "leverage": int(c.get("SCALP_LEVERAGE", 3)),
                   "notional_usd": float(c.get("SCALP_NOTIONAL_USD", 60.0)),
-                  "sl_pct": float(c.get("SCALP_SL_PCT", 1.0)), "tp_pct": float(c.get("SCALP_TP_PCT", 0.6)),
+                  "sl_pct": float(c.get("SCALP_SL_PCT", 0.65)), "tp_pct": float(c.get("SCALP_TP_PCT", 0.6)),
                   "confirm_live": mode == "live"}
         try:
             res = self.manual.submit(params)

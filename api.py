@@ -2826,7 +2826,7 @@ _SCALP_NUM = {   # cle : (min, max, entier ?)
     "SCALP_MIN_ATR15_PCT": (0, 2, False), "SCALP_MIN_ROOM_PCT": (0, 10, False), "SCALP_BREAK_VOL_MULT": (1, 10, False),
     "SCALP_MAX_CHASE_PCT": (0.05, 3, False), "SCALP_MAX_OPEN": (0, 100, True), "SCALP_MAX_PER_DAY": (0, 500, True),
     "SCALP_DAILY_LOSS_USD": (0, 10000, False), "SCALP_PAUSE_AFTER_LOSSES": (0, 20, True), "SCALP_PAUSE_MIN": (1, 1440, True),
-    "SCALP_COOLDOWN_MIN": (0, 1440, True), "SCALP_MAX_HOLD_MIN": (0, 1440, True),
+    "SCALP_COOLDOWN_MIN": (0, 1440, True), "SCALP_ZONE_COOLDOWN_MIN": (0, 1440, True), "SCALP_MAX_HOLD_MIN": (0, 1440, True),
 }
 
 
