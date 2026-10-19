@@ -704,6 +704,29 @@ const MT = {
   td: {fontSize:12,color:"#e2e8f0",padding:"7px 8px",borderBottom:"1px solid #131d33",whiteSpace:"nowrap"},
 };
 const fmtP = v => v==null||isNaN(v) ? "—" : (Math.abs(v)>=1000 ? Number(v).toFixed(2) : Number(v).toPrecision(6));
+// v4.436 — PC : flèches ◀ ▶ au survol de toute zone défilable en largeur (tableaux, historique, onglets) + sélection du texte conservée.
+// Sur téléphone le défilement tactile reste inchangé ; ce code n'ajoute rien au DOM de React (boutons dans <body>).
+(function(){
+  if (typeof document === "undefined" || window.__hscrollArrows) return; window.__hscrollArrows = true;
+  const mk = (txt, side) => { const b = document.createElement("button"); b.textContent = txt; b.setAttribute("aria-label", side==="l"?"Défiler vers la gauche":"Défiler vers la droite");
+    b.style.cssText = "position:fixed;z-index:99999;display:none;width:34px;height:34px;border-radius:50%;border:1px solid #3b82f6;background:rgba(15,22,41,.92);color:#93c5fd;font-size:16px;line-height:1;cursor:pointer;padding:0;box-shadow:0 2px 8px rgba(0,0,0,.5)"; return b; };
+  let cur = null, L = null, R = null;
+  const scrollable = el => { for (let i = 0; el && el !== document.body && i < 14; i++, el = el.parentElement) { if (el.nodeType !== 1) continue; const ox = getComputedStyle(el).overflowX; if ((ox === "auto" || ox === "scroll") && el.scrollWidth > el.clientWidth + 4) return el; } return null; };
+  const place = () => { if (!cur || !document.body.contains(cur)) { hide(); return; } const r = cur.getBoundingClientRect();
+    const top = Math.max(r.top, 0), bot = Math.min(r.bottom, window.innerHeight); if (bot - top < 14) { hide(); return; }
+    const y = Math.round((top + bot) / 2 - 17);
+    L.style.cssText += `;display:${cur.scrollLeft > 2 ? "block" : "none"};left:${Math.round(Math.max(r.left, 0) + 6)}px;top:${y}px`;
+    R.style.cssText += `;display:${cur.scrollLeft + cur.clientWidth < cur.scrollWidth - 2 ? "block" : "none"};left:${Math.round(Math.min(r.right, window.innerWidth) - 40)}px;top:${y}px`; };
+  const hide = () => { cur = null; if (L) { L.style.display = "none"; R.style.display = "none"; } };
+  const init = () => { if (L) return; L = mk("◀", "l"); R = mk("▶", "r"); document.body.appendChild(L); document.body.appendChild(R);
+    const go = d => () => { if (cur) { cur.scrollBy({ left: d * Math.max(200, cur.clientWidth * 0.8), behavior: "smooth" }); setTimeout(place, 350); } };
+    L.onclick = go(-1); R.onclick = go(1); };
+  document.addEventListener("mousemove", e => { if (!window.matchMedia("(hover:hover)").matches) return; init();
+    if (e.target === L || e.target === R) return; const sc = scrollable(e.target); if (sc !== cur) { cur = sc; if (!sc) hide(); } if (cur) place(); }, { passive: true });
+  document.addEventListener("scroll", () => { if (cur) place(); }, true);
+  window.addEventListener("resize", () => { if (cur) place(); });
+})();
+
 const fmtUsd = v => v==null||isNaN(v) ? "—" : `${v>=0?"+":""}${Number(v).toFixed(2)} $`;
 const fmtAgo = s => s<60?`${s}s`:s<3600?`${Math.floor(s/60)} min`:`${Math.floor(s/3600)} h ${Math.floor(s%3600/60)} min`;
 // v4.435 — heure d'ouverture + durée écoulée d'un trade ouvert (heure locale de l'appareil)

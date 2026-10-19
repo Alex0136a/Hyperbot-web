@@ -1165,3 +1165,13 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 ## v4.435 — Heure d'ouverture et durée écoulée sur les trades manuels/Scalp ouverts
 Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
 - Chaque position ouverte (liste « Positions » du trading manuel et carte du trade dans l'onglet « Tous ») affiche « 🕒 ouvert à HH:MM · depuis X h YY min » (la date s'ajoute si l'ouverture date d'un autre jour). Heure locale de l'appareil. Le temps écoulé se rafraîchit à chaque actualisation de l'écran.
+
+## v4.436 — PC : flèches ◀ ▶ et glisser à la souris sur les zones défilables en largeur
+Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
+- Sur ordinateur (appareil avec souris), au survol d'un tableau ou d'une barre d'onglets plus large que l'écran (historique, trades, onglets…), deux flèches rondes ◀ ▶ apparaissent sur les bords ; un clic fait défiler d'environ 80 % de la largeur. La flèche disparaît quand on est au bout.
+- On peut aussi **glisser à la souris** (clic maintenu sur une zone vide du tableau) ; les boutons, champs et liens gardent leur comportement normal.
+- Téléphone : rien ne change (défilement tactile habituel). Les flèches sont ajoutées hors de l'interface React, sans toucher aux composants. Testé sur une page d'essai (flèche, clic, glisser) ; pas sur l'application complète.
+
+## v4.437 — Retrait du « glisser à la souris » (sélection du texte rétablie)
+Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
+- Le glisser à la souris de la v4.436 empêchait de sélectionner le texte à copier : supprimé. Les flèches ◀ ▶ au survol restent (clic = défilement), la sélection du texte au clic-glisser fonctionne comme avant.
