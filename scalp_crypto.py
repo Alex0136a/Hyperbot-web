@@ -280,7 +280,8 @@ class ScalpEngine:
         try:
             for r in db.manual_history(800):
                 d = r["data"]
-                if d.get("strategy_source") == STRATEGY and d.get("status") == "closed" and d.get("mode") == mode:
+                # le statut est une colonne de la base, absent du JSON des donnees (bug v4.421-v4.429 : filtre sur d["status"] => toujours 0 trade)
+                if d.get("strategy_source") == STRATEGY and r.get("status") == "closed" and d.get("mode") == mode:
                     rows.append(d)
         except Exception as e:
             self.last_error = f"stats : {type(e).__name__}: {e}"

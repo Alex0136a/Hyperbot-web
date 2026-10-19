@@ -1127,3 +1127,9 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 - **Mouvement contraire = bruit, mais borné** (`SCALP_NOISE_ATR` = 0,5 × ATR 5 min) : tant que le prix reste sous l'extrême de la bougie signal + cette marge, on attend ; au-delà, ou sans confirmation dans le délai, le signal est abandonné (événements « attente » / « abandon » dans le journal).
 - Les cassures confirmées (déjà basées sur une bougie de mouvement) entrent comme avant, mais passent aussi le filtre de tendance.
 - Cause du changement : 4 shorts de rebond ouverts ensemble ont tous perdu avec un pic de gain de 0,00 à 0,16 % (le prix est parti à contre-sens dès l'entrée).
+
+## v4.430 — FIX : les statistiques et garde-fous du Scalp ne voyaient aucun trade
+Fichiers : `scalp_crypto.py`, `bot_engine.py` (version), `README.md`.
+- Cause : les statistiques du Scalp lisaient le statut « closed » dans le contenu JSON des trades, alors que le statut est une colonne de la base (absent du JSON). Résultat : « aucun trade » partout dans la carte.
+- Conséquence cachée corrigée en même temps : les **garde-fous qui reposent sur ces statistiques ne fonctionnaient pas** (perte journalière max, pause après X pertes de suite, nombre max de trades par jour). Ils s'appliquent désormais.
+- Vérifié sur une base de test avec des trades sans clé « status », comme en réel.
