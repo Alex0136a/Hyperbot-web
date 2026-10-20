@@ -2905,6 +2905,15 @@ def manual_history_delete(body: ManualHistDeleteBody, email: str = Depends(requi
     return {"deleted": n}
 
 
+@app.post("/api/manual/history/import-hl")
+def manual_history_import_hl(days: int = 10, email: str = Depends(require_user)):
+    """v4.443 — compare l historique Live du bot aux remplissages Hyperliquid et ajoute les trades manquants."""
+    try:
+        return bot.manual.import_missing_from_hl(max(1, min(int(days), 30)))
+    except Exception as e:
+        raise HTTPException(500, f"{type(e).__name__}: {e}")
+
+
 @app.get("/api/manual/leverage-check")
 def manual_leverage_check(email: str = Depends(require_user)):
     """v4.414 — diagnostic du levier reel (ce que renvoie Hyperliquid) + alignement immediat du suivi."""

@@ -1220,3 +1220,11 @@ Fichiers : `db.py`, `manual_trading.py`, `bot_engine.py` (version), `README.md`.
 - Cause : l'historique lisait les 800 derniers trades clôturés **tous modes confondus** puis gardait 100 par mode. Le Scalp Paper en produit beaucoup : les plus anciens trades Live sortaient des 800 et disparaissaient de l'affichage (ils restaient en base).
 - Correctif : le filtre Live / Paper se fait maintenant en SQL ; l'historique montre toujours les 100 derniers Live et les 100 derniers Paper. Même correction pour le calcul des frais réels (trades Live anciens).
 - Rien n'est supprimé : les trades « perdus » réapparaissent (dans la limite des 100 derniers Live).
+
+## v4.444 — Réconciliation de l'historique Live avec Hyperliquid
+Fichiers : `db.py`, `manual_trading.py`, `api.py`, `bot_engine.py` (version), `index_src.html`, `index.html`, `README.md`.
+- Le bot lit les remplissages Hyperliquid des 10 derniers jours, reconstitue chaque trade perp (ouverture → retour à zéro) et **ajoute à l'historique Live ceux que le bot ne connaît pas** (source « Importé Hyperliquid »). Un trade est « connu » si un trade du bot sur le même actif chevauche sa période (± 3 min).
+- Prix d'entrée/sortie moyens réels, PnL brut, frais et funding réels (net ✓). Levier non disponible (non affiché dans l'historique).
+- Automatique toutes les 15 min, ou à la demande : bouton **« 🔄 Comparer à Hyperliquid »** (onglet LIVE de l'historique, 14 jours).
+- Les positions encore ouvertes ne sont jamais importées. Un trade importé que tu supprimes à la main n'est pas réimporté.
+- Testé sur ton export Hyperliquid : retrouve SUI 14/10 12:01 (+0,45 $ brut) et BTC 14/10 13:16 (−0,70 $ brut), absents du bot, et ne duplique aucun trade déjà présent.

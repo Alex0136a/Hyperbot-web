@@ -1117,6 +1117,13 @@ def manual_list(statuses):
         return [{"id": r["id"], "status": r["status"], "data": json.loads(r["data"])} for r in rows]
 
 
+def hl_ignore_keys():
+    """v4.443 : cles (actif:ouverture) des trades importes d Hyperliquid que l utilisateur a supprimes -> ne pas les reimporter."""
+    with _lock, _connect() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS hl_import_ignore (k TEXT PRIMARY KEY)")
+        return {r[0] for r in conn.execute("SELECT k FROM hl_import_ignore").fetchall()}
+
+
 def manual_delete_finished(ids):
     """v4.426 : supprime de l historique manuel des elements TERMINES (closed / cancelled / expired / failed). Les positions ouvertes
     ou programmees ne sont jamais touchees. Retourne le nombre de lignes supprimees."""
@@ -1124,7 +1131,16 @@ def manual_delete_finished(ids):
     if not ids:
         return 0
     with _lock, _connect() as conn:
-        cur = conn.execute(f"DELETE FROM manual_trades WHERE status IN ('closed','cancelled','expired','failed') AND id IN ({','.join('?' * len(ids))})", tuple(ids))
+        qs = ','.join('?' * len(ids))
+        try:     # v4.443 : un trade importe d Hyperliquid supprime a la main ne doit pas revenir
+            conn.execute("CREATE TABLE IF NOT EXISTS hl_import_ignore (k TEXT PRIMARY KEY)")
+            for r in conn.execute(f"SELECT data FROM manual_trades WHERE status='closed' AND id IN ({qs})", tuple(ids)).fetchall():
+                k = (json.loads(r["data"]) or {}).get("hl_key")
+                if k:
+                    conn.execute("INSERT OR IGNORE INTO hl_import_ignore (k) VALUES (?)", (k,))
+        except Exception as e:
+            print(f"[DB] ignore import HL : {e}")
+        cur = conn.execute(f"DELETE FROM manual_trades WHERE status IN ('closed','cancelled','expired','failed') AND id IN ({qs})", tuple(ids))
         conn.commit()
         return cur.rowcount
 

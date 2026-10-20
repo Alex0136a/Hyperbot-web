@@ -43,6 +43,7 @@ STRATEGY_LABELS = {
     "accumulation": "Accumulation",
     "spot_accumulation": "Spot-Accum",
     "funding_contrarian": "Funding",
+    "hl_import": "Importé Hyperliquid",
 }
 FREE_LIKE = ("libre", "swing_support", "scalp_crypto")     # tickets sans opportunite du bot a confirmer
 OPEN_STATUSES = ("scheduled", "opening", "open", "closing")
@@ -1539,6 +1540,120 @@ class ManualTrading:
                 print(f"[MANUEL] Sauvegarde correction #{r['id']} impossible : {e}")
         return fixed
 
+    def _safe_import(self):
+        try:
+            if self.bot.exchange is not None:
+                self.import_missing_from_hl(10)
+        except Exception as e:
+            print(f"[MANUEL] import Hyperliquid : {type(e).__name__}: {e}")
+
+    def import_missing_from_hl(self, days=10):
+        """v4.443 — RECONCILIATION AVEC HYPERLIQUID : les trades perp presents sur le compte (cycle ouverture -> retour a zero) mais
+        absents de l historique Live du bot sont ajoutes (source « Importé Hyperliquid »), avec frais et funding reels. Un trade
+        est considere connu si un trade du bot sur le meme actif chevauche sa periode. Positions encore ouvertes : ignorees."""
+        wallet = self._wallet()
+        if not wallet:
+            return {"imported": 0, "error": "portefeuille indisponible"}
+        now = time.time()
+        t0_ms, t1_ms = int((now - days * 86400) * 1000), int(now * 1000) + 60_000
+        fills, start = [], t0_ms
+        for _ in range(8):                                  # pagination : 2000 remplissages par appel
+            chunk = self.bot.info.user_fills_by_time(wallet, start, t1_ms) or []
+            fills += chunk
+            if len(chunk) < 2000:
+                break
+            start = max(int(f.get("time") or 0) for f in chunk) + 1
+        seen, uniq = set(), []
+        for f in fills:
+            k = (f.get("tid"), f.get("oid"), f.get("time"), f.get("coin"), f.get("sz"), f.get("px"))
+            if k not in seen:
+                seen.add(k)
+                uniq.append(f)
+        by = {}
+        for f in sorted(uniq, key=lambda x: int(x.get("time") or 0)):
+            by.setdefault(f.get("coin"), []).append(f)
+        cycles = []
+        for coin, lst in by.items():
+            cur = None
+            for f in lst:
+                sz = abs(float(f.get("sz") or 0))
+                start_pos = float(f.get("startPosition") or 0)
+                signed = sz if f.get("side") == "B" else -sz
+                end_pos = start_pos + signed
+                tol = max(1e-9, sz * 1e-6)
+                if cur is None:
+                    if abs(start_pos) > tol or not str(f.get("dir", "")).startswith("Open"):
+                        continue                              # debut du cycle hors fenetre : ignore
+                    cur = {"coin": coin, "dir": "long" if signed > 0 else "short", "fills": []}
+                cur["fills"].append(f)
+                if abs(end_pos) <= tol:
+                    cycles.append(cur)
+                    cur = None
+        known = []
+        try:
+            for r in db.manual_history(600, "live"):
+                known.append(r["data"])
+            known += [dict(i) for i in self.items.values() if i.get("mode") == "live"]
+        except Exception:
+            pass
+        ignore = set()
+        try:
+            ignore = db.hl_ignore_keys()
+        except Exception:
+            pass
+        n = 0
+        for cy in cycles:
+            fl = cy["fills"]
+            ts0 = min(int(f["time"]) for f in fl) / 1000.0
+            ts1 = max(int(f["time"]) for f in fl) / 1000.0
+            key = f"{cy['coin']}:{int(ts0 * 1000)}"
+            if key in ignore:
+                continue
+            dup = False
+            for it in known:
+                if it.get("ticker") != cy["coin"] or it.get("market", "perp") != "perp":
+                    continue
+                oa = it.get("opened_at")
+                if not oa:
+                    continue
+                ca = it.get("closed_at") or now
+                if float(oa) <= ts1 + 180 and float(ca) + 180 >= ts0:
+                    dup = True
+                    break
+            if dup:
+                continue
+            opens = [f for f in fl if str(f.get("dir", "")).startswith("Open")]
+            closes = [f for f in fl if str(f.get("dir", "")).startswith("Close")]
+            qo = sum(abs(float(f["sz"])) for f in opens) or 1e-12
+            qc = sum(abs(float(f["sz"])) for f in closes) or 1e-12
+            entry = sum(float(f["px"]) * abs(float(f["sz"])) for f in opens) / qo
+            exit_px = sum(float(f["px"]) * abs(float(f["sz"])) for f in closes) / qc
+            fees = sum(float(f.get("fee") or 0) for f in fl)
+            pnl_after_fees = sum(float(f.get("closedPnl") or 0) for f in fl)     # closedPnl Hyperliquid = deja net des frais
+            gross = pnl_after_fees + fees
+            funding = 0.0
+            try:
+                fund = [x for x in (self.bot.info.user_funding_history(wallet, int(ts0 * 1000) - 5_000, int(ts1 * 1000) + 180_000) or [])
+                        if (x.get("delta") or {}).get("coin") == cy["coin"]]
+                funding = sum(float((x.get("delta") or {}).get("usdc") or 0) for x in fund)
+            except Exception:
+                pass
+            data = {"mode": "live", "market": "perp", "ticker": cy["coin"], "direction": cy["dir"], "strategy_source": "hl_import",
+                    "leverage": None, "qty": qo, "entry_price": entry, "exit_price": exit_px, "notional_usd": qo * entry,
+                    "opened_at": ts0, "created_at": ts0, "closed_at": ts1, "pnl": gross, "fees_est": fees,
+                    "reason": "IMPORTÉ DEPUIS HYPERLIQUID (trade absent du bot)", "exit_source": "hyperliquid", "entry_verified": True,
+                    "real_costs": {"fees": round(fees, 5), "funding": round(funding, 5), "n_fills": len(fl),
+                                   "net": round(gross - fees + funding, 5), "ts": now},
+                    "hl_key": key, "error": None}
+            try:
+                db.manual_insert("closed", data)
+                known.append(data)
+                n += 1
+                self._log(f"Importé depuis Hyperliquid : {cy['coin']} {cy['dir']} {entry:.6g} → {exit_px:.6g} | PnL {gross:+.2f} $", "info")
+            except Exception as e:
+                print(f"[MANUEL] import Hyperliquid {key} impossible : {e}")
+        return {"imported": n, "cycles": len(cycles), "fills": len(uniq)}
+
     def reconcile_real_costs(self, max_age_days=30, limit=6):
         """v4.441 — FRAIS ET FUNDING REELS des trades LIVE perp fermes : somme des frais de tous les remplissages Hyperliquid du trade
         (ouverture, partiels, cloture) et du funding paye / recu pendant la detention. Net reel = PnL - frais + funding.
@@ -1884,6 +1999,9 @@ class ManualTrading:
             threading.Thread(target=lambda: self.reconcile_exit_sources(), daemon=True).start()
         if time.time() - getattr(self, "_real_costs_ts", 0) >= 120:
             threading.Thread(target=self.reconcile_real_costs, daemon=True).start()
+        if time.time() - getattr(self, "_hl_import_ts", 0) >= 900:      # v4.443 : trades Hyperliquid absents du bot (toutes les 15 min)
+            self._hl_import_ts = time.time()
+            threading.Thread(target=lambda: self._safe_import(), daemon=True).start()
         if time.time() - getattr(self, "_lev_sync_ts", 0) >= 300:
             self._lev_sync_ts = time.time()
             threading.Thread(target=self.sync_leverage, daemon=True).start()
