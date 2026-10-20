@@ -1214,3 +1214,9 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 6. `SCALP_CORR_BASKET_EXIT_ON` (0) / `SCALP_BASKET_EXIT_PCT` (70) — sortie panier : en régime corrélé, un trade en perte (ouvert depuis plus de 2 min, laisser courir non armé) est fermé si ≥ 70 % des actifs vont contre lui (motif « SCALP SORTIE PANIER »).
 **Interface** : la carte Scalp a trois onglets (⚙️ Réglages · 🔗 Corrélation · 📊 Résultats & journal). L'onglet Corrélation affiche le régime en direct, la variation 30 min de chaque actif, les résultats par régime et par taille de grappe, les signaux en attente de pair et tous les réglages ci-dessus.
 **Limites** : seuils de départ non calibrés (le but de l'étape 1 est de les calibrer) ; testé sur séries simulées (corrélation 0,91 vs 0,06) et avec un moteur factice pour les règles, pas sur le marché réel.
+
+## v4.443 — Historique Live : trades anciens qui disparaissaient
+Fichiers : `db.py`, `manual_trading.py`, `bot_engine.py` (version), `README.md`.
+- Cause : l'historique lisait les 800 derniers trades clôturés **tous modes confondus** puis gardait 100 par mode. Le Scalp Paper en produit beaucoup : les plus anciens trades Live sortaient des 800 et disparaissaient de l'affichage (ils restaient en base).
+- Correctif : le filtre Live / Paper se fait maintenant en SQL ; l'historique montre toujours les 100 derniers Live et les 100 derniers Paper. Même correction pour le calcul des frais réels (trades Live anciens).
+- Rien n'est supprimé : les trades « perdus » réapparaissent (dans la limite des 100 derniers Live).

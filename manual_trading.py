@@ -1503,7 +1503,7 @@ class ManualTrading:
         self._recon_exit_ts = time.time()
         fixed = 0
         try:
-            rows = db.manual_history(200)
+            rows = db.manual_history(200, "live")
         except Exception:
             return 0
         done = 0
@@ -1550,7 +1550,7 @@ class ManualTrading:
         if not wallet:
             return 0
         try:
-            rows = db.manual_history(300)
+            rows = db.manual_history(300, "live")
         except Exception:
             return 0
         done = 0
@@ -2155,7 +2155,9 @@ class ManualTrading:
             items = [self.public(i) for i in self.items.values()]
         history = []
         cnt = {"live": 0, "paper": 0}        # v4.425 : 100 derniers PAR MODE (le paper du Scalp ne doit pas noyer le live)
-        for row in db.manual_history(800):
+        _rows = db.manual_history(100, "live") + db.manual_history(100, "paper")   # v4.443 : filtre par mode en SQL
+        _rows.sort(key=lambda r: r["id"], reverse=True)
+        for row in _rows:
             d = row["data"]
             md = "live" if d.get("mode") == "live" else "paper"
             if cnt[md] >= 100:

@@ -1129,10 +1129,24 @@ def manual_delete_finished(ids):
         return cur.rowcount
 
 
-def manual_history(limit=50):
+def manual_history(limit=50, mode=None):
+    """v4.443 : mode='live' / 'paper' filtre en SQL (avant, la fenetre globale de 800 lignes se remplissait de
+    trades Scalp paper et les vieux trades live sortaient de l historique)."""
     with _lock, _connect() as conn:
-        rows = conn.execute("SELECT id, status, data FROM manual_trades WHERE status IN ('closed','cancelled','expired','failed') "
-                            "ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+        base = "SELECT id, status, data FROM manual_trades WHERE status IN ('closed','cancelled','expired','failed') "
+        rows = None
+        if mode in ("live", "paper"):
+            try:
+                cond = ("json_extract(data,'$.mode') = 'live' " if mode == "live"
+                        else "json_extract(data,'$.mode') IS NOT 'live' ")
+                rows = conn.execute(base + "AND " + cond + "ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+            except Exception:
+                rows = None
+        if rows is None:
+            rows = conn.execute(base + "ORDER BY updated_at DESC LIMIT ?",
+                                (limit if mode is None else max(limit, 5000),)).fetchall()
+            if mode in ("live", "paper"):
+                rows = [r for r in rows if (json.loads(r["data"]).get("mode") == "live") == (mode == "live")][:limit]
         return [{"id": r["id"], "status": r["status"], "data": json.loads(r["data"])} for r in rows]
 
 
