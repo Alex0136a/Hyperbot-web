@@ -1182,3 +1182,10 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 - Mettre `SCALP_SHORT_BTC_BLOCK` à 0 le désactive ; abaisser le seuil à 0 ou en négatif le rend plus strict.
 - Cause : sur 75 trades Paper, les shorts ont 24 % de gagnants (−7,32 $ net) et 9 shorts corrélés ouverts pendant une hausse de BTC ont tous perdu.
 - Testé sur marchés simulés : BTC +0,5 % = 0 short ; BTC 0 ou négatif = shorts possibles.
+
+## v4.439 — Swing Support : stops « fantômes » à 2 % et 3 % (observation seule)
+Fichiers : `manual_trading.py`, `bot_engine.py` (version), `index_src.html`, `index.html`, `README.md`.
+- Pour chaque trade **Swing Support** (Live et Paper), le moteur note le plus bas atteint et si le prix a touché −2 % / −3 % (par rapport à l'entrée). À la clôture il enregistre ce qu'auraient donné un stop à 2 % et à 3 % : si le seuil a été touché, perte de 2 % (ou 3 %) ; sinon le résultat réel.
+- **Aucun effet sur les positions** : le stop réel (5 %) reste inchangé.
+- L'historique affiche sous chaque trade « 🧪 stop fantôme : réel … · avec stop 2 % … · avec stop 3 % … » et une ligne de total (en $ avant frais et en %). Seuls les trades ouverts puis clôturés après cette version sont concernés.
+- Limites : approximation sans slippage ; le prix est celui observé à chaque cycle du moteur (pas à la seconde), donc un franchissement très bref peut être manqué.

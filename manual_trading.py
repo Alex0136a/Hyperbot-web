@@ -1316,6 +1316,10 @@ class ManualTrading:
             move_pct = sign * (exit_price - item["entry_price"]) / item["entry_price"] * 100
             pnl = item["qty"] * (exit_price - item["entry_price"]) * sign + float(item.get("realized_pnl") or 0)    # v4.404 : + partie deja encaissee au TP1
             fees = item["notional_usd"] * FEE_ROUND_TRIP + float(item.get("realized_fees") or 0)
+            if item.get("strategy_source") == "swing_support":      # v4.439 : ce qu aurait donne un stop a 2 % / 3 % du prix (observation seule)
+                item["shadow"] = {"actual_pct": round(move_pct, 3), "trough_pct": round(float(item.get("trough_pct") or min(0.0, move_pct)), 3),
+                                  "s2_pct": -2.0 if "shadow2_ts" in item else round(move_pct, 3),
+                                  "s3_pct": -3.0 if "shadow3_ts" in item else round(move_pct, 3)}
             item.update({"status": "closed", "closed_at": time.time(), "exit_price": exit_price,
                          "pnl": pnl, "fees_est": fees, "reason": reason, "exit_source": source, "error": None})
             self._save(item)
@@ -1923,6 +1927,12 @@ class ManualTrading:
         move = sign * (price - item["entry_price"]) / item["entry_price"] * 100
         if move > item.get("peak_pct", 0):
             item["peak_pct"] = move
+        if item.get("strategy_source") == "swing_support":      # v4.439 : stops FANTOMES (observation seule, aucun effet sur la position)
+            if move < item.get("trough_pct", 0):
+                item["trough_pct"] = move
+            for _s in (2, 3):
+                if move <= -_s and f"shadow{_s}_ts" not in item:
+                    item[f"shadow{_s}_ts"] = time.time()
         reason = None
         # v4.343 — VERROU PROGRESSIF : des que le gain maximal atteint le seuil, le SL monte pour garantir
         # une part (lock_fraction) de ce gain maximal. Il ne fait que MONTER (long) / DESCENDRE (short).

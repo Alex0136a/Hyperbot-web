@@ -727,6 +727,7 @@ const fmtP = v => v==null||isNaN(v) ? "—" : (Math.abs(v)>=1000 ? Number(v).toF
   window.addEventListener("resize", () => { if (cur) place(); });
 })();
 
+const shp = v => v==null ? "—" : `${v>=0?"+":""}${Number(v).toFixed(2)}`;
 const fmtUsd = v => v==null||isNaN(v) ? "—" : `${v>=0?"+":""}${Number(v).toFixed(2)} $`;
 const fmtAgo = s => s<60?`${s}s`:s<3600?`${Math.floor(s/60)} min`:`${Math.floor(s/3600)} h ${Math.floor(s%3600/60)} min`;
 // v4.435 — heure d'ouverture + durée écoulée d'un trade ouvert (heure locale de l'appareil)
@@ -1690,6 +1691,8 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
         </div>
         {(()=>{ const cl=histRows.filter(h=>h.status==="closed"); const w=cl.filter(h=>(h.pnl||0)>0).length; const pn=cl.reduce((s,h)=>s+(h.pnl||0),0); const pnn=cl.reduce((s,h)=>s+(h.pnl_net!=null?h.pnl_net:(h.pnl||0)),0);
           return cl.length ? <div style={{fontSize:12,color:"#cbd5e1",marginBottom:8}}>{cl.length} trades clôturés · <b>{(w/cl.length*100).toFixed(0)} %</b> gagnants · PnL brut <b>{fmtUsd(pn)}</b> · <b style={{color:pnn>=0?"#22c55e":"#ef4444"}}>{fmtUsd(pnn)} net de frais</b></div> : null; })()}
+        {(()=>{ const sh=histRows.filter(h=>h.status==="closed"&&h.shadow); if(!sh.length) return null; const f=k=>sh.reduce((a,h)=>a+(h.notional_usd||0)*h.shadow[k]/100,0); const f1=k=>sh.reduce((a,h)=>a+h.shadow[k],0);
+          return <div style={{fontSize:11,color:"#c4b5fd",marginBottom:8}}>🧪 Stops fantômes Swing Support ({sh.length} trades, avant frais) : réel <b>{fmtUsd(f("actual_pct"))}</b> ({f1("actual_pct").toFixed(1)} %) · si stop 2 % <b>{fmtUsd(f("s2_pct"))}</b> ({f1("s2_pct").toFixed(1)} %) · si stop 3 % <b>{fmtUsd(f("s3_pct"))}</b> ({f1("s3_pct").toFixed(1)} %). Observation seule : les positions gardent leur stop réel.</div>; })()}
         {histRows.length>0 && (()=>{ const ids=histRows.filter(h=>histSel[h.id]).map(h=>h.id); const all=ids.length===histRows.length;
           return <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:8}}>
             <button style={MT.btn("#334155","#e2e8f0")} onClick={()=>setHistSel(all?{}:Object.fromEntries(histRows.map(h=>[h.id,true])))}>{all?"Tout désélectionner":"Tout sélectionner"}</button>
@@ -1708,6 +1711,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
               <td style={MT.td}>{fmtP(h.entry_price)}</td><td style={MT.td}>{fmtP(h.exit_price)}</td>
               <td style={{...MT.td,color:(h.pnl||0)>=0?"#22c55e":"#ef4444"}}>{h.pnl!=null?fmtUsd(h.pnl):"—"}{h.pnl_net!=null && h.status==="closed" ? <div style={{fontSize:10,color:"#94a3b8"}}>net {fmtUsd(h.pnl_net)}</div> : null}</td>
               <td style={{...MT.td,color:"#94a3b8"}}>{h.status==="closed"?h.reason:`${h.status==="cancelled"?"annulé":h.status==="expired"?"expiré":"échec"} — ${h.reason||h.error||""}`}
+                {h.shadow && <div style={{fontSize:10,color:"#a78bfa"}}>🧪 stop fantôme : réel {shp(h.shadow.actual_pct)} % · avec stop 2 % → {shp(h.shadow.s2_pct)} % · avec stop 3 % → {shp(h.shadow.s3_pct)} % · plus bas atteint {shp(h.shadow.trough_pct)} %</div>}
                 {h.scalp && <div style={{fontSize:10,color:"#93c5fd"}}>⚡ {h.scalp.kind}{h.scalp.counter?" · CONTRE-TENDANCE":""} · note {Math.round(h.scalp.score)} · pic de gain {(h.peak_pct||0).toFixed(2)} % (objectif {h.tp_pct} %){h.scalp.reasons&&h.scalp.reasons[0]?` · ${h.scalp.reasons[0]}`:""}</div>}
                 {h.status==="closed" && h.mode==="live" && <div style={{fontSize:10,color:h.exit_source==="hyperliquid"?"#86efac":"#fbbf24"}}>{h.entry_verified?"ouverture constatée sur Hyperliquid · ":""}sortie {h.exit_source==="hyperliquid"?"confirmée par Hyperliquid":"estimée par le bot (remplissage Hyperliquid introuvable)"}</div>}</td>
             </tr>)}</tbody>
