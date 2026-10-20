@@ -1189,3 +1189,7 @@ Fichiers : `manual_trading.py`, `bot_engine.py` (version), `index_src.html`, `in
 - **Aucun effet sur les positions** : le stop réel (5 %) reste inchangé.
 - L'historique affiche sous chaque trade « 🧪 stop fantôme : réel … · avec stop 2 % … · avec stop 3 % … » et une ligne de total (en $ avant frais et en %). Seuls les trades ouverts puis clôturés après cette version sont concernés.
 - Limites : approximation sans slippage ; le prix est celui observé à chaque cycle du moteur (pas à la seconde), donc un franchissement très bref peut être manqué.
+
+## v4.440 — Taille d'entrée en USDC sur les trades ouverts
+Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
+- Les positions ouvertes du Trading Manuel (liste « Positions », donc aussi les trades Scalp/Swing Support) et leur carte dans l'onglet « Tous » affichent « Taille XX.XX USDC (marge YY.YY) » : valeur notionnelle de la position et marge engagée (taille / levier).

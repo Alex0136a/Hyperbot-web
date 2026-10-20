@@ -1036,7 +1036,7 @@ function ManualOpenCard({ t, token, onDone }) {
       <div style={{display:"flex",gap:14,flexWrap:"wrap",fontSize:10,color:"#94a3b8",marginTop:6}}>
         <span>Entrée {fmtP(t.entry_price)}</span><span>Prix {fmtP(t.current_price)}</span>
         <span style={{color:"#f87171"}}>SL {fmtP(t.sl_price)}</span>{t.tp1_price ? <span style={{color:"#34d399"}}>{t.tp1_done?"TP1 ✔ encaissé":`TP1 ${fmtP(t.tp1_price)} (${Math.round(t.tp1_close_pct||50)} %)`}</span> : null}{t.tp_price ? <span style={{color:"#34d399"}}>{t.tp1_price?"TP2":"TP"} {fmtP(t.tp_price)}{t.tp_run?(t.tp_run_armed?" · on laisse courir (armé)":" · laisser courir"):""}</span> : null}<span style={{color:"#fbbf24"}}>🏔️ pic {peakUsd!=null?`${fmtUsd(peakUsd)} `:""}(+{Number(_roe(peak,t.leverage)).toFixed(2)} %){peakPx!=null?` · prix ${fmtP(peakPx)}`:""}</span>
-        <span>{Number(t.notional_usd).toFixed(2)} $</span>{t.opened_at && <span style={{color:"#fbbf24"}}>{openedTxt(t.opened_at)}</span>}
+        <span style={{color:"#e2e8f0",fontWeight:700}}>Taille {Number(t.notional_usd).toFixed(2)} USDC{t.leverage>1?` (marge ${(Number(t.notional_usd)/t.leverage).toFixed(2)})`:""}</span>{t.opened_at && <span style={{color:"#fbbf24"}}>{openedTxt(t.opened_at)}</span>}
       </div>
       <div style={{display:"flex",gap:8,alignItems:"center",marginTop:8,flexWrap:"wrap"}}>
         <button style={{background:"#450a0a",border:"1px solid #ef4444",color:"#fca5a5",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer",fontFamily:"inherit"}} onClick={close}>Fermer</button>
@@ -1642,6 +1642,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
             <div style={{display:"flex",flexWrap:"wrap",gap:14,alignItems:"center",fontSize:12,color:"#e2e8f0"}}>
               <b>#{p.id} <span data-tk={p.ticker} title="Résumé de l'actif" style={{cursor:"pointer",textDecoration:"underline dotted"}}>{p.ticker}</span></b>{dirBadge(p.direction)}
               <span>{p.market.toUpperCase()} · <span style={{color:p.mode==="live"?"#ef4444":"#22c55e"}}>{p.mode.toUpperCase()}</span> · x{p.leverage}</span>
+              <span style={{color:"#e2e8f0",fontWeight:700}} title="Taille de la position (valeur notionnelle) ; marge = taille / levier">Taille {Number(p.notional_usd).toFixed(2)} USDC{p.leverage>1?` (marge ${(Number(p.notional_usd)/p.leverage).toFixed(2)})`:""}</span>
               {(p.leverage_requested || p.leverage_note) && <div title={p.leverage_note||""} style={{width:"100%",fontSize:10,color:"#fbbf24"}}>Levier disponible : x{p.leverage}</div>}
               <span>Entrée {fmtP(p.entry_price)} → {fmtP(p.current_price)}</span>
               {p.status==="open" && p.opened_at && <span style={{color:"#fbbf24"}}>{openedTxt(p.opened_at)}</span>}
