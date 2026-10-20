@@ -245,6 +245,42 @@ def evaluate(c5, c15, c1h, btc_chg, K, flow=None):
     return best, "ok"
 
 
+def compute_regime(closes_by_t, win_bars, high, flat_pct=0.05, lag_bars=6):
+    """v4.442 — REGIME DU PANIER (pur). closes_by_t : ticker -> clotures 5 min (anciennes d abord).
+    corr = correlation moyenne des rendements 5 min entre actifs (fenetre win_bars) ; ch = variation sur lag_bars bougies (30 min) en % ;
+    up / down = part des actifs qui montent / baissent de plus de flat_pct ; basket = variation moyenne. label : « correle » si corr >= high."""
+    rets, ch = {}, {}
+    for t, cl in closes_by_t.items():
+        if len(cl) < max(win_bars, lag_bars) + 2 or min(cl[-(win_bars + 1):]) <= 0:
+            continue
+        w = cl[-(win_bars + 1):]
+        rets[t] = [w[i] / w[i - 1] - 1 for i in range(1, len(w))]
+        ch[t] = (cl[-1] / cl[-1 - lag_bars] - 1) * 100
+    n = len(ch)
+    if n < 3:
+        return {"n": n, "label": "inconnu", "corr": None, "up": None, "down": None, "basket30": None, "ch30": {}}
+    names = list(rets)
+    mats = {}
+    for t in names:
+        r = rets[t]
+        m = sum(r) / len(r)
+        d = [x - m for x in r]
+        mats[t] = (d, sum(x * x for x in d) ** 0.5)
+    cs = []
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            da, sa = mats[names[i]]
+            db_, sb = mats[names[j]]
+            if sa > 0 and sb > 0:
+                cs.append(sum(x * y for x, y in zip(da, db_)) / (sa * sb))
+    corr = sum(cs) / len(cs) if cs else None
+    up = sum(1 for v in ch.values() if v > flat_pct) / n
+    down = sum(1 for v in ch.values() if v < -flat_pct) / n
+    basket = sum(ch.values()) / n
+    return {"n": n, "corr": None if corr is None else round(corr, 3), "up": round(up, 3), "down": round(down, 3), "basket30": round(basket, 3),
+            "label": "correle" if (corr is not None and corr >= high) else "disperse", "ch30": {t: round(v, 3) for t, v in ch.items()}}
+
+
 # ───────────────────────────── moteur ─────────────────────────────
 class ScalpEngine:
     def __init__(self, bot, manual):
@@ -254,6 +290,10 @@ class ScalpEngine:
         self._seen = {}                      # ticker -> derniere tranche 5 min evaluee
         self._cool = {}                      # ticker -> fin de pause
         self._zone_cache = (0, {})           # v4.432 : zones ou un stop vient de tomber
+        self.regime = {"ts": 0, "n": 0, "label": "inconnu"}     # v4.442 : regime du panier (correlation / largeur)
+        self._opens = deque(maxlen=200)      # (ts, side, mode, ticker) des ouvertures recentes (grappe)
+        self._sigs = deque(maxlen=300)       # (ts, ticker, side) signaux vus (confirmation par les pairs)
+        self.peer_wait = {}                  # ticker -> signal en attente d un pair
         self._busy = False
         self.pending = {}                    # v4.429 : signaux de rebond en attente de confirmation (ticker -> dict)
         self._last_tick = 0
@@ -346,11 +386,17 @@ class ScalpEngine:
             by_kind[k] = agg([d for d in rows if (d.get("scalp") or {}).get("kind") == k])
         by_trend = {"avec": agg([d for d in rows if not (d.get("scalp") or {}).get("counter")]),
                     "contre": agg([d for d in rows if (d.get("scalp") or {}).get("counter")])}
+        def _rg(d):
+            return ((d.get("scalp") or {}).get("regime") or {})
+        by_regime = {"correle": agg([d for d in rows if _rg(d).get("label") == "correle"]),
+                     "disperse": agg([d for d in rows if _rg(d).get("label") == "disperse"]),
+                     "inconnu": agg([d for d in rows if _rg(d).get("label") not in ("correle", "disperse")])}
+        by_cluster = {k: agg([d for d in rows if _rg(d).get("cluster") is not None and (min(int(_rg(d)["cluster"]), 3) == k)]) for k in (0, 1, 2, 3)}
         by_hour = {}
         for d in rows:
             h = datetime.fromtimestamp(float(d.get("opened_at") or d.get("closed_at") or 0), timezone.utc).hour
             by_hour.setdefault(h, []).append(d)
-        out = {"mode": mode, "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend,
+        out = {"mode": mode, "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
                "by_hour": {h: agg(v) for h, v in sorted(by_hour.items())}, "last_closed": rows[0].get("closed_at") if rows else None}
         self._stats_cache = (time.time(), mode, out)
         return out
@@ -371,13 +417,26 @@ class ScalpEngine:
 
     def _manage_open(self, now):
         mx = float(self.cfg.get("SCALP_MAX_HOLD_MIN", 90)) * 60
-        if mx <= 0:
+        if mx <= 0 and not int(self.cfg.get("SCALP_CORR_BASKET_EXIT_ON", 0)):
             return
         for it in list(self.manual.items.values()):
             if it.get("strategy_source") == STRATEGY and it.get("status") == "open":
+                if int(self.cfg.get("SCALP_CORR_BASKET_EXIT_ON", 0)) and not it.get("tp_run_armed"):
+                    try:
+                        reg = self.regime
+                        px, en = float(it.get("last_price") or 0), float(it.get("entry_price") or 0)
+                        if reg.get("label") == "correle" and now - reg.get("ts", 0) < 300 and px > 0 and en > 0 and now - float(it.get("opened_at") or now) > 120:
+                            sg = 1 if it["direction"] == "long" else -1
+                            against = reg["down"] if sg > 0 else reg["up"]
+                            if sg * (px - en) / en < 0 and against >= float(self.cfg.get("SCALP_BASKET_EXIT_PCT", 70)) / 100:
+                                self.manual.close(it["id"], "SCALP SORTIE PANIER")
+                                self._ev("sortie", it["ticker"], f"#{it['id']} fermé : le panier se retourne ({against * 100:.0f} % des actifs contre, trade en perte)")
+                                continue
+                    except Exception as e:
+                        self.last_error = f"sortie panier : {e}"
                 if it.get("tp_run_armed"):      # v4.434 : objectif atteint, le trade court avec son stop suiveur : la duree max ne s applique plus
                     continue
-                if now - float(it.get("opened_at") or now) > mx:
+                if mx > 0 and now - float(it.get("opened_at") or now) > mx:
                     try:
                         self.manual.close(it["id"], "SCALP DUREE MAX")
                         self._ev("sortie", it["ticker"], f"#{it['id']} ferme : duree maximale {mx / 60:.0f} min atteinte")
@@ -427,6 +486,7 @@ class ScalpEngine:
             if not ok:
                 return
             K = self.thresholds()
+            self._regime()          # v4.442 : regime du panier (correlation / largeur), recalcule au plus toutes les 60 s
             self._check_pending(K)
             btc = self._btc_change()
             maxo = int(self.cfg.get("SCALP_MAX_OPEN", 0))       # v4.422 : 0 = pas de plafond (en live, c est le capital qui limite)
@@ -455,16 +515,111 @@ class ScalpEngine:
                 if self._zone_blocked(t, mode, sig.get("level")):
                     self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : un stop vient de tomber sur cette zone ({sig['level']:.6g}), pause de zone")
                     continue
-                nb = int(self.cfg.get("SCALP_CONFIRM_BARS", 3))
-                if nb > 0 and sig["kind"] == "rebond":
-                    self._arm(t, sig, nb)
-                else:
-                    self._take(t, sig)
+                if not self._gate(t, sig, mode):
+                    continue
+                if not self._peers(t, sig, mode):
+                    continue
+                self._dispatch(t, sig)
+                self._release_peers(sig["side"], mode)
         except Exception as e:
             self.last_error = f"scan : {type(e).__name__}: {e}"
             print(f"[SCALP] {self.last_error}")
         finally:
             self._busy = False
+
+    # ── v4.442 : correlation, largeur du marche, grappe ──
+    def _regime(self):
+        c, now = self.cfg, time.time()
+        if now - self.regime.get("ts", 0) < 60 and self.regime.get("n"):
+            return self.regime
+        closes = {}
+        for t in self.universe():
+            try:
+                cs = self.bot._mtf_candles(t, "5m", 60)
+                if cs:
+                    closes[t] = [float(x["c"]) for x in cs]
+            except Exception:
+                continue
+        win = max(int(float(c.get("SCALP_CORR_WINDOW_MIN", 120)) // 5), 6)
+        reg = compute_regime(closes, min(win, 55), float(c.get("SCALP_CORR_HIGH", 0.6)))
+        reg["ts"] = now
+        self.regime = reg
+        return reg
+
+    def _cluster_count(self, side, mode):
+        w = float(self.cfg.get("SCALP_CLUSTER_WINDOW_MIN", 30)) * 60
+        now = time.time()
+        return sum(1 for ts, sd, md, _t in self._opens if sd == side and md == mode and now - ts <= w)
+
+    def _gate(self, t, sig, mode):
+        """Regles du regime correle (chacune a son interrupteur, desactivees par defaut). True = on peut continuer."""
+        c, side = self.cfg, sig["side"]
+        reg = self._regime()
+        if not reg.get("n") or reg.get("label") == "inconnu":
+            return True
+        corr_on = reg["label"] == "correle"
+        why = None
+        if corr_on and int(c.get("SCALP_CORR_DIR_ON", 0)):
+            need = float(c.get("SCALP_BREADTH_MIN", 60)) / 100
+            share = reg["up"] if side == "long" else reg["down"]
+            if share < need:
+                why = f"marché corrélé (corr {reg['corr']:.2f}) : seulement {share * 100:.0f} % des actifs vont dans le sens {side.upper()} (< {need * 100:.0f} %)"
+        if why is None and corr_on and int(c.get("SCALP_CORR_RELSTR_ON", 0)):
+            rs = (reg["ch30"].get(t, 0.0)) - reg["basket30"]
+            if (side == "long" and rs < 0) or (side == "short" and rs > 0):
+                why = f"marché corrélé : {t} est {'plus faible' if side == 'long' else 'plus fort'} que le panier ({rs:+.2f} % / 30 min), on ne prend que le meilleur du groupe"
+        cm = int(c.get("SCALP_CLUSTER_MAX", 0))
+        if why is None and corr_on and cm > 0 and self._cluster_count(side, mode) >= cm:
+            why = f"marché corrélé : grappe {side.upper()} pleine ({self._cluster_count(side, mode)}/{cm} ouvertures en {c.get('SCALP_CLUSTER_WINDOW_MIN', 30)} min)"
+        if why:
+            self._ev("refus", t, f"{sig['kind']} {side} refusé : {why}")
+            return False
+        return True
+
+    def _peers(self, t, sig, mode):
+        """Confirmation par les pairs : un signal n est pris que si au moins SCALP_PEER_MIN AUTRES actifs ont donne un signal dans le meme sens
+        (ou ont ete ouverts) dans la fenetre. Sinon il attend. Retourne True si on peut continuer maintenant."""
+        pm = int(self.cfg.get("SCALP_PEER_MIN", 0))
+        now = time.time()
+        self._sigs.append((now, t, sig["side"]))
+        if pm <= 0:
+            return True
+        w = float(self.cfg.get("SCALP_PEER_WINDOW_MIN", 30)) * 60
+        peers = {tt for ts, tt, sd in self._sigs if sd == sig["side"] and tt != t and now - ts <= w}
+        peers |= {tt for ts, sd, md, tt in self._opens if sd == sig["side"] and md == mode and tt != t and now - ts <= w}
+        if len(peers) >= pm:
+            sig["peers"] = len(peers)
+            self.peer_wait.pop(t, None)
+            return True
+        self.peer_wait[t] = {"sig": sig, "ts": now, "side": sig["side"]}
+        self._ev("attente", t, f"{sig['side'].upper()} {sig['kind']} note {sig['score']:.0f} en attente d'un autre actif dans le même sens ({len(peers)}/{pm}, jusqu'à {w / 60:.0f} min)")
+        return False
+
+    def _release_peers(self, side, mode):
+        pm = int(self.cfg.get("SCALP_PEER_MIN", 0))
+        if pm <= 0 or not self.peer_wait:
+            return
+        now = time.time()
+        w = float(self.cfg.get("SCALP_PEER_WINDOW_MIN", 30)) * 60
+        for t2, wt in list(self.peer_wait.items()):
+            if now - wt["ts"] > w:
+                self.peer_wait.pop(t2, None)
+                continue
+            if wt["side"] != side or t2 in self.pending or self._busy_same_mode(t2, mode):
+                continue
+            peers = {tt for ts, tt, sd in self._sigs if sd == side and tt != t2 and now - ts <= w}
+            peers |= {tt for ts, sd, md, tt in self._opens if sd == side and md == mode and tt != t2 and now - ts <= w}
+            if len(peers) >= pm and self._gate(t2, wt["sig"], mode):
+                wt["sig"]["peers"] = len(peers)
+                self.peer_wait.pop(t2, None)
+                self._dispatch(t2, wt["sig"])
+
+    def _dispatch(self, t, sig):
+        nb = int(self.cfg.get("SCALP_CONFIRM_BARS", 3))
+        if nb > 0 and sig["kind"] == "rebond":
+            self._arm(t, sig, nb)
+        else:
+            self._take(t, sig)
 
     def _flow(self, t, minutes=10):
         """v4.433 : part des achats agressifs sur les N dernieres minutes (flux WebSocket du bot). S abonne a la volee aux actifs hors liste du bot.
@@ -612,9 +767,15 @@ class ScalpEngine:
             if free is not None and free < need * 1.05 + 0.5:
                 self._ev("refus", t, f"{sig['kind']} {sig['side']} non ouvert : marge libre insuffisante ({free:.2f} $ < {need:.2f} $ requis)")
                 return
+        reg = dict(self.regime) if self.regime.get("n") else {}
+        notional = float(c.get("SCALP_NOTIONAL_USD", 60.0))
+        sp = float(c.get("SCALP_CORR_SIZE_PCT", 100))
+        if reg.get("label") == "correle" and 0 < sp < 100:      # v4.442 : marche correle = un seul pari ; on reduit la taille de chaque ligne
+            notional = max(notional * sp / 100.0, 10.5 if mode == "live" else 1.0)
+        cluster_before = self._cluster_count(sig["side"], mode)
         params = {"strategy": STRATEGY, "ticker": t, "direction": sig["side"], "market": "perp", "mode": mode,
                   "execution": "now", "leverage": int(c.get("SCALP_LEVERAGE", 3)),
-                  "notional_usd": float(c.get("SCALP_NOTIONAL_USD", 60.0)),
+                  "notional_usd": round(notional, 2),
                   "sl_pct": float(c.get("SCALP_SL_PCT", 0.65)), "tp_pct": float(c.get("SCALP_TP_PCT", 0.6)),
                   "confirm_live": mode == "live"}
         if int(c.get("SCALP_RUN_ENABLED", 1)):     # v4.434 : laisser courir apres l objectif ; sortie si le prix recule de X % depuis son plus haut
@@ -626,13 +787,17 @@ class ScalpEngine:
             self._cool[(t, mode)] = time.time() + 300
             return
         self._cool[(t, mode)] = time.time() + float(c.get("SCALP_COOLDOWN_MIN", 30)) * 60
+        self._opens.append((time.time(), sig["side"], mode, t))
         try:
             with self.manual.lock:
                 it = self.manual.items.get(res["id"])
                 if it is not None:
                     it["scalp"] = {"kind": sig["kind"], "score": sig["score"], "level": sig["level"], "room": round(sig["room"], 2),
                                    "reasons": sig["reasons"], "volume_ratio": round(sig["volume_ratio"], 2),
-                                   "atr15_pct": round(sig["atr15_pct"], 3), "counter": bool(sig.get("counter"))}
+                                   "atr15_pct": round(sig["atr15_pct"], 3), "counter": bool(sig.get("counter")),
+                                   "regime": {"label": reg.get("label", "inconnu"), "corr": reg.get("corr"), "up": reg.get("up"), "down": reg.get("down"),
+                                              "basket30": reg.get("basket30"), "rel30": (round(reg["ch30"].get(t, 0) - reg["basket30"], 3) if reg.get("ch30") and reg.get("basket30") is not None else None),
+                                              "cluster": cluster_before, "peers": sig.get("peers")}}
                     it["reasons"] = sig["reasons"]
                     self.manual._save(it)
         except Exception as e:
@@ -647,7 +812,8 @@ class ScalpEngine:
         return {"enabled": bool(int(c.get("SCALP_ENABLED", 0))), "mode": c.get("SCALP_MODE", "paper"), "window_open": ok, "window_reason": why,
                 "universe": list(self._uni), "open": self._open_count(), "max_open": int(c.get("SCALP_MAX_OPEN", 0)),
                 "params": {k: c.get(k) for k in ("SCALP_LEVERAGE", "SCALP_NOTIONAL_USD", "SCALP_SL_PCT", "SCALP_TP_PCT", "SCALP_HOURS_UTC",
-                                                 "SCALP_MIN_SCORE", "SCALP_SHORT_MIN_SCORE", "SCALP_TREND_MODE", "SCALP_SHORT_BTC_BLOCK", "SCALP_SHORT_BTC_MAX_PCT", "SCALP_RUN_ENABLED", "SCALP_RUN_TRAIL_PCT", "SCALP_COUNTER_ENABLED", "SCALP_COUNTER_MIN_SCORE", "SCALP_COUNTER_FLOW_MIN", "SCALP_COUNTER_MIN_TRADES", "SCALP_CONFIRM_BARS", "SCALP_NOISE_ATR", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
+                                                 "SCALP_MIN_SCORE", "SCALP_SHORT_MIN_SCORE", "SCALP_TREND_MODE", "SCALP_SHORT_BTC_BLOCK", "SCALP_SHORT_BTC_MAX_PCT", "SCALP_RUN_ENABLED", "SCALP_RUN_TRAIL_PCT", "SCALP_COUNTER_ENABLED", "SCALP_COUNTER_MIN_SCORE", "SCALP_COUNTER_FLOW_MIN", "SCALP_COUNTER_MIN_TRADES", "SCALP_CONFIRM_BARS", "SCALP_NOISE_ATR", "SCALP_CORR_HIGH", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
+                "regime": {k: v for k, v in self.regime.items()}, "peer_wait": [{"ticker": t, "side": w["side"], "age_min": round((time.time() - w["ts"]) / 60, 1)} for t, w in self.peer_wait.items()],
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),
                 "pending": [{"ticker": t, "side": p["sig"]["side"], "trigger": p["trigger"], "expires": p["expires"]} for t, p in self.pending.items()],
                 "events": list(self.events)[:40], "error": self.last_error}

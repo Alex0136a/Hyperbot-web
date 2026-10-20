@@ -1199,3 +1199,18 @@ Fichiers : `manual_trading.py`, `scalp_crypto.py`, `bot_engine.py` (version), `i
 - Pour chaque trade manuel/Scalp/Swing Support **Live perp fermé** (30 derniers jours), le bot lit dans Hyperliquid **tous les remplissages** du trade (ouverture, partiels, clôture : somme des frais réels) et le **funding payé/reçu pendant la détention**. Net réel = PnL − frais + funding. Traitement en tâche de fond : 6 trades au plus toutes les 2 min, 3 essais par trade, au moins 2,5 min après la clôture.
 - L'historique affiche « net +0.39 $ ✓ (frais 0.041 · funding −0.013) » quand les coûts réels sont connus, « (est.) » sinon (estimation 0,09 %). Le résumé et les statistiques Scalp utilisent les coûts réels quand ils existent. Le Paper garde l'estimation.
 - Hypothèses : le funding vient de `user_funding_history` (SDK Hyperliquid), filtré par actif ; la position étant unique par actif en Live, tous les remplissages de l'actif pendant la durée du trade lui sont attribués. Testé avec des réponses simulées, pas encore sur le compte réel : vérifier sur un trade connu (ex. PAXG : frais 0,02 $).
+
+## v4.442 — Scalp : gestion de la corrélation (régime du panier) + onglet « 🔗 Corrélation »
+Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `index.html`, `README.md`.
+**Étape 1 — observation (toujours active, sans effet sur les trades)**
+- Toutes les 60 s, le Scalp mesure sur les 5 min des actifs suivis : **corrélation moyenne** des rendements (fenêtre `SCALP_CORR_WINDOW_MIN`, 120 min), **largeur** (part d'actifs qui montent / baissent de plus de 0,05 % sur 30 min) et variation moyenne du panier. Régime **corrélé** si corrélation ≥ `SCALP_CORR_HIGH` (0,6), sinon **dispersé**.
+- Chaque trade Scalp enregistre à l'entrée : régime, corrélation, largeur dans son sens, force relative de l'actif (vs panier), **taille de la grappe** (ouvertures déjà faites dans le même sens sur 30 min) et nombre de pairs. L'historique affiche « corrélé 0.72 · panier 65 % dans le sens · grappe 3 ».
+**Étape 2 — règles (désactivées par défaut, un interrupteur chacune ; ne s'appliquent qu'en régime corrélé sauf mention)**
+1. `SCALP_CORR_DIR_ON` — sens du panier : long seulement si ≥ `SCALP_BREADTH_MIN` % (60) des actifs montent ; short si autant baissent.
+2. `SCALP_CORR_RELSTR_ON` — meilleur du groupe : long seulement si l'actif est plus fort que le panier, short si plus faible.
+3. `SCALP_CLUSTER_MAX` (0 = illimité) / `SCALP_CLUSTER_WINDOW_MIN` (30) — plafond d'ouvertures dans le même sens.
+4. `SCALP_CORR_SIZE_PCT` (100) — taille de chaque trade en régime corrélé (% de la taille normale ; plancher 10,5 $ en live).
+5. `SCALP_PEER_MIN` (0) / `SCALP_PEER_WINDOW_MIN` (30) — confirmation par les pairs (tous régimes) : un signal attend qu'au moins N autres actifs donnent un signal ou soient ouverts dans le même sens ; sinon il expire.
+6. `SCALP_CORR_BASKET_EXIT_ON` (0) / `SCALP_BASKET_EXIT_PCT` (70) — sortie panier : en régime corrélé, un trade en perte (ouvert depuis plus de 2 min, laisser courir non armé) est fermé si ≥ 70 % des actifs vont contre lui (motif « SCALP SORTIE PANIER »).
+**Interface** : la carte Scalp a trois onglets (⚙️ Réglages · 🔗 Corrélation · 📊 Résultats & journal). L'onglet Corrélation affiche le régime en direct, la variation 30 min de chaque actif, les résultats par régime et par taille de grappe, les signaux en attente de pair et tous les réglages ci-dessus.
+**Limites** : seuils de départ non calibrés (le but de l'étape 1 est de les calibrer) ; testé sur séries simulées (corrélation 0,91 vs 0,06) et avec un moteur factice pour les règles, pas sur le marché réel.

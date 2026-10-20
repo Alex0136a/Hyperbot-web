@@ -1184,6 +1184,7 @@ function ScalpPanel({ token }) {
   const [open, setOpen] = useState(false);
   const [vals, setVals] = useState({});
   const [hours, setHours] = useState("");
+  const [sub, setSub] = useState("reglages");
   const load = useCallback(async () => {
     try { const r = await apiCall("/api/scalp","GET",null,token); setD(r); setErr("");
       setVals(v => Object.keys(v).length ? v : Object.fromEntries(Object.entries(r.config||{}).filter(([k])=>k!=="SCALP_HOURS_UTC"&&k!=="SCALP_ENABLED"&&k!=="SCALP_MODE")));
@@ -1200,6 +1201,18 @@ function ScalpPanel({ token }) {
     SCALP_BREAK_VOL_MULT:"Cassure : volume ×",SCALP_MAX_CHASE_PCT:"Cassure : ne pas poursuivre au-delà (%)",SCALP_MAX_OPEN:"Positions simultanées max (0 = illimité ; en live le capital limite)",
     SCALP_MAX_PER_DAY:"Trades max par jour",SCALP_DAILY_LOSS_USD:"Perte journalière max ($)",SCALP_PAUSE_AFTER_LOSSES:"Pause après X pertes de suite",
     SCALP_PAUSE_MIN:"Durée de la pause (min)",SCALP_SHORT_BTC_BLOCK:"Pas de short si BTC monte (1 = oui, 0 = non)",SCALP_SHORT_BTC_MAX_PCT:"Short bloqué si BTC 1 h > (%)",SCALP_RUN_ENABLED:"Laisser courir après l'objectif (1 = oui, 0 = non)",SCALP_RUN_TRAIL_PCT:"Laisser courir : sortie si recul > (% prix)",SCALP_COUNTER_ENABLED:"Contre-tendance sécurisée (1 = autorisée, 0 = bloquée)",SCALP_COUNTER_MIN_SCORE:"Contre-tendance : note min",SCALP_COUNTER_FLOW_MIN:"Contre-tendance : part min d'achats/ventes agressifs (0,58 = 58 %)",SCALP_COUNTER_MIN_TRADES:"Contre-tendance : nb min de transactions du flux",SCALP_ZONE_COOLDOWN_MIN:"Pause sur une zone après un stop (min, 0 = non)",SCALP_COOLDOWN_MIN:"Attente par actif (min)",SCALP_MAX_HOLD_MIN:"Durée max d'un trade (min ; sans effet une fois l'objectif atteint)"};
+  const CLBL = {SCALP_CORR_WINDOW_MIN:"Fenêtre de mesure de la corrélation (min, 30 à 275)",SCALP_CORR_HIGH:"Marché « corrélé » si corrélation moyenne ≥ (0,1 à 0,95)",
+    SCALP_BREADTH_MIN:"Largeur : part d'actifs requise dans le sens du trade (%)",
+    SCALP_CORR_DIR_ON:"Règle 1 · Sens du panier : trader seulement dans le sens de la majorité (1 = oui, 0 = non)",
+    SCALP_CORR_RELSTR_ON:"Règle 2 · Meilleur du groupe : long si plus fort que le panier, short si plus faible (1 = oui)",
+    SCALP_CLUSTER_MAX:"Règle 3 · Grappe : max d'ouvertures dans le même sens (0 = illimité)",SCALP_CLUSTER_WINDOW_MIN:"Grappe : fenêtre de temps (min)",
+    SCALP_CORR_SIZE_PCT:"Règle 4 · Taille de chaque trade en marché corrélé (% de la taille normale)",
+    SCALP_PEER_MIN:"Règle 5 · Confirmation par les pairs : nb d'autres actifs requis dans le même sens (0 = non)",SCALP_PEER_WINDOW_MIN:"Pairs : fenêtre de temps (min)",
+    SCALP_CORR_BASKET_EXIT_ON:"Règle 6 · Sortie panier : fermer les trades en perte si le panier se retourne (1 = oui)",SCALP_BASKET_EXIT_PCT:"Sortie panier : part d'actifs contre (%)"};
+  const isC = k => k in CLBL;
+  const reg = d.regime || {};
+  const rgTxt = reg.n ? `${reg.label==="correle"?"CORRÉLÉ":reg.label==="disperse"?"DISPERSÉ":"inconnu"} · corrélation ${reg.corr!=null?reg.corr.toFixed(2):"—"} · ${Math.round((reg.up||0)*100)} % des actifs montent / ${Math.round((reg.down||0)*100)} % baissent (30 min) · panier ${reg.basket30>=0?"+":""}${reg.basket30} %` : "mesure en cours (nécessite le Scalp actif)";
+  const prC = (a) => a && a.n ? `${a.n} trades · ${a.win_rate.toFixed(0)} % gagnants · ${fmtUsd(a.pnl_net)} net` : "—";
   return (
     <div style={{...MT.card,borderColor:d.enabled?(live?"#ef4444":"#22c55e"):"#1e2d4a"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
@@ -1227,17 +1240,42 @@ function ScalpPanel({ token }) {
       <div style={{fontSize:10,color:"#64748b",marginTop:6}}>Seuil de rentabilité : environ 58 % de trades gagnants avec TP 0,6 % / SL 0,65 % (frais inclus) ; plus le stop est serré, plus il tombe souvent (bruit). Reste en PAPER jusqu'à ce que ce taux soit confirmé sur plusieurs dizaines de trades.</div>
       <button style={{...MT.btn("#334155","#e2e8f0"),marginTop:8}} onClick={()=>setOpen(!open)}>{open?"Masquer":"Réglages, résultats par heure et journal"}</button>
       {open && <div style={{marginTop:10}}>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))",gap:10}}>
-          <div><span style={MT.label}>TRANCHES HORAIRES UTC (ex. 7-11,13-21 · vide = tout le temps)</span><input style={MT.input} value={hours} onChange={e=>setHours(e.target.value)}/></div>
-          {Object.keys(LBL).map(k=><div key={k}><span style={MT.label}>{LBL[k]}</span><input style={MT.input} value={vals[k]??""} onChange={e=>setVals({...vals,[k]:e.target.value})}/></div>)}
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
+          {[["reglages","⚙️ Réglages"],["corr","🔗 Corrélation"],["res","📊 Résultats & journal"]].map(([id,l])=><button key={id} style={MT.seg(sub===id,"#60a5fa")} onClick={()=>setSub(id)}>{l}</button>)}
         </div>
-        <button style={{...MT.btn("#60a5fa"),marginTop:10}} onClick={()=>send({hours_utc:hours,values:vals},"Réglages enregistrés.")}>Enregistrer les réglages</button>
-        <div style={{...MT.title,marginTop:14}}>RÉSULTATS PAR HEURE (UTC, {live?"live":"paper"})</div>
+        {sub==="reglages" && <div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))",gap:10}}>
+            <div><span style={MT.label}>TRANCHES HORAIRES UTC (ex. 7-11,13-21 · vide = tout le temps)</span><input style={MT.input} value={hours} onChange={e=>setHours(e.target.value)}/></div>
+            {Object.keys(LBL).filter(k=>!isC(k)).map(k=><div key={k}><span style={MT.label}>{LBL[k]}</span><input style={MT.input} value={vals[k]??""} onChange={e=>setVals({...vals,[k]:e.target.value})}/></div>)}
+          </div>
+          <button style={{...MT.btn("#60a5fa"),marginTop:10}} onClick={()=>send({hours_utc:hours,values:vals},"Réglages enregistrés.")}>Enregistrer les réglages</button>
+        </div>}
+        {sub==="corr" && <div>
+          <div style={{fontSize:12,color:"#cbd5e1",marginBottom:6}}><b>Régime du panier ({(d.universe||[]).length} actifs)</b> : <span style={{color:reg.label==="correle"?"#fbbf24":"#34d399"}}>{rgTxt}</span></div>
+          <div style={{fontSize:11,color:"#94a3b8",marginBottom:8}}>Corrélé = les actifs bougent ensemble : le panier compte comme UN seul pari, et les règles ci-dessous (désactivées par défaut) s'appliquent. Dispersé = chaque actif fait son chemin : le Scalp trade comme avant. Le régime est enregistré sur chaque trade (visible dans l'historique) pour calibrer les seuils.</div>
+          {reg.ch30 && Object.keys(reg.ch30).length>0 && <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>{Object.entries(reg.ch30).sort((x,y)=>y[1]-x[1]).map(([t,v])=><div key={t} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"3px 7px",fontSize:11,color:v>0.05?"#22c55e":v<-0.05?"#ef4444":"#94a3b8"}}>{t} {v>=0?"+":""}{v.toFixed(2)} %</div>)}</div>}
+          {(d.peer_wait||[]).length>0 && <div style={{fontSize:11,color:"#fbbf24",marginBottom:8}}>En attente d'un pair : {(d.peer_wait||[]).map(w=>`${w.ticker} ${w.side.toUpperCase()} (${w.age_min} min)`).join(", ")}</div>}
+          <div style={{...MT.title}}>RÉSULTATS PAR RÉGIME À L'ENTRÉE ({live?"live":"paper"}, net de frais)</div>
+          <div style={{display:"flex",gap:18,flexWrap:"wrap",fontSize:12,color:"#e2e8f0",marginBottom:8}}>
+            {S.by_regime && [["correle","Corrélé"],["disperse","Dispersé"],["inconnu","Avant mesure"]].map(([k,l])=><div key={k}><span style={MT.label}>{l}</span>{prC(S.by_regime[k])}</div>)}
+          </div>
+          <div style={{...MT.title}}>PAR TAILLE DE GRAPPE (ouvertures dans le même sens avant celle-ci)</div>
+          <div style={{display:"flex",gap:18,flexWrap:"wrap",fontSize:12,color:"#e2e8f0",marginBottom:10}}>
+            {S.by_cluster && [["0","0"],["1","1"],["2","2"],["3","3 ou plus"]].map(([k,l])=><div key={k}><span style={MT.label}>{l}</span>{prC(S.by_cluster[k])}</div>)}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(230px,1fr))",gap:10}}>
+            {Object.keys(CLBL).map(k=><div key={k}><span style={MT.label}>{CLBL[k]}</span><input style={MT.input} value={vals[k]??""} onChange={e=>setVals({...vals,[k]:e.target.value})}/></div>)}
+          </div>
+          <button style={{...MT.btn("#60a5fa"),marginTop:10}} onClick={()=>send({hours_utc:hours,values:vals},"Réglages de corrélation enregistrés.")}>Enregistrer</button>
+        </div>}
+        {sub==="res" && <div>
+        <div style={{...MT.title,marginTop:4}}>RÉSULTATS PAR HEURE (UTC, {live?"live":"paper"})</div>
         {Object.keys(S.by_hour).length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Pas encore de trade clôturé.</div> :
           <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{Object.entries(S.by_hour).map(([h,a])=><div key={h} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"4px 8px",fontSize:11,color:a.pnl>=0?"#22c55e":"#ef4444"}}>{h} h · {a.n} · {a.win_rate.toFixed(0)} % · {fmtUsd(a.pnl)}</div>)}</div>}
         <div style={{...MT.title,marginTop:14}}>JOURNAL DES SIGNAUX</div>
         {(d.events||[]).length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucun signal pour l'instant.</div> :
           <div style={{maxHeight:240,overflowY:"auto",fontSize:11,color:"#cbd5e1"}}>{d.events.map((e,i)=><div key={i} style={{padding:"3px 0",borderBottom:"1px solid #131d33"}}><span style={{color:"#64748b"}}>{fmtTime(e.ts)}</span> <b style={{color:e.kind==="entree"?"#22c55e":e.kind==="refus"?"#fbbf24":e.kind==="erreur"?"#ef4444":"#94a3b8"}}>{e.kind}</b> {e.ticker} — {e.text}</div>)}</div>}
+        </div>}
         {d.error && <div style={{fontSize:11,color:"#fca5a5",marginTop:6}}>Dernière erreur technique : {d.error}</div>}
       </div>}
     </div>
@@ -1713,7 +1751,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
               <td style={{...MT.td,color:(h.pnl||0)>=0?"#22c55e":"#ef4444"}}>{h.pnl!=null?fmtUsd(h.pnl):"—"}{h.pnl_net!=null && h.status==="closed" ? <div style={{fontSize:10,color:"#94a3b8"}} title={h.real_costs?`frais réels ${h.real_costs.fees} $ · funding ${h.real_costs.funding} $`:"frais estimés (0,09 %)"}>net {fmtUsd(h.pnl_net)}{h.real_costs?` ✓ (frais ${Number(h.real_costs.fees).toFixed(3)} · funding ${Number(h.real_costs.funding)>=0?"+":""}${Number(h.real_costs.funding).toFixed(3)})`:" (est.)"}</div> : null}</td>
               <td style={{...MT.td,color:"#94a3b8"}}>{h.status==="closed"?h.reason:`${h.status==="cancelled"?"annulé":h.status==="expired"?"expiré":"échec"} — ${h.reason||h.error||""}`}
                 {h.shadow && <div style={{fontSize:10,color:"#a78bfa"}}>🧪 stop fantôme : réel {shp(h.shadow.actual_pct)} % · avec stop 2 % → {shp(h.shadow.s2_pct)} % · avec stop 3 % → {shp(h.shadow.s3_pct)} % · plus bas atteint {shp(h.shadow.trough_pct)} %</div>}
-                {h.scalp && <div style={{fontSize:10,color:"#93c5fd"}}>⚡ {h.scalp.kind}{h.scalp.counter?" · CONTRE-TENDANCE":""} · note {Math.round(h.scalp.score)} · pic de gain {(h.peak_pct||0).toFixed(2)} % (objectif {h.tp_pct} %){h.scalp.reasons&&h.scalp.reasons[0]?` · ${h.scalp.reasons[0]}`:""}</div>}
+                {h.scalp && <div style={{fontSize:10,color:"#93c5fd"}}>⚡ {h.scalp.kind}{h.scalp.counter?" · CONTRE-TENDANCE":""}{h.scalp.regime&&h.scalp.regime.label&&h.scalp.regime.label!=="inconnu"?` · ${h.scalp.regime.label==="correle"?"corrélé":"dispersé"} ${h.scalp.regime.corr!=null?Number(h.scalp.regime.corr).toFixed(2):""} · panier ${Math.round((((h.side||h.direction)==="long"?h.scalp.regime.up:h.scalp.regime.down)||0)*100)} % dans le sens · grappe ${h.scalp.regime.cluster??0}${h.scalp.regime.peers!=null?` · pairs ${h.scalp.regime.peers}`:""}`:""} · note {Math.round(h.scalp.score)} · pic de gain {(h.peak_pct||0).toFixed(2)} % (objectif {h.tp_pct} %){h.scalp.reasons&&h.scalp.reasons[0]?` · ${h.scalp.reasons[0]}`:""}</div>}
                 {h.status==="closed" && h.mode==="live" && <div style={{fontSize:10,color:h.exit_source==="hyperliquid"?"#86efac":"#fbbf24"}}>{h.entry_verified?"ouverture constatée sur Hyperliquid · ":""}sortie {h.exit_source==="hyperliquid"?"confirmée par Hyperliquid":"estimée par le bot (remplissage Hyperliquid introuvable)"}</div>}</td>
             </tr>)}</tbody>
           </table></div>)}
