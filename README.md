@@ -1193,3 +1193,9 @@ Fichiers : `manual_trading.py`, `bot_engine.py` (version), `index_src.html`, `in
 ## v4.440 — Taille d'entrée en USDC sur les trades ouverts
 Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
 - Les positions ouvertes du Trading Manuel (liste « Positions », donc aussi les trades Scalp/Swing Support) et leur carte dans l'onglet « Tous » affichent « Taille XX.XX USDC (marge YY.YY) » : valeur notionnelle de la position et marge engagée (taille / levier).
+
+## v4.441 — Net LIVE avec frais ET funding réels Hyperliquid
+Fichiers : `manual_trading.py`, `scalp_crypto.py`, `bot_engine.py` (version), `index_src.html`, `index.html`, `README.md`.
+- Pour chaque trade manuel/Scalp/Swing Support **Live perp fermé** (30 derniers jours), le bot lit dans Hyperliquid **tous les remplissages** du trade (ouverture, partiels, clôture : somme des frais réels) et le **funding payé/reçu pendant la détention**. Net réel = PnL − frais + funding. Traitement en tâche de fond : 6 trades au plus toutes les 2 min, 3 essais par trade, au moins 2,5 min après la clôture.
+- L'historique affiche « net +0.39 $ ✓ (frais 0.041 · funding −0.013) » quand les coûts réels sont connus, « (est.) » sinon (estimation 0,09 %). Le résumé et les statistiques Scalp utilisent les coûts réels quand ils existent. Le Paper garde l'estimation.
+- Hypothèses : le funding vient de `user_funding_history` (SDK Hyperliquid), filtré par actif ; la position étant unique par actif en Live, tous les remplissages de l'actif pendant la durée du trade lui sont attribués. Testé avec des réponses simulées, pas encore sur le compte réel : vérifier sur un trade connu (ex. PAXG : frais 0,02 $).

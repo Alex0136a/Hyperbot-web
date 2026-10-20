@@ -1539,6 +1539,50 @@ class ManualTrading:
                 print(f"[MANUEL] Sauvegarde correction #{r['id']} impossible : {e}")
         return fixed
 
+    def reconcile_real_costs(self, max_age_days=30, limit=6):
+        """v4.441 — FRAIS ET FUNDING REELS des trades LIVE perp fermes : somme des frais de tous les remplissages Hyperliquid du trade
+        (ouverture, partiels, cloture) et du funding paye / recu pendant la detention. Net reel = PnL - frais + funding.
+        Appel espace (toutes les 2 min au plus), quelques trades a la fois, 3 essais par trade."""
+        if time.time() - getattr(self, "_real_costs_ts", 0) < 120:
+            return 0
+        self._real_costs_ts = time.time()
+        wallet = self._wallet()
+        if not wallet:
+            return 0
+        try:
+            rows = db.manual_history(300)
+        except Exception:
+            return 0
+        done = 0
+        for r in rows:
+            it = r["data"]
+            if (r["status"] != "closed" or it.get("mode") != "live" or it.get("market") != "perp" or not it.get("closed_at")
+                    or it.get("real_costs") or int(it.get("real_costs_tries") or 0) >= 3
+                    or time.time() - it["closed_at"] > max_age_days * 86400 or time.time() - it["closed_at"] < 150):
+                continue
+            if done >= limit:
+                break
+            done += 1
+            opened = float(it.get("opened_at") or it.get("created_at") or it["closed_at"] - 86400)
+            t0, t1 = int(opened * 1000) - 5_000, int(it["closed_at"] * 1000) + 180_000
+            try:
+                fills = [f for f in (self.bot.info.user_fills_by_time(wallet, t0, t1) or []) if f.get("coin") == it["ticker"]]
+                fund = [x for x in (self.bot.info.user_funding_history(wallet, t0, t1) or []) if (x.get("delta") or {}).get("coin") == it["ticker"]]
+            except Exception as e:
+                print(f"[MANUEL] couts reels #{r['id']} : {type(e).__name__}: {e}")
+                continue
+            it["real_costs_tries"] = int(it.get("real_costs_tries") or 0) + 1
+            if fills:
+                fees = sum(float(f.get("fee") or 0) for f in fills)
+                funding = sum(float((x.get("delta") or {}).get("usdc") or 0) for x in fund)
+                it["real_costs"] = {"fees": round(fees, 5), "funding": round(funding, 5), "n_fills": len(fills),
+                                    "net": round(float(it.get("pnl") or 0) - fees + funding, 5), "ts": time.time()}
+            try:
+                db.manual_update(r["id"], "closed", {k: v for k, v in it.items() if k not in ("id", "status")})
+            except Exception as e:
+                print(f"[MANUEL] sauvegarde couts reels #{r['id']} impossible : {e}")
+        return done
+
     def _partial_close(self, item, price):
         """v4.404 : TP1 atteint -> cloture partielle au marche, puis SL au seuil de rentabilite (option)."""
         if item["id"] in self._busy:
@@ -1838,6 +1882,8 @@ class ManualTrading:
             self.on_tick()
         if time.time() - getattr(self, "_recon_exit_ts", 0) >= 3600:
             threading.Thread(target=lambda: self.reconcile_exit_sources(), daemon=True).start()
+        if time.time() - getattr(self, "_real_costs_ts", 0) >= 120:
+            threading.Thread(target=self.reconcile_real_costs, daemon=True).start()
         if time.time() - getattr(self, "_lev_sync_ts", 0) >= 300:
             self._lev_sync_ts = time.time()
             threading.Thread(target=self.sync_leverage, daemon=True).start()
@@ -2117,9 +2163,13 @@ class ManualTrading:
             cnt[md] += 1
             d.update({"id": row["id"], "status": row["status"]})
             d["strategy_label"] = STRATEGY_LABELS.get(d.get("strategy_source"), d.get("strategy_source"))
-            try:    # v4.432 : PnL net de frais (le pnl stocke est brut)
-                fe = float(d.get("fees_est") or 0) or float(d.get("notional_usd") or 0) * 0.0009
-                d["pnl_net"] = (float(d.get("pnl") or 0) - fe) if d.get("pnl") is not None else None
+            try:    # v4.432 : PnL net de frais (le pnl stocke est brut) ; v4.441 : frais + funding REELS Hyperliquid quand connus
+                rc = d.get("real_costs")
+                if rc and d.get("pnl") is not None:
+                    d["pnl_net"] = float(rc["net"])
+                else:
+                    fe = float(d.get("fees_est") or 0) or float(d.get("notional_usd") or 0) * 0.0009
+                    d["pnl_net"] = (float(d.get("pnl") or 0) - fe) if d.get("pnl") is not None else None
             except Exception:
                 d["pnl_net"] = None
             history.append(d)

@@ -332,7 +332,8 @@ class ScalpEngine:
             n = len(lst)
             w = sum(1 for d in lst if float(d.get("pnl") or 0) > 0)
             pnl = sum(float(d.get("pnl") or 0) for d in lst)
-            fees = sum((float(d.get("fees_est") or 0) or float(d.get("notional_usd") or 0) * 0.0009) for d in lst)
+            fees = sum(((float(d["real_costs"]["fees"]) - float(d["real_costs"]["funding"])) if d.get("real_costs")
+                        else (float(d.get("fees_est") or 0) or float(d.get("notional_usd") or 0) * 0.0009)) for d in lst)
             return {"n": n, "wins": w, "win_rate": (w / n * 100) if n else None, "pnl": pnl, "fees": fees, "pnl_net": pnl - fees}
         streak = 0
         for d in rows:
