@@ -1051,6 +1051,8 @@ class ManualTrading:
                 "tp_run": bool(p.get("tp_run")) and p.get("tp_pct") not in (None, "", 0),
                 "tp_run_lock_pct": float(p.get("tp_run_lock_pct") or 0), "tp_run_trail_pct": float(p.get("tp_run_trail_pct") or 0.5),
                 "tp_run_armed": False,
+                # v4.445 — stop au seuil de rentabilite : des que le gain maximal atteint be_arm_pct, le SL monte a entree + be_lock_pct
+                "be_arm_pct": float(p.get("be_arm_pct") or 0) or None, "be_lock_pct": float(p.get("be_lock_pct") or 0.1), "be_done": False,
                 # v4.404 — TP1 : cloture partielle ; le reste continue vers le TP2 (tp_pct)
                 "tp1_pct": float(p["tp1_pct"]) if p.get("tp1_pct") not in (None, "", 0) else None,
                 "tp1_close_pct": float(p.get("tp1_close_pct") or 50), "tp1_be": bool(p.get("tp1_be", True)),
@@ -2111,6 +2113,20 @@ class ManualTrading:
                     self._log(f"#{item['id']} {item['ticker']} : verrou du SL actif a +{item['peak_pct']:.2f}% — SL {new_sl:.6g} (garantit {lock_pct:.2f}%)", "signal")
                     self._save(item)
                 self._maybe_push_sl(item, new_sl)
+        # v4.445 — STOP AU SEUIL DE RENTABILITE : un trade qui a deja gagne be_arm_pct ne peut plus finir en perte (SL = entree + frais)
+        _ba = item.get("be_arm_pct")
+        if _ba and not item.get("be_done") and item["peak_pct"] >= _ba:
+            _bl = item["entry_price"] * (1 + sign * float(item.get("be_lock_pct") or 0.1) / 100)
+            if (sign > 0 and _bl > item["sl_price"] and _bl < price) or (sign < 0 and _bl < item["sl_price"] and _bl > price):
+                item["sl_price"], item["be_done"] = _bl, True
+                self._log(f"#{item['id']} {item['ticker']} : +{item['peak_pct']:.2f}% atteint — SL remonte au seuil de rentabilite {_bl:.6g}", "signal")
+                self._save(item)
+                self._maybe_push_sl(item, _bl)
+            elif (sign > 0 and _bl >= price) or (sign < 0 and _bl <= price):
+                pass      # le prix est deja retombe sous le seuil : on ne place pas un stop deja franchi (le SL d origine reste)
+            else:
+                item["be_done"] = True
+
         # v4.395 — LAISSER COURIR AU TP : a l objectif on ne ferme pas ; le SL monte (gain verrouille puis suit le plus haut)
         if item.get("tp_run") and item.get("tp_price"):
             _tp_hit = (sign > 0 and price >= item["tp_price"]) or (sign < 0 and price <= item["tp_price"])
@@ -2144,6 +2160,7 @@ class ManualTrading:
             return
         if (sign > 0 and price <= item["sl_price"]) or (sign < 0 and price >= item["sl_price"]):
             reason = ("TRAILING TAKE PROFIT (manuel)" if item.get("tp_run_armed")
+                      else "STOP SEUIL RENTABILITE (manuel)" if item.get("be_done")
                       else "STOP DYNAMIQUE (manuel)" if item.get("lock_active")
                       else "STOP APRES TP1 (manuel)" if item.get("tp1_done") else "STOP LOSS (manuel)")
         elif item.get("tp_price") and not item.get("tp_run") and ((sign > 0 and price >= item["tp_price"]) or (sign < 0 and price <= item["tp_price"])):

@@ -1228,3 +1228,10 @@ Fichiers : `db.py`, `manual_trading.py`, `api.py`, `bot_engine.py` (version), `i
 - Automatique toutes les 15 min, ou à la demande : bouton **« 🔄 Comparer à Hyperliquid »** (onglet LIVE de l'historique, 14 jours).
 - Les positions encore ouvertes ne sont jamais importées. Un trade importé que tu supprimes à la main n'est pas réimporté.
 - Testé sur ton export Hyperliquid : retrouve SUI 14/10 12:01 (+0,45 $ brut) et BTC 14/10 13:16 (−0,70 $ brut), absents du bot, et ne duplique aucun trade déjà présent.
+
+## v4.445 — Scalp : stop au seuil de rentabilité (option)
+Fichiers : `manual_trading.py`, `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `index.html`, `README.md`.
+- Réglages Scalp (**désactivé par défaut**) : `SCALP_BE_ENABLED` (0/1), `SCALP_BE_ARM_PCT` (0,4 : gain maximal à atteindre) et `SCALP_BE_LOCK_PCT` (0,1 : le stop passe à entrée ± 0,1 %, de quoi couvrir les frais).
+- Quand le gain atteint le seuil, le stop remonte (aussi le stop natif Hyperliquid en Live). Il ne remonte pas si le prix est déjà retombé sous ce niveau. Sortie notée « STOP SEUIL RENTABILITE ».
+- Compatible avec « laisser courir » (objectif 0,6 %) : le stop de rentabilité protège la zone 0,4 → 0,6 %.
+- Contrepartie : certains trades qui auraient fini gagnants après un petit recul sortent à zéro ; à comparer sur une vingtaine de trades Paper.
