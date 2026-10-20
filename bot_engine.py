@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.445"
+BOT_VERSION = "4.446"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -276,7 +276,7 @@ CONFIG = {
     "SCALP_SHORT_BTC_BLOCK": 1, "SCALP_SHORT_BTC_MAX_PCT": 0.1,   # v4.438 pas de short si BTC monte
     "SCALP_CORR_WINDOW_MIN": 120, "SCALP_CORR_HIGH": 0.6, "SCALP_BREADTH_MIN": 60,      # v4.442 correlation / regime du panier
     "SCALP_CORR_DIR_ON": 0, "SCALP_CORR_RELSTR_ON": 0, "SCALP_CLUSTER_MAX": 0, "SCALP_CLUSTER_WINDOW_MIN": 30, "SCALP_CORR_SIZE_PCT": 100,
-    "SCALP_PEER_MIN": 0, "SCALP_PEER_WINDOW_MIN": 30, "SCALP_CORR_BASKET_EXIT_ON": 0, "SCALP_BASKET_EXIT_PCT": 70,
+    "SCALP_PEER_MIN": 0, "SCALP_PEER_CORR_ONLY": 1, "SCALP_PEER_WINDOW_MIN": 30, "SCALP_CORR_BASKET_EXIT_ON": 0, "SCALP_BASKET_EXIT_PCT": 70,
     "SCALP_RUN_ENABLED": 1, "SCALP_RUN_TRAIL_PCT": 0.2, "SCALP_BE_ENABLED": 0, "SCALP_BE_ARM_PCT": 0.4, "SCALP_BE_LOCK_PCT": 0.1,     # v4.434 laisser courir apres l objectif
     "SCALP_COUNTER_ENABLED": 1, "SCALP_COUNTER_MIN_SCORE": 65, "SCALP_COUNTER_FLOW_MIN": 0.58, "SCALP_COUNTER_MIN_TRADES": 30,   # v4.433 contre-tendance securisee "SCALP_TP_PCT": 0.6,            # % du PRIX ; TP fixe (pas de laisser courir)
     "SCALP_TOP_N": 15,                                   # actifs : les N plus echanges (volume 24 h) parmi les actifs suivis

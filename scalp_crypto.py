@@ -584,6 +584,8 @@ class ScalpEngine:
         self._sigs.append((now, t, sig["side"]))
         if pm <= 0:
             return True
+        if int(self.cfg.get("SCALP_PEER_CORR_ONLY", 1)) and self._regime().get("label") != "correle":
+            return True      # v4.446 : la confirmation par les pairs ne s applique qu en marche correle (sauf reglage contraire)
         w = float(self.cfg.get("SCALP_PEER_WINDOW_MIN", 30)) * 60
         peers = {tt for ts, tt, sd in self._sigs if sd == sig["side"] and tt != t and now - ts <= w}
         peers |= {tt for ts, sd, md, tt in self._opens if sd == sig["side"] and md == mode and tt != t and now - ts <= w}

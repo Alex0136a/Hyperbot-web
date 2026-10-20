@@ -1235,3 +1235,7 @@ Fichiers : `manual_trading.py`, `scalp_crypto.py`, `bot_engine.py`, `api.py`, `i
 - Quand le gain atteint le seuil, le stop remonte (aussi le stop natif Hyperliquid en Live). Il ne remonte pas si le prix est déjà retombé sous ce niveau. Sortie notée « STOP SEUIL RENTABILITE ».
 - Compatible avec « laisser courir » (objectif 0,6 %) : le stop de rentabilité protège la zone 0,4 → 0,6 %.
 - Contrepartie : certains trades qui auraient fini gagnants après un petit recul sortent à zéro ; à comparer sur une vingtaine de trades Paper.
+
+## v4.446 — Scalp : confirmation par les pairs seulement en marché corrélé
+Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `index.html`, `README.md`.
+- Nouveau réglage `SCALP_PEER_CORR_ONLY` (1 par défaut) : la règle 5 (pairs) ne s'applique plus qu'en marché « corrélé », comme les règles 1, 2, 3, 4 et 6. Mettre 0 pour la rendre valable en tout régime.

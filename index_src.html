@@ -1207,7 +1207,7 @@ function ScalpPanel({ token }) {
     SCALP_CORR_RELSTR_ON:"Règle 2 · Meilleur du groupe : long si plus fort que le panier, short si plus faible (1 = oui)",
     SCALP_CLUSTER_MAX:"Règle 3 · Grappe : max d'ouvertures dans le même sens (0 = illimité)",SCALP_CLUSTER_WINDOW_MIN:"Grappe : fenêtre de temps (min)",
     SCALP_CORR_SIZE_PCT:"Règle 4 · Taille de chaque trade en marché corrélé (% de la taille normale)",
-    SCALP_PEER_MIN:"Règle 5 · Confirmation par les pairs : nb d'autres actifs requis dans le même sens (0 = non)",SCALP_PEER_WINDOW_MIN:"Pairs : fenêtre de temps (min)",
+    SCALP_PEER_MIN:"Règle 5 · Confirmation par les pairs : nb d'autres actifs requis dans le même sens (0 = non)",SCALP_PEER_CORR_ONLY:"Pairs : seulement en marché corrélé (1 = oui, 0 = tous les marchés)",SCALP_PEER_WINDOW_MIN:"Pairs : fenêtre de temps (min)",
     SCALP_CORR_BASKET_EXIT_ON:"Règle 6 · Sortie panier : fermer les trades en perte si le panier se retourne (1 = oui)",SCALP_BASKET_EXIT_PCT:"Sortie panier : part d'actifs contre (%)"};
   const isC = k => k in CLBL;
   const reg = d.regime || {};
