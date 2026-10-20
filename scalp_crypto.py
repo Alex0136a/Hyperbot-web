@@ -180,6 +180,12 @@ def evaluate(c5, c15, c1h, btc_chg, K, flow=None):
                           "touches": int(z.get("touches") or 1), "reasons": [f"cassure confirmee de {zl:.6g} (5 min, corps fort)"] + why, "level": zl})
     if not cands:
         return None, "aucun signal"
+    # v4.438 : SHORT interdit tant que BTC monte (variation 1 h > seuil). Appliquer avant le filtre de tendance.
+    if K.get("short_btc_block", 1) and btc_chg is not None and btc_chg > K.get("short_btc_max", 0.1):
+        n0 = len(cands)
+        cands = [c for c in cands if c["side"] != "short"]
+        if not cands:
+            return None, f"short refuse : BTC en hausse ({btc_chg:+.2f} % / 1 h > {K.get('short_btc_max', 0.1):+.2f} %)" if n0 else "aucun signal"
     if K.get("trend_mode", 1):
         # v4.429 : sens du trade = sens de la tendance H1 (si H1 neutre : tendance 15 min)
         # v4.433 : une CONTRE-TENDANCE est autorisee (SCALP_COUNTER_ENABLED) si TOUTES les securites sont reunies :
@@ -269,6 +275,7 @@ class ScalpEngine:
                 "min_score": float(c.get("SCALP_MIN_SCORE", 0)),
                 "min_score_short": float(c.get("SCALP_SHORT_MIN_SCORE", 62)),
                 "trend_mode": int(c.get("SCALP_TREND_MODE", 1)),
+                "short_btc_block": int(c.get("SCALP_SHORT_BTC_BLOCK", 1)), "short_btc_max": float(c.get("SCALP_SHORT_BTC_MAX_PCT", 0.1)),
                 "counter_enabled": int(c.get("SCALP_COUNTER_ENABLED", 1)), "counter_min_score": float(c.get("SCALP_COUNTER_MIN_SCORE", 65)),
                 "counter_flow": float(c.get("SCALP_COUNTER_FLOW_MIN", 0.58)), "counter_min_trades": int(c.get("SCALP_COUNTER_MIN_TRADES", 30))}
 
@@ -639,7 +646,7 @@ class ScalpEngine:
         return {"enabled": bool(int(c.get("SCALP_ENABLED", 0))), "mode": c.get("SCALP_MODE", "paper"), "window_open": ok, "window_reason": why,
                 "universe": list(self._uni), "open": self._open_count(), "max_open": int(c.get("SCALP_MAX_OPEN", 0)),
                 "params": {k: c.get(k) for k in ("SCALP_LEVERAGE", "SCALP_NOTIONAL_USD", "SCALP_SL_PCT", "SCALP_TP_PCT", "SCALP_HOURS_UTC",
-                                                 "SCALP_MIN_SCORE", "SCALP_SHORT_MIN_SCORE", "SCALP_TREND_MODE", "SCALP_RUN_ENABLED", "SCALP_RUN_TRAIL_PCT", "SCALP_COUNTER_ENABLED", "SCALP_COUNTER_MIN_SCORE", "SCALP_COUNTER_FLOW_MIN", "SCALP_COUNTER_MIN_TRADES", "SCALP_CONFIRM_BARS", "SCALP_NOISE_ATR", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
+                                                 "SCALP_MIN_SCORE", "SCALP_SHORT_MIN_SCORE", "SCALP_TREND_MODE", "SCALP_SHORT_BTC_BLOCK", "SCALP_SHORT_BTC_MAX_PCT", "SCALP_RUN_ENABLED", "SCALP_RUN_TRAIL_PCT", "SCALP_COUNTER_ENABLED", "SCALP_COUNTER_MIN_SCORE", "SCALP_COUNTER_FLOW_MIN", "SCALP_COUNTER_MIN_TRADES", "SCALP_CONFIRM_BARS", "SCALP_NOISE_ATR", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),
                 "pending": [{"ticker": t, "side": p["sig"]["side"], "trigger": p["trigger"], "expires": p["expires"]} for t, p in self.pending.items()],
                 "events": list(self.events)[:40], "error": self.last_error}

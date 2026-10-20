@@ -1175,3 +1175,10 @@ Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md
 ## v4.437 — Retrait du « glisser à la souris » (sélection du texte rétablie)
 Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
 - Le glisser à la souris de la v4.436 empêchait de sélectionner le texte à copier : supprimé. Les flèches ◀ ▶ au survol restent (clic = défilement), la sélection du texte au clic-glisser fonctionne comme avant.
+
+## v4.438 — Scalp : pas de short tant que BTC monte
+Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `index.html`, `README.md`.
+- Nouveau réglage **`SCALP_SHORT_BTC_BLOCK`** (défaut 1) : un SHORT (rebond ou cassure, tendance ou contre-tendance) est refusé si BTC a monté de plus de **`SCALP_SHORT_BTC_MAX_PCT`** (défaut **+0,1 %**) sur 1 h (4 bougies de 15 min). Refus visible dans le journal : « short refusé : BTC en hausse ». Les longs ne sont pas touchés.
+- Mettre `SCALP_SHORT_BTC_BLOCK` à 0 le désactive ; abaisser le seuil à 0 ou en négatif le rend plus strict.
+- Cause : sur 75 trades Paper, les shorts ont 24 % de gagnants (−7,32 $ net) et 9 shorts corrélés ouverts pendant une hausse de BTC ont tous perdu.
+- Testé sur marchés simulés : BTC +0,5 % = 0 short ; BTC 0 ou négatif = shorts possibles.
