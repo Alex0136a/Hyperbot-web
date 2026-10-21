@@ -227,6 +227,20 @@ def evaluate(c5, c15, c1h, btc_chg, K, flow=None):
         if not aligned:
             return None, refus or "contre-tendance refusée"
         cands = aligned
+    # v4.450 : FLUX POUR TOUS LES TRADES (option) : le flux agressif des 10 dernieres minutes doit etre dans le sens du trade.
+    # Flux indisponible / trop peu de transactions : on ne bloque pas (donnee manquante != flux contraire).
+    if K.get("flow_all_on", 0) and flow is not None and flow.get("n", 0) >= K.get("flow_all_trades", 30):
+        need = K.get("flow_all_min", 0.52)
+        kept, refus_f = [], None
+        for c in cands:
+            bad = (c["side"] == "long" and flow["buy_ratio"] < need) or (c["side"] == "short" and flow["buy_ratio"] > 1 - need)
+            if bad and not c.get("counter"):
+                refus_f = refus_f or f"{c['kind']} {c['side']} refuse : flux pas dans le sens ({flow['buy_ratio'] * 100:.0f} % d'achats agressifs, {flow['n']} transactions)"
+            else:
+                kept.append(c)
+        if not kept:
+            return None, refus_f
+        cands = kept
     good = [c for c in cands if c["room"] >= K["min_room_pct"]]
     if not good:
         best = max(cands, key=lambda c: c["score"])
@@ -242,7 +256,14 @@ def evaluate(c5, c15, c1h, btc_chg, K, flow=None):
     best["atr15_pct"] = atr15_pct
     best["volume_ratio"] = vr
     best["sig_high"], best["sig_low"], best["atr5"] = last["h"], last["l"], a5
+    # v4.450 : contexte a l entree (observation, pour calibrer les filtres) : flux, tendances, BTC
+    best["ctx"] = {"flow_buy": (round(flow["buy_ratio"], 3) if flow else None), "flow_n": (flow.get("n") if flow else None),
+                   "t1h": t1h, "m15": m15, "btc1h": (round(btc_chg, 3) if btc_chg is not None else None)}
     return best, "ok"
+
+
+def p_fmt(x):
+    return f"{x:.6g}"
 
 
 def compute_regime(closes_by_t, win_bars, high, flat_pct=0.05, lag_bars=6):
@@ -317,7 +338,9 @@ class ScalpEngine:
                 "trend_mode": int(c.get("SCALP_TREND_MODE", 1)),
                 "short_btc_block": int(c.get("SCALP_SHORT_BTC_BLOCK", 1)), "short_btc_max": float(c.get("SCALP_SHORT_BTC_MAX_PCT", 0.1)),
                 "counter_enabled": int(c.get("SCALP_COUNTER_ENABLED", 1)), "counter_min_score": float(c.get("SCALP_COUNTER_MIN_SCORE", 65)),
-                "counter_flow": float(c.get("SCALP_COUNTER_FLOW_MIN", 0.58)), "counter_min_trades": int(c.get("SCALP_COUNTER_MIN_TRADES", 30))}
+                "counter_flow": float(c.get("SCALP_COUNTER_FLOW_MIN", 0.58)), "counter_min_trades": int(c.get("SCALP_COUNTER_MIN_TRADES", 30)),
+                "flow_all_on": int(c.get("SCALP_FLOW_ALL_ON", 0)), "flow_all_min": float(c.get("SCALP_FLOW_ALL_MIN", 0.52)),
+                "flow_all_trades": int(c.get("SCALP_FLOW_ALL_MIN_TRADES", 30))}
 
     # ── univers : top N par volume 24 h parmi les actifs suivis ──
     def universe(self):
@@ -620,6 +643,8 @@ class ScalpEngine:
         nb = int(self.cfg.get("SCALP_CONFIRM_BARS", 3))
         if nb > 0 and sig["kind"] == "rebond":
             self._arm(t, sig, nb)
+        elif int(self.cfg.get("SCALP_RETEST_ON", 0)) and sig["kind"] == "cassure":
+            self._arm_retest(t, sig)
         else:
             self._take(t, sig)
 
@@ -705,6 +730,49 @@ class ScalpEngine:
         self._ev("attente", t, f"{sig['side'].upper()} {sig['kind']} note {sig['score']:.0f} : entrée si le prix {'passe sous' if sig['side'] == 'short' else 'repasse au-dessus de'} {trig:.6g} "
                                f"(abandon au-delà de {inval:.6g}, ou sans confirmation en {nb} bougies)")
 
+    def _arm_retest(self, t, sig):
+        """v4.450 : CASSURE AVEC RETEST. On n entre pas sur la cassure : on attend que le prix revienne pres du niveau casse (zone de retest), puis
+        qu'il reparte dans le sens de la cassure (rebond d'au moins SCALP_RETEST_BOUNCE_ATR x ATR5 depuis le point extreme du retest).
+        Abandon : le prix repasse de l'autre cote du niveau (fausse cassure, marge de bruit), ou pas de retest dans SCALP_RETEST_BARS bougies."""
+        c = self.cfg
+        a5 = sig["atr5"]
+        nb = int(c.get("SCALP_RETEST_BARS", 6))
+        lvl = float(sig["level"])
+        noise = float(c.get("SCALP_NOISE_ATR", 0.5)) * a5
+        tol = float(c.get("SCALP_RETEST_TOL_ATR", 0.3)) * a5
+        bounce = float(c.get("SCALP_RETEST_BOUNCE_ATR", 0.25)) * a5
+        long_ = sig["side"] == "long"
+        self.pending[t] = {"sig": sig, "retest": True, "level": lvl, "tol": tol, "bounce": bounce, "touched": False, "extreme": None,
+                           "trigger": lvl, "invalid": (lvl - noise) if long_ else (lvl + noise),
+                           "armed": time.time(), "expires": time.time() + nb * 300}
+        self._ev("attente", t, f"{sig['side'].upper()} cassure note {sig['score']:.0f} : attente d'un RETEST de {lvl:.6g} puis d'un rebond de {bounce:.6g} "
+                               f"(abandon si le prix repasse {'sous' if long_ else 'au-dessus de'} {p_fmt(self.pending[t]['invalid'])}, ou sans retest en {nb} bougies)")
+
+    def _check_retest(self, t, p, px, now):
+        """Retourne True si l'entree doit avoir lieu maintenant."""
+        sig = p["sig"]
+        long_ = sig["side"] == "long"
+        if now > p["expires"]:
+            del self.pending[t]
+            self._ev("abandon", t, f"{sig['side'].upper()} cassure : pas de retest dans le délai" if not p["touched"] else f"{sig['side'].upper()} cassure : retest sans rebond dans le délai")
+            return False
+        if (long_ and px < p["invalid"]) or ((not long_) and px > p["invalid"]):
+            del self.pending[t]
+            self._ev("abandon", t, f"{sig['side'].upper()} cassure : le prix repasse de l'autre côté du niveau ({px:.6g}) — fausse cassure")
+            return False
+        near = (px <= p["level"] + p["tol"]) if long_ else (px >= p["level"] - p["tol"])
+        if near:
+            if not p["touched"]:
+                p["touched"] = True
+                self._ev("attente", t, f"{sig['side'].upper()} cassure : retest du niveau {p['level']:.6g} en cours ({px:.6g})")
+            p["extreme"] = px if p["extreme"] is None else (min(p["extreme"], px) if long_ else max(p["extreme"], px))
+        if p["touched"] and p["extreme"] is not None:
+            if long_ and px >= p["extreme"] + p["bounce"] and px > p["level"]:
+                return True
+            if (not long_) and px <= p["extreme"] - p["bounce"] and px < p["level"]:
+                return True
+        return False
+
     def _check_pending(self, K):
         now = time.time()
         mode = "live" if self.cfg.get("SCALP_MODE") == "live" else "paper"
@@ -714,6 +782,15 @@ class ScalpEngine:
             if not px:
                 continue
             short = sig["side"] == "short"
+            if p.get("retest"):      # v4.450 : cassure avec retest
+                if self._check_retest(t, p, px, now):
+                    del self.pending[t]
+                    if self._busy_same_mode(t, mode):
+                        continue
+                    sig = dict(sig); sig["price"] = px
+                    sig["reasons"] = list(sig["reasons"]) + [f"retest du niveau {p['level']:.6g} confirmé, rebond au prix {px:.6g}"]
+                    self._take(t, sig)
+                continue
             if now > p["expires"]:
                 del self.pending[t]; self._ev("abandon", t, f"{sig['side'].upper()} : pas de confirmation du mouvement dans le délai"); continue
             if (short and px > p["invalid"]) or ((not short) and px < p["invalid"]):
@@ -801,7 +878,8 @@ class ScalpEngine:
                                    "atr15_pct": round(sig["atr15_pct"], 3), "counter": bool(sig.get("counter")),
                                    "regime": {"label": reg.get("label", "inconnu"), "corr": reg.get("corr"), "up": reg.get("up"), "down": reg.get("down"),
                                               "basket30": reg.get("basket30"), "rel30": (round(reg["ch30"].get(t, 0) - reg["basket30"], 3) if reg.get("ch30") and reg.get("basket30") is not None else None),
-                                              "cluster": cluster_before, "peers": sig.get("peers")}}
+                                              "cluster": cluster_before, "peers": sig.get("peers")},
+                                   "ctx": sig.get("ctx"), "retest": bool(sig.get("retest"))}
                     it["reasons"] = sig["reasons"]
                     self.manual._save(it)
         except Exception as e:
@@ -816,7 +894,7 @@ class ScalpEngine:
         return {"enabled": bool(int(c.get("SCALP_ENABLED", 0))), "mode": c.get("SCALP_MODE", "paper"), "window_open": ok, "window_reason": why,
                 "universe": list(self._uni), "open": self._open_count(), "max_open": int(c.get("SCALP_MAX_OPEN", 0)),
                 "params": {k: c.get(k) for k in ("SCALP_LEVERAGE", "SCALP_NOTIONAL_USD", "SCALP_SL_PCT", "SCALP_TP_PCT", "SCALP_HOURS_UTC",
-                                                 "SCALP_MIN_SCORE", "SCALP_SHORT_MIN_SCORE", "SCALP_TREND_MODE", "SCALP_SHORT_BTC_BLOCK", "SCALP_SHORT_BTC_MAX_PCT", "SCALP_RUN_ENABLED", "SCALP_RUN_TRAIL_PCT", "SCALP_BE_ENABLED", "SCALP_BE_ARM_PCT", "SCALP_BE_LOCK_PCT", "SCALP_COUNTER_ENABLED", "SCALP_COUNTER_MIN_SCORE", "SCALP_COUNTER_FLOW_MIN", "SCALP_COUNTER_MIN_TRADES", "SCALP_CONFIRM_BARS", "SCALP_NOISE_ATR", "SCALP_CORR_HIGH", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
+                                                 "SCALP_MIN_SCORE", "SCALP_SHORT_MIN_SCORE", "SCALP_TREND_MODE", "SCALP_SHORT_BTC_BLOCK", "SCALP_SHORT_BTC_MAX_PCT", "SCALP_RUN_ENABLED", "SCALP_RUN_TRAIL_PCT", "SCALP_BE_ENABLED", "SCALP_BE_ARM_PCT", "SCALP_BE_LOCK_PCT", "SCALP_FLOW_ALL_ON", "SCALP_FLOW_ALL_MIN", "SCALP_FLOW_ALL_MIN_TRADES", "SCALP_RETEST_ON", "SCALP_RETEST_BARS", "SCALP_RETEST_TOL_ATR", "SCALP_RETEST_BOUNCE_ATR", "SCALP_COUNTER_ENABLED", "SCALP_COUNTER_MIN_SCORE", "SCALP_COUNTER_FLOW_MIN", "SCALP_COUNTER_MIN_TRADES", "SCALP_CONFIRM_BARS", "SCALP_NOISE_ATR", "SCALP_CORR_HIGH", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
                 "regime": {k: v for k, v in self.regime.items()}, "peer_wait": [{"ticker": t, "side": w["side"], "age_min": round((time.time() - w["ts"]) / 60, 1)} for t, w in self.peer_wait.items()],
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),
                 "pending": [{"ticker": t, "side": p["sig"]["side"], "trigger": p["trigger"], "expires": p["expires"]} for t, p in self.pending.items()],
