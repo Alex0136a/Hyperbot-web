@@ -1296,6 +1296,8 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
   const [sched, setSched] = useState({});
   const [freeT, setFreeT] = useState("");          // v4.343 — ordre libre : actif
   const [freeDir, setFreeDir] = useState("long");  // v4.343 — ordre libre : sens
+  const [histView, setHistView] = useState("trades");     // v4.448 : sous-onglets de l historique (trades / par jour)
+  const [histFrom, setHistFrom] = useState(""), [histTo, setHistTo] = useState("");     // v4.447 — filtre par date (AAAA-MM-JJ, heure locale)
   const [histTab, setHistTab] = useState("live");     // v4.425 — historique : onglet LIVE / PAPER
   const [histSel, setHistSel] = useState({});            // v4.426 — lignes cochees pour suppression
 
@@ -1439,7 +1441,10 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
 
   if (!st) return <div style={{padding:16,color:"#94a3b8"}}>{err || "Chargement..."}</div>;
 
-  const histRows = st.history.filter(h=>(h.mode==="live"?"live":"paper")===histTab);
+  const dayKey = ts => { const d=new Date(ts*1000); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
+  const histTabRows = st.history.filter(h=>(h.mode==="live"?"live":"paper")===histTab);
+  const histRows = histTabRows.filter(h=>{ const ts=h.closed_at||h.opened_at||h.created_at; if(!ts) return !histFrom&&!histTo; const k=dayKey(ts); return (!histFrom||k>=histFrom)&&(!histTo||k<=histTo); });
+  const dayStats = (()=>{ const m={}; histTabRows.filter(h=>h.status==="closed"&&h.closed_at).forEach(h=>{ const k=dayKey(h.closed_at); const o=m[k]||(m[k]={n:0,w:0,g:0,net:0}); o.n++; if((h.pnl||0)>0) o.w++; o.g+=(h.pnl||0); o.net+=(h.pnl_net!=null?h.pnl_net:(h.pnl||0)); }); return Object.entries(m).sort((a,b)=>a[0]<b[0]?1:-1); })();
   const notional = f ? Number(f.notional_usd)||0 : 0;
   const lev = f ? (f.market==="spot" ? 1 : Number(f.leverage)||1) : 1;
   const feesEst = notional * 0.0009;
@@ -1723,11 +1728,29 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
       {/* HISTORIQUE */}
       <div style={MT.card}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:10}}>
-          <div style={{...MT.title,marginBottom:0}}>📜 HISTORIQUE MANUEL (100 derniers par mode)</div>
+          <div style={{...MT.title,marginBottom:0}}>📜 HISTORIQUE MANUEL (300 derniers par mode)</div>
           <div style={{display:"flex",gap:6}}>
             {[["live","LIVE","#ef4444"],["paper","PAPER","#22c55e"]].map(([k,l,c])=>{ const n=st.history.filter(h=>(h.mode==="live"?"live":"paper")===k).length; return <button key={k} style={{...MT.seg(histTab===k,c),flex:"none",padding:"6px 14px"}} onClick={()=>setHistTab(k)}>{l} ({n})</button>; })}
           </div>
         </div>
+        <div style={{display:"flex",gap:6,marginBottom:10}}>
+          {[["trades","📜 Trades"],["jours","📅 Par jour"]].map(([k,l])=><button key={k} style={{...MT.seg(histView===k,"#0ea5e9"),flex:"none",padding:"6px 14px"}} onClick={()=>setHistView(k)}>{l}</button>)}
+        </div>
+        {histView==="trades" && <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:8,fontSize:12,color:"#cbd5e1"}}>
+          <span>📅 Du</span><input type="date" style={{...MT.input,width:"auto"}} value={histFrom} onChange={e=>setHistFrom(e.target.value)}/>
+          <span>au</span><input type="date" style={{...MT.input,width:"auto"}} value={histTo} onChange={e=>setHistTo(e.target.value)}/>
+          <button style={MT.btn("#334155","#e2e8f0")} onClick={()=>{ const k=dayKey(Date.now()/1000); setHistFrom(k); setHistTo(k); }}>Aujourd'hui</button>
+          <button style={MT.btn("#334155","#e2e8f0")} onClick={()=>{ const k=dayKey(Date.now()/1000-86400); setHistFrom(k); setHistTo(k); }}>Hier</button>
+          <button style={MT.btn("#334155","#e2e8f0")} onClick={()=>{ setHistFrom(""); setHistTo(""); }}>Tout</button>
+          {(histFrom||histTo) && <span style={{color:"#94a3b8"}}>{histRows.length} ligne(s) affichée(s)</span>}
+        </div>}
+        {histView==="jours" && (dayStats.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucun trade clôturé.</div> : <div style={{overflowX:"auto",marginBottom:10}}><table style={{borderCollapse:"collapse"}}>
+          <thead><tr>{["Jour","Trades","Gagnants","PnL brut","Net de frais"].map(h=><th key={h} style={MT.th}>{h}</th>)}</tr></thead>
+          <tbody>{dayStats.map(([k,o])=><tr key={k} style={{cursor:"pointer"}} title="Filtrer sur ce jour" onClick={()=>{ setHistFrom(k); setHistTo(k); setHistView("trades"); }}>
+            <td style={MT.td}>{k.slice(8)}/{k.slice(5,7)}</td><td style={MT.td}>{o.n}</td><td style={MT.td}>{o.w} ({Math.round(o.w/o.n*100)} %)</td>
+            <td style={{...MT.td,color:o.g>=0?"#22c55e":"#ef4444"}}>{fmtUsd(o.g)}</td><td style={{...MT.td,fontWeight:700,color:o.net>=0?"#22c55e":"#ef4444"}}>{fmtUsd(o.net)}</td></tr>)}</tbody>
+        </table><div style={{fontSize:10,color:"#64748b",marginTop:4}}>Jours en heure locale, d'après la date de fermeture. Cliquer sur un jour pour voir ses trades.</div></div>)}
+        {histView==="trades" && <div>
         {(()=>{ const cl=histRows.filter(h=>h.status==="closed"); const w=cl.filter(h=>(h.pnl||0)>0).length; const pn=cl.reduce((s,h)=>s+(h.pnl||0),0); const pnn=cl.reduce((s,h)=>s+(h.pnl_net!=null?h.pnl_net:(h.pnl||0)),0);
           return cl.length ? <div style={{fontSize:12,color:"#cbd5e1",marginBottom:8}}>{cl.length} trades clôturés · <b>{(w/cl.length*100).toFixed(0)} %</b> gagnants · PnL brut <b>{fmtUsd(pn)}</b> · <b style={{color:pnn>=0?"#22c55e":"#ef4444"}}>{fmtUsd(pnn)} net de frais</b></div> : null; })()}
         {(()=>{ const sh=histRows.filter(h=>h.status==="closed"&&h.shadow); if(!sh.length) return null; const f=k=>sh.reduce((a,h)=>a+(h.notional_usd||0)*h.shadow[k]/100,0); const f1=k=>sh.reduce((a,h)=>a+h.shadow[k],0);
@@ -1756,6 +1779,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
                 {h.status==="closed" && h.mode==="live" && <div style={{fontSize:10,color:h.exit_source==="hyperliquid"?"#86efac":"#fbbf24"}}>{h.entry_verified?"ouverture constatée sur Hyperliquid · ":""}sortie {h.exit_source==="hyperliquid"?"confirmée par Hyperliquid":"estimée par le bot (remplissage Hyperliquid introuvable)"}</div>}</td>
             </tr>)}</tbody>
           </table></div>)}
+        </div>}
       </div>
     </div>
   );

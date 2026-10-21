@@ -1239,3 +1239,14 @@ Fichiers : `manual_trading.py`, `scalp_crypto.py`, `bot_engine.py`, `api.py`, `i
 ## v4.446 — Scalp : confirmation par les pairs seulement en marché corrélé
 Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `index.html`, `README.md`.
 - Nouveau réglage `SCALP_PEER_CORR_ONLY` (1 par défaut) : la règle 5 (pairs) ne s'applique plus qu'en marché « corrélé », comme les règles 1, 2, 3, 4 et 6. Mettre 0 pour la rendre valable en tout régime.
+
+## v4.447 — Historique : filtre par date et résultats journaliers
+Fichiers : `index_src.html`, `index.html`, `manual_trading.py`, `bot_engine.py` (version), `README.md`.
+- Au-dessus de l'historique (onglets LIVE et PAPER) : sélecteurs « Du … au … » et boutons Aujourd'hui / Hier / Tout. La liste et le résumé (gagnants, PnL brut, net) ne portent que sur la période choisie.
+- Tableau **par jour** : nombre de trades, gagnants, PnL brut et net de frais. Cliquer sur un jour filtre la liste sur ce jour.
+- Jours en heure locale de l'appareil, d'après la date de fermeture (les statuts annulés / expirés ne sont pas comptés).
+- L'historique renvoyé passe de 100 à **300 derniers trades par mode** pour couvrir plus de jours.
+
+## v4.448 — Historique : sous-onglets « 📜 Trades » et « 📅 Par jour »
+Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
+- L'historique (LIVE et PAPER) a deux sous-onglets. **Trades** : filtre par date, résumé, liste. **Par jour** : tableau des résultats journaliers ; un clic sur un jour ouvre ses trades.
