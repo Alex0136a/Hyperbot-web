@@ -1262,3 +1262,8 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 - **Flux pour tous (option, désactivée)** : `SCALP_FLOW_ALL_ON` (0/1), `SCALP_FLOW_ALL_MIN` (0,52 : part mini d'achats agressifs pour un long ; pour un short, part de ventes), `SCALP_FLOW_ALL_MIN_TRADES` (30). Flux indisponible ou trop peu de transactions : pas de blocage. La contre-tendance garde ses propres exigences (58 %).
 - **Cassure avec retest (option, désactivée)** : `SCALP_RETEST_ON` (0/1). Une cassure n'ouvre plus le trade tout de suite : le bot attend que le prix revienne près du niveau cassé (`SCALP_RETEST_TOL_ATR`, 0,3 × ATR 5 min), puis qu'il reparte d'au moins `SCALP_RETEST_BOUNCE_ATR` (0,25 × ATR 5 min) depuis l'extrême du retest. Abandon si le prix repasse de l'autre côté du niveau (marge de bruit `SCALP_NOISE_ATR`) ou sans entrée en `SCALP_RETEST_BARS` bougies 5 min (6). Les rebonds gardent leur confirmation actuelle.
 - Testé sur séries simulées : flux baissier bloque les 44 longs détectés, flux haussier ou trop peu de transactions n'en bloque aucun ; machine du retest validée (retest + rebond → entrée, pas de retest → rien, retour sous le niveau → abandon).
+
+## v4.451 — Historique : filtre par actif
+Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
+- Liste déroulante « Tous les actifs » à droite des sous-onglets de l'historique (LIVE et PAPER). Elle ne propose que les actifs présents dans l'historique de l'onglet.
+- Le filtre s'applique à la liste, au résumé, au tableau « Par jour » et à l'export CSV, et se combine avec la période « Du … au … ».

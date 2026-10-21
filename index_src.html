@@ -1296,6 +1296,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
   const [sched, setSched] = useState({});
   const [freeT, setFreeT] = useState("");          // v4.343 — ordre libre : actif
   const [freeDir, setFreeDir] = useState("long");  // v4.343 — ordre libre : sens
+  const [histAsset, setHistAsset] = useState("");     // v4.451 : filtre par actif
   const [histView, setHistView] = useState("trades");     // v4.448 : sous-onglets de l historique (trades / par jour)
   const [histFrom, setHistFrom] = useState(""), [histTo, setHistTo] = useState("");     // v4.447 — filtre par date (AAAA-MM-JJ, heure locale)
   const [histTab, setHistTab] = useState("live");     // v4.425 — historique : onglet LIVE / PAPER
@@ -1442,7 +1443,10 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
   if (!st) return <div style={{padding:16,color:"#94a3b8"}}>{err || "Chargement..."}</div>;
 
   const dayKey = ts => { const d=new Date(ts*1000); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
-  const histTabRows = st.history.filter(h=>(h.mode==="live"?"live":"paper")===histTab);
+  const histTabAll = st.history.filter(h=>(h.mode==="live"?"live":"paper")===histTab);
+  const histAssets = [...new Set(histTabAll.map(h=>h.ticker).filter(Boolean))].sort();
+  const histAssetOk = histAssets.includes(histAsset) ? histAsset : "";
+  const histTabRows = histAssetOk ? histTabAll.filter(h=>h.ticker===histAssetOk) : histTabAll;
   const histRows = histTabRows.filter(h=>{ const ts=h.closed_at||h.opened_at||h.created_at; if(!ts) return !histFrom&&!histTo; const k=dayKey(ts); return (!histFrom||k>=histFrom)&&(!histTo||k<=histTo); });
   const dayStats = (()=>{ const m={}; histTabRows.filter(h=>h.status==="closed"&&h.closed_at).forEach(h=>{ const k=dayKey(h.closed_at); const o=m[k]||(m[k]={n:0,w:0,g:0,net:0}); o.n++; if((h.pnl||0)>0) o.w++; o.g+=(h.pnl||0); o.net+=(h.pnl_net!=null?h.pnl_net:(h.pnl||0)); }); return Object.entries(m).sort((a,b)=>a[0]<b[0]?1:-1); })();
   const notional = f ? Number(f.notional_usd)||0 : 0;
@@ -1733,8 +1737,11 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
             {[["live","LIVE","#ef4444"],["paper","PAPER","#22c55e"]].map(([k,l,c])=>{ const n=st.history.filter(h=>(h.mode==="live"?"live":"paper")===k).length; return <button key={k} style={{...MT.seg(histTab===k,c),flex:"none",padding:"6px 14px"}} onClick={()=>setHistTab(k)}>{l} ({n})</button>; })}
           </div>
         </div>
-        <div style={{display:"flex",gap:6,marginBottom:10}}>
+        <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
           {[["trades","📜 Trades"],["jours","📅 Par jour"]].map(([k,l])=><button key={k} style={{...MT.seg(histView===k,"#0ea5e9"),flex:"none",padding:"6px 14px"}} onClick={()=>setHistView(k)}>{l}</button>)}
+          <select style={{...MT.input,width:"auto",marginLeft:8}} value={histAssets.includes(histAsset)?histAsset:""} onChange={e=>setHistAsset(e.target.value)} title="Filtrer par actif">
+            <option value="">Tous les actifs</option>{histAssets.map(a=><option key={a} value={a}>{a}</option>)}
+          </select>
         </div>
         {histView==="trades" && <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:8,fontSize:12,color:"#cbd5e1"}}>
           <span>📅 Du</span><input type="date" style={{...MT.input,width:"auto"}} value={histFrom} onChange={e=>setHistFrom(e.target.value)}/>
