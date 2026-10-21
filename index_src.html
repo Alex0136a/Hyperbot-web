@@ -1742,6 +1742,17 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
           <button style={MT.btn("#334155","#e2e8f0")} onClick={()=>{ const k=dayKey(Date.now()/1000); setHistFrom(k); setHistTo(k); }}>Aujourd'hui</button>
           <button style={MT.btn("#334155","#e2e8f0")} onClick={()=>{ const k=dayKey(Date.now()/1000-86400); setHistFrom(k); setHistTo(k); }}>Hier</button>
           <button style={MT.btn("#334155","#e2e8f0")} onClick={()=>{ setHistFrom(""); setHistTo(""); }}>Tout</button>
+          <button style={MT.btn("#0ea5e9","#fff")} disabled={!histRows.length} onClick={()=>{
+            const iso=ts=>{ if(!ts) return ""; const d=new Date(ts*1000); const p=n=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; };
+            const q=v=>{ if(v===null||v===undefined) return ""; const s=String(v).replace(/"/g,'""'); return /[;"\n\r]/.test(s)?`"${s}"`:s; };
+            const num=v=>(v===null||v===undefined||v==="")?"":String(v).replace(".",",");
+            const head=["id","actif","sens","marche","mode","source","statut","ouverture","fermeture","entree","sortie","taille_usd","levier","pnl_brut","frais","funding","net","couts_reels","pic_gain_pct","motif","scalp_type","scalp_note","regime"];
+            const rows=histRows.map(h=>{ const rc=h.real_costs; return [h.id,h.ticker,h.direction,h.market,h.mode,h.strategy_label,h.status,iso(h.opened_at||h.created_at),iso(h.closed_at),num(h.entry_price),num(h.exit_price),num(h.notional_usd!=null?Number(h.notional_usd).toFixed(2):""),h.leverage??"",num(h.pnl!=null?Number(h.pnl).toFixed(4):""),rc?num(rc.fees):num(h.fees_est!=null?Number(h.fees_est).toFixed(4):""),rc?num(rc.funding):"",num(h.pnl_net!=null?Number(h.pnl_net).toFixed(4):""),rc?"oui":"estimes",num(h.peak_pct!=null?Number(h.peak_pct).toFixed(3):""),h.reason||h.error||"",h.scalp?h.scalp.kind:"",h.scalp&&h.scalp.score!=null?Math.round(h.scalp.score):"",h.scalp&&h.scalp.regime?h.scalp.regime.label:""].map(q).join(";"); });
+            const blob=new Blob(["\ufeff"+head.join(";")+"\n"+rows.join("\n")],{type:"text/csv;charset=utf-8"});
+            const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+            const tag=histFrom||histTo?`${histFrom||"debut"}_${histTo||"fin"}`:"tout";
+            a.download=`historique_${histTab}_${tag}.csv`; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },500);
+          }}>⬇ CSV</button>
           {(histFrom||histTo) && <span style={{color:"#94a3b8"}}>{histRows.length} ligne(s) affichée(s)</span>}
         </div>}
         {histView==="jours" && (dayStats.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucun trade clôturé.</div> : <div style={{overflowX:"auto",marginBottom:10}}><table style={{borderCollapse:"collapse"}}>

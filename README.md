@@ -1250,3 +1250,8 @@ Fichiers : `index_src.html`, `index.html`, `manual_trading.py`, `bot_engine.py` 
 ## v4.448 — Historique : sous-onglets « 📜 Trades » et « 📅 Par jour »
 Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
 - L'historique (LIVE et PAPER) a deux sous-onglets. **Trades** : filtre par date, résumé, liste. **Par jour** : tableau des résultats journaliers ; un clic sur un jour ouvre ses trades.
+
+## v4.449 — Historique : export CSV de la sélection
+Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
+- Bouton **⬇ CSV** (sous-onglet Trades) : télécharge les lignes affichées (onglet LIVE ou PAPER, période « Du … au … » choisie) dans `historique_<mode>_<du>_<au>.csv`.
+- Séparateur `;`, décimales à la virgule, UTF-8 avec BOM (ouverture directe dans Excel). Colonnes : id, actif, sens, marché, mode, source, statut, ouverture, fermeture (heure locale), entrée, sortie, taille, levier, PnL brut, frais, funding, net, coûts réels/estimés, pic de gain, motif, type et note Scalp, régime.
