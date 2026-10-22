@@ -2768,6 +2768,8 @@ class ManualOrderBody(BaseModel):
     tp1_pct: Optional[float] = None       # v4.404 : TP1 (cloture partielle), le TP devient le TP2
     tp1_close_pct: Optional[float] = None
     tp1_be: Optional[bool] = None
+    be_arm_pct: Optional[float] = None      # v4.445/454 : stop au seuil de rentabilite (tickets Scalp)
+    be_lock_pct: Optional[float] = None
 
 
 class ManualModifyBody(BaseModel):
@@ -2800,6 +2802,8 @@ class ManualModifyBody(BaseModel):
     execution: Optional[str] = None          # v4.402 : critere d'entree d'un ordre programme
     trend_entry: Optional[str] = None        # "" = aucune condition de tendance
     require_valid: Optional[bool] = None
+    be_arm_pct: Optional[float] = None       # v4.455 : stop au seuil de rentabilite (0 = aucun)
+    be_lock_pct: Optional[float] = None
     tp1_price: Optional[float] = None        # v4.404 : position ouverte
     tp1_pct: Optional[float] = None          # v4.404 : ordre programme
     clear_tp1: bool = False
@@ -2933,6 +2937,12 @@ def manual_proposal(strategy: str, ticker: str, direction: str, market: str = "p
     return p
 
 
+@app.get("/api/manual/preset")
+def manual_preset(preset: str, ticker: str, direction: str, market: str = "perp", email: str = Depends(require_user)):
+    """v4.455 — reglages par defaut d un mode, applicables a un ticket / ordre programme / position."""
+    return _manual_call(bot.manual.preset, preset, _norm_ticker(ticker), direction, market)
+
+
 @app.post("/api/manual/orders")
 def manual_submit(body: ManualOrderBody, email: str = Depends(require_user)):
     params = body.model_dump()
@@ -2960,7 +2970,7 @@ def manual_modify(item_id: int, body: ManualModifyBody, email: str = Depends(req
         changes["tp_price"] = body.tp_price
     if not body.clear_tp and body.tp_pct:
         changes["tp_pct"] = body.tp_pct
-    for _k in ("sl_pct", "notional_usd", "leverage", "trigger_price", "trigger_time", "confirm_pct", "expiry_hours", "direction", "mode"):
+    for _k in ("sl_pct", "notional_usd", "leverage", "trigger_price", "trigger_time", "confirm_pct", "expiry_hours", "direction", "mode", "be_arm_pct", "be_lock_pct"):
         if getattr(body, _k) is not None:
             changes[_k] = getattr(body, _k)
     if body.clear_ttp:
@@ -4230,6 +4240,36 @@ def _supsw_stats(events, fee, sl_pct, tp_pct):
             "by_weekly": group(events, lambda r: r.get("weekly_trend") or "?"), "by_btc": group(events, lambda r: r.get("btc_trend") or "?"),
             "by_funding": group(events, fbucket), "by_trend": group(events, lambda r: r.get("trend") or "?"),
             "exits": exits, "real": real, "breakeven_tp_rate": breakeven}
+
+
+class SupSymbolsBody(BaseModel):
+    symbols: List[str]
+
+
+def _supsw_available_symbols():
+    fx = set(cfg.get("FOREX_SYMBOLS", []))
+    return sorted({be.ticker_from_slot_key(s) for s in cfg.get("SYMBOLS", [])
+                   if be.ticker_from_slot_key(s) not in fx and ":" not in be.ticker_from_slot_key(s)})
+
+
+@app.get("/api/supsw/symbols")
+def supsw_symbols_get(email: str = Depends(require_user)):
+    """v4.452 — actifs evalues par Swing Support (liste modifiable) + actifs disponibles."""
+    return {"symbols": list(cfg.get("SUPSW_SYMBOLS", ["BTC", "ETH", "HYPE", "TAO", "SUI"])), "available": _supsw_available_symbols()}
+
+
+@app.put("/api/supsw/symbols")
+def supsw_symbols_put(body: SupSymbolsBody, email: str = Depends(require_user)):
+    avail = set(_supsw_available_symbols())
+    syms = []
+    for s in body.symbols:
+        s = str(s).strip()
+        if s in avail and s not in syms:
+            syms.append(s)
+    if not syms:
+        raise HTTPException(400, "Choisissez au moins un actif.")
+    _apply_and_persist("SUPSW_SYMBOLS", syms)
+    return {"ok": True, "symbols": syms}
 
 
 @app.get("/api/supsw/status")

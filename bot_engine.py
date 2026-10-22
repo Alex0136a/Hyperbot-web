@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.451"
+BOT_VERSION = "4.456"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -1624,6 +1624,7 @@ PROFILE_SWING = {
     "SITUATION_MIN_ROOM_PCT": 1.0,         # contre-tendance : marge minimale avant le niveau 1h oppose
     "COUNTERTREND_TTP_MULT": 0.6,          # contre-tendance : trailing arme a 60 % et repli toleré a 60 %
     # v4.273 — TRADING MANUEL
+    "MANUAL_SCALP_OPP_TTL_SEC": 300,       # v4.454 : une ouverture Scalp reste proposee en manuel pendant 5 min
     "MANUAL_OPPORTUNITY_TTL_SEC": 120,     # une opportunite reste valable tant qu elle est revue dans ce delai
     "MANUAL_DEFAULT_NOTIONAL_USD": 15.0,   # taille proposee (notionnel) — minimum Hyperliquid 10 $
     "MANUAL_DEFAULT_LEVERAGE": 1,

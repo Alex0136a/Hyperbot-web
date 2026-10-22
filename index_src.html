@@ -985,7 +985,7 @@ function PushPanel({ token, onPrepare }) {
         {P.opps ? <div style={{marginLeft:22,marginTop:4}}>
           <div style={{fontSize:10,color:"#64748b",marginBottom:4}}>Types annoncés :</div>
           <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-            {[["swing_support","Swing Support"],["accumulation","Accumulation"],["spot_accumulation","Spot-Accum"],["funding_contrarian","Funding"],["forex","Forex"]].map(([k,l])=>{
+            {[["swing_support","Swing Support"],["accumulation","Accumulation"],["spot_accumulation","Spot-Accum"],["scalp_crypto","Scalp"],["forex","Forex"]].map(([k,l])=>{
               const on = (P.opps_types||[]).includes(k);
               return <button key={k} style={{...MT.seg(on,"#22c55e"),fontSize:11}} onClick={()=>setPref("opps_types", on ? (P.opps_types||[]).filter(x=>x!==k) : [...(P.opps_types||[]), k])}>{l}</button>;
             })}
@@ -994,7 +994,7 @@ function PushPanel({ token, onPrepare }) {
             <b>Swing Support</b> : setup valide sur <b>tous les actifs crypto</b> (les 5 du mode, pris ou non par le bot, et les autres en alerte seulement). Note de qualité minimale : {num("opps_min_score",56,"/ 100")}
             <div>Repères : 40 = souple · 60 = normal · 80 = strict. Note = Daily 20, Weekly 15, BTC 15, H4 10, contacts de la zone 15, flux 15, funding 10 (non calibrée sur des résultats : à ajuster à l'usage).</div>
           </div>
-          <div style={{fontSize:10,color:"#64748b",marginTop:4}}>Une même opportunité n'est annoncée qu'une fois toutes les {num("opps_cooldown_min",56,"min")}. « confiance ≥ » ci-dessus concerne Accumulation, Spot-Accum, Funding et Forex.</div>
+          <div style={{fontSize:10,color:"#64748b",marginTop:4}}>Une même opportunité n'est annoncée qu'une fois toutes les {num("opps_cooldown_min",56,"min")}. « confiance ≥ » ci-dessus concerne Accumulation, Spot-Accum, Scalp (note) et Forex.</div>
         </div> : null}
       </div>
     </div>);
@@ -1299,6 +1299,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
   const [histAsset, setHistAsset] = useState("");     // v4.451 : filtre par actif
   const [histView, setHistView] = useState("trades");     // v4.448 : sous-onglets de l historique (trades / par jour)
   const [histFrom, setHistFrom] = useState(""), [histTo, setHistTo] = useState("");     // v4.447 — filtre par date (AAAA-MM-JJ, heure locale)
+  const [oppView, setOppView] = useState("liste");     // v4.454 : opportunites : liste / par mode
   const [histTab, setHistTab] = useState("live");     // v4.425 — historique : onglet LIVE / PAPER
   const [histSel, setHistSel] = useState({});            // v4.426 — lignes cochees pour suppression
 
@@ -1314,7 +1315,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
       const p = await apiCall(`/api/manual/proposal?${q}`,"GET",null,token);
       setProp(p);
       setF(prev => ({
-        market, mode: prev?.mode || "paper", execution: prev?.execution || "now",
+        market, mode: (p.default_mode==="live" ? "live" : (prev?.mode || "paper")), execution: prev?.execution || "now", preset: p.strategy, preset0: p.strategy, be_arm_pct: p.be_arm_pct ?? "", be_lock_pct: p.be_lock_pct ?? "",
         trigger_price: prev?.trigger_price || "", trigger_time: prev?.trigger_time || "",
         expiry_hours: prev?.expiry_hours || 24, require_valid: prev?.require_valid ?? true,
         notional_usd: p.notional_usd, leverage: p.leverage,
@@ -1328,6 +1329,37 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
       }));
     } catch(e) { alert(e.message); setSel(null); setProp(null); setF(null); }
   };
+  // v4.455 — reglages par defaut d'un mode (Scalp, Swing Support, Libre, Accumulation...) applicables au ticket, a un ordre programme ou a une position
+  const PRESETS = [["scalp_crypto","⚡ Scalp"],["swing_support","🧱 Swing Support"],["libre","✋ Libre"],["accumulation","🎯 Accumulation"],["spot_accumulation","🌱 Spot-Accum"],["funding_contrarian","💰 Funding"],["forex","💱 Forex"]];
+  const getPreset = (key, ticker, direction, market) => apiCall(`/api/manual/preset?${new URLSearchParams({preset:key, ticker, direction, market: market||"perp"})}`,"GET",null,token);
+  const presetBar = (current, onPick) => (
+    <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",margin:"6px 0 10px"}}>
+      <span style={{fontSize:11,color:"#94a3b8"}}>Réglages par défaut du mode :</span>
+      {PRESETS.map(([k,l])=><button key={k} style={{...MT.seg(current===k,"#c084fc"),flex:"none",padding:"4px 10px",fontSize:11}} onClick={()=>onPick(k)}>{l}</button>)}
+    </div>);
+  const applyPresetTicket = async (key) => { try {
+    const p = await getPreset(key, sel.ticker, sel.direction, f.market);
+    setF(prev => ({...prev, preset: key, notional_usd: p.notional_usd, leverage: prev.market==="spot" ? 1 : p.leverage, sl_pct: p.sl_pct, tp_on: !p.free, tp_pct: p.tp_pct,
+      ttp_on: !p.free && !p.no_ttp, ttp_arm_pct: p.ttp_arm_pct, ttp_trail_pct: p.ttp_trail_pct, tp_run: !!p.tp_run, tp_run_lock_pct: p.tp_run_lock_pct ?? 0.5, tp_run_trail_pct: p.tp_run_trail_pct ?? 0.5,
+      lock_on: !!p.free, lock_arm_pct: p.lock_arm_pct ?? p.sl_pct, lock_fraction_pct: Math.round((p.lock_fraction ?? 0.5)*100), be_arm_pct: p.be_arm_pct ?? "", be_lock_pct: p.be_lock_pct ?? "", tp1_on: false}));
+    setProp(prev => ({...prev, sl_basis: p.sl_basis, tp_basis: p.tp_basis}));
+  } catch(e) { alert(e.message); } };
+  const applyPresetSched = async (o, key) => { try {
+    const p = await getPreset(key, o.ticker, sched.direction || o.direction, o.market);
+    setSched(prev => ({...prev, preset: key, notional_usd: p.notional_usd, leverage: o.market==="spot" ? 1 : p.leverage, sl_pct: p.sl_pct, tp_pct: p.free ? "" : p.tp_pct,
+      tp_run: !!p.tp_run, tp_run_lock_pct: p.tp_run_lock_pct ?? 0.5, tp_run_trail_pct: p.tp_run_trail_pct ?? 0.5, tp1_pct: "",
+      ttp_off: !!(p.free || p.no_ttp), ttp_arm_pct: p.ttp_arm_pct ?? "", ttp_trail_pct: p.ttp_trail_pct ?? "",
+      lock_off: !p.free, lock_arm_pct: p.lock_arm_pct ?? "", lock_fraction_pct: Math.round((p.lock_fraction ?? 0.5)*100), be_arm_pct: p.be_arm_pct ?? "", be_lock_pct: p.be_lock_pct ?? ""}));
+  } catch(e) { alert(e.message); } };
+  const applyPresetEdit = async (pos, key) => { try {
+    const p = await getPreset(key, pos.ticker, pos.direction, pos.market);
+    const sg = pos.direction==="long" ? 1 : -1, en = Number(pos.entry_price);
+    const px = pct => Number((en * (1 + sg * pct / 100)).toPrecision(7));
+    setEdit(prev => ({...prev, preset: key, sl_price: px(-p.sl_pct), tp_price: p.free ? "" : px(p.tp_pct),
+      tp_run: !!p.tp_run, tp_run_lock_pct: p.tp_run_lock_pct ?? 0.5, tp_run_trail_pct: p.tp_run_trail_pct ?? 0.5,
+      ttp_off: !!(p.free || p.no_ttp), ttp_arm_pct: p.ttp_arm_pct ?? "", ttp_trail_pct: p.ttp_trail_pct ?? "",
+      lock_off: !p.free, lock_arm_pct: p.lock_arm_pct ?? "", lock_fraction_pct: Math.round((p.lock_fraction ?? 0.5)*100), be_arm_pct: p.be_arm_pct ?? "", be_lock_pct: p.be_lock_pct ?? ""}));
+  } catch(e) { alert(e.message); } };
   const choose = (opp0, preset) => { const opp = (opp0.strategy==="libre" && opp0.direction==="long" && !String(opp0.ticker).startsWith("xyz:")) ? {...opp0, strategy:"swing_support"} : opp0;   /* v4.415 : par defaut Swing Support */ setSel(opp); setF(null); loadProposal(opp, "perp", preset); setTimeout(() => { const el = document.getElementById("manual-ticket"); if (el) el.scrollIntoView({behavior:"smooth", block:"start"}); }, 700); };
   // v4.381 : prepare un ticket depuis une alerte. Opportunite encore valable -> ticket de son mode ; sinon ticket libre (Swing Support : ses propres niveaux).
   useEffect(() => {      // v4.406 : ticket prepare depuis la fenetre « resume de l'actif »
@@ -1340,7 +1372,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
     else { setErr(`Opportunité ${o.ticker} expirée : ticket libre préparé (stop, objectif et taille par défaut).`); choose({strategy:"libre", ticker:o.ticker, direction:o.direction}); }
   };
 
-  const oppStillValid = sel && ((sel.strategy==="libre" || sel.strategy==="swing_support") || (st && st.opportunities.some(o => o.strategy===sel.strategy && o.ticker===sel.ticker && o.direction===sel.direction)));
+  const oppStillValid = sel && ((sel.strategy==="libre" || sel.strategy==="swing_support" || sel.strategy==="scalp_crypto") || (st && st.opportunities.some(o => o.strategy===sel.strategy && o.ticker===sel.ticker && o.direction===sel.direction)));
   const refPrice = f && prop ? ((f.execution==="price_above"||f.execution==="price_below"||f.execution==="bounce_up"||f.execution==="bounce_down") && Number(f.trigger_price)>0 ? Number(f.trigger_price) : prop.price) : null;
   const isLong = sel?.direction === "long";
   const pxFromPct = (pct, side) => refPrice ? refPrice * (1 + (side==="sl" ? (isLong?-1:1) : (isLong?1:-1)) * pct/100) : null;
@@ -1350,12 +1382,13 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
   const submit = async () => {
     if (!f || !sel) return;
     const body = {
-      strategy: sel.strategy, ticker: sel.ticker, direction: sel.direction, market: f.market, mode: f.mode,
+      strategy: (f.preset && f.preset!==f.preset0) ? (["scalp_crypto","swing_support","libre"].includes(f.preset) ? f.preset : "libre") : sel.strategy, ticker: sel.ticker, direction: sel.direction, market: f.market, mode: f.mode,
       execution: f.execution, notional_usd: Number(f.notional_usd), leverage: f.market==="spot" ? 1 : Number(f.leverage),
       sl_pct: Number(f.sl_pct), tp_pct: f.tp_on ? Number(f.tp_pct) : null,
       ttp_arm_pct: f.ttp_on ? Number(f.ttp_arm_pct) : null, ttp_trail_pct: f.ttp_on ? Number(f.ttp_trail_pct) : null,
       tp_run: !!(f.tp_on && f.tp_run), tp_run_lock_pct: Number(f.tp_run_lock_pct) || 0, tp_run_trail_pct: Number(f.tp_run_trail_pct) || 0.5,
       tp1_pct: (f.tp_on && f.tp1_on && Number(f.tp1_pct) > 0) ? Number(f.tp1_pct) : null, tp1_close_pct: Number(f.tp1_close_pct) || 50, tp1_be: !!f.tp1_be,
+      be_arm_pct: Number(f.be_arm_pct) > 0 ? Number(f.be_arm_pct) : null, be_lock_pct: Number(f.be_lock_pct) > 0 ? Number(f.be_lock_pct) : null,
       trigger_price: (f.execution==="price_above"||f.execution==="price_below"||f.execution==="bounce_up"||f.execution==="bounce_down") ? Number(f.trigger_price) : null, confirm_pct: (f.execution==="bounce_up"||f.execution==="bounce_down") ? (Number(f.confirm_pct)||0.3) : null,
       trigger_time: f.execution==="time" && f.trigger_time ? new Date(f.trigger_time).getTime()/1000 : null,
       expiry_hours: Number(f.expiry_hours) || 24, require_valid: !!f.require_valid, confirm_live: false,
@@ -1417,6 +1450,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
     if (sched.lock_off) body.clear_lock = true; else { if (sched.lock_arm_pct) body.lock_arm_pct = Number(sched.lock_arm_pct); if (sched.lock_fraction_pct) body.lock_fraction = Number(sched.lock_fraction_pct)/100; }
     body.notional_usd = Number(sched.notional_usd); if (o.market!=="spot") body.leverage = Number(sched.leverage)||1;
     body.sl_pct = Number(sched.sl_pct);
+    if (sched.preset) { body.be_arm_pct = Number(sched.be_arm_pct) || 0; body.be_lock_pct = Number(sched.be_lock_pct) || 0.1; }
     if (sched.tp_pct==="" ) body.clear_tp = true; else body.tp_pct = Number(sched.tp_pct);
     body.tp_run = !!sched.tp_run && sched.tp_pct!==""; body.tp_run_lock_pct = Number(sched.tp_run_lock_pct)||0; body.tp_run_trail_pct = Number(sched.tp_run_trail_pct)||0.5;
     if (sched.tp1_pct==="" || sched.tp1_pct==null || sched.tp_pct==="") body.clear_tp1 = true; else { body.tp1_pct = Number(sched.tp1_pct); body.tp1_close_pct = Number(sched.tp1_close_pct) || 50; body.tp1_be = !!sched.tp1_be; }
@@ -1434,6 +1468,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
     if (edit.lock_off) body.clear_lock = true;
     else { if (edit.lock_arm_pct) body.lock_arm_pct = Number(edit.lock_arm_pct); if (edit.lock_fraction_pct) body.lock_fraction = Number(edit.lock_fraction_pct)/100; }
     if (edit.trend_exit === "") body.clear_trend_exit = true; else if (edit.trend_exit) body.trend_exit = edit.trend_exit;
+    if (edit.preset) { body.be_arm_pct = Number(edit.be_arm_pct) || 0; body.be_lock_pct = Number(edit.be_lock_pct) || 0.1; }
     try {
       const res = await apiCall(`/api/manual/positions/${p.id}`,"PUT",body,token);
       if (body.tp_run && !(res && res.tp_run)) alert("⚠️ « Laisser courir au TP » n'a pas été pris en compte : le serveur n'est pas à jour (déposer api.py et manual_trading.py de la v4.395, puis attendre le redéploiement) ou le trade n'a pas de TP.");
@@ -1482,7 +1517,23 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
       {/* OPPORTUNITES */}
       <div style={MT.card}>
         <div style={MT.title}>🎯 OPPORTUNITÉS DU BOT <span style={{fontWeight:400,color:"#64748b"}}>— valables tant que le bot les confirme (revues il y a moins de {st.opportunity_ttl_sec}s), dans le sens qu'il prévoit</span></div>
-        {st.opportunities.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucune opportunité valable pour le moment. Elles apparaissent dès qu'un mode du bot détecte une entrée (y compris quand il ne peut pas la prendre, faute de place).</div> : (
+        <div style={{display:"flex",gap:6,marginBottom:10}}>
+          {[["liste",`🎯 Toutes (${st.opportunities.length})`],["modes","🗂 Par mode"]].map(([k,l])=><button key={k} style={{...MT.seg(oppView===k,"#60a5fa"),flex:"none",padding:"6px 14px"}} onClick={()=>setOppView(k)}>{l}</button>)}
+        </div>
+        {oppView==="modes" && (()=>{ const ORDER=[["scalp_crypto","⚡ Scalp"],["swing_support","🧱 Swing Support"],["accumulation","🎯 Accumulation"],["spot_accumulation","🌱 Spot-Accum"],["forex","💱 Forex"],["funding_contrarian","💰 Funding"]];
+          const known=ORDER.map(x=>x[0]); const extra=[...new Set(st.opportunities.map(o=>o.strategy))].filter(s=>!known.includes(s)).map(s=>[s,s]);
+          return <div>{[...ORDER,...extra].map(([k,l])=>{ const rows=st.opportunities.filter(o=>o.strategy===k);
+            return <div key={k} style={{marginBottom:10,borderTop:"1px solid #1e2d4a",paddingTop:6}}>
+              <div style={{fontWeight:800,color:rows.length?"#e2e8f0":"#64748b",marginBottom:4}}>{l} <span style={{fontWeight:400,color:"#64748b"}}>· {rows.length} opportunité{rows.length>1?"s":""}{k==="scalp_crypto"?" · ouverture live manuelle, valable "+Math.round(((rows[0]&&rows[0].ttl_sec)||300)/60)+" min":""}</span></div>
+              {rows.length===0 ? <div style={{fontSize:11,color:"#475569"}}>Aucune pour le moment.</div> : rows.map(o=>(
+                <div key={o.strategy+o.ticker+o.direction} style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",padding:"3px 0",fontSize:12}}>
+                  <span data-tk={o.ticker} style={{fontWeight:800,minWidth:60,cursor:"pointer",textDecoration:"underline dotted"}}>{o.ticker}</span>{dirBadge(o.direction)}
+                  <span>{o.confidence!=null?`${Math.round(o.confidence)} %`:"—"}</span><span>{fmtP(o.current_price||o.price)}</span><span style={{color:"#94a3b8"}}>il y a {fmtAgo(o.age_sec)}</span>
+                  {k==="scalp_crypto" && <span style={{color:o.left_sec<60?"#fca5a5":"#fbbf24"}}>⏱ reste {Math.floor(o.left_sec/60)}:{String(o.left_sec%60).padStart(2,"0")}</span>}
+                  <button style={MT.btn("#60a5fa")} onClick={()=>choose(o)}>{k==="scalp_crypto"?"Ouvrir en live":"Préparer"}</button>
+                </div>))}
+            </div>; })}</div>; })()}
+        {oppView==="liste" && (st.opportunities.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucune opportunité valable pour le moment. Elles apparaissent dès qu'un mode du bot détecte une entrée (y compris quand il ne peut pas la prendre, faute de place).</div> : (
           <div style={{overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%"}}>
             <thead><tr>{["Mode","Actif","Sens","Confiance","Prix","Depuis","Spot",""].map(h=><th key={h} style={MT.th}>{h}</th>)}</tr></thead>
             <tbody>{st.opportunities.map(o => {
@@ -1494,7 +1545,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
                 <td style={MT.td}>{o.spot_available?"✓":"—"}</td>
                 <td style={MT.td}><button style={MT.btn("#60a5fa")} onClick={()=>choose(o)}>Préparer</button></td>
               </tr>; })}</tbody>
-          </table></div>)}
+          </table></div>))}
       </div>
 
       {/* FORMULAIRE */}
@@ -1506,6 +1557,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
           </div>
           {!oppStillValid && <div style={{background:"#7f1d1d33",border:"1px solid #7f1d1d",borderRadius:7,padding:8,color:"#fca5a5",fontSize:12,marginBottom:10}}>⛔ Le bot ne confirme plus cette opportunité : l'ordre sera refusé.</div>}
           {prop.reasons?.length>0 && <div style={{fontSize:11,color:"#64748b",marginBottom:12}}>Raisons du bot : {prop.reasons.join(" · ")}</div>}
+          {presetBar(f.preset, applyPresetTicket)}
 
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(230px,1fr))",gap:14}}>
             <div>
@@ -1641,6 +1693,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
               <td style={MT.td}><button style={MT.btn("#1e2d4a","#93c5fd")} onClick={()=>openSchedEdit(o)}>Modifier</button> <button style={MT.btn("#1e2d4a","#fca5a5")} onClick={()=>cancelOrder(o.id)}>Annuler</button></td>
             </tr>
             {schedId===o.id && <tr><td colSpan={10} style={{...MT.td,background:"#0b1222"}}>
+              <div>{presetBar(sched.preset, k=>applyPresetSched(o,k))}</div>
               <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end",padding:"6px 0"}}>
                 <div><span style={MT.label}>SENS</span><select style={{...MT.input,width:100}} value={sched.direction} onChange={e=>setSched({...sched,direction:e.target.value})}><option value="long">LONG</option>{o.market!=="spot" && <option value="short">SHORT</option>}</select></div>
                 <div><span style={MT.label}>MODE</span><select style={{...MT.input,width:100}} value={sched.mode} onChange={e=>setSched({...sched,mode:e.target.value})}><option value="paper">PAPER</option><option value="live">🔴 LIVE</option></select></div>
@@ -1705,6 +1758,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
               </span>
             </div>
             {editId===p.id && <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:8,alignItems:"flex-end"}}>
+              <div style={{width:"100%"}}>{presetBar(edit.preset, k=>applyPresetEdit(p,k))}<div style={{fontSize:10,color:"#64748b",marginTop:-6}}>Remplit les champs ci-dessous (stop et objectif recalculés depuis le prix d'entrée) : rien n'est appliqué avant « Enregistrer ».</div></div>
               <div><span style={MT.label}>SL (prix)</span><input style={{...MT.input,width:120}} type="number" step="any" value={edit.sl_price} onChange={e=>setEdit({...edit,sl_price:e.target.value})}/></div>
               <div><span style={MT.label}>TP (prix, vide = aucun)</span><input style={{...MT.input,width:140}} type="number" step="any" value={edit.tp_price} onChange={e=>setEdit({...edit,tp_price:e.target.value})}/></div>
               <label style={{fontSize:11,color:"#94a3b8",display:"flex",gap:4,alignItems:"center"}}><input type="checkbox" checked={!!edit.tp_run} onChange={e=>{ const on=e.target.checked; setEdit(prev=>{ if(!on) return {...prev,tp_run:false}; const ref=Math.max(Number(p.current_price)||0,Number(p.entry_price)||0)||Number(p.entry_price); const refS=Math.min(Number(p.current_price)||Infinity,Number(p.entry_price)||Infinity); const dflt = p.direction==="long" ? ref*(1+RUN_DEF.tp_pct/100) : refS*(1-RUN_DEF.tp_pct/100); return {...prev, tp_run:true, tp_price:(prev.tp_price===""||prev.tp_price==null?Number(dflt.toPrecision(6)):prev.tp_price), tp_run_lock_pct:(prev.tp_run_lock_pct===""||prev.tp_run_lock_pct==null?RUN_DEF.lock:prev.tp_run_lock_pct), tp_run_trail_pct:(Number(prev.tp_run_trail_pct)>0?prev.tp_run_trail_pct:RUN_DEF.trail)}; }); }}/>laisser courir au TP</label>
@@ -1753,8 +1807,8 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
             const iso=ts=>{ if(!ts) return ""; const d=new Date(ts*1000); const p=n=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; };
             const q=v=>{ if(v===null||v===undefined) return ""; const s=String(v).replace(/"/g,'""'); return /[;"\n\r]/.test(s)?`"${s}"`:s; };
             const num=v=>(v===null||v===undefined||v==="")?"":String(v).replace(".",",");
-            const head=["id","actif","sens","marche","mode","source","statut","ouverture","fermeture","entree","sortie","taille_usd","levier","pnl_brut","frais","funding","net","couts_reels","pic_gain_pct","motif","scalp_type","scalp_note","regime"];
-            const rows=histRows.map(h=>{ const rc=h.real_costs; return [h.id,h.ticker,h.direction,h.market,h.mode,h.strategy_label,h.status,iso(h.opened_at||h.created_at),iso(h.closed_at),num(h.entry_price),num(h.exit_price),num(h.notional_usd!=null?Number(h.notional_usd).toFixed(2):""),h.leverage??"",num(h.pnl!=null?Number(h.pnl).toFixed(4):""),rc?num(rc.fees):num(h.fees_est!=null?Number(h.fees_est).toFixed(4):""),rc?num(rc.funding):"",num(h.pnl_net!=null?Number(h.pnl_net).toFixed(4):""),rc?"oui":"estimes",num(h.peak_pct!=null?Number(h.peak_pct).toFixed(3):""),h.reason||h.error||"",h.scalp?h.scalp.kind:"",h.scalp&&h.scalp.score!=null?Math.round(h.scalp.score):"",h.scalp&&h.scalp.regime?h.scalp.regime.label:""].map(q).join(";"); });
+            const head=["id","actif","sens","marche","mode","source","statut","ouverture","fermeture","entree","sortie","taille_usd","levier","pnl_brut","frais","funding","net","couts_reels","pic_gain_pct","motif","scalp_type","scalp_note","regime","flux_achats","flux_n","tend_h1","tend_15m","btc_1h_pct"];
+            const rows=histRows.map(h=>{ const rc=h.real_costs; return [h.id,h.ticker,h.direction,h.market,h.mode,h.strategy_label,h.status,iso(h.opened_at||h.created_at),iso(h.closed_at),num(h.entry_price),num(h.exit_price),num(h.notional_usd!=null?Number(h.notional_usd).toFixed(2):""),h.leverage??"",num(h.pnl!=null?Number(h.pnl).toFixed(4):""),rc?num(rc.fees):num(h.fees_est!=null?Number(h.fees_est).toFixed(4):""),rc?num(rc.funding):"",num(h.pnl_net!=null?Number(h.pnl_net).toFixed(4):""),rc?"oui":"estimes",num(h.peak_pct!=null?Number(h.peak_pct).toFixed(3):""),h.reason||h.error||"",h.scalp?h.scalp.kind:"",h.scalp&&h.scalp.score!=null?Math.round(h.scalp.score):"",h.scalp&&h.scalp.regime?h.scalp.regime.label:"",...(()=>{ const x=(h.scalp&&h.scalp.ctx)||{}; return [num(x.flow_buy),x.flow_n??"",x.t1h||"",x.m15||"",num(x.btc1h)]; })()].map(q).join(";"); });
             const blob=new Blob(["\ufeff"+head.join(";")+"\n"+rows.join("\n")],{type:"text/csv;charset=utf-8"});
             const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
             const tag=histFrom||histTo?`${histFrom||"debut"}_${histTo||"fin"}`:"tout";
@@ -1857,6 +1911,9 @@ function App() {
   const [supSt, setSupSt] = useState(null);
   const [supStats, setSupStats] = useState(null);
   const [supErr, setSupErr] = useState(null);
+  const [supSyms, setSupSyms] = useState(null);     // v4.452 : actifs evalues par Swing Support {symbols, available}
+  const [supSymsEdit, setSupSymsEdit] = useState(null);
+  const loadSupSyms = async () => { try { const r = await apiCall("/api/supsw/symbols","GET",null,token); setSupSyms(r); setSupSymsEdit(r.symbols); } catch(e) { alert("Erreur : "+e.message); } };
   const loadSupSt = useCallback(async () => {
     try { setSupSt(await apiCall("/api/supsw/status","GET",null,token)); setSupErr(null); }
     catch(e) { setSupErr((e && e.message) ? e.message : String(e)); }
@@ -4566,6 +4623,22 @@ Confirmer ?`
                       <div style={{color:"#94a3b8",marginTop:4}}>Crypto (BTC, ETH, HYPE, TAO, SUI). Un LONG près d'un support Daily en tendance haussière, avec un <b>stop large</b> (simple filet) et un <b>objectif proche</b>. La vraie protection est la <b>sortie anticipée</b> quand le support casse. Chaque signal (pris ou non) est journalisé avec le contexte BTC / Weekly / funding / flux, puis mesuré à 24 h et 72 h ; chaque sortie anticipée est suivie 1 h, 4 h et 24 h pour savoir si elle était <b>trop tôt</b>.</div>
                       {!P ? (supErr ? <div style={{color:"#fca5a5",marginTop:6}}>Suivi du Swing Support indisponible : <b>{supErr}</b>. Si « Not Found », le serveur n'est pas à jour (api.py, db.py, bot_engine.py, swing_support.py).</div> : <div style={{color:"#94a3b8",marginTop:6}}>Chargement…</div>) : (
                         <div style={{marginTop:6}}>
+                          <div style={{margin:"6px 0"}}>
+                            {!supSyms ? <button style={MT.btn("#334155","#e2e8f0")} onClick={loadSupSyms}>⚙️ Choisir les actifs surveillés ({(P.assets||[]).length})</button> : (
+                              <div style={{background:"#0f172a",border:"1px solid #1e2d4a",borderRadius:8,padding:8}}>
+                                <div style={{marginBottom:6,color:"#cbd5e1"}}>Actifs évalués par Swing Support ({(supSymsEdit||[]).length}/{supSyms.available.length}) :</div>
+                                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                                  {supSyms.available.map(s=>{ const on=(supSymsEdit||[]).includes(s); return <button key={s} style={{...MT.seg(on,"#c084fc"),flex:"none",padding:"3px 9px",fontSize:11}} onClick={()=>setSupSymsEdit(on?supSymsEdit.filter(x=>x!==s):[...supSymsEdit,s])}>{s}</button>; })}
+                                </div>
+                                <div style={{display:"flex",gap:8,marginTop:8,flexWrap:"wrap"}}>
+                                  <button style={MT.btn("#334155","#e2e8f0")} onClick={()=>setSupSymsEdit(supSyms.available)}>Tous</button>
+                                  <button style={MT.btn("#334155","#e2e8f0")} onClick={()=>setSupSymsEdit(["BTC","ETH","HYPE","TAO","SUI"].filter(s=>supSyms.available.includes(s)))}>Par défaut (5)</button>
+                                  <button style={MT.btn("#0ea5e9","#fff")} onClick={async()=>{ try{ await apiCall("/api/supsw/symbols","PUT",{symbols:supSymsEdit},token); setSupSyms(null); await loadSupSt(); alert("Actifs enregistrés. Ils sont évalués au prochain cycle."); }catch(e){ alert("Erreur : "+e.message); } }}>Enregistrer</button>
+                                  <button style={MT.btn("#334155","#e2e8f0")} onClick={()=>setSupSyms(null)}>Annuler</button>
+                                </div>
+                                <div style={{color:"#64748b",marginTop:6,fontSize:10}}>Ces actifs sont aussi retirés de Tendance / Accumulation tant que « Actifs réservés » est à 1. L'entrée automatique de Swing Support s'applique à tous les actifs cochés.</div>
+                              </div>)}
+                          </div>
                           {P.enabled && (P.assets||[]).map(a=>(
                             <div key={a.asset} style={{display:"flex",gap:8,flexWrap:"wrap",padding:"2px 0",borderTop:"1px solid #1e2d4a"}}>
                               <b style={{color:"#e2e8f0",minWidth:60}}>{a.asset}</b>

@@ -115,12 +115,12 @@ class ManualTrading:
         now = time.time()
         with self.lock:
             for c in candidates:
-                if self.ticker_busy(c["ticker"]):
+                if self._opp_busy(strategy, c["ticker"]):
                     continue
                 key = (strategy, c["ticker"], c["signal"])
                 opp = self.opportunities.get(key)
                 is_new = False
-                if opp is None or now - opp["last_seen"] > self._ttl():
+                if opp is None or now - opp["last_seen"] > self._ttl(strategy):
                     opp = {"strategy": strategy, "ticker": c["ticker"], "direction": c["signal"],
                            "first_seen": now}
                     self.opportunities[key] = opp
@@ -138,26 +138,43 @@ class ManualTrading:
                     if _push is not None:
                         _push.on_opportunity(dict(opp))
 
-    def _ttl(self):
+    def _ttl(self, strategy=None):
+        if strategy == "scalp_crypto":      # v4.454 : une ouverture Scalp reste proposee en manuel pendant 5 min (puis disparait)
+            return float(self.cfg.get("MANUAL_SCALP_OPP_TTL_SEC", 300))
         return self.cfg.get("MANUAL_OPPORTUNITY_TTL_SEC", 120)
+
+    def _opp_busy(self, strategy, ticker):
+        """Opportunite non proposable car l actif est occupe. Scalp : seul un trade LIVE sur l actif compte (l opportunite sert a
+        ouvrir en live ; le trade paper que le Scalp vient d ouvrir ne doit pas la masquer)."""
+        if strategy != "scalp_crypto":
+            return self.ticker_busy(ticker)
+        try:
+            if any(i.get("mode") == "live" and i.get("ticker") == ticker and i.get("status") in ("scheduled", "opening", "open", "closing")
+                   for i in list(self.items.values())):
+                return True
+            return bool(self._bot_live_position_on(ticker))
+        except Exception:
+            return False
 
     def get_opportunity(self, strategy, ticker, direction):
         opp = self.opportunities.get((strategy, ticker, direction))
-        if opp and time.time() - opp["last_seen"] <= self._ttl():
+        if opp and time.time() - opp["last_seen"] <= self._ttl(strategy):
             return opp
         return None
 
     def list_opportunities(self):
         now = time.time()
         with self.lock:
-            for key in [k for k, o in self.opportunities.items() if now - o["last_seen"] > self._ttl() * 5]:
+            for key in [k for k, o in self.opportunities.items() if now - o["last_seen"] > self._ttl(o["strategy"]) * 5]:
                 del self.opportunities[key]
             out = []
             for o in self.opportunities.values():
-                valid = now - o["last_seen"] <= self._ttl()
-                if not valid or self.ticker_busy(o["ticker"]):     # v4.382 : plus proposee si une position vient de s ouvrir
+                ttl = self._ttl(o["strategy"])
+                valid = now - o["last_seen"] <= ttl
+                if not valid or self._opp_busy(o["strategy"], o["ticker"]):     # v4.382 : plus proposee si une position vient de s ouvrir
                     continue
                 out.append({**o, "strategy_label": STRATEGY_LABELS.get(o["strategy"], o["strategy"]),
+                            "left_sec": max(0, round(ttl - (now - o["last_seen"]))), "ttl_sec": ttl,
                             "age_sec": round(now - o["first_seen"]),
                             "current_price": self.price(o["ticker"], "perp"),
                             "spot_available": self.spot_pair(o["ticker"]) is not None and o["direction"] == "long"})
@@ -719,14 +736,23 @@ class ManualTrading:
                 pts += 0.5; why.append((0.5, f"Funding {fa:+.0f} %/an : les shorts paient (foule short)"))
         SEUIL, RR_MIN = 3.0, 1.2          # score minimal ; gain/risque minimal d une entree immediate
         wait = []
-        if pts >= SEUIL:
-            side, label = "long", "LONG"
-        elif pts <= -SEUIL:
-            side, label = "short", "SHORT"
+        # v4.456 : HIERARCHIE DES ECHELLES — H4 et D1 donnent la DIRECTION (biais), le H1 prend la DECISION d entrer.
+        # Biais : H4 (poids 2) + D1 (poids 1) ; direction retenue a partir de +/-2. Le H1 doit etre dans le meme sens, sinon ATTENDRE.
+        sg = lambda t: 1 if t == "haussiere" else (-1 if t == "baissiere" else 0)
+        t4, td, t1 = T("h4"), T("d1"), T("h1")
+        bias_pts = 2 * sg(t4) + sg(td)
+        bias = "long" if bias_pts >= 2 else ("short" if bias_pts <= -2 else None)
+        side, label = None, "ATTENDRE"
+        if bias is None:
+            wait.append("H4 et D1 ne donnent pas de direction claire (il faut au moins une tendance H4 nette, non contredite par le D1).")
+        elif sg(t1) != (1 if bias == "long" else -1):
+            h1txt = "indisponible" if t1 is None else ("neutre" if sg(t1) == 0 else "contraire")
+            wait.append(f"H4/D1 donnent la direction {bias.upper()}, mais le H1 est {h1txt} : on attend que le H1 confirme avant d'entrer.")
+        elif (bias == "long" and pts >= SEUIL) or (bias == "short" and pts <= -SEUIL):
+            side, label = bias, bias.upper()
         else:
-            side, label = None, "ATTENDRE"
-            wait.append(f"Signaux insuffisants ou partagés (score {pts:+.1f}, il faut au moins ±{SEUIL:.0f}).")
-        lean = "long" if pts > 0 else ("short" if pts < 0 else None)
+            wait.append(f"Direction {bias.upper()} confirmée par le H1, mais signaux insuffisants ou partagés (score {pts:+.1f}, il faut au moins ±{SEUIL:.0f}).")
+        lean = bias or ("long" if pts > 0 else ("short" if pts < 0 else None))
         conf = "forte" if abs(pts) >= 4.5 else ("moyenne" if abs(pts) >= SEUIL else "faible")
         # niveaux de reference (structure H4) pour le sens penche
         plan = None
@@ -753,7 +779,7 @@ class ManualTrading:
         why.sort(key=lambda x: -abs(x[0]))
         return {"wait": wait, "verdict": label, "side": side, "lean": lean, "score": round(pts, 1), "confidence": conf,
                 "reasons": [t for _, t in why], "plan": plan,
-                "note": "Conseil indicatif fondé sur des règles (tendance, RSI, zones, BTC, funding) — pas une garantie."}
+                "note": "Conseil indicatif fondé sur des règles (H4/D1 = direction, H1 = décision, puis RSI, zones, BTC, funding) — pas une garantie."}
 
     def _check_trend_entry(self, ticker, required):
         """Condition d entree sur la tendance H4 : leve ManualError si elle n est pas remplie
@@ -855,7 +881,34 @@ class ManualTrading:
                               "La sortie anticipee du mode ne s applique pas aux trades manuels."]})
         return p
 
-    def propose(self, strategy, ticker, direction, market="perp"):
+    def _propose_scalp(self, ticker, direction, market, _preset=False):
+        """v4.454 : ticket prepare depuis une ouverture Scalp (valable 5 min) : memes stop / objectif / levier / taille / laisser courir
+        que le Scalp ; ouverture LIVE par defaut, tout reste modifiable."""
+        opp = self.get_opportunity("scalp_crypto", ticker, direction)
+        if _preset:
+            opp = opp or {}
+        else:
+            if opp is None:
+                raise ManualError("Cette ouverture Scalp n est plus proposee (valable 5 min).")
+            if self._opp_busy("scalp_crypto", ticker):
+                raise ManualError(f"Une position LIVE est deja ouverte sur {ticker}.")
+        if market == "spot":
+            raise ManualError("Scalp : marche perp uniquement.")
+        p = self._propose_free(ticker, direction, "perp")
+        cfg = self.cfg
+        lev = max(int(cfg.get("SCALP_LEVERAGE", 3)), 1)
+        notional = float(cfg.get("SCALP_NOTIONAL_USD", 60.0))
+        p.update({"strategy": "scalp_crypto", "free": False, "no_ttp": True, "leverage": lev, "notional_usd": round(notional, 2),
+                  "margin_usd": round(notional / lev, 2), "sl_pct": float(cfg.get("SCALP_SL_PCT", 0.65)), "sl_basis": "stop Scalp",
+                  "tp_pct": float(cfg.get("SCALP_TP_PCT", 0.6)), "tp_basis": "objectif Scalp", "default_mode": "live",
+                  "reasons": list(opp.get("reasons") or []) + ["Reglages du mode Scalp appliques (stop, objectif, levier, taille, laisser courir) : tout est modifiable."]})
+        if int(cfg.get("SCALP_RUN_ENABLED", 1)):
+            p.update({"tp_run": True, "tp_run_lock_pct": 0.0, "tp_run_trail_pct": float(cfg.get("SCALP_RUN_TRAIL_PCT", 0.2))})
+        if int(cfg.get("SCALP_BE_ENABLED", 0)):
+            p.update({"be_arm_pct": float(cfg.get("SCALP_BE_ARM_PCT", 0.4)), "be_lock_pct": float(cfg.get("SCALP_BE_LOCK_PCT", 0.1))})
+        return p
+
+    def propose(self, strategy, ticker, direction, market="perp", _preset=False):
         if strategy == "libre":
             # v4.415 : par defaut, tout ticket manuel (crypto) s ouvre avec les reglages du mode Swing Support
             # (stop, objectif, levier, taille, laisser courir). Les marches Forex (xyz:) gardent les reglages libres.
@@ -868,11 +921,16 @@ class ManualTrading:
             return self._propose_free(ticker, direction, market)
         if strategy == "swing_support":
             return self._propose_swing_support(ticker, direction, market)
+        if strategy == "scalp_crypto":
+            return self._propose_scalp(ticker, direction, market, _preset=_preset)
         opp = self.get_opportunity(strategy, ticker, direction)
-        if opp is None:
-            raise ManualError("Cette opportunite n est pas (ou plus) valable dans ce sens.")
-        if self.ticker_busy(ticker):
-            raise ManualError(f"Une position est deja ouverte sur {ticker} : opportunite non proposee.")
+        if _preset:      # v4.455 : reglages par defaut d un mode appliques a un ticket existant : aucune opportunite requise
+            opp = opp or {}
+        else:
+            if opp is None:
+                raise ManualError("Cette opportunite n est pas (ou plus) valable dans ce sens.")
+            if self.ticker_busy(ticker):
+                raise ManualError(f"Une position est deja ouverte sur {ticker} : opportunite non proposee.")
         if market == "spot" and (direction != "long" or not self.spot_pair(ticker)):
             raise ManualError("Pas de marche spot disponible pour cet actif (le spot n autorise que l achat).")
         cfg = self.cfg
@@ -924,6 +982,21 @@ class ManualTrading:
             "live_available": self.bot.exchange is not None and bool(self._wallet()),
             "min_notional_usd": 10.0,
         }
+
+    PRESETS = ("scalp_crypto", "swing_support", "libre", "accumulation", "spot_accumulation", "funding_contrarian", "forex")
+
+    def preset(self, preset, ticker, direction, market="perp"):
+        """v4.455 — reglages par defaut d un MODE (taille, levier, stop, objectif, laisser courir, trailing, verrou), pour les appliquer
+        a un ticket, un ordre programme ou une position ouverte. Aucune opportunite du mode n est requise."""
+        if preset not in self.PRESETS:
+            raise ManualError("Mode inconnu.")
+        if preset == "libre":
+            return self._propose_free(ticker, direction, market)
+        if preset == "swing_support":
+            return self._propose_swing_support(ticker, direction, market, mirror=True)
+        if preset == "scalp_crypto" and market == "spot":
+            market = "perp"
+        return self.propose(preset, ticker, direction, market, _preset=True)
 
     # ───────────────────────────── validations ───────────────────────────
     def has_live_perp(self, ticker, exclude_id=None):
@@ -1774,6 +1847,16 @@ class ManualTrading:
             item = self.items.get(item_id)
             if not item:
                 raise ManualError("Element introuvable.")
+            if "be_arm_pct" in changes or "be_lock_pct" in changes:      # v4.455 : stop au seuil de rentabilite (reglages d un mode appliques)
+                if "be_arm_pct" in changes:
+                    _v = changes.pop("be_arm_pct")
+                    item["be_arm_pct"] = float(_v) if _v else None
+                    item["be_done"] = False
+                if "be_lock_pct" in changes:
+                    _v = changes.pop("be_lock_pct")
+                    item["be_lock_pct"] = float(_v) if _v else 0.1
+                if item["status"] != "scheduled":
+                    self._save(item)
             if item["status"] == "scheduled":
                 # v4.400 : un ordre programme est entierement modifiable (memes regles qu a la creation)
                 p = dict(item)
@@ -2290,12 +2373,12 @@ class ManualTrading:
             items = [self.public(i) for i in self.items.values()]
         history = []
         cnt = {"live": 0, "paper": 0}        # v4.425 : 100 derniers PAR MODE (le paper du Scalp ne doit pas noyer le live)
-        _rows = db.manual_history(100, "live") + db.manual_history(100, "paper")   # v4.443 : filtre par mode en SQL
+        _rows = db.manual_history(300, "live") + db.manual_history(300, "paper")   # v4.443 : filtre par mode en SQL
         _rows.sort(key=lambda r: r["id"], reverse=True)
         for row in _rows:
             d = row["data"]
             md = "live" if d.get("mode") == "live" else "paper"
-            if cnt[md] >= 100:
+            if cnt[md] >= 300:
                 continue
             cnt[md] += 1
             d.update({"id": row["id"], "status": row["status"]})

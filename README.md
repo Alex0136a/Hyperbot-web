@@ -1267,3 +1267,38 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
 - Liste déroulante « Tous les actifs » à droite des sous-onglets de l'historique (LIVE et PAPER). Elle ne propose que les actifs présents dans l'historique de l'onglet.
 - Le filtre s'applique à la liste, au résumé, au tableau « Par jour » et à l'export CSV, et se combine avec la période « Du … au … ».
+
+## v4.452 — Swing Support : choix des actifs évalués
+Fichiers : `api.py`, `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
+- Dans la carte Swing Support : bouton « ⚙️ Choisir les actifs surveillés » → grille d'actifs à cocher (tous les actifs crypto suivis par le bot, hors Forex), boutons Tous / Par défaut (BTC, ETH, HYPE, TAO, SUI) / Enregistrer. Enregistré dans `SUPSW_SYMBOLS` (persistant), pris en compte au cycle suivant.
+- Les actifs cochés sont évalués comme les cinq d'origine (support Daily, porte BTC, chute récente, résistance, réentrée…) et peuvent déclencher l'entrée automatique de Swing Support. Le plafond `SUPSW_MAX_TRADES` (3 positions simultanées) reste inchangé.
+- Tant que « Actifs réservés » (`SUPSW_RESERVE_ASSETS`) est à 1, les actifs cochés sont ignorés par Tendance / Accumulation / Spot-Accum.
+- API : `GET/PUT /api/supsw/symbols`.
+
+## v4.453 — Export CSV : contexte d'entrée Scalp
+Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
+- Le CSV de l'historique ajoute 5 colonnes pour les trades Scalp ouverts depuis la v4.450 : `flux_achats` (part d'achats agressifs), `flux_n` (transactions), `tend_h1`, `tend_15m`, `btc_1h_pct`.
+
+## v4.454 — Opportunités : Scalp remplace Funding, ouverture live manuelle, vue « Par mode »
+Fichiers : `manual_trading.py`, `scalp_crypto.py`, `push_alerts.py`, `api.py`, `bot_engine.py`, `index_src.html`, `index.html`, `README.md`.
+- **Types annoncés (alertes téléphone)** : « Funding » est retiré, « Scalp » ajouté. Les préférences déjà enregistrées avec Funding sont migrées (Funding → Scalp). La « confiance ≥ » s'applique à la note du Scalp.
+- **Ouvertures Scalp proposées en manuel** : à chaque ouverture (paper ou live) du Scalp, l'opportunité « Scalp » apparaît dans la liste pendant **5 min** (`MANUAL_SCALP_OPP_TTL_SEC`, 300) puis disparaît. Un trade paper du Scalp ne la masque pas ; seule une position LIVE sur l'actif la retire.
+- **Ticket** : bouton « Ouvrir en live » → ticket **LIVE par défaut** avec les réglages du Scalp (taille, levier, stop, objectif, laisser courir, stop de rentabilité si activé), tout modifiable. Le trade ouvert est un trade Scalp (stats et gestion du Scalp).
+- **Vue « 🗂 Par mode »** dans la carte des opportunités : une section par mode (Scalp, Swing Support, Accumulation, Spot-Accum, Forex, Funding) avec le nombre d'opportunités, les lignes et, pour le Scalp, le temps restant.
+
+## v4.455 — Choix des réglages par défaut d'un mode (ticket, ordre programmé, position ouverte)
+Fichiers : `manual_trading.py`, `api.py`, `bot_engine.py` (version), `index_src.html`, `index.html`, `README.md`.
+- Une barre « Réglages par défaut du mode » (⚡ Scalp · 🧱 Swing Support · ✋ Libre · 🎯 Accumulation · 🌱 Spot-Accum · 💰 Funding · 💱 Forex) apparaît :
+  1. sur le **ticket** d'une opportunité : le mode de l'opportunité est présélectionné (une opportunité Scalp vient avec les réglages Scalp) ; un clic remplit taille, levier, stop, objectif, trailing, laisser courir, verrou et stop de rentabilité du mode choisi ;
+  2. dans « Modifier » d'un **ordre programmé** (mêmes champs, en pourcentages) ;
+  3. dans « Modifier » d'une **position ouverte** : stop et objectif sont recalculés depuis le prix d'entrée ; la taille et le levier ne changent pas.
+- Rien n'est appliqué avant le bouton d'envoi / « Enregistrer » ; tous les champs restent modifiables après le choix.
+- Sur un ticket, si le mode choisi diffère de celui de l'opportunité, le trade prend l'étiquette de ce mode (Scalp, Swing Support ou Libre ; Accumulation, Spot-Accum, Funding et Forex passent en « Libre » avec leurs réglages).
+- API : `GET /api/manual/preset`. Le stop de rentabilité (`be_arm_pct`, `be_lock_pct`) devient modifiable sur ordres programmés et positions ouvertes.
+
+## v4.456 — Conseil par actif : H4/D1 = direction, H1 = décision
+Fichiers : `manual_trading.py`, `bot_engine.py` (version), `README.md` (+ fichiers de v4.455 non encore déployés).
+- **Direction (biais)** : donnée uniquement par H4 (poids 2) et D1 (poids 1). LONG si le cumul ≥ +2, SHORT si ≤ −2, sinon pas de direction (H4 neutre ou contredit par le D1).
+- **Décision** : le H1 doit aller dans le sens du biais. H1 neutre, contraire ou indisponible → **ATTENDRE** avec la raison « H4/D1 donnent la direction LONG, mais le H1 est neutre : on attend que le H1 confirme ».
+- Si le H1 confirme, les autres critères (RSI, zones, BTC, funding, score ≥ ±3, gain/risque ≥ 1,2) décident toujours de l'entrée.
+- « Penche LONG/SHORT » reprend désormais le biais H4/D1 ; ce n'est plus un score cumulé qui ressemble à une décision.
