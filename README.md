@@ -1302,3 +1302,19 @@ Fichiers : `manual_trading.py`, `bot_engine.py` (version), `README.md` (+ fichie
 - **Décision** : le H1 doit aller dans le sens du biais. H1 neutre, contraire ou indisponible → **ATTENDRE** avec la raison « H4/D1 donnent la direction LONG, mais le H1 est neutre : on attend que le H1 confirme ».
 - Si le H1 confirme, les autres critères (RSI, zones, BTC, funding, score ≥ ±3, gain/risque ≥ 1,2) décident toujours de l'entrée.
 - « Penche LONG/SHORT » reprend désormais le biais H4/D1 ; ce n'est plus un score cumulé qui ressemble à une décision.
+
+## v4.457 — Historique : pic affiché du plus bas au plus haut
+Fichiers : `manual_trading.py`, `bot_engine.py` (version), `index_src.html`, `index.html`, `README.md` (+ fichiers de v4.455/v4.456 non encore déployés : `api.py`).
+- Le plus bas atteint par le prix (`trough_pct`) est désormais enregistré pour **tous** les trades manuels (avant : Swing Support seulement).
+- Chaque ligne de l'historique clôturé affiche « 🏔️ Pic −0.20 % à 1.02 % » (mouvement du prix, sans levier).
+- Le CSV de l'historique gagne une colonne `creux_pct` placée juste avant `pic_gain_pct`.
+- Les trades fermés avant cette version n'ont pas de plus bas enregistré : seul le pic est affiché, avec une mention. Le plus bas est mesuré à chaque cycle de gestion, donc un creux très bref entre deux cycles peut manquer.
+
+## v4.458 — Ajouter à une position ouverte / la réduire (paper et live)
+Fichiers : `manual_trading.py`, `api.py`, `bot_engine.py` (version), `index_src.html`, `index.html`, `README.md`.
+- Deux boutons sur chaque position ouverte : **＋ Taille** et **－ Taille** (perpétuels en live ; paper et live).
+- **Ajouter** (montant en $, notionnel) : paper = au prix courant ; live = ordre réel au marché sur Hyperliquid (marge ajoutée = montant / levier). La taille et le **prix d'entrée moyen** sont relus sur Hyperliquid. Le **SL et l'objectif gardent leurs prix** ; le SL natif est renvoyé à la nouvelle taille. Le pic et le creux sont recalculés par rapport à la nouvelle entrée.
+- **Réduire** (montant en $ ou en %) : paper = au prix courant ; live = clôture partielle au marché (comme le TP1). Le gain ou la perte de la partie retirée est encaissé (`realized_pnl`) et compté dans le PnL final. Refus si la partie retirée ou le reste fait moins de 10 $ (minimum Hyperliquid) ou si cela revient à tout fermer (utiliser « Fermer »).
+- Live : confirmation obligatoire dans l'interface et côté serveur. Chaque ajout ou réduction est consigné dans la position (`resizes`) et le journal.
+- Frais : chaque ajout ou réduction paie les frais d'un ordre au marché (0,045 %). Les frais réels sont réconciliés comme pour les autres trades.
+- API : `POST /api/manual/positions/{id}/resize` (`action`, `notional_usd` ou `pct`, `confirm_live`).

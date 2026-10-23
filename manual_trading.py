@@ -1832,6 +1832,108 @@ class ManualTrading:
         self._log(f"#{item['id']} {item['ticker']} TP1 atteint @ {exit_price:.6g} ({source}) : {item['tp1_close_pct']:.0f} % cloture, PnL partiel {pnl_part:+.2f} $"
                   + be_txt + " — le reste continue vers le TP2", "win")
 
+    # ───────────── v4.458 : ajouter a une position ouverte / la reduire (paper + live) ─────────────
+    def resize(self, item_id, action, notional_usd=None, pct=None, confirm_live=False):
+        """Ajoute (action="add", notionnel en $) ou retire (action="reduce", notionnel en $ ou pct de la position) de la taille
+        d une position OUVERTE. Live : ordre au marche reel sur Hyperliquid ; le SL natif est renvoye a la nouvelle taille.
+        Add : le prix d entree devient la moyenne ; SL, objectif et reglages gardent leurs PRIX. Reduce : meme logique que le TP1."""
+        item = self.items.get(item_id)
+        if not item or item.get("status") != "open":
+            raise ManualError("Position ouverte introuvable.")
+        if action not in ("add", "reduce"):
+            raise ManualError("Action invalide (add ou reduce).")
+        if item["mode"] == "live" and not confirm_live:
+            raise ManualError("Trade REEL : confirmation requise.")
+        if item["mode"] == "live" and (item["market"] != "perp" or self.bot.exchange is None):
+            raise ManualError("Ajout / reduction live disponible pour les perpetuels uniquement.")
+        if item["id"] in self._busy:
+            raise ManualError("Une opération est déjà en cours sur cette position, réessayez dans quelques secondes.")
+        self._busy.add(item["id"])
+        try:
+            return self._resize_impl(item, action, notional_usd, pct)
+        finally:
+            self._busy.discard(item["id"])
+
+    def _resize_impl(self, item, action, notional_usd, pct):
+        sign = 1 if item["direction"] == "long" else -1
+        price = self.price(item["ticker"], item["market"]) or item.get("last_price")
+        if not price:
+            raise ManualError("Prix indisponible.")
+        entry, qty0, live = item["entry_price"], item["qty"], item["mode"] == "live"
+        if action == "reduce":
+            if pct:
+                qty_part = qty0 * float(pct) / 100
+            elif notional_usd:
+                qty_part = float(notional_usd) / price
+            else:
+                raise ManualError("Indiquez un montant ($) ou un pourcentage à retirer.")
+            if qty_part <= 0:
+                raise ManualError("Montant à retirer invalide.")
+            if qty_part >= qty0 * 0.995:
+                raise ManualError("Cela revient à tout fermer : utilisez « Clôturer ».")
+            exit_price, source = price, "simulation"
+            if live:
+                perp_map, _ = be._get_sz_decimals_map(self.bot.info)
+                sz = be.format_size_hl(qty_part, perp_map.get(item["ticker"], 4))
+                if not sz or sz <= 0:
+                    raise ManualError("Taille à retirer nulle.")
+                if sz * price < 10.0 or (qty0 - sz) * price < 10.0:
+                    raise ManualError(f"Hyperliquid refuse les ordres < 10 $ : retirer {sz * price:.2f} $ laisserait {(qty0 - sz) * price:.2f} $. Choisissez une autre taille ou clôturez.")
+                result = self.bot.exchange.market_close(item["ticker"], sz)
+                status = be._order_first_status(result) if result else None
+                if not (status and "filled" in status):
+                    raise ManualError(f"Ordre non exécuté : {str(result)[:150]}")
+                exit_price, source = float(status["filled"]["avgPx"]), "hyperliquid"
+                qty_part = float(status["filled"].get("totalSz") or sz)
+            pnl_part = qty_part * (exit_price - entry) * sign
+            item["realized_pnl"] = float(item.get("realized_pnl") or 0) + pnl_part
+            item["realized_fees"] = float(item.get("realized_fees") or 0) + qty_part * entry * FEE_ROUND_TRIP
+            item["qty"] = max(qty0 - qty_part, 0.0)
+            item["notional_usd"] = item["qty"] * entry
+            msg = (f"#{item['id']} {item['ticker']} : position RÉDUITE de {qty_part * exit_price:.2f} $ @ {exit_price:.6g} ({source}), PnL encaissé {pnl_part:+.2f} $ "
+                   f"— reste {item['notional_usd']:.2f} $")
+            hist = {"a": "reduce", "qty": qty_part, "px": exit_price}
+        else:
+            add_usd = float(notional_usd or 0)
+            if add_usd <= 0:
+                raise ManualError("Indiquez le montant à ajouter (notionnel en $).")
+            fill, new_qty = price, qty0 + add_usd / price
+            new_entry = (qty0 * entry + (add_usd / price) * price) / new_qty
+            if live:
+                lev = max(int(item.get("leverage") or 1), 1)
+                ok, err, fill_px = be.place_order(self.bot.exchange, item["ticker"], item["direction"] == "long", add_usd / lev, price, self.cfg,
+                                                  sl_price=None, tp_price=None, leverage=lev, trade_uid=None)
+                if not ok:
+                    raise ManualError(err or "Ordre refusé par Hyperliquid.")
+                ep = None
+                for _ in range(4):
+                    ep = (be.fetch_exchange_positions(self.bot.info, self._wallet(), [item["ticker"]]) or {}).get(item["ticker"])
+                    if ep and abs(ep["szi"]) > qty0 * 1.0001:
+                        break
+                    time.sleep(0.7)
+                if not ep or ep["szi"] == 0:
+                    raise ManualError("Ordre accepté mais position introuvable sur Hyperliquid : vérifiez sur Hyperliquid.")
+                new_qty, new_entry = abs(ep["szi"]), float(ep.get("entry") or new_entry)
+                fill = fill_px or price
+            # le plus haut / plus bas deja atteints sont reexprimes par rapport a la nouvelle entree moyenne
+            for k, fn in (("peak_pct", max), ("trough_pct", min)):
+                if item.get(k) is not None:
+                    px_k = entry * (1 + sign * float(item[k]) / 100)
+                    item[k] = fn(0.0, sign * (px_k - new_entry) / new_entry * 100)
+            item["entry_price"], item["qty"] = new_entry, new_qty
+            item["notional_usd"] = new_qty * new_entry
+            msg = (f"#{item['id']} {item['ticker']} : position AGRANDIE de {add_usd:.2f} $ @ {fill:.6g} — nouvelle taille {item['notional_usd']:.2f} $, "
+                   f"entrée moyenne {new_entry:.6g} (SL {item['sl_price']:.6g} et objectif inchangés)")
+            hist = {"a": "add", "qty": new_qty - qty0, "px": fill}
+        hist["ts"] = time.time()
+        item.setdefault("resizes", []).append(hist)
+        item["error"] = None
+        item["lock_pushed"] = None
+        self._save(item)
+        self._maybe_push_sl(item, item["sl_price"])      # live : le SL natif doit couvrir la nouvelle taille
+        self._log(msg, "signal")
+        return self.public(item)
+
     def _cancel_native_orders(self, ticker):
         try:
             sl_oids, tp_oids = be._get_open_orders_by_type(self.bot.info, self._wallet(), ticker)
@@ -2176,9 +2278,9 @@ class ManualTrading:
         move = sign * (price - item["entry_price"]) / item["entry_price"] * 100
         if move > item.get("peak_pct", 0):
             item["peak_pct"] = move
+        if move < item.get("trough_pct", 0):                      # v4.457 : creux (plus bas) suivi pour TOUS les trades
+            item["trough_pct"] = move
         if item.get("strategy_source") == "swing_support":      # v4.439 : stops FANTOMES (observation seule, aucun effet sur la position)
-            if move < item.get("trough_pct", 0):
-                item["trough_pct"] = move
             for _s in (2, 3):
                 if move <= -_s and f"shadow{_s}_ts" not in item:
                     item[f"shadow{_s}_ts"] = time.time()

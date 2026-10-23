@@ -3039,6 +3039,19 @@ def asset_summary_ep(ticker: str, email: str = Depends(require_user)):
         return {"ok": False, "why": f"{type(e).__name__}: {e}"}
 
 
+class ManualResizeBody(BaseModel):
+    action: str                         # "add" ou "reduce"
+    notional_usd: Optional[float] = None
+    pct: Optional[float] = None         # reduce : pourcentage de la position
+    confirm_live: bool = False
+
+
+@app.post("/api/manual/positions/{item_id}/resize")
+def manual_resize(item_id: int, body: ManualResizeBody, email: str = Depends(require_user)):
+    """v4.458 — ajoute a une position ouverte ou la reduit (paper et live)."""
+    return _manual_call(bot.manual.resize, item_id, body.action, body.notional_usd, body.pct, body.confirm_live)
+
+
 @app.post("/api/manual/positions/{item_id}/close")
 def manual_close(item_id: int, email: str = Depends(require_user)):
     return _manual_call(bot.manual.close, item_id)
