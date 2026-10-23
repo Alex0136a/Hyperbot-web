@@ -303,6 +303,14 @@ def compute_regime(closes_by_t, win_bars, high, flat_pct=0.05, lag_bars=6):
 
 
 # ───────────────────────────── moteur ─────────────────────────────
+def _eff_ratio(vals):
+    """Ratio d efficacite de Kaufman : mouvement net / chemin parcouru (1 = tendance propre, 0 = va-et-vient)."""
+    if len(vals) < 3:
+        return 0.0
+    path = sum(abs(vals[i] - vals[i - 1]) for i in range(1, len(vals)))
+    return abs(vals[-1] - vals[0]) / path if path > 0 else 0.0
+
+
 class ScalpEngine:
     def __init__(self, bot, manual):
         self.bot, self.manual = bot, manual
@@ -566,6 +574,15 @@ class ScalpEngine:
         win = max(int(float(c.get("SCALP_CORR_WINDOW_MIN", 120)) // 5), 6)
         reg = compute_regime(closes, min(win, 55), float(c.get("SCALP_CORR_HIGH", 0.6)))
         reg["ts"] = now
+        try:      # v4.461 : qualite de tendance du panier (mesure seule, aucun effet sur les decisions)
+            ser = [v[-49:] for v in closes.values() if len(v) >= 49]
+            if ser:
+                idx = [sum(v[i] / v[0] for v in ser) / len(ser) * 100 for i in range(49)]
+                reg["basket_er_4h"] = round(_eff_ratio(idx), 3)
+                reg["basket_er_2h"] = round(_eff_ratio(idx[-25:]), 3)
+                reg["basket_2h"] = round(idx[-1] / idx[-25] * 100 - 100, 3)
+        except Exception:
+            pass
         self.regime = reg
         return reg
 
@@ -867,6 +884,29 @@ class ScalpEngine:
         self._fm = (time.time(), val)
         return val
 
+    def _trend_quality(self, t, reg):
+        """v4.461 : mesures de qualite de tendance a l entree, enregistrees dans le trade (aucun effet sur les decisions)."""
+        out = {}
+        try:
+            b = [float(x["c"]) for x in (self.bot._mtf_candles("BTC", "5m", 60) or [])]
+            if len(b) >= 49:
+                out["er_btc_1h"] = round(_eff_ratio(b[-13:]), 3)
+                out["er_btc_4h"] = round(_eff_ratio(b[-49:]), 3)
+        except Exception:
+            pass
+        try:
+            a = [float(x["c"]) for x in (self.bot._mtf_candles(t, "5m", 60) or [])]
+            if len(a) >= 13:
+                out["er_actif_1h"] = round(_eff_ratio(a[-13:]), 3)
+                m = sum(a[-12:]) / 12
+                out["ecart_moy_1h_pct"] = round((a[-1] - m) / m * 100, 3)
+        except Exception:
+            pass
+        for k in ("basket_er_2h", "basket_er_4h", "basket_2h"):
+            if reg.get(k) is not None:
+                out[k] = reg[k]
+        return out
+
     # ── v4.460 : capital compose + objectif du jour + mode prudent ──
     @staticmethod
     def _row_net(d):
@@ -1070,7 +1110,7 @@ class ScalpEngine:
                                    "regime": {"label": reg.get("label", "inconnu"), "corr": reg.get("corr"), "up": reg.get("up"), "down": reg.get("down"),
                                               "basket30": reg.get("basket30"), "rel30": (round(reg["ch30"].get(t, 0) - reg["basket30"], 3) if reg.get("ch30") and reg.get("basket30") is not None else None),
                                               "cluster": cluster_before, "peers": sig.get("peers")},
-                                   "ctx": sig.get("ctx"), "retest": bool(sig.get("retest"))}
+                                   "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg)}
                     it["reasons"] = sig["reasons"]
                     self.manual._save(it)
         except Exception as e:
