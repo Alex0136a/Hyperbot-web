@@ -1318,3 +1318,11 @@ Fichiers : `manual_trading.py`, `api.py`, `bot_engine.py` (version), `index_src.
 - Live : confirmation obligatoire dans l'interface et côté serveur. Chaque ajout ou réduction est consigné dans la position (`resizes`) et le journal.
 - Frais : chaque ajout ou réduction paie les frais d'un ordre au marché (0,045 %). Les frais réels sont réconciliés comme pour les autres trades.
 - API : `POST /api/manual/positions/{id}/resize` (`action`, `notional_usd` ou `pct`, `confirm_live`).
+
+## v4.459 — Grappe Scalp : se débloque sur un recul de l'actif
+Fichiers : `scalp_crypto.py`, `bot_engine.py` (version + défaut), `api.py` (plage), `index_src.html`, `index.html`, `README.md`.
+- Nouveau réglage **« Grappe : débloquer après un recul de X % depuis le plus bas/haut de la fenêtre »** (`SCALP_CLUSTER_RETRACE_PCT`, 0 = désactivé, comportement inchangé).
+- Contexte : la règle 3 (Grappe, `SCALP_CLUSTER_MAX`) refuse une nouvelle ouverture dans le même sens quand le marché est corrélé et que la grappe est pleine. Avant, le refus durait jusqu'à la fin de la fenêtre de temps. Avec X > 0, un actif peut entrer malgré la grappe pleine **s'il a reculé d'au moins X %** : SHORT = prix remonté de X % depuis son plus bas des bougies 5 min de la fenêtre ; LONG = prix redescendu de X % depuis son plus haut.
+- Le refus indique le recul requis et le recul actuel ; une entrée débloquée enregistre `cluster_retrace` dans le signal.
+- Conditions : `SCALP_CLUSTER_MAX` > 0 et régime « corrélé ». Hors régime corrélé, aucune règle de grappe ne s'applique.
+- Valeurs de départ suggérées : grappe 2 ouvertures sur 30 min, recul 0,3 %.

@@ -574,6 +574,25 @@ class ScalpEngine:
         now = time.time()
         return sum(1 for ts, sd, md, _t in self._opens if sd == side and md == mode and now - ts <= w)
 
+    def _retraced(self, t, side, rr):
+        """v4.459 : (ok, recul %) — l actif a-t-il reculé d au moins rr % depuis l extrême de la fenêtre de grappe ?
+        SHORT : le prix est remonté de rr % depuis son plus bas ; LONG : il est redescendu de rr % depuis son plus haut."""
+        try:
+            n = int(float(self.cfg.get("SCALP_CLUSTER_WINDOW_MIN", 30)) // 5) + 2
+            cs = self.bot._mtf_candles(t, "5m", n)
+            if not cs:
+                return False, None
+            px = float(cs[-1]["c"])
+            if side == "short":
+                ext = min(float(x["l"]) for x in cs)
+                ret = (px - ext) / ext * 100
+            else:
+                ext = max(float(x["h"]) for x in cs)
+                ret = (ext - px) / ext * 100
+            return ret >= rr, ret
+        except Exception:
+            return False, None
+
     def _gate(self, t, sig, mode):
         """Regles du regime correle (chacune a son interrupteur, desactivees par defaut). True = on peut continuer."""
         c, side = self.cfg, sig["side"]
@@ -593,7 +612,13 @@ class ScalpEngine:
                 why = f"marché corrélé : {t} est {'plus faible' if side == 'long' else 'plus fort'} que le panier ({rs:+.2f} % / 30 min), on ne prend que le meilleur du groupe"
         cm = int(c.get("SCALP_CLUSTER_MAX", 0))
         if why is None and corr_on and cm > 0 and self._cluster_count(side, mode) >= cm:
-            why = f"marché corrélé : grappe {side.upper()} pleine ({self._cluster_count(side, mode)}/{cm} ouvertures en {c.get('SCALP_CLUSTER_WINDOW_MIN', 30)} min)"
+            rr = float(c.get("SCALP_CLUSTER_RETRACE_PCT", 0) or 0)
+            ok_rec, ret = (self._retraced(t, side, rr) if rr > 0 else (False, None))      # v4.459 : la grappe se debloque sur un recul de l actif
+            if not ok_rec:
+                why = (f"marché corrélé : grappe {side.upper()} pleine ({self._cluster_count(side, mode)}/{cm} ouvertures en {c.get('SCALP_CLUSTER_WINDOW_MIN', 30)} min)"
+                       + (f" — on attend un recul de {rr:g} % de {t} depuis son {'plus bas' if side == 'short' else 'plus haut'} de la fenêtre (actuel {ret:+.2f} %)" if ret is not None else ""))
+            else:
+                sig["cluster_retrace"] = round(ret, 3)
         if why:
             self._ev("refus", t, f"{sig['kind']} {side} refusé : {why}")
             return False
@@ -884,6 +909,13 @@ class ScalpEngine:
                     self.manual._save(it)
         except Exception as e:
             self.last_error = f"annotation : {e}"
+        try:      # v4.454 : cette ouverture est aussi proposee en ouverture LIVE manuelle pendant 5 min (liste des opportunites)
+            zl, zh = (sig.get("zone") or (None, None))
+            self.manual.record_candidates(STRATEGY, [{"ticker": t, "signal": sig["side"], "price": sig.get("price"), "confidence": sig["score"],
+                                                      "support": zl, "resistance": zh,
+                                                      "reasons": [f"Scalp {sig['kind']} note {sig['score']:.0f}"] + list(sig["reasons"])[:3]}])
+        except Exception as e:
+            self.last_error = f"opportunite scalp : {e}"
         self._ev("entree", t, f"{sig['side'].upper()} {sig['kind']} note {sig['score']:.0f} ({mode}) — " + " · ".join(sig["reasons"][:3]))
         self.manual._log(f"SCALP {t} {sig['side'].upper()} ({sig['kind']}, note {sig['score']:.0f}, {mode}) — " + " ; ".join(sig["reasons"]), "signal")
 
