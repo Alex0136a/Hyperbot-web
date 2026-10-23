@@ -2832,6 +2832,9 @@ _SCALP_NUM = {   # cle : (min, max, entier ?)
     "SCALP_DAILY_LOSS_USD": (0, 10000, False), "SCALP_PAUSE_AFTER_LOSSES": (0, 20, True), "SCALP_PAUSE_MIN": (1, 1440, True),
     "SCALP_COOLDOWN_MIN": (0, 1440, True), "SCALP_ZONE_COOLDOWN_MIN": (0, 1440, True), "SCALP_SHORT_BTC_BLOCK": (0, 1, True), "SCALP_SHORT_BTC_MAX_PCT": (-2, 3, False), "SCALP_RUN_ENABLED": (0, 1, True), "SCALP_CORR_WINDOW_MIN": (30, 275, True), "SCALP_CORR_HIGH": (0.1, 0.95, False), "SCALP_BREADTH_MIN": (50, 95, True),
     "SCALP_CORR_DIR_ON": (0, 1, True), "SCALP_CORR_RELSTR_ON": (0, 1, True), "SCALP_CLUSTER_MAX": (0, 20, True), "SCALP_CLUSTER_WINDOW_MIN": (5, 240, True), "SCALP_CLUSTER_RETRACE_PCT": (0, 3, False),
+    "SCALP_COMPOUND_ON": (0, 1, True), "SCALP_CAPITAL_USD": (10, 100000, False), "SCALP_COMPOUND_PCT": (10, 300, False), "SCALP_CAPITAL_FROM_HL": (0, 1, True), "SCALP_CAPITAL_CAP_USD": (0, 1000000, False),
+    "SCALP_GOAL_PCT": (0, 50, False), "SCALP_GOAL_STOP_ALL": (0, 1, True), "SCALP_SAFE_WINDOW": (5, 100, True), "SCALP_SAFE_MIN_TRADES": (3, 100, True),
+    "SCALP_SAFE_MIN_WINRATE": (30, 100, False), "SCALP_SAFE_REBOND_ONLY": (0, 1, True), "SCALP_SAFE_MAX_SCORE": (0, 100, False),
     "SCALP_CORR_SIZE_PCT": (10, 100, True), "SCALP_PEER_MIN": (0, 5, True), "SCALP_PEER_WINDOW_MIN": (5, 120, True), "SCALP_CORR_BASKET_EXIT_ON": (0, 1, True),
     "SCALP_BASKET_EXIT_PCT": (50, 100, True), "SCALP_RUN_TRAIL_PCT": (0.05, 5, False), "SCALP_BE_ENABLED": (0, 1, True), "SCALP_FLOW_ALL_ON": (0, 1, True), "SCALP_FLOW_ALL_MIN": (0.5, 0.9, False), "SCALP_FLOW_ALL_MIN_TRADES": (5, 500, True), "SCALP_RETEST_ON": (0, 1, True), "SCALP_RETEST_BARS": (1, 24, True), "SCALP_RETEST_TOL_ATR": (0.05, 2, False), "SCALP_RETEST_BOUNCE_ATR": (0.05, 2, False), "SCALP_PEER_CORR_ONLY": (0, 1, True), "SCALP_BE_ARM_PCT": (0.1, 5, False), "SCALP_BE_LOCK_PCT": (0, 1, False), "SCALP_COUNTER_ENABLED": (0, 1, True), "SCALP_COUNTER_MIN_SCORE": (0, 100, False),
     "SCALP_COUNTER_FLOW_MIN": (0.5, 0.95, False), "SCALP_COUNTER_MIN_TRADES": (5, 1000, True), "SCALP_MAX_HOLD_MIN": (0, 1440, True),
@@ -2844,6 +2847,7 @@ class ScalpConfigBody(BaseModel):
     confirm_live: bool = False
     hours_utc: Optional[str] = None
     values: Optional[dict] = None
+    reset_capital: bool = False           # v4.460 : le capital compose repart du capital de depart, a partir de maintenant
 
 
 @app.get("/api/scalp")
@@ -2886,6 +2890,10 @@ def scalp_config(body: ScalpConfigBody, email: str = Depends(require_user)):
         if not lo <= x <= hi:
             raise HTTPException(400, f"{k} : entre {lo} et {hi}.")
         _apply_and_persist(k, int(round(x)) if as_int else x)
+    if body.reset_capital:
+        _apply_and_persist("SCALP_COMPOUND_SINCE", time.time())
+    bot.manual.scalp._rows_cache = (0, None, None)
+    bot.manual.scalp._rec_cache = (0, None, None)
     bot.manual.scalp._uni_ts = 0
     return scalp_status(email)
 

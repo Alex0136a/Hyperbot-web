@@ -853,7 +853,12 @@ class ScalpEngine:
             w = self.manual._wallet()
             st = self.bot.info.user_state(w)
             ms = st["marginSummary"]
-            val = float(ms["accountValue"]) - float(ms["totalMarginUsed"])
+            av = float(ms["accountValue"])
+            if av <= 0:      # v4.460 : compte Unifie -> les fonds sont dans le solde USDC spot (le perps renvoie 0), comme dans l onglet Bilan
+                bal = (self.bot.info.spot_user_state(w) or {}).get("balances", [])
+                u = next((b for b in bal if b.get("coin") == "USDC"), None)
+                av = float(u.get("total", 0)) if u else 0.0
+            val = av - float(ms["totalMarginUsed"])
             wd = st.get("withdrawable")
             if wd is not None:
                 val = min(val, float(wd)) if float(wd) > 0 else val
@@ -862,17 +867,178 @@ class ScalpEngine:
         self._fm = (time.time(), val)
         return val
 
+    # ── v4.460 : capital compose + objectif du jour + mode prudent ──
+    @staticmethod
+    def _row_net(d):
+        fees = ((float(d["real_costs"]["fees"]) - float(d["real_costs"]["funding"])) if d.get("real_costs")
+                else (float(d.get("fees_est") or 0) or float(d.get("notional_usd") or 0) * 0.0009))
+        return float(d.get("pnl") or 0) - fees
+
+    def _closed_rows(self, mode):
+        """Trades Scalp clotures du mode (plus recents d abord), cache 30 s."""
+        ts, m, rows = getattr(self, "_rows_cache", (0, None, None))
+        if rows is not None and m == mode and time.time() - ts < 30:
+            return rows
+        rows = []
+        try:
+            for r in db.manual_history(800):
+                d = r["data"]
+                if d.get("strategy_source") == STRATEGY and r.get("status") == "closed" and d.get("mode") == mode:
+                    rows.append(d)
+        except Exception as e:
+            self.last_error = f"capital : {type(e).__name__}: {e}"
+        rows.sort(key=lambda d: float(d.get("closed_at") or 0), reverse=True)
+        self._rows_cache = (time.time(), mode, rows)
+        return rows
+
+    def hl_balance(self):
+        """Solde du compte Hyperliquid comme dans l onglet Bilan : le plus eleve de la valeur du compte perps et du solde USDC spot
+        (compte Unifie : le perps renvoie 0 et les fonds sont dans le spot). None si illisible."""
+        try:
+            w = self.manual._wallet()
+            perps = 0.0
+            try:
+                perps = float((self.bot.info.user_state(w).get("marginSummary") or {}).get("accountValue") or 0)
+            except Exception:
+                pass
+            spot = 0.0
+            try:
+                bal = (self.bot.info.spot_user_state(w) or {}).get("balances", [])
+                u = next((b for b in bal if b.get("coin") == "USDC"), None)
+                spot = float(u.get("total", 0)) if u else 0.0
+            except Exception:
+                pass
+            v = max(perps, spot)
+            return v if v > 0 else None
+        except Exception as e:
+            self.last_error = f"solde Hyperliquid : {type(e).__name__}: {e}"
+            return None
+
+    def _day_snapshot(self):
+        """(valeur, ts) : solde Hyperliquid lu UNE FOIS par jour UTC, avant le premier trade du jour (relu apres un redemarrage)."""
+        today = datetime.now(timezone.utc).date()
+        snap = getattr(self, "_hl_snap", None)
+        if snap is None or snap[0] != today:
+            v = self.hl_balance()
+            if v is not None:
+                snap = self._hl_snap = (today, v, time.time())
+            elif snap is None:
+                return None
+        return snap[1], snap[2]
+
+    def capital_state(self, mode=None):
+        """Capital courant = capital de depart + gains/pertes nets des trades clotures depuis le depart ; objectif du jour (jour UTC).
+        Live avec SCALP_CAPITAL_FROM_HL : le depart est le solde Hyperliquid lu chaque jour (plafonne par SCALP_CAPITAL_CAP_USD)."""
+        c = self.cfg
+        mode = mode or ("live" if c.get("SCALP_MODE") == "live" else "paper")
+        base = float(c.get("SCALP_CAPITAL_USD", 100.0))
+        since = float(c.get("SCALP_COMPOUND_SINCE", 0) or 0)
+        src = "réglage"
+        from_hl = False
+        if mode == "live" and int(c.get("SCALP_CAPITAL_FROM_HL", 0)):
+            sn = self._day_snapshot()
+            if sn:
+                base, since, src, from_hl = sn[0], sn[1], "solde Hyperliquid (lu chaque jour)", True
+                cap = float(c.get("SCALP_CAPITAL_CAP_USD", 0) or 0)
+                if cap > 0 and base > cap:
+                    base, src = cap, f"solde Hyperliquid plafonné à {cap:g} $"
+            else:
+                src = "réglage (solde Hyperliquid illisible)"
+        rows = self._closed_rows(mode)
+        midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        net_all = sum(self._row_net(d) for d in rows if float(d.get("closed_at") or 0) >= since)
+        net_today = sum(self._row_net(d) for d in rows if float(d.get("closed_at") or 0) >= (midnight if from_hl else max(midnight, since)))
+        now_cap = max(base + net_all, 0.0)
+        day_start = max(now_cap - net_today, 0.01)
+        goal = float(c.get("SCALP_GOAL_PCT", 0) or 0)
+        day_pct = net_today / day_start * 100
+        return {"mode": mode, "compound": bool(int(c.get("SCALP_COMPOUND_ON", 0))), "base": round(base, 2), "now": round(now_cap, 2), "source": src,
+                "since": since or None, "day_start": round(day_start, 2), "day_net": round(net_today, 2), "day_pct": round(day_pct, 2),
+                "goal_pct": goal, "goal_reached": bool(goal > 0 and day_pct >= goal)}
+
+    def compound_notional(self, mode):
+        """Taille d un trade (notionnel $) = capital courant x SCALP_COMPOUND_PCT %, ou None si le capital compose est desactive."""
+        c = self.cfg
+        if not int(c.get("SCALP_COMPOUND_ON", 0)):
+            return None
+        cs = self.capital_state(mode)
+        lo = 10.5 if mode == "live" else 1.0
+        return max(cs["now"] * float(c.get("SCALP_COMPOUND_PCT", 100)) / 100.0, lo)
+
+    def committed_margin(self, mode):
+        """Marge engagee par les trades Scalp ouverts du mode."""
+        return sum(float(it.get("notional_usd") or 0) / max(int(it.get("leverage") or 1), 1)
+                   for it in self.manual.items.values()
+                   if it.get("strategy_source") == STRATEGY and it.get("mode") == mode and it.get("status") in ("opening", "open", "closing"))
+
+    def _asset_record(self, mode):
+        """{actif : (n, taux de reussite %, net $)} sur les SCALP_SAFE_WINDOW derniers trades de chaque actif, cache 60 s."""
+        ts, m, rec = getattr(self, "_rec_cache", (0, None, None))
+        if rec is not None and m == mode and time.time() - ts < 60:
+            return rec
+        win = max(int(float(self.cfg.get("SCALP_SAFE_WINDOW", 20))), 3)
+        per = {}
+        for d in self._closed_rows(mode):
+            per.setdefault(d.get("ticker"), [])
+            if len(per[d.get("ticker")]) < win:
+                per[d.get("ticker")].append(d)
+        rec = {t: (len(v), sum(1 for d in v if self._row_net(d) > 0) / len(v) * 100, sum(self._row_net(d) for d in v)) for t, v in per.items() if v}
+        self._rec_cache = (time.time(), mode, rec)
+        return rec
+
+    def safe_assets(self, mode):
+        c = self.cfg
+        mn, wr = int(float(c.get("SCALP_SAFE_MIN_TRADES", 6))), float(c.get("SCALP_SAFE_MIN_WINRATE", 55))
+        return sorted(t for t, (n, w, net) in self._asset_record(mode).items() if n >= mn and w >= wr and net > 0)
+
+    def _goal_refusal(self, t, sig, mode):
+        """Objectif du jour atteint : texte du refus si l entree n est pas assez sure, sinon None."""
+        c = self.cfg
+        if float(c.get("SCALP_GOAL_PCT", 0) or 0) <= 0:
+            return None
+        cs = self.capital_state(mode)
+        if not cs["goal_reached"]:
+            return None
+        pre = f"objectif du jour atteint ({cs['day_pct']:+.2f} % / {cs['goal_pct']:g} %) : "
+        if int(c.get("SCALP_GOAL_STOP_ALL", 0)):
+            return pre + "plus d'entrée aujourd'hui"
+        rec = self._asset_record(mode).get(t)
+        mn, wr = int(float(c.get("SCALP_SAFE_MIN_TRADES", 6))), float(c.get("SCALP_SAFE_MIN_WINRATE", 55))
+        if not rec or rec[0] < mn or rec[1] < wr or rec[2] <= 0:
+            txt = "pas assez de trades" if (not rec or rec[0] < mn) else f"{rec[1]:.0f} % de réussite, {rec[2]:+.2f} $"
+            return pre + f"{t} n'a pas un historique assez sûr ({txt}; il faut ≥ {mn} trades et ≥ {wr:g} % de réussite avec un net positif)"
+        if int(c.get("SCALP_SAFE_REBOND_ONLY", 1)) and sig["kind"] != "rebond":
+            return pre + "seuls les rebonds sont acceptés (pas les cassures)"
+        mx = float(c.get("SCALP_SAFE_MAX_SCORE", 90) or 0)
+        if mx > 0 and float(sig.get("score") or 0) >= mx:
+            return pre + f"note {sig['score']:.0f} ≥ {mx:g} (les notes les plus hautes ont perdu davantage)"
+        return None
+
     def _take(self, t, sig):
         c = self.cfg
         mode = "live" if c.get("SCALP_MODE") == "live" else "paper"
+        why_goal = self._goal_refusal(t, sig, mode)          # v4.460 : objectif du jour atteint -> entrees restreintes
+        if why_goal:
+            self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_goal}")
+            return
+        base_notional = self.compound_notional(mode)
+        if base_notional is None:
+            base_notional = float(c.get("SCALP_NOTIONAL_USD", 60.0))
+        else:      # v4.460 : capital compose -> la marge de tous les trades ouverts ne depasse jamais le capital courant
+            cs_ = self.capital_state(mode)
+            new_margin = base_notional / max(int(c.get("SCALP_LEVERAGE", 3)), 1)
+            used = self.committed_margin(mode)
+            if used + new_margin > cs_["now"] + 0.5:
+                self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : capital engagé ({used:.2f} $ de marge déjà utilisée + {new_margin:.2f} $ > capital {cs_['now']:.2f} $)")
+                return
         if mode == "live":
-            need = float(c.get("SCALP_NOTIONAL_USD", 60.0)) / max(int(c.get("SCALP_LEVERAGE", 3)), 1)
+            need = base_notional / max(int(c.get("SCALP_LEVERAGE", 3)), 1)
             free = self._free_margin()
             if free is not None and free < need * 1.05 + 0.5:
                 self._ev("refus", t, f"{sig['kind']} {sig['side']} non ouvert : marge libre insuffisante ({free:.2f} $ < {need:.2f} $ requis)")
                 return
         reg = dict(self.regime) if self.regime.get("n") else {}
-        notional = float(c.get("SCALP_NOTIONAL_USD", 60.0))
+        notional = base_notional
         sp = float(c.get("SCALP_CORR_SIZE_PCT", 100))
         if reg.get("label") == "correle" and 0 < sp < 100:      # v4.442 : marche correle = un seul pari ; on reduit la taille de chaque ligne
             notional = max(notional * sp / 100.0, 10.5 if mode == "live" else 1.0)
@@ -927,6 +1093,7 @@ class ScalpEngine:
                 "universe": list(self._uni), "open": self._open_count(), "max_open": int(c.get("SCALP_MAX_OPEN", 0)),
                 "params": {k: c.get(k) for k in ("SCALP_LEVERAGE", "SCALP_NOTIONAL_USD", "SCALP_SL_PCT", "SCALP_TP_PCT", "SCALP_HOURS_UTC",
                                                  "SCALP_MIN_SCORE", "SCALP_SHORT_MIN_SCORE", "SCALP_TREND_MODE", "SCALP_SHORT_BTC_BLOCK", "SCALP_SHORT_BTC_MAX_PCT", "SCALP_RUN_ENABLED", "SCALP_RUN_TRAIL_PCT", "SCALP_BE_ENABLED", "SCALP_BE_ARM_PCT", "SCALP_BE_LOCK_PCT", "SCALP_FLOW_ALL_ON", "SCALP_FLOW_ALL_MIN", "SCALP_FLOW_ALL_MIN_TRADES", "SCALP_RETEST_ON", "SCALP_RETEST_BARS", "SCALP_RETEST_TOL_ATR", "SCALP_RETEST_BOUNCE_ATR", "SCALP_COUNTER_ENABLED", "SCALP_COUNTER_MIN_SCORE", "SCALP_COUNTER_FLOW_MIN", "SCALP_COUNTER_MIN_TRADES", "SCALP_CONFIRM_BARS", "SCALP_NOISE_ATR", "SCALP_CORR_HIGH", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
+                "capital": dict(self.capital_state(), safe_assets=self.safe_assets(self.capital_state()["mode"])),
                 "regime": {k: v for k, v in self.regime.items()}, "peer_wait": [{"ticker": t, "side": w["side"], "age_min": round((time.time() - w["ts"]) / 60, 1)} for t, w in self.peer_wait.items()],
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),
                 "pending": [{"ticker": t, "side": p["sig"]["side"], "trigger": p["trigger"], "expires": p["expires"]} for t, p in self.pending.items()],
