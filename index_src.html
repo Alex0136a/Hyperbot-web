@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.464";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.465";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1196,11 +1196,12 @@ function ScalpPanel({ token }) {
   if (!d) return <div style={MT.card}><div style={MT.title}>⚡ SCALP CRYPTO</div><div style={{color:"#94a3b8",fontSize:12}}>{err || "Chargement…"}</div></div>;
   const live = d.mode === "live";
   const S = live ? d.stats_live : d.stats_paper;
+  const _off = Number(d.config.SCALP_DAY_OFFSET_H ?? -4); const dayLbl = _off===0 ? "jour UTC" : `jour UTC${_off>0?"+":"−"}${Math.abs(_off)}`;
   const pr = (a) => a && a.n ? `${a.n} trades · ${a.win_rate.toFixed(0)} % gagnants · ${fmtUsd(a.pnl)} brut · ${fmtUsd(a.pnl_net)} net` : "aucun trade";
   const LBL = {SCALP_LEVERAGE:"Levier",SCALP_NOTIONAL_USD:"Taille ($)",SCALP_SL_PCT:"Stop (% prix)",SCALP_TP_PCT:"Objectif (% prix)",SCALP_TOP_N:"Nb d'actifs (top volume)",
     SCALP_MIN_SCORE:"Filtre note min LONG (0 = aucun)",SCALP_SHORT_MIN_SCORE:"Exigence SHORT : note min (0 = aucune)",SCALP_TREND_MODE:"Sans contre-tendance (1 = oui, 0 = non)",SCALP_CONFIRM_BARS:"Rebond : bougies 5 min pour confirmer (0 = entrer tout de suite)",SCALP_NOISE_ATR:"Bruit toléré à contre-sens (× ATR 5 min)",SCALP_MIN_ATR15_PCT:"Filtre volatilité 15 min min % (0 = aucun)",SCALP_MIN_ROOM_PCT:"Filtre place min avant zone % (0 = aucun)",
     SCALP_BREAK_VOL_MULT:"Cassure : volume ×",SCALP_MAX_CHASE_PCT:"Cassure : ne pas poursuivre au-delà (%)",SCALP_MAX_OPEN:"Positions simultanées max (0 = illimité ; en live le capital limite)",
-    SCALP_COMPOUND_ON:"Capital composé : taille = % du capital courant (1 = oui, 0 = non)",SCALP_CAPITAL_USD:"Capital de départ ($)",SCALP_COMPOUND_PCT:"Taille d'un trade (% du capital, notionnel)",SCALP_CAPITAL_FROM_HL:"Live : capital de départ = solde Hyperliquid lu chaque jour (1 = oui, 0 = non)",SCALP_CAPITAL_CAP_USD:"Live : plafond du capital utilisé ($, 0 = aucun)",SCALP_GOAL_PCT:"Objectif du jour (% du capital, 0 = aucun)",SCALP_GOAL_STOP_ALL:"Objectif atteint : arrêter toute entrée (1 = oui, 0 = mode prudent)",SCALP_SAFE_WINDOW:"Mode prudent : derniers trades pris en compte par actif",SCALP_SAFE_MIN_TRADES:"Mode prudent : trades minimum par actif",SCALP_SAFE_MIN_WINRATE:"Mode prudent : taux de réussite minimum (%)",SCALP_SAFE_REBOND_ONLY:"Mode prudent : rebonds seulement (1 = oui, 0 = non)",SCALP_SAFE_MAX_SCORE:"Mode prudent : refuser les notes ≥ (0 = aucune limite)",SCALP_MAX_PER_DAY:"Trades max par jour",SCALP_DAILY_LOSS_USD:"Perte journalière max ($)",SCALP_PAUSE_AFTER_LOSSES:"Pause après X pertes de suite",
+    SCALP_DAY_OFFSET_H:"Début de la journée du Scalp : décalage avec UTC en heures (-4 = heure de Marigot, 0 = UTC)",SCALP_COMPOUND_ON:"Capital composé : taille = % du capital courant (1 = oui, 0 = non)",SCALP_CAPITAL_USD:"Capital de départ ($)",SCALP_COMPOUND_PCT:"Taille d'un trade (% du capital, notionnel)",SCALP_CAPITAL_FROM_HL:"Live : capital de départ = solde Hyperliquid lu chaque jour (1 = oui, 0 = non)",SCALP_CAPITAL_CAP_USD:"Live : plafond du capital utilisé ($, 0 = aucun)",SCALP_GOAL_PCT:"Objectif du jour (% du capital, 0 = aucun)",SCALP_GOAL_STOP_ALL:"Objectif atteint : arrêter toute entrée (1 = oui, 0 = mode prudent)",SCALP_SAFE_WINDOW:"Mode prudent : derniers trades pris en compte par actif",SCALP_SAFE_MIN_TRADES:"Mode prudent : trades minimum par actif",SCALP_SAFE_MIN_WINRATE:"Mode prudent : taux de réussite minimum (%)",SCALP_SAFE_REBOND_ONLY:"Mode prudent : rebonds seulement (1 = oui, 0 = non)",SCALP_SAFE_MAX_SCORE:"Mode prudent : refuser les notes ≥ (0 = aucune limite)",SCALP_MAX_PER_DAY:"Trades max par jour",SCALP_DAILY_LOSS_USD:"Perte journalière max ($)",SCALP_PAUSE_AFTER_LOSSES:"Pause après X pertes de suite",
     SCALP_PAUSE_MIN:"Durée de la pause (min)",SCALP_SHORT_BTC_BLOCK:"Pas de short si BTC monte (1 = oui, 0 = non)",SCALP_SHORT_BTC_MAX_PCT:"Short bloqué si BTC 1 h > (%)",SCALP_RUN_ENABLED:"Laisser courir après l'objectif (1 = oui, 0 = non)",SCALP_RUN_TRAIL_PCT:"Laisser courir : sortie si recul > (% prix)",SCALP_FLOW_ALL_ON:"Flux obligatoire pour TOUS les trades (1 = oui, 0 = non)",SCALP_FLOW_ALL_MIN:"Flux : part min d'achats (long) / ventes (short) agressifs (0,52 = 52 %)",SCALP_FLOW_ALL_MIN_TRADES:"Flux : nb min de transactions (sinon pas de blocage)",SCALP_RETEST_ON:"Cassure avec retest : attendre le retour sur le niveau puis le rebond (1 = oui, 0 = non)",SCALP_RETEST_BARS:"Retest : nb de bougies 5 min d'attente max",SCALP_RETEST_TOL_ATR:"Retest : proximité du niveau (× ATR 5 min)",SCALP_RETEST_BOUNCE_ATR:"Retest : rebond requis avant d'entrer (× ATR 5 min)",SCALP_BE_ENABLED:"Stop au seuil de rentabilité (1 = oui, 0 = non)",SCALP_BE_ARM_PCT:"Seuil : gain atteint avant de remonter le stop (%)",SCALP_BE_LOCK_PCT:"Stop remonté à entrée + (% prix, ≈ frais)",SCALP_COUNTER_ENABLED:"Contre-tendance sécurisée (1 = autorisée, 0 = bloquée)",SCALP_COUNTER_MIN_SCORE:"Contre-tendance : note min",SCALP_COUNTER_FLOW_MIN:"Contre-tendance : part min d'achats/ventes agressifs (0,58 = 58 %)",SCALP_COUNTER_MIN_TRADES:"Contre-tendance : nb min de transactions du flux",SCALP_ZONE_COOLDOWN_MIN:"Pause sur une zone après un stop (min, 0 = non)",SCALP_COOLDOWN_MIN:"Attente par actif (min)",SCALP_MAX_HOLD_MIN:"Durée max d'un trade (min ; sans effet une fois l'objectif atteint)"};
   const CLBL = {SCALP_CORR_WINDOW_MIN:"Fenêtre de mesure de la corrélation (min, 30 à 275)",SCALP_CORR_HIGH:"Marché « corrélé » si corrélation moyenne ≥ (0,1 à 0,95)",
     SCALP_BREADTH_MIN:"Largeur : part d'actifs requise dans le sens du trade (%)",
@@ -1240,7 +1241,7 @@ function ScalpPanel({ token }) {
         const l = Math.min(pos(0), pos(dp)), w = Math.abs(pos(dp)-pos(0));
         return <div style={{margin:"8px 0",padding:"8px 10px",border:"1px solid #1e2d4a",borderRadius:8,background:"#0b1220"}}>
           <div style={{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6,fontSize:12,color:"#e2e8f0",marginBottom:6}}>
-            <span>🌡️ <b>Objectif du jour</b> (UTC) : <b style={{color:col}}>{dp>=0?"+":""}{dp.toFixed(2)} %</b> / {g} % <span style={{color:"#94a3b8"}}>({k.day_net>=0?"+":""}{k.day_net} $)</span></span>
+            <span>🌡️ <b>Objectif du jour</b> ({dayLbl}) : <b style={{color:col}}>{dp>=0?"+":""}{dp.toFixed(2)} %</b> / {g} % <span style={{color:"#94a3b8"}}>({k.day_net>=0?"+":""}{k.day_net} $)</span></span>
             <span style={{color:col,fontWeight:700}}>{reached ? `✔ atteint · surplus +${(dp-g).toFixed(2)} % (≈ +${usd.toFixed(2)} $)` : `reste ${rest.toFixed(2)} % (≈ ${usd.toFixed(2)} $)`}</span>
           </div>
           <div style={{position:"relative",height:16,borderRadius:8,background:"#1e293b",overflow:"hidden"}}>
@@ -1256,7 +1257,7 @@ function ScalpPanel({ token }) {
           {reached && <div style={{fontSize:10,color:"#86efac"}}>Objectif atteint : {Number(d.config.SCALP_GOAL_STOP_ALL)?"plus d'entrée aujourd'hui.":"mode prudent actif (actifs sûrs, rebonds, notes < "+(d.config.SCALP_SAFE_MAX_SCORE||"—")+")."}</div>}
         </div>; })()}
       <div style={{display:"flex",gap:18,flexWrap:"wrap",fontSize:12,color:"#e2e8f0"}}>
-        <div><span style={MT.label}>AUJOURD'HUI (UTC) · {live?"LIVE":"PAPER"}</span>{pr(S.today)}</div>
+        <div><span style={MT.label}>AUJOURD'HUI ({dayLbl}) · {live?"LIVE":"PAPER"}</span>{pr(S.today)}</div>
         <div><span style={MT.label}>TOTAL · {live?"LIVE":"PAPER"}</span>{pr(S.total)}</div>
         <div><span style={MT.label}>REBOND</span>{pr(S.by_kind.rebond)}</div>
         <div><span style={MT.label}>CASSURE</span>{pr(S.by_kind.cassure)}</div>
@@ -1273,7 +1274,7 @@ function ScalpPanel({ token }) {
         {sub==="reglages" && <div>
           {d.capital && (()=>{ const k=d.capital; return <div style={{fontSize:12,color:"#cbd5e1",marginBottom:10,padding:"8px 10px",border:"1px solid #1e2d4a",borderRadius:8,background:"#0b1220"}}>
             <b>Capital {k.mode==="live"?"LIVE":"PAPER"}</b> : départ {k.base} $ ({k.source}) → <b style={{color:k.now>=k.base?"#22c55e":"#ef4444"}}>{k.now} $</b>{k.compound?` · chaque trade = ${Number(d.config.SCALP_COMPOUND_PCT||100)} % du capital`:" · taille fixe (capital composé désactivé)"}
-            {Number(k.goal_pct)>0 && <div>Objectif du jour (UTC) : <b style={{color:k.goal_reached?"#22c55e":"#fbbf24"}}>{k.day_pct>=0?"+":""}{k.day_pct} %</b> / {k.goal_pct} % ({k.day_net>=0?"+":""}{k.day_net} $){k.goal_reached?" — atteint : "+(Number(d.config.SCALP_GOAL_STOP_ALL)?"plus d'entrée aujourd'hui":"mode prudent actif"):""}</div>}
+            {Number(k.goal_pct)>0 && <div>Objectif du jour ({dayLbl}) : <b style={{color:k.goal_reached?"#22c55e":"#fbbf24"}}>{k.day_pct>=0?"+":""}{k.day_pct} %</b> / {k.goal_pct} % ({k.day_net>=0?"+":""}{k.day_net} $){k.goal_reached?" — atteint : "+(Number(d.config.SCALP_GOAL_STOP_ALL)?"plus d'entrée aujourd'hui":"mode prudent actif"):""}</div>}
             {Number(k.goal_pct)>0 && <div style={{color:"#94a3b8"}}>Actifs « sûrs » ({(k.safe_assets||[]).length}) : {(k.safe_assets||[]).join(", ")||"aucun pour l'instant"}</div>}
             <button style={{...MT.btn("#334155","#e2e8f0"),marginTop:6}} onClick={()=>{ if(window.confirm("Repartir du capital de départ à partir de maintenant ? Les trades déjà clôturés ne comptent plus dans le capital.")) send({reset_capital:true},"Le capital repart du capital de départ."); }}>↺ Repartir du capital de départ</button>
           </div>; })()}

@@ -1360,3 +1360,9 @@ Fichiers : `api.py`, `bot_engine.py` (version), `index_src.html`, `index.html`, 
 - La route `/` envoie `Cache-Control: no-store` : le navigateur ou l'application installée ne garde plus de copie de la page.
 - La carte Scalp affiche « [page v4.464] » : c'est la version de `index.html` réellement chargée par le navigateur (différente de `/health`, qui donne la version de `bot_engine.py`). Si `/health` affiche 4.464 mais que la carte affiche une autre version, `index.html` n'a pas été remplacé.
 - Le thermomètre de l'objectif du jour a été vérifié par un rendu réel dans un navigateur de test (objectif en cours, atteint avec surplus, journée négative, serveur sans capital).
+
+## v4.465 — Une seule base horaire pour les statistiques du Scalp
+Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `index.html`, `README.md`.
+- Nouveau réglage **« Début de la journée du Scalp : décalage avec UTC en heures »** (`SCALP_DAY_OFFSET_H`, **−4** par défaut = heure de Marigot ; 0 = UTC). La « journée » du Scalp commence maintenant à minuit à ce décalage (04:00 UTC pour −4) au lieu de 00:00 UTC.
+- Cette base unique est utilisée pour : la ligne « AUJOURD'HUI » de la carte, le thermomètre et l'objectif du jour, la limite de perte journalière, le nombre de trades max par jour, et le point de départ du solde Hyperliquid lu chaque jour.
+- Les libellés affichent la base (« jour UTC−4 »). Les résultats « par tranche horaire » et les tranches horaires de trading restent en UTC.

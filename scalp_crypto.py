@@ -15,7 +15,7 @@ meme suivi des prix de sortie. Aucune logique n est partagee avec les autres mod
 import threading
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import db
 import bot_engine as be
@@ -381,6 +381,17 @@ class ScalpEngine:
         return self._uni
 
     # ── statistiques (a partir de l historique des trades manuels) ──
+    def day_start_ts(self):
+        """v4.465 : debut de la journee du Scalp (stats, objectif du jour, limite de perte, trades max) = minuit au decalage SCALP_DAY_OFFSET_H
+        par rapport a UTC (defaut -4 = heure de Marigot). Retourne un timestamp UTC."""
+        try:
+            off = float(self.cfg.get("SCALP_DAY_OFFSET_H", -4))
+        except (TypeError, ValueError):
+            off = -4.0
+        now = datetime.now(timezone.utc)
+        loc = now + timedelta(hours=off)
+        return loc.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() - off * 3600
+
     def stats(self, mode=None):
         mode = mode or self.cfg.get("SCALP_MODE", "paper")
         ts, m, cached = self._stats_cache
@@ -395,7 +406,7 @@ class ScalpEngine:
                     rows.append(d)
         except Exception as e:
             self.last_error = f"stats : {type(e).__name__}: {e}"
-        midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        midnight = self.day_start_ts()
         today = [d for d in rows if float(d.get("closed_at") or 0) >= midnight]
         rows.sort(key=lambda d: float(d.get("closed_at") or 0), reverse=True)
 
@@ -956,7 +967,7 @@ class ScalpEngine:
 
     def _day_snapshot(self):
         """(valeur, ts) : solde Hyperliquid lu UNE FOIS par jour UTC, avant le premier trade du jour (relu apres un redemarrage)."""
-        today = datetime.now(timezone.utc).date()
+        today = self.day_start_ts()
         snap = getattr(self, "_hl_snap", None)
         if snap is None or snap[0] != today:
             v = self.hl_balance()
@@ -985,7 +996,7 @@ class ScalpEngine:
             else:
                 src = "réglage (solde Hyperliquid illisible)"
         rows = self._closed_rows(mode)
-        midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        midnight = self.day_start_ts()
         net_all = sum(self._row_net(d) for d in rows if float(d.get("closed_at") or 0) >= since)
         net_today = sum(self._row_net(d) for d in rows if float(d.get("closed_at") or 0) >= (midnight if from_hl else max(midnight, since)))
         now_cap = max(base + net_all, 0.0)
