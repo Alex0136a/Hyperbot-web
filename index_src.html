@@ -50,6 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
+const UI_VERSION = "4.464";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1216,7 +1217,7 @@ function ScalpPanel({ token }) {
   return (
     <div style={{...MT.card,borderColor:d.enabled?(live?"#ef4444":"#22c55e"):"#1e2d4a"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
-        <div style={MT.title}>⚡ SCALP CRYPTO <span style={{fontWeight:400,color:"#64748b"}}>— x{d.config.SCALP_LEVERAGE} · TP {d.config.SCALP_TP_PCT} % · SL {d.config.SCALP_SL_PCT} % · {d.config.SCALP_NOTIONAL_USD} $ · départ de support / résistance H1, rebond ou cassure confirmée (bougies 5 min)</span></div>
+        <div style={MT.title}>⚡ SCALP CRYPTO <span style={{fontWeight:400,color:"#475569",fontSize:10}}>[page v{UI_VERSION}]</span> <span style={{fontWeight:400,color:"#64748b"}}>— x{d.config.SCALP_LEVERAGE} · TP {d.config.SCALP_TP_PCT} % · SL {d.config.SCALP_SL_PCT} % · {d.config.SCALP_NOTIONAL_USD} $ · départ de support / résistance H1, rebond ou cassure confirmée (bougies 5 min)</span></div>
         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
           <button style={MT.seg(d.enabled,"#22c55e")} onClick={()=>send({enabled:!d.enabled})}>{d.enabled?"● ACTIF":"○ ARRÊTÉ"}</button>
           <button style={MT.seg(!live,"#60a5fa")} onClick={()=>live && send({mode:"paper"})}>PAPER</button>

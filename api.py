@@ -5440,7 +5440,8 @@ _HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.htm
 @app.get("/", response_class=HTMLResponse)
 def index():
     with open(_HTML_PATH, "r", encoding="utf-8") as f:
-        return f.read()
+        # v4.464 : jamais de copie en cache de la page (sinon une ancienne interface peut rester affichee apres un deploiement)
+        return HTMLResponse(content=f.read(), headers={"Cache-Control": "no-store, max-age=0"})
 
 
 # ── v4.372 — application installable sur smartphone (PWA) : icones generees en code, aucun fichier a deposer en plus ──

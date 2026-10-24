@@ -1354,3 +1354,9 @@ Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md
 ## v4.463 — Thermomètre : message de diagnostic si le capital n'est pas reçu
 Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md` (+ `scalp_crypto.py` et `api.py` de v4.460–v4.461 en cas de dépôt incomplet).
 - Si le serveur n'envoie pas le champ `capital` du Scalp (fichier `scalp_crypto.py` plus ancien que v4.460), la carte affiche maintenant une ligne jaune « 🌡️ Thermomètre indisponible … » au lieu de rien.
+
+## v4.464 — Page jamais en cache + version de la page affichée
+Fichiers : `api.py`, `bot_engine.py` (version), `index_src.html`, `index.html`, `README.md` (+ `scalp_crypto.py`).
+- La route `/` envoie `Cache-Control: no-store` : le navigateur ou l'application installée ne garde plus de copie de la page.
+- La carte Scalp affiche « [page v4.464] » : c'est la version de `index.html` réellement chargée par le navigateur (différente de `/health`, qui donne la version de `bot_engine.py`). Si `/health` affiche 4.464 mais que la carte affiche une autre version, `index.html` n'a pas été remplacé.
+- Le thermomètre de l'objectif du jour a été vérifié par un rendu réel dans un navigateur de test (objectif en cours, atteint avec surplus, journée négative, serveur sans capital).
