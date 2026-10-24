@@ -1343,3 +1343,10 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py` (version), `index_src.html`, `inde
 - À chaque ouverture Scalp, le trade enregistre (`scalp.tq`) : ratio d'efficacité (mouvement net / chemin parcouru, 1 = tendance propre, 0 = va-et-vient) de **BTC sur 1 h et 4 h**, de **l'actif sur 1 h**, du **panier sur 2 h et 4 h** ; l'**écart du prix à sa moyenne 1 h** (%) ; le **mouvement du panier sur 2 h** (%).
 - Le CSV de l'historique gagne 7 colonnes : `er_btc_1h`, `er_btc_4h`, `er_actif_1h`, `ecart_moy_1h_pct`, `er_panier_2h`, `er_panier_4h`, `panier_2h_pct`. Seuls les trades ouverts après cette version les contiennent.
 - But : vérifier, après quelques jours variés, si une de ces mesures sépare les trades/journées perdants des gagnants avant d'ajouter un filtre.
+
+## v4.462 — Thermomètre de l'objectif du jour (carte Scalp)
+Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md`.
+- Sous la ligne d'état de la carte Scalp (toujours visible, sans ouvrir les réglages) : un thermomètre horizontal de l'objectif du jour (UTC) du mode affiché (paper ou live). Barre orange jusqu'à l'objectif, repère 🎯 à la valeur de l'objectif, barre verte rayée au-delà (surplus), barre rouge vers la gauche si la journée est négative.
+- Texte : avancement en % et en $, « reste X % (≈ Y $) » ou « ✔ atteint · surplus +X % (≈ +Y $) », et rappel du mode prudent ou de l'arrêt des entrées une fois l'objectif atteint.
+- Si l'objectif est à 0 (désactivé), une ligne discrète affiche seulement le résultat du jour.
+- Aucune décision du bot n'est modifiée.

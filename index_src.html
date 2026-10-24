@@ -1228,6 +1228,30 @@ function ScalpPanel({ token }) {
         {d.enabled ? (d.window_open ? <span style={{color:"#22c55e"}}>● à l'écoute</span> : <span style={{color:"#fbbf24"}}>● en attente : {d.window_reason}</span>) : <span style={{color:"#94a3b8"}}>○ désactivé (rien ne s'ouvre)</span>}
         {" · "}mode <b style={{color:live?"#ef4444":"#60a5fa"}}>{live?"LIVE":"PAPER"}</b> · positions {d.open}{d.max_open>0?`/${d.max_open}`:""} · actifs : {(d.universe||[]).join(", ")||"—"}
       </div>
+      {d.capital && (()=>{ const k=d.capital; const g=Number(k.goal_pct)||0; const dp=Number(k.day_pct)||0;
+        if(g<=0) return <div style={{fontSize:11,color:"#64748b",margin:"4px 0"}}>🌡️ Objectif du jour désactivé (réglage « Objectif du jour »). Aujourd'hui : {dp>=0?"+":""}{dp.toFixed(2)} % ({k.day_net>=0?"+":""}{k.day_net} $).</div>;
+        const minV = dp<0 ? Math.min(dp*1.1, -g*0.25) : 0, maxV = Math.max(g*1.25, dp*1.1), span = maxV-minV||1;
+        const pos = v => Math.max(0, Math.min(100, (v-minV)/span*100));
+        const reached = dp>=g, rest = g-dp, usd = Math.abs(rest)/100*(Number(k.day_start)||0);
+        const col = dp<0 ? "#ef4444" : reached ? "#22c55e" : "#fbbf24";
+        const l = Math.min(pos(0), pos(dp)), w = Math.abs(pos(dp)-pos(0));
+        return <div style={{margin:"8px 0",padding:"8px 10px",border:"1px solid #1e2d4a",borderRadius:8,background:"#0b1220"}}>
+          <div style={{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6,fontSize:12,color:"#e2e8f0",marginBottom:6}}>
+            <span>🌡️ <b>Objectif du jour</b> (UTC) : <b style={{color:col}}>{dp>=0?"+":""}{dp.toFixed(2)} %</b> / {g} % <span style={{color:"#94a3b8"}}>({k.day_net>=0?"+":""}{k.day_net} $)</span></span>
+            <span style={{color:col,fontWeight:700}}>{reached ? `✔ atteint · surplus +${(dp-g).toFixed(2)} % (≈ +${usd.toFixed(2)} $)` : `reste ${rest.toFixed(2)} % (≈ ${usd.toFixed(2)} $)`}</span>
+          </div>
+          <div style={{position:"relative",height:16,borderRadius:8,background:"#1e293b",overflow:"hidden"}}>
+            <div style={{position:"absolute",left:`${l}%`,width:`${w}%`,top:0,bottom:0,background:col,borderRadius:8,transition:"all .4s"}}/>
+            {reached && <div style={{position:"absolute",left:`${pos(g)}%`,width:`${Math.max(pos(dp)-pos(g),0)}%`,top:0,bottom:0,background:"repeating-linear-gradient(45deg,#16a34a,#16a34a 4px,#4ade80 4px,#4ade80 8px)"}}/>}
+            <div style={{position:"absolute",left:`${pos(g)}%`,top:0,bottom:0,width:2,background:"#e2e8f0"}} title={`Objectif ${g} %`}/>
+            {minV<0 && <div style={{position:"absolute",left:`${pos(0)}%`,top:0,bottom:0,width:1,background:"#64748b"}}/>}
+          </div>
+          <div style={{position:"relative",height:14,fontSize:10,color:"#64748b",marginTop:2}}>
+            <span style={{position:"absolute",left:`${pos(0)}%`,transform:"translateX(-50%)"}}>0</span>
+            <span style={{position:"absolute",left:`${pos(g)}%`,transform:"translateX(-50%)",color:"#e2e8f0"}}>🎯 {g} %</span>
+          </div>
+          {reached && <div style={{fontSize:10,color:"#86efac"}}>Objectif atteint : {Number(d.config.SCALP_GOAL_STOP_ALL)?"plus d'entrée aujourd'hui.":"mode prudent actif (actifs sûrs, rebonds, notes < "+(d.config.SCALP_SAFE_MAX_SCORE||"—")+")."}</div>}
+        </div>; })()}
       <div style={{display:"flex",gap:18,flexWrap:"wrap",fontSize:12,color:"#e2e8f0"}}>
         <div><span style={MT.label}>AUJOURD'HUI (UTC) · {live?"LIVE":"PAPER"}</span>{pr(S.today)}</div>
         <div><span style={MT.label}>TOTAL · {live?"LIVE":"PAPER"}</span>{pr(S.total)}</div>
