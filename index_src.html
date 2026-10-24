@@ -1228,7 +1228,9 @@ function ScalpPanel({ token }) {
         {d.enabled ? (d.window_open ? <span style={{color:"#22c55e"}}>● à l'écoute</span> : <span style={{color:"#fbbf24"}}>● en attente : {d.window_reason}</span>) : <span style={{color:"#94a3b8"}}>○ désactivé (rien ne s'ouvre)</span>}
         {" · "}mode <b style={{color:live?"#ef4444":"#60a5fa"}}>{live?"LIVE":"PAPER"}</b> · positions {d.open}{d.max_open>0?`/${d.max_open}`:""} · actifs : {(d.universe||[]).join(", ")||"—"}
       </div>
-      {d.capital && (()=>{ const k=d.capital; const g=Number(k.goal_pct)||0; const dp=Number(k.day_pct)||0;
+      {(()=>{ const k=d.capital;
+        if(!k) return <div style={{fontSize:11,color:"#fbbf24",margin:"4px 0"}}>🌡️ Thermomètre indisponible : le serveur n'envoie pas le capital du Scalp. Vérifiez que <b>scalp_crypto.py</b> (v4.460 ou plus récente) est bien déposé sur GitHub, puis redéployez.</div>;
+        const g=Number(k.goal_pct)||0; const dp=Number(k.day_pct)||0;
         if(g<=0) return <div style={{fontSize:11,color:"#64748b",margin:"4px 0"}}>🌡️ Objectif du jour désactivé (réglage « Objectif du jour »). Aujourd'hui : {dp>=0?"+":""}{dp.toFixed(2)} % ({k.day_net>=0?"+":""}{k.day_net} $).</div>;
         const minV = dp<0 ? Math.min(dp*1.1, -g*0.25) : 0, maxV = Math.max(g*1.25, dp*1.1), span = maxV-minV||1;
         const pos = v => Math.max(0, Math.min(100, (v-minV)/span*100));

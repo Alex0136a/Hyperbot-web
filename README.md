@@ -1350,3 +1350,7 @@ Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md
 - Texte : avancement en % et en $, « reste X % (≈ Y $) » ou « ✔ atteint · surplus +X % (≈ +Y $) », et rappel du mode prudent ou de l'arrêt des entrées une fois l'objectif atteint.
 - Si l'objectif est à 0 (désactivé), une ligne discrète affiche seulement le résultat du jour.
 - Aucune décision du bot n'est modifiée.
+
+## v4.463 — Thermomètre : message de diagnostic si le capital n'est pas reçu
+Fichiers : `index_src.html`, `index.html`, `bot_engine.py` (version), `README.md` (+ `scalp_crypto.py` et `api.py` de v4.460–v4.461 en cas de dépôt incomplet).
+- Si le serveur n'envoie pas le champ `capital` du Scalp (fichier `scalp_crypto.py` plus ancien que v4.460), la carte affiche maintenant une ligne jaune « 🌡️ Thermomètre indisponible … » au lieu de rien.
