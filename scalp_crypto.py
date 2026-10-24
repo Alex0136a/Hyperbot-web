@@ -1060,6 +1060,12 @@ class ScalpEngine:
             return pre + f"{t} n'a pas un historique assez sûr ({txt}; il faut ≥ {mn} trades et ≥ {wr:g} % de réussite avec un net positif)"
         if int(c.get("SCALP_SAFE_REBOND_ONLY", 1)) and sig["kind"] != "rebond":
             return pre + "seuls les rebonds sont acceptés (pas les cassures)"
+        mt = int(float(c.get("SCALP_SAFE_MIN_TOUCHES", 2) or 0))
+        if mt > 0 and int(sig.get("touches") or 1) < mt:
+            return pre + f"support/résistance testé {int(sig.get('touches') or 1)} fois (il en faut ≥ {mt})"
+        mr = float(c.get("SCALP_SAFE_MIN_ROOM_PCT", 0) or 0)
+        if mr > 0 and float(sig.get("room") or 0) < mr:
+            return pre + f"place avant la zone suivante {float(sig.get('room') or 0):.2f} % < {mr:g} %"
         mx = float(c.get("SCALP_SAFE_MAX_SCORE", 90) or 0)
         if mx > 0 and float(sig.get("score") or 0) >= mx:
             return pre + f"note {sig['score']:.0f} ≥ {mx:g} (les notes les plus hautes ont perdu davantage)"

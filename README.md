@@ -1366,3 +1366,8 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 - Nouveau réglage **« Début de la journée du Scalp : décalage avec UTC en heures »** (`SCALP_DAY_OFFSET_H`, **−4** par défaut = heure de Marigot ; 0 = UTC). La « journée » du Scalp commence maintenant à minuit à ce décalage (04:00 UTC pour −4) au lieu de 00:00 UTC.
 - Cette base unique est utilisée pour : la ligne « AUJOURD'HUI » de la carte, le thermomètre et l'objectif du jour, la limite de perte journalière, le nombre de trades max par jour, et le point de départ du solde Hyperliquid lu chaque jour.
 - Les libellés affichent la base (« jour UTC−4 »). Les résultats « par tranche horaire » et les tranches horaires de trading restent en UTC.
+
+## v4.466 — Mode prudent : support/résistance obligatoire
+- Objectif du jour atteint : un rebond n'est accepté que si le support/résistance a été **testé au moins X fois** (`SCALP_SAFE_MIN_TOUCHES`, 2 par défaut ; 0 = aucune exigence).
+- Option `SCALP_SAFE_MIN_ROOM_PCT` (0 = off) : place minimale (%) avant la zone opposée suivante.
+- Ne s'applique qu'après l'objectif atteint (aucun effet si l'objectif est à 0).
