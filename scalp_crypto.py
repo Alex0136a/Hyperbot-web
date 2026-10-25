@@ -318,6 +318,7 @@ class ScalpEngine:
         self._uni, self._uni_ts = [], 0
         self._seen = {}                      # ticker -> derniere tranche 5 min evaluee
         self._cool = {}                      # ticker -> fin de pause
+        self.verdicts = {}                   # v4.470 : ticker -> (ts, type, texte) dernier verdict du Scalp (diagnostic)
         self._zone_cache = (0, {})           # v4.432 : zones ou un stop vient de tomber
         self.regime = {"ts": 0, "n": 0, "label": "inconnu"}     # v4.442 : regime du panier (correlation / largeur)
         self._opens = deque(maxlen=200)      # (ts, side, mode, ticker) des ouvertures recentes (grappe)
@@ -335,6 +336,8 @@ class ScalpEngine:
         return self.bot.cfg
 
     def _ev(self, kind, ticker, text):
+        if ticker and ticker != "-":
+            self.verdicts[ticker] = (time.time(), kind, text)
         self.events.appendleft({"ts": time.time(), "kind": kind, "ticker": ticker, "text": text})
 
     def thresholds(self):
@@ -550,6 +553,7 @@ class ScalpEngine:
                     self.last_error = f"bougies {t} : {type(e).__name__}: {e}"
                     continue
                 sig, motif = evaluate(c5, c15, c1h, btc, K, self._flow(t))
+                self.verdicts[t] = (time.time(), "analyse", ("signal valide : " + f"{sig['kind']} {sig['side']} note {sig['score']:.0f}") if sig else (motif or "aucun signal"))
                 if not sig:
                     if "refuse" in motif:
                         self._ev("refus", t, motif)
@@ -1041,6 +1045,47 @@ class ScalpEngine:
             except Exception:
                 out[m] = None
         return out
+
+    def diag_line(self, t):
+        """v4.470 : ligne du diagnostic d entree pour un actif : pourquoi le Scalp crypto entre ou n entre pas."""
+        c = self.cfg
+        try:
+            if not int(c.get("SCALP_ENABLED", 0)):
+                return "Scalp désactivé (rien ne s'ouvre)"
+            if t not in self.universe():
+                return "hors de l'univers du Scalp (top volume + actifs suivis)"
+            mode = "live" if c.get("SCALP_MODE") == "live" else "paper"
+            parts = []
+            ok, why = self.window_state()
+            if not ok:
+                parts.append(f"⏸ {why}")
+            cd = self._cool.get((t, mode), 0) - time.time()
+            if cd > 0:
+                parts.append(f"⏳ pause sur cet actif encore {cd / 60:.0f} min")
+            if self._busy_same_mode(t, mode):
+                parts.append("position Scalp déjà ouverte (live : une seule par actif)")
+            if t in self.pending:
+                parts.append("signal en attente de confirmation")
+            v = self.verdicts.get(t)
+            if v:
+                age = time.time() - v[0]
+                parts.append(f"dernier verdict ({age / 60:.0f} min) : {v[2]}")
+            else:
+                parts.append("pas encore évalué depuis le démarrage")
+            try:
+                cs = self.capital_state(mode)
+                if cs["goal_reached"]:
+                    rec = self._asset_record(mode).get(t)
+                    safe = rec and rec[0] >= int(float(c.get("SCALP_SAFE_MIN_TRADES", 6))) and rec[1] >= float(c.get("SCALP_SAFE_MIN_WINRATE", 55)) and rec[2] > 0
+                    parts.append("objectif atteint : " + ("actif jugé sûr" if safe else "actif PAS assez sûr (mode prudent)"))
+            except Exception:
+                pass
+            reg = self.regime or {}
+            if reg.get("n"):
+                parts.append(f"marché {reg.get('label')} (corr {reg.get('corr', 0):.2f})")
+            return " · ".join(parts)
+        except Exception as e:
+            return f"indisponible ({type(e).__name__}: {e})"
 
     def compound_notional(self, mode):
         """Taille d un trade (notionnel $) = capital courant x SCALP_COMPOUND_PCT %, ou None si le capital compose est desactive."""

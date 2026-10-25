@@ -1383,3 +1383,8 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 
 ## v4.469 — Thermomètre : choix du mode affiché (Paper / Live)
 - Deux boutons PAPER / LIVE dans le cadre du thermomètre permettent de voir les résultats de l'autre mode sans changer le mode du moteur. Le serveur envoie `capital_modes` (paper et live).
+
+## v4.470 — Diagnostic Scalp (diagnostic d'entrée + bouton dans Manuel)
+- Le diagnostic « Pourquoi cet actif ne trade pas ? » a une nouvelle ligne **⚡ SCALP CRYPTO** par actif : dernier verdict du Scalp (signal valide, ou motif du refus : zone, note, tendance, grappe, mode prudent, capital…), fenêtre fermée / pause / position ouverte / signal en attente, état de l'objectif et du mode prudent, régime du marché. L'ancienne ligne « ⚡ SCALP » (Forex) devient « ⚡ SCALP FOREX ».
+- Nouvelle carte **🔍 DIAGNOSTIC SCALP** dans l'onglet Manuel (sous la carte Scalp) : même diagnostic, limité aux actifs du Scalp, avec le verdict Scalp + top-down, situation, niveaux, qualité du marché et flux. Choix d'un actif ou de tous, bouton Copier.
+- Le Scalp mémorise le dernier verdict de chaque actif (`verdicts`), mesure seule, aucun effet sur les décisions.
