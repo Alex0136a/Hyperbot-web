@@ -1391,3 +1391,15 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 
 ## v4.471 — Bouton « Masquer » sur les diagnostics
 - Un bouton **🙈 Masquer** à côté de « Copier » (carte Diagnostic Scalp) et à côté de « Diagnostiquer maintenant » (diagnostic « Pourquoi cet actif ne trade pas ? ») cache les résultats ; un nouveau clic sur « Diagnostiquer » les réaffiche.
+
+## v4.472 — Emplacements : N trades simultanés de taille identique, capital repris chaque jour
+- Nouveau réglage **Emplacements** (`SCALP_SLOTS`, 0 = désactivé). Avec N > 0 : au plus N trades Scalp ouverts en même temps (par mode), chacun de **notionnel = capital du début de journée × levier ÷ N** (donc marge = capital ÷ N). La taille est fixe pendant toute la journée ; le capital du lendemain intègre les gains/pertes nets (intérêts composés quotidiens).
+- Remplace pour le dimensionnement « Taille ($) » et « Capital composé » tant qu'il est > 0. Entrée refusée si les N emplacements sont occupés (« n/N emplacements occupés »).
+- Exemple : capital 200 $, N = 4, ×3 → chaque trade 150 $ de notionnel (50 $ de marge), 4 trades au maximum.
+- Le capital du début de journée suit la base de jour (`SCALP_DAY_OFFSET_H`) ; en live avec « capital = solde Hyperliquid », c'est le solde lu au début de la journée.
+
+## v4.473 — Emplacements : réserve de capital
+- Nouveau réglage **Part du capital engagée** (`SCALP_SLOTS_USE_PCT`, 100 par défaut = aucun changement). Taille d'un trade = capital du début de journée × part engagée × levier ÷ N. Exemple : 200 $, N = 4, ×3, 80 % → 120 $ de notionnel par trade (40 $ de marge), 40 $ de réserve.
+
+## v4.474 — Historique : onglets LIVE SCALP et PAPER SCALP
+- Dans l'historique, deux nouveaux onglets **LIVE SCALP** et **PAPER SCALP** n'affichent que les trades du Scalp crypto du mode correspondant (avec compteur). Les onglets LIVE et PAPER restent inchangés (tous les trades du mode). Filtre par actif, par date, « Par jour », export CSV et suppression fonctionnent sur l'onglet affiché ; le CSV est nommé `historique_live_scalp_…`.
