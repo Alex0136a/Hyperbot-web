@@ -1388,3 +1388,6 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 - Le diagnostic « Pourquoi cet actif ne trade pas ? » a une nouvelle ligne **⚡ SCALP CRYPTO** par actif : dernier verdict du Scalp (signal valide, ou motif du refus : zone, note, tendance, grappe, mode prudent, capital…), fenêtre fermée / pause / position ouverte / signal en attente, état de l'objectif et du mode prudent, régime du marché. L'ancienne ligne « ⚡ SCALP » (Forex) devient « ⚡ SCALP FOREX ».
 - Nouvelle carte **🔍 DIAGNOSTIC SCALP** dans l'onglet Manuel (sous la carte Scalp) : même diagnostic, limité aux actifs du Scalp, avec le verdict Scalp + top-down, situation, niveaux, qualité du marché et flux. Choix d'un actif ou de tous, bouton Copier.
 - Le Scalp mémorise le dernier verdict de chaque actif (`verdicts`), mesure seule, aucun effet sur les décisions.
+
+## v4.471 — Bouton « Masquer » sur les diagnostics
+- Un bouton **🙈 Masquer** à côté de « Copier » (carte Diagnostic Scalp) et à côté de « Diagnostiquer maintenant » (diagnostic « Pourquoi cet actif ne trade pas ? ») cache les résultats ; un nouveau clic sur « Diagnostiquer » les réaffiche.

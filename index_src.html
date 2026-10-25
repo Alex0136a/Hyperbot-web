@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.470";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.471";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1350,6 +1350,7 @@ function ScalpDiagBox({ token }) {
       </select>
       <textarea readOnly value={txt||"Aucun actif du Scalp dans le diagnostic."} style={{width:"100%",minHeight:220,background:"#0b1220",color:"#e2e8f0",border:"1px solid #1e2d4a",borderRadius:6,padding:8,fontSize:11,fontFamily:"monospace",boxSizing:"border-box"}}/>
       <button style={{...MT.btn("#334155","#e2e8f0"),marginTop:6}} onClick={()=>{ try { navigator.clipboard.writeText(txt); } catch(e) {} }}>📋 Copier</button>
+      <button style={{...MT.btn("#334155","#e2e8f0"),marginTop:6,marginLeft:6}} onClick={()=>{ setRes(null); setPick(""); }}>🙈 Masquer</button>
     </>}
   </div>;
 }
@@ -3741,6 +3742,7 @@ Confirmer ?`
                 style={{background:"#3d2e0522",border:"1px solid #fbbf24",borderRadius:6,padding:"7px 14px",color:"#fbbf24",fontSize:11,cursor:"pointer",fontWeight:700}}>
                 {entryDiagLoading?"Chargement...":"🔄 Diagnostiquer maintenant"}
               </button>
+              {entryDiag && <button onClick={()=>setEntryDiag(null)} style={{background:"#0f1629",border:"1px solid #334155",borderRadius:6,padding:"7px 14px",color:"#cbd5e1",fontSize:11,cursor:"pointer",fontWeight:700,marginLeft:6}}>🙈 Masquer</button>}
             </div>
             {!entryDiag ? (
               <div style={{fontSize:11,color:"#94a3b8"}}>Cliquez pour voir, pour CHAQUE actif, l'obstacle précis (s'il y en a un) qui bloque un LONG ou un SHORT en ce moment précis — capturé à chaque cycle côté bot, toujours à jour au moment du clic.</div>
