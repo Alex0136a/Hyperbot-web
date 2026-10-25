@@ -1380,3 +1380,6 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 - Pour un jour passé : net du jour ÷ capital au début de ce jour (capital de départ + net cumulé avant ce jour).
 - « Tout » : cumul depuis le départ (réglage « Capital »), objectif = objectif du jour × nombre de jours de trading.
 - Le serveur envoie `capital.days` (120 derniers jours) et `capital.all`.
+
+## v4.469 — Thermomètre : choix du mode affiché (Paper / Live)
+- Deux boutons PAPER / LIVE dans le cadre du thermomètre permettent de voir les résultats de l'autre mode sans changer le mode du moteur. Le serveur envoie `capital_modes` (paper et live).

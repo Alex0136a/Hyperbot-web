@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.468";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.469";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1186,7 +1186,7 @@ function ScalpPanel({ token }) {
   const [vals, setVals] = useState({});
   const [hours, setHours] = useState("");
   const [sub, setSub] = useState("reglages");
-  const [thSel, setThSel] = useState("today"), [thDate, setThDate] = useState("");
+  const [thSel, setThSel] = useState("today"), [thDate, setThDate] = useState(""), [thMode, setThMode] = useState("");
   const load = useCallback(async () => {
     try { const r = await apiCall("/api/scalp","GET",null,token); setD(r); setErr("");
       setVals(v => Object.keys(v).length ? v : Object.fromEntries(Object.entries(r.config||{}).filter(([k])=>k!=="SCALP_HOURS_UTC"&&k!=="SCALP_ENABLED"&&k!=="SCALP_MODE")));
@@ -1231,7 +1231,7 @@ function ScalpPanel({ token }) {
         {d.enabled ? (d.window_open ? <span style={{color:"#22c55e"}}>● à l'écoute</span> : <span style={{color:"#fbbf24"}}>● en attente : {d.window_reason}</span>) : <span style={{color:"#94a3b8"}}>○ désactivé (rien ne s'ouvre)</span>}
         {" · "}mode <b style={{color:live?"#ef4444":"#60a5fa"}}>{live?"LIVE":"PAPER"}</b> · positions {d.open}{d.max_open>0?`/${d.max_open}`:""} · actifs : {(d.universe||[]).join(", ")||"—"}
       </div>
-      {(()=>{ const k=d.capital;
+      {(()=>{ const thM=thMode||d.mode; const k=(d.capital_modes&&d.capital_modes[thM])||d.capital;
         if(!k) return <div style={{fontSize:11,color:"#fbbf24",margin:"4px 0"}}>🌡️ Thermomètre indisponible : le serveur n'envoie pas le capital du Scalp. Vérifiez que <b>scalp_crypto.py</b> (v4.460 ou plus récente) est bien déposé sur GitHub, puis redéployez.</div>;
         const g0=Number(k.goal_pct)||0;
         const _days=k.days||[]; const _ymd=t=>{ const o=new Date(Date.now()+(_off*3600*1000)-(t||0)*86400000); return o.toISOString().slice(0,10); };
@@ -1242,6 +1242,8 @@ function ScalpPanel({ token }) {
         else if(thSel==="all" && k.all) view={...view, dp:k.all.pct, net:k.all.net, gross:k.all.gross, fees:k.all.fees, start:k.all.start, n:k.all.n, lbl:`tout · ${k.all.active_days} jours de trading`, g:g0*Math.max(k.all.active_days,1)};
         const g=view.g; const dp=view.dp;
         const picker=<div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginBottom:6,fontSize:11}}>
+          {[["paper","PAPER"],["live","LIVE"]].map(([kk,ll])=><button key={kk} style={{...MT.seg(thM===kk,kk==="live"?"#ef4444":"#60a5fa"),flex:"none",padding:"3px 10px"}} onClick={()=>setThMode(kk===d.mode?"":kk)}>{ll}</button>)}
+          <span style={{color:"#475569"}}>|</span>
           {[["today","Aujourd'hui"],["yesterday","Hier"],["all","Tout"]].map(([kk,ll])=><button key={kk} style={{...MT.seg(thSel===kk,"#0ea5e9"),flex:"none",padding:"3px 10px"}} onClick={()=>setThSel(kk)}>{ll}</button>)}
           <input type="date" style={{...MT.input,width:"auto",padding:"2px 6px"}} value={thDate} onChange={e=>{ setThDate(e.target.value); setThSel(e.target.value?"date":"today"); }}/>
         </div>;
@@ -1254,7 +1256,7 @@ function ScalpPanel({ token }) {
         return <div style={{margin:"8px 0",padding:"8px 10px",border:"1px solid #1e2d4a",borderRadius:8,background:"#0b1220"}}>
           {picker}
           <div style={{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6,fontSize:12,color:"#e2e8f0",marginBottom:6}}>
-            <span>🌡️ <b>Objectif NET de frais</b> ({view.lbl}{view.n!=null?` · ${view.n} trades`:""}) : <b style={{color:col}}>{dp>=0?"+":""}{dp.toFixed(2)} %</b> / {g} % <span style={{color:"#94a3b8"}}>({view.net>=0?"+":""}{view.net} $ net = brut {view.gross>=0?"+":""}{view.gross} $ − frais {view.fees} $)</span></span>
+            <span>🌡️ <b>Objectif NET de frais</b> ({thM==="live"?"LIVE":"PAPER"} · {view.lbl}{view.n!=null?` · ${view.n} trades`:""}) : <b style={{color:col}}>{dp>=0?"+":""}{dp.toFixed(2)} %</b> / {g} % <span style={{color:"#94a3b8"}}>({view.net>=0?"+":""}{view.net} $ net = brut {view.gross>=0?"+":""}{view.gross} $ − frais {view.fees} $)</span></span>
             <span style={{color:col,fontWeight:700}}>{reached ? `✔ atteint · surplus +${(dp-g).toFixed(2)} % (≈ +${usd.toFixed(2)} $)` : `reste ${rest.toFixed(2)} % (≈ ${usd.toFixed(2)} $)`}</span>
           </div>
           <div style={{position:"relative",height:16,borderRadius:8,background:"#1e293b",overflow:"hidden"}}>
@@ -1268,7 +1270,7 @@ function ScalpPanel({ token }) {
             <span style={{position:"absolute",left:`${pos(g)}%`,transform:"translateX(-50%)",color:"#e2e8f0"}}>🎯 {g} %</span>
           </div>
           {thSel==="all" && <div style={{fontSize:10,color:"#64748b"}}>Tout : cumul depuis le départ (réglage « Capital »), objectif = {g0} % × {k.all?k.all.active_days:0} jours de trading.</div>}
-          {reached && thSel==="today" && <div style={{fontSize:10,color:"#86efac"}}>Objectif atteint : {Number(d.config.SCALP_GOAL_STOP_ALL)?"plus d'entrée aujourd'hui.":"mode prudent actif (actifs sûrs, rebonds sur support/résistance testé ≥ "+(d.config.SCALP_SAFE_MIN_TOUCHES||0)+" fois, notes < "+(d.config.SCALP_SAFE_MAX_SCORE||"—")+")."}</div>}
+          {reached && thSel==="today" && thM===d.mode && <div style={{fontSize:10,color:"#86efac"}}>Objectif atteint : {Number(d.config.SCALP_GOAL_STOP_ALL)?"plus d'entrée aujourd'hui.":"mode prudent actif (actifs sûrs, rebonds sur support/résistance testé ≥ "+(d.config.SCALP_SAFE_MIN_TOUCHES||0)+" fois, notes < "+(d.config.SCALP_SAFE_MAX_SCORE||"—")+")."}</div>}
         </div>; })()}
       <div style={{display:"flex",gap:18,flexWrap:"wrap",fontSize:12,color:"#e2e8f0"}}>
         <div><span style={MT.label}>AUJOURD'HUI ({dayLbl}) · {live?"LIVE":"PAPER"}</span>{pr(S.today)}</div>

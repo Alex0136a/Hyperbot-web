@@ -1033,6 +1033,15 @@ class ScalpEngine:
                 "since": since or None, "day_start": round(day_start, 2), "day_net": round(net_today, 2), "day_gross": round(gross_today, 2), "day_fees": round(gross_today - net_today, 2), "day_pct": round(day_pct, 2),
                 "goal_pct": goal, "goal_reached": bool(goal > 0 and day_pct >= goal)}
 
+    def _capital_both(self):
+        out = {}
+        for m in ("paper", "live"):
+            try:
+                out[m] = self.capital_state(m)
+            except Exception:
+                out[m] = None
+        return out
+
     def compound_notional(self, mode):
         """Taille d un trade (notionnel $) = capital courant x SCALP_COMPOUND_PCT %, ou None si le capital compose est desactive."""
         c = self.cfg
@@ -1177,6 +1186,7 @@ class ScalpEngine:
                 "params": {k: c.get(k) for k in ("SCALP_LEVERAGE", "SCALP_NOTIONAL_USD", "SCALP_SL_PCT", "SCALP_TP_PCT", "SCALP_HOURS_UTC",
                                                  "SCALP_MIN_SCORE", "SCALP_SHORT_MIN_SCORE", "SCALP_TREND_MODE", "SCALP_SHORT_BTC_BLOCK", "SCALP_SHORT_BTC_MAX_PCT", "SCALP_RUN_ENABLED", "SCALP_RUN_TRAIL_PCT", "SCALP_BE_ENABLED", "SCALP_BE_ARM_PCT", "SCALP_BE_LOCK_PCT", "SCALP_FLOW_ALL_ON", "SCALP_FLOW_ALL_MIN", "SCALP_FLOW_ALL_MIN_TRADES", "SCALP_RETEST_ON", "SCALP_RETEST_BARS", "SCALP_RETEST_TOL_ATR", "SCALP_RETEST_BOUNCE_ATR", "SCALP_COUNTER_ENABLED", "SCALP_COUNTER_MIN_SCORE", "SCALP_COUNTER_FLOW_MIN", "SCALP_COUNTER_MIN_TRADES", "SCALP_CONFIRM_BARS", "SCALP_NOISE_ATR", "SCALP_CORR_HIGH", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
                 "capital": dict(self.capital_state(), safe_assets=self.safe_assets(self.capital_state()["mode"])),
+                "capital_modes": self._capital_both(),
                 "regime": {k: v for k, v in self.regime.items()}, "peer_wait": [{"ticker": t, "side": w["side"], "age_min": round((time.time() - w["ts"]) / 60, 1)} for t, w in self.peer_wait.items()],
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),
                 "pending": [{"ticker": t, "side": p["sig"]["side"], "trigger": p["trigger"], "expires": p["expires"]} for t, p in self.pending.items()],
