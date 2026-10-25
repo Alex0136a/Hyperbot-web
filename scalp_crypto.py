@@ -999,12 +999,38 @@ class ScalpEngine:
         midnight = self.day_start_ts()
         net_all = sum(self._row_net(d) for d in rows if float(d.get("closed_at") or 0) >= since)
         net_today = sum(self._row_net(d) for d in rows if float(d.get("closed_at") or 0) >= (midnight if from_hl else max(midnight, since)))
+        td = [d for d in rows if float(d.get("closed_at") or 0) >= (midnight if from_hl else max(midnight, since))]
+        gross_today = sum(float(d.get("pnl") or 0) for d in td)
         now_cap = max(base + net_all, 0.0)
         day_start = max(now_cap - net_today, 0.01)
         goal = float(c.get("SCALP_GOAL_PCT", 0) or 0)
         day_pct = net_today / day_start * 100
-        return {"mode": mode, "compound": bool(int(c.get("SCALP_COMPOUND_ON", 0))), "base": round(base, 2), "now": round(now_cap, 2), "source": src,
-                "since": since or None, "day_start": round(day_start, 2), "day_net": round(net_today, 2), "day_pct": round(day_pct, 2),
+        # v4.468 : resultats par jour (base du jour = SCALP_DAY_OFFSET_H) pour le selecteur du thermometre
+        days = []
+        try:
+            off = float(c.get("SCALP_DAY_OFFSET_H", -4) or 0)
+            b0 = float(c.get("SCALP_CAPITAL_USD", 100.0))
+            s0 = float(c.get("SCALP_COMPOUND_SINCE", 0) or 0)
+            rr = sorted(((float(d.get("closed_at") or 0), d) for d in rows if float(d.get("closed_at") or 0) >= s0), key=lambda x: x[0])
+            by = {}
+            for ts_, d in rr:
+                by.setdefault(int((ts_ + off * 3600) // 86400), []).append(d)
+            run = b0
+            for k in sorted(by):
+                lst = by[k]
+                net = sum(self._row_net(d) for d in lst)
+                gr = sum(float(d.get("pnl") or 0) for d in lst)
+                days.append({"d": datetime.fromtimestamp(k * 86400, timezone.utc).strftime("%Y-%m-%d"), "n": len(lst),
+                             "net": round(net, 2), "gross": round(gr, 2), "fees": round(gr - net, 2), "start": round(max(run, 0.01), 2),
+                             "pct": round(net / max(run, 0.01) * 100, 2)})
+                run += net
+            allnet = run - b0
+            allsum = {"net": round(allnet, 2), "gross": round(sum(x["gross"] for x in days), 2), "fees": round(sum(x["fees"] for x in days), 2),
+                      "n": sum(x["n"] for x in days), "start": round(b0, 2), "pct": round(allnet / max(b0, 0.01) * 100, 2), "active_days": len(days)}
+        except Exception:
+            allsum = None
+        return {"days": days[-120:], "all": allsum, "mode": mode, "compound": bool(int(c.get("SCALP_COMPOUND_ON", 0))), "base": round(base, 2), "now": round(now_cap, 2), "source": src,
+                "since": since or None, "day_start": round(day_start, 2), "day_net": round(net_today, 2), "day_gross": round(gross_today, 2), "day_fees": round(gross_today - net_today, 2), "day_pct": round(day_pct, 2),
                 "goal_pct": goal, "goal_reached": bool(goal > 0 and day_pct >= goal)}
 
     def compound_notional(self, mode):

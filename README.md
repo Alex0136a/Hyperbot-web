@@ -1371,3 +1371,12 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 - Objectif du jour atteint : un rebond n'est accepté que si le support/résistance a été **testé au moins X fois** (`SCALP_SAFE_MIN_TOUCHES`, 2 par défaut ; 0 = aucune exigence).
 - Option `SCALP_SAFE_MIN_ROOM_PCT` (0 = off) : place minimale (%) avant la zone opposée suivante.
 - Ne s'applique qu'après l'objectif atteint (aucun effet si l'objectif est à 0).
+
+## v4.467 — Objectif du jour : net de frais explicite
+- Le calcul était déjà net (gain brut − frais réels − funding, trades clôturés du jour local). Le thermomètre l'indique maintenant : « Objectif du jour NET de frais » avec le détail « net = brut − frais ».
+
+## v4.468 — Thermomètre : sélecteur Aujourd'hui / Hier / Tout / date
+- Le thermomètre du Scalp a un sélecteur : **Aujourd'hui**, **Hier**, **Tout**, ou une **date** choisie. Même calcul net de frais, même base de jour (`SCALP_DAY_OFFSET_H`).
+- Pour un jour passé : net du jour ÷ capital au début de ce jour (capital de départ + net cumulé avant ce jour).
+- « Tout » : cumul depuis le départ (réglage « Capital »), objectif = objectif du jour × nombre de jours de trading.
+- Le serveur envoie `capital.days` (120 derniers jours) et `capital.all`.

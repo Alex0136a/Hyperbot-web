@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.466";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.468";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1186,6 +1186,7 @@ function ScalpPanel({ token }) {
   const [vals, setVals] = useState({});
   const [hours, setHours] = useState("");
   const [sub, setSub] = useState("reglages");
+  const [thSel, setThSel] = useState("today"), [thDate, setThDate] = useState("");
   const load = useCallback(async () => {
     try { const r = await apiCall("/api/scalp","GET",null,token); setD(r); setErr("");
       setVals(v => Object.keys(v).length ? v : Object.fromEntries(Object.entries(r.config||{}).filter(([k])=>k!=="SCALP_HOURS_UTC"&&k!=="SCALP_ENABLED"&&k!=="SCALP_MODE")));
@@ -1232,16 +1233,28 @@ function ScalpPanel({ token }) {
       </div>
       {(()=>{ const k=d.capital;
         if(!k) return <div style={{fontSize:11,color:"#fbbf24",margin:"4px 0"}}>🌡️ Thermomètre indisponible : le serveur n'envoie pas le capital du Scalp. Vérifiez que <b>scalp_crypto.py</b> (v4.460 ou plus récente) est bien déposé sur GitHub, puis redéployez.</div>;
-        const g=Number(k.goal_pct)||0; const dp=Number(k.day_pct)||0;
-        if(g<=0) return <div style={{fontSize:11,color:"#64748b",margin:"4px 0"}}>🌡️ Objectif du jour désactivé (réglage « Objectif du jour »). Aujourd'hui : {dp>=0?"+":""}{dp.toFixed(2)} % ({k.day_net>=0?"+":""}{k.day_net} $).</div>;
+        const g0=Number(k.goal_pct)||0;
+        const _days=k.days||[]; const _ymd=t=>{ const o=new Date(Date.now()+(_off*3600*1000)-(t||0)*86400000); return o.toISOString().slice(0,10); };
+        let view={dp:Number(k.day_pct)||0, net:k.day_net, gross:k.day_gross, fees:k.day_fees, start:Number(k.day_start)||0, n:null, lbl:`${dayLbl}`, g:g0};
+        const _pick=(key)=>{ const r=_days.find(x=>x.d===key); return r ? {dp:r.pct, net:r.net, gross:r.gross, fees:r.fees, start:r.start, n:r.n} : {dp:0, net:0, gross:0, fees:0, start:Number(k.now)||0, n:0}; };
+        if(thSel==="yesterday") view={...view, ..._pick(_ymd(1)), lbl:`hier · ${_ymd(1)}`};
+        else if(thSel==="date" && thDate) view={...view, ..._pick(thDate), lbl:`${thDate}`};
+        else if(thSel==="all" && k.all) view={...view, dp:k.all.pct, net:k.all.net, gross:k.all.gross, fees:k.all.fees, start:k.all.start, n:k.all.n, lbl:`tout · ${k.all.active_days} jours de trading`, g:g0*Math.max(k.all.active_days,1)};
+        const g=view.g; const dp=view.dp;
+        const picker=<div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginBottom:6,fontSize:11}}>
+          {[["today","Aujourd'hui"],["yesterday","Hier"],["all","Tout"]].map(([kk,ll])=><button key={kk} style={{...MT.seg(thSel===kk,"#0ea5e9"),flex:"none",padding:"3px 10px"}} onClick={()=>setThSel(kk)}>{ll}</button>)}
+          <input type="date" style={{...MT.input,width:"auto",padding:"2px 6px"}} value={thDate} onChange={e=>{ setThDate(e.target.value); setThSel(e.target.value?"date":"today"); }}/>
+        </div>;
+        if(g<=0) return <div style={{fontSize:11,color:"#64748b",margin:"4px 0"}}>🌡️ Objectif du jour désactivé (réglage « Objectif du jour »). {view.lbl} : {dp>=0?"+":""}{dp.toFixed(2)} % ({view.net>=0?"+":""}{view.net} $).</div>;
         const minV = dp<0 ? Math.min(dp*1.1, -g*0.25) : 0, maxV = Math.max(g*1.25, dp*1.1), span = maxV-minV||1;
         const pos = v => Math.max(0, Math.min(100, (v-minV)/span*100));
-        const reached = dp>=g, rest = g-dp, usd = Math.abs(rest)/100*(Number(k.day_start)||0);
+        const reached = dp>=g, rest = g-dp, usd = Math.abs(rest)/100*(Number(view.start)||0);
         const col = dp<0 ? "#ef4444" : reached ? "#22c55e" : "#fbbf24";
         const l = Math.min(pos(0), pos(dp)), w = Math.abs(pos(dp)-pos(0));
         return <div style={{margin:"8px 0",padding:"8px 10px",border:"1px solid #1e2d4a",borderRadius:8,background:"#0b1220"}}>
+          {picker}
           <div style={{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6,fontSize:12,color:"#e2e8f0",marginBottom:6}}>
-            <span>🌡️ <b>Objectif du jour</b> ({dayLbl}) : <b style={{color:col}}>{dp>=0?"+":""}{dp.toFixed(2)} %</b> / {g} % <span style={{color:"#94a3b8"}}>({k.day_net>=0?"+":""}{k.day_net} $)</span></span>
+            <span>🌡️ <b>Objectif NET de frais</b> ({view.lbl}{view.n!=null?` · ${view.n} trades`:""}) : <b style={{color:col}}>{dp>=0?"+":""}{dp.toFixed(2)} %</b> / {g} % <span style={{color:"#94a3b8"}}>({view.net>=0?"+":""}{view.net} $ net = brut {view.gross>=0?"+":""}{view.gross} $ − frais {view.fees} $)</span></span>
             <span style={{color:col,fontWeight:700}}>{reached ? `✔ atteint · surplus +${(dp-g).toFixed(2)} % (≈ +${usd.toFixed(2)} $)` : `reste ${rest.toFixed(2)} % (≈ ${usd.toFixed(2)} $)`}</span>
           </div>
           <div style={{position:"relative",height:16,borderRadius:8,background:"#1e293b",overflow:"hidden"}}>
@@ -1254,7 +1267,8 @@ function ScalpPanel({ token }) {
             <span style={{position:"absolute",left:`${pos(0)}%`,transform:"translateX(-50%)"}}>0</span>
             <span style={{position:"absolute",left:`${pos(g)}%`,transform:"translateX(-50%)",color:"#e2e8f0"}}>🎯 {g} %</span>
           </div>
-          {reached && <div style={{fontSize:10,color:"#86efac"}}>Objectif atteint : {Number(d.config.SCALP_GOAL_STOP_ALL)?"plus d'entrée aujourd'hui.":"mode prudent actif (actifs sûrs, rebonds sur support/résistance testé ≥ "+(d.config.SCALP_SAFE_MIN_TOUCHES||0)+" fois, notes < "+(d.config.SCALP_SAFE_MAX_SCORE||"—")+")."}</div>}
+          {thSel==="all" && <div style={{fontSize:10,color:"#64748b"}}>Tout : cumul depuis le départ (réglage « Capital »), objectif = {g0} % × {k.all?k.all.active_days:0} jours de trading.</div>}
+          {reached && thSel==="today" && <div style={{fontSize:10,color:"#86efac"}}>Objectif atteint : {Number(d.config.SCALP_GOAL_STOP_ALL)?"plus d'entrée aujourd'hui.":"mode prudent actif (actifs sûrs, rebonds sur support/résistance testé ≥ "+(d.config.SCALP_SAFE_MIN_TOUCHES||0)+" fois, notes < "+(d.config.SCALP_SAFE_MAX_SCORE||"—")+")."}</div>}
         </div>; })()}
       <div style={{display:"flex",gap:18,flexWrap:"wrap",fontSize:12,color:"#e2e8f0"}}>
         <div><span style={MT.label}>AUJOURD'HUI ({dayLbl}) · {live?"LIVE":"PAPER"}</span>{pr(S.today)}</div>
@@ -1274,7 +1288,7 @@ function ScalpPanel({ token }) {
         {sub==="reglages" && <div>
           {d.capital && (()=>{ const k=d.capital; return <div style={{fontSize:12,color:"#cbd5e1",marginBottom:10,padding:"8px 10px",border:"1px solid #1e2d4a",borderRadius:8,background:"#0b1220"}}>
             <b>Capital {k.mode==="live"?"LIVE":"PAPER"}</b> : départ {k.base} $ ({k.source}) → <b style={{color:k.now>=k.base?"#22c55e":"#ef4444"}}>{k.now} $</b>{k.compound?` · chaque trade = ${Number(d.config.SCALP_COMPOUND_PCT||100)} % du capital`:" · taille fixe (capital composé désactivé)"}
-            {Number(k.goal_pct)>0 && <div>Objectif du jour ({dayLbl}) : <b style={{color:k.goal_reached?"#22c55e":"#fbbf24"}}>{k.day_pct>=0?"+":""}{k.day_pct} %</b> / {k.goal_pct} % ({k.day_net>=0?"+":""}{k.day_net} $){k.goal_reached?" — atteint : "+(Number(d.config.SCALP_GOAL_STOP_ALL)?"plus d'entrée aujourd'hui":"mode prudent actif"):""}</div>}
+            {Number(k.goal_pct)>0 && <div>Objectif du jour net de frais ({dayLbl}) : <b style={{color:k.goal_reached?"#22c55e":"#fbbf24"}}>{k.day_pct>=0?"+":""}{k.day_pct} %</b> / {k.goal_pct} % ({k.day_net>=0?"+":""}{k.day_net} $){k.goal_reached?" — atteint : "+(Number(d.config.SCALP_GOAL_STOP_ALL)?"plus d'entrée aujourd'hui":"mode prudent actif"):""}</div>}
             {Number(k.goal_pct)>0 && <div style={{color:"#94a3b8"}}>Actifs « sûrs » ({(k.safe_assets||[]).length}) : {(k.safe_assets||[]).join(", ")||"aucun pour l'instant"}</div>}
             <button style={{...MT.btn("#334155","#e2e8f0"),marginTop:6}} onClick={()=>{ if(window.confirm("Repartir du capital de départ à partir de maintenant ? Les trades déjà clôturés ne comptent plus dans le capital.")) send({reset_capital:true},"Le capital repart du capital de départ."); }}>↺ Repartir du capital de départ</button>
           </div>; })()}
