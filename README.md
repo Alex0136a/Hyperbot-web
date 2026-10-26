@@ -1421,3 +1421,7 @@ Constat : BTC, ETH, HYPE, TAO, SUI sont réservés à Swing Support, donc Tendan
 - Quand la journée est à **−1,5 % du capital ou moins** (net de frais, base de jour locale), le Scalp applique les **mêmes filtres stricts que l'objectif atteint** : actifs « sûrs », rebonds seulement, support/résistance testé ≥ X fois, notes < seuil. Réglage `SCALP_DEFENSE_DAY_PCT` (1,5 par défaut ; 0 = désactivé).
 - Option `SCALP_DEFENSE_LOSSES` (0 = off) + `SCALP_DEFENSE_MIN` (60) : même mode après N pertes de suite, pendant N minutes après la dernière clôture.
 - Les trades déjà ouverts ne sont pas touchés ; la journée suivante repart normalement. Refus journalisés « mode défensif (…) ». Une pastille 🛡 s'affiche sous le thermomètre ; le diagnostic Scalp l'indique.
+
+## v4.478 — Corrélation de chaque actif avec BTC
+- Nouvelle carte **📉 CORRÉLATION AVEC BTC** dans l'onglet Manuel (sous « Diagnostic Scalp ») : pour chaque actif crypto du Scalp, corrélation des rendements 1 h avec BTC sur **7 jours** et **30 jours**, corrélation **quand BTC baisse**, et **bêta 30 j**. Trié du moins corrélé au plus corrélé ; couleurs vert < 0,4 / jaune 0,4–0,7 / rouge > 0,7 ; boutons Copier, Télécharger, Masquer, Recalculer.
+- Endpoint `GET /api/scalp/corr-btc` (cache 30 min). Bougies lues directement chez Hyperliquid (pas dans le cache partagé du bot). Mesure seule, aucun effet sur les décisions.

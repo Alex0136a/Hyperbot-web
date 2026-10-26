@@ -1048,6 +1048,58 @@ class ScalpEngine:
                 out[m] = None
         return out
 
+    def corr_btc(self, force=False):
+        """v4.478 : correlation de chaque actif du Scalp avec BTC (rendements des bougies 1 h) : 7 j, 30 j, quand BTC baisse, beta 30 j. Cache 30 min."""
+        now = time.time()
+        cc = getattr(self, "_corr_cache", None)
+        if cc and not force and now - cc[0] < 1800:
+            return cc[1]
+        end = int(now * 1000)
+
+        def fetch(t):
+            raw = self.bot.info.post("/info", {"type": "candleSnapshot", "req": {"coin": t, "interval": "1h", "startTime": end - 31 * 86400 * 1000, "endTime": end}})
+            px = {int(x["t"]): float(x["c"]) for x in (raw or []) if int(x.get("T", 0)) <= end}
+            return {ts: px[ts] / px[ts - 3600000] - 1 for ts in px if (ts - 3600000) in px and px[ts - 3600000] > 0}
+
+        def pear(a, b):
+            n = len(a)
+            if n < 24:
+                return None
+            ma, mb = sum(a) / n, sum(b) / n
+            va = sum((x - ma) ** 2 for x in a)
+            vb = sum((y - mb) ** 2 for y in b)
+            if va <= 0 or vb <= 0:
+                return None
+            return sum((x - ma) * (y - mb) for x, y in zip(a, b)) / (va * vb) ** 0.5
+
+        rows, errs = [], []
+        try:
+            btc = fetch("BTC")
+        except Exception as e:
+            return {"rows": [], "error": f"BTC illisible : {type(e).__name__}: {e}", "ts": now}
+        for t in self.universe():
+            if t == "BTC" or t.startswith("xyz:") or t == "PAXG":
+                continue
+            try:
+                r = fetch(t)
+                ts = sorted(set(r) & set(btc))
+                a = [r[k] for k in ts]
+                b = [btc[k] for k in ts]
+                n7 = 168
+                dn = [(x, y) for x, y in zip(a, b) if y < 0]
+                vb = sum((y - sum(b) / len(b)) ** 2 for y in b) if b else 0
+                beta = (sum((x - sum(a) / len(a)) * (y - sum(b) / len(b)) for x, y in zip(a, b)) / vb) if vb > 0 and len(a) > 24 else None
+                c30, c7 = pear(a, b), pear(a[-n7:], b[-n7:])
+                cdn = pear([x for x, _ in dn], [y for _, y in dn]) if len(dn) >= 24 else None
+                rows.append({"t": t, "corr7": None if c7 is None else round(c7, 2), "corr30": None if c30 is None else round(c30, 2),
+                             "corr_btc_down": None if cdn is None else round(cdn, 2), "beta30": None if beta is None else round(beta, 2), "n": len(a)})
+            except Exception as e:
+                errs.append(f"{t} : {type(e).__name__}")
+        rows.sort(key=lambda x: (x["corr30"] is None, x["corr30"] if x["corr30"] is not None else 9))
+        out = {"rows": rows, "errors": errs, "ts": now}
+        self._corr_cache = (now, out)
+        return out
+
     def diag_line(self, t):
         """v4.470 : ligne du diagnostic d entree pour un actif : pourquoi le Scalp crypto entre ou n entre pas."""
         c = self.cfg

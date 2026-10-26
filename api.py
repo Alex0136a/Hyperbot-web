@@ -2870,6 +2870,12 @@ def scalp_status(email: str = Depends(require_user)):
     return out
 
 
+@app.get("/api/scalp/corr-btc")
+def scalp_corr_btc(refresh: int = 0, email: str = Depends(require_user)):
+    """v4.478 : correlation de chaque actif du Scalp avec BTC (rendements 1 h)."""
+    return bot.manual.scalp.corr_btc(force=bool(refresh))
+
+
 @app.post("/api/scalp/config")
 def scalp_config(body: ScalpConfigBody, email: str = Depends(require_user)):
     import scalp_crypto as _sc

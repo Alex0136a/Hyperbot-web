@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.477";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.478";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1359,6 +1359,31 @@ function ScalpDiagBox({ token }) {
   </div>;
 }
 
+function CorrBtcBox({ token }) {
+  const [res, setRes] = useState(null), [busy, setBusy] = useState(false);
+  const run = async (fresh) => { setBusy(true); try { setRes(await apiCall("/api/scalp/corr-btc"+(fresh?"?refresh=1":""),"GET",null,token)); } catch(e) { alert(e.message); } setBusy(false); };
+  const rows = (res&&res.rows)||[];
+  const f = v => v==null ? "—" : Number(v).toFixed(2);
+  const col = v => v==null ? "#64748b" : v<0.4 ? "#22c55e" : v<0.7 ? "#fbbf24" : "#ef4444";
+  const txt = "CORRÉLATION AVEC BTC (rendements 1 h) — actif · corr 7 j · corr 30 j · corr quand BTC baisse · bêta 30 j\n"+rows.map(r=>`${r.t} · ${f(r.corr7)} · ${f(r.corr30)} · ${f(r.corr_btc_down)} · ${f(r.beta30)}`).join("\n");
+  const dl = () => { const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob(["\ufeff"+txt],{type:"text/plain;charset=utf-8"})); a.download="correlation_btc.txt"; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },500); };
+  return <div style={MT.card}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:6}}>
+      <div style={MT.title}>📉 CORRÉLATION AVEC BTC <span style={{fontWeight:400,color:"#64748b"}}>— actif par actif, rendements 1 h</span></div>
+      <button style={MT.btn("#60a5fa")} disabled={busy} onClick={()=>run(!!res)}>{busy?"Calcul…":(res?"🔄 Recalculer":"Calculer")}</button>
+    </div>
+    {!res ? <div style={{fontSize:11,color:"#94a3b8"}}>Corrélation de chaque actif du Scalp avec BTC sur 7 et 30 jours, et quand BTC baisse (là où elle compte le plus), avec le bêta. Du moins corrélé au plus corrélé.</div> : <>
+      {res.error && <div style={{fontSize:11,color:"#fca5a5"}}>{res.error}</div>}
+      <div style={{overflowX:"auto"}}><table style={{borderCollapse:"collapse",fontSize:12,color:"#e2e8f0",width:"100%"}}>
+        <thead><tr style={{color:"#64748b",textAlign:"left"}}><th style={{padding:"3px 8px"}}>Actif</th><th>Corr 7 j</th><th>Corr 30 j</th><th>Si BTC baisse</th><th>Bêta 30 j</th></tr></thead>
+        <tbody>{rows.map(r=><tr key={r.t} style={{borderTop:"1px solid #1e2d4a"}}><td style={{padding:"3px 8px",fontWeight:700}}>{r.t}</td>
+          <td style={{color:col(r.corr7)}}>{f(r.corr7)}</td><td style={{color:col(r.corr30)}}>{f(r.corr30)}</td><td style={{color:col(r.corr_btc_down)}}>{f(r.corr_btc_down)}</td><td>{f(r.beta30)}</td></tr>)}</tbody></table></div>
+      <div style={{fontSize:10,color:"#64748b",marginTop:4}}>Vert &lt; 0,4 · jaune 0,4–0,7 · rouge &gt; 0,7. « Si BTC baisse » : corrélation mesurée seulement sur les heures où BTC recule ; un actif peu corrélé en temps calme peut le devenir en baisse.{(res.errors||[]).length>0?` · illisibles : ${res.errors.join(", ")}`:""}</div>
+      <div style={{marginTop:6}}><button style={MT.btn("#334155","#e2e8f0")} onClick={()=>{ try { navigator.clipboard.writeText(txt); } catch(e) {} }}>📋 Copier</button> <button style={{...MT.btn("#334155","#e2e8f0"),marginLeft:6}} onClick={dl}>⬇ Télécharger</button> <button style={{...MT.btn("#334155","#e2e8f0"),marginLeft:6}} onClick={()=>setRes(null)}>🙈 Masquer</button></div>
+    </>}
+  </div>;
+}
+
 function ManualTradingTab({ token, prep, onPrepDone }) {
   const [st, setSt] = useState(null);
   const [err, setErr] = useState("");
@@ -1592,6 +1617,8 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
       <ScalpPanel token={token}/>
 
       <ScalpDiagBox token={token}/>
+
+      <CorrBtcBox token={token}/>
 
       {/* ORDRE LIBRE — v4.343 */}
       <div style={MT.card}>
