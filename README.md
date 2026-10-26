@@ -1435,3 +1435,6 @@ Constat : BTC, ETH, HYPE, TAO, SUI sont réservés à Swing Support, donc Tendan
 
 ## v4.480 — Tendance : cryptos de l'univers du Scalp
 - Correction : les cryptos du Scalp (SOL, XRP, LINK, etc.) sont bien suivies par le bot ; seule la liste `TRENDF_SYMBOLS` limitait Tendance. Nouveau réglage `TRENDF_SCALP_UNIVERSE` (0 par défaut) : 1 = Tendance évalue aussi les cryptos de l'univers du Scalp, en plus de la liste habituelle. Les 5 actifs réservés à Swing Support restent exclus sauf `TRENDF_IGNORE_RESERVE` = 1. Les conditions d'entrée (Daily + H4 [+ H1], flux) et de sortie sont inchangées.
+
+## v4.481 — Historique : SL du ticket et SL à la sortie
+- Chaque trade fermé de l'historique affiche « 🛑 SL du ticket X % · SL à la sortie ±Y % du prix d'entrée » avec la mention « modifié depuis l'ouverture » si le SL a bougé. Le CSV a deux colonnes de plus : `sl_ticket_pct`, `sl_final_pct`. Permet de vérifier d'un coup d'œil si un stop a été respecté.
