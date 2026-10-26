@@ -1416,3 +1416,8 @@ Constat : BTC, ETH, HYPE, TAO, SUI sont réservés à Swing Support, donc Tendan
 - `TRENDF_EXIT_H1` : 0 ignorée, 1 H1 franchement retournée, 2 H1 n'est plus dans le sens. Jugée sur bougies clôturées après l'entrée.
 - `TRENDF_LOCK_ARM_PCT` / `TRENDF_LOCK_GIVEBACK_PCT` : gain acquis. Une fois le gain maximal ≥ N % du prix, sortie si le gain retombe de X % de son pic (motif « TENDANCE GAIN PROTEGE »).
 - Le stop suiveur ATR reste actif ; le stop maximal (`TRENDF_MAX_STOP_PCT`, jusqu'à 20) et le levier (`TRENDF_LEVERAGE`, jusqu'à 10) sont déjà réglables.
+
+## v4.477 — Mode défensif du Scalp
+- Quand la journée est à **−1,5 % du capital ou moins** (net de frais, base de jour locale), le Scalp applique les **mêmes filtres stricts que l'objectif atteint** : actifs « sûrs », rebonds seulement, support/résistance testé ≥ X fois, notes < seuil. Réglage `SCALP_DEFENSE_DAY_PCT` (1,5 par défaut ; 0 = désactivé).
+- Option `SCALP_DEFENSE_LOSSES` (0 = off) + `SCALP_DEFENSE_MIN` (60) : même mode après N pertes de suite, pendant N minutes après la dernière clôture.
+- Les trades déjà ouverts ne sont pas touchés ; la journée suivante repart normalement. Refus journalisés « mode défensif (…) ». Une pastille 🛡 s'affiche sous le thermomètre ; le diagnostic Scalp l'indique.

@@ -1035,6 +1035,8 @@ class ScalpEngine:
             allsum = None
         return {"days": days[-120:], "all": allsum, "mode": mode, "compound": bool(int(c.get("SCALP_COMPOUND_ON", 0))), "base": round(base, 2), "now": round(now_cap, 2), "source": src,
                 "since": since or None, "day_start": round(day_start, 2), "day_net": round(net_today, 2), "day_gross": round(gross_today, 2), "day_fees": round(gross_today - net_today, 2), "day_pct": round(day_pct, 2),
+                "slots": int(float(c.get("SCALP_SLOTS", 0) or 0)),
+                "slot_notional": (round(day_start * min(max(float(c.get("SCALP_SLOTS_USE_PCT", 100) or 100), 5.0), 100.0) / 100.0 * max(int(c.get("SCALP_LEVERAGE", 3)), 1) / int(float(c.get("SCALP_SLOTS", 0))), 2) if int(float(c.get("SCALP_SLOTS", 0) or 0)) > 0 else None),
                 "goal_pct": goal, "goal_reached": bool(goal > 0 and day_pct >= goal)}
 
     def _capital_both(self):
@@ -1080,6 +1082,9 @@ class ScalpEngine:
                     parts.append("objectif atteint : " + ("actif jugé sûr" if safe else "actif PAS assez sûr (mode prudent)"))
             except Exception:
                 pass
+            dfn = self.defense_state(mode)
+            if dfn:
+                parts.append(f"🛡 mode défensif : {dfn}")
             reg = self.regime or {}
             if reg.get("n"):
                 parts.append(f"marché {reg.get('label')} (corr {reg.get('corr', 0):.2f})")
@@ -1090,6 +1095,11 @@ class ScalpEngine:
     def compound_notional(self, mode):
         """Taille d un trade (notionnel $) = capital courant x SCALP_COMPOUND_PCT %, ou None si le capital compose est desactive."""
         c = self.cfg
+        slots = int(float(c.get("SCALP_SLOTS", 0) or 0))
+        if slots > 0:      # v4.472 : N emplacements ; taille identique = capital du DEBUT de journee x levier / N (le capital est repris chaque jour)
+            cs = self.capital_state(mode)
+            use = min(max(float(c.get("SCALP_SLOTS_USE_PCT", 100) or 100), 5.0), 100.0) / 100.0      # part du capital engagee (le reste = reserve)
+            return max(cs["day_start"] * use * max(int(c.get("SCALP_LEVERAGE", 3)), 1) / slots, 10.5 if mode == "live" else 1.0)
         if not int(c.get("SCALP_COMPOUND_ON", 0)):
             return None
         cs = self.capital_state(mode)
@@ -1122,16 +1132,45 @@ class ScalpEngine:
         mn, wr = int(float(c.get("SCALP_SAFE_MIN_TRADES", 6))), float(c.get("SCALP_SAFE_MIN_WINRATE", 55))
         return sorted(t for t, (n, w, net) in self._asset_record(mode).items() if n >= mn and w >= wr and net > 0)
 
-    def _goal_refusal(self, t, sig, mode):
-        """Objectif du jour atteint : texte du refus si l entree n est pas assez sure, sinon None."""
+    def defense_state(self, mode):
+        """v4.477 : mode defensif (memes filtres que l objectif atteint) quand le Scalp est en difficulte. Texte ou None.
+        - SCALP_DEFENSE_DAY_PCT = X : net du jour <= -X % du capital de debut de journee (jusqu a la fin de la journee ou retour au-dessus) ;
+        - SCALP_DEFENSE_LOSSES = N : N pertes de suite, pendant SCALP_DEFENSE_MIN minutes apres la derniere cloture (0 = desactive)."""
         c = self.cfg
-        if float(c.get("SCALP_GOAL_PCT", 0) or 0) <= 0:
+        try:
+            x = float(c.get("SCALP_DEFENSE_DAY_PCT", 0) or 0)
+            if x > 0:
+                cs = self.capital_state(mode)
+                if cs["day_pct"] <= -x:
+                    return f"journée à {cs['day_pct']:+.2f} % (seuil -{x:g} %)"
+            n = int(float(c.get("SCALP_DEFENSE_LOSSES", 0) or 0))
+            if n > 0:
+                st = self.stats(mode)
+                lc = st.get("last_closed")
+                if st["streak_losses"] >= n and lc and time.time() - float(lc) < float(c.get("SCALP_DEFENSE_MIN", 60)) * 60:
+                    return f"{st['streak_losses']} pertes de suite (défensif {c.get('SCALP_DEFENSE_MIN', 60)} min)"
+        except Exception:
             return None
-        cs = self.capital_state(mode)
-        if not cs["goal_reached"]:
+        return None
+
+    def _goal_refusal(self, t, sig, mode):
+        """Entree trop risquee en mode prudent : objectif du jour atteint OU mode defensif. Texte du refus ou None."""
+        c = self.cfg
+        pre = None
+        stop_all = False
+        goal = float(c.get("SCALP_GOAL_PCT", 0) or 0)
+        if goal > 0:
+            cs = self.capital_state(mode)
+            if cs["goal_reached"]:
+                pre = f"objectif du jour atteint ({cs['day_pct']:+.2f} % / {cs['goal_pct']:g} %) : "
+                stop_all = bool(int(c.get("SCALP_GOAL_STOP_ALL", 0)))
+        if pre is None:
+            why_def = self.defense_state(mode)
+            if why_def:
+                pre = f"mode défensif ({why_def}) : "
+        if pre is None:
             return None
-        pre = f"objectif du jour atteint ({cs['day_pct']:+.2f} % / {cs['goal_pct']:g} %) : "
-        if int(c.get("SCALP_GOAL_STOP_ALL", 0)):
+        if stop_all:
             return pre + "plus d'entrée aujourd'hui"
         rec = self._asset_record(mode).get(t)
         mn, wr = int(float(c.get("SCALP_SAFE_MIN_TRADES", 6))), float(c.get("SCALP_SAFE_MIN_WINRATE", 55))
@@ -1158,9 +1197,18 @@ class ScalpEngine:
         if why_goal:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_goal}")
             return
+        slots = int(float(c.get("SCALP_SLOTS", 0) or 0))
+        if slots > 0:      # v4.472 : emplacements pleins -> pas de nouvelle entree
+            n_open = sum(1 for it in self.manual.items.values()
+                         if it.get("strategy_source") == STRATEGY and it.get("mode") == mode and it.get("status") in ("scheduled", "opening", "open", "closing"))
+            if n_open >= slots:
+                self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {n_open}/{slots} emplacements occupés")
+                return
         base_notional = self.compound_notional(mode)
         if base_notional is None:
             base_notional = float(c.get("SCALP_NOTIONAL_USD", 60.0))
+        elif slots > 0:
+            pass
         else:      # v4.460 : capital compose -> la marge de tous les trades ouverts ne depasse jamais le capital courant
             cs_ = self.capital_state(mode)
             new_margin = base_notional / max(int(c.get("SCALP_LEVERAGE", 3)), 1)
@@ -1232,6 +1280,7 @@ class ScalpEngine:
                                                  "SCALP_MIN_SCORE", "SCALP_SHORT_MIN_SCORE", "SCALP_TREND_MODE", "SCALP_SHORT_BTC_BLOCK", "SCALP_SHORT_BTC_MAX_PCT", "SCALP_RUN_ENABLED", "SCALP_RUN_TRAIL_PCT", "SCALP_BE_ENABLED", "SCALP_BE_ARM_PCT", "SCALP_BE_LOCK_PCT", "SCALP_FLOW_ALL_ON", "SCALP_FLOW_ALL_MIN", "SCALP_FLOW_ALL_MIN_TRADES", "SCALP_RETEST_ON", "SCALP_RETEST_BARS", "SCALP_RETEST_TOL_ATR", "SCALP_RETEST_BOUNCE_ATR", "SCALP_COUNTER_ENABLED", "SCALP_COUNTER_MIN_SCORE", "SCALP_COUNTER_FLOW_MIN", "SCALP_COUNTER_MIN_TRADES", "SCALP_CONFIRM_BARS", "SCALP_NOISE_ATR", "SCALP_CORR_HIGH", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
                 "capital": dict(self.capital_state(), safe_assets=self.safe_assets(self.capital_state()["mode"])),
                 "capital_modes": self._capital_both(),
+                "defense": self.defense_state("live" if self.cfg.get("SCALP_MODE") == "live" else "paper"),
                 "regime": {k: v for k, v in self.regime.items()}, "peer_wait": [{"ticker": t, "side": w["side"], "age_min": round((time.time() - w["ts"]) / 60, 1)} for t, w in self.peer_wait.items()],
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),
                 "pending": [{"ticker": t, "side": p["sig"]["side"], "trigger": p["trigger"], "expires": p["expires"]} for t, p in self.pending.items()],
