@@ -531,6 +531,7 @@ class ScalpEngine:
             if not ok:
                 return
             K = self.thresholds()
+            self._beta_kick()       # v4.479 : betas a jour en arriere-plan
             self._regime()          # v4.442 : regime du panier (correlation / largeur), recalcule au plus toutes les 60 s
             self._check_pending(K)
             btc = self._btc_change()
@@ -1098,7 +1099,74 @@ class ScalpEngine:
         rows.sort(key=lambda x: (x["corr30"] is None, x["corr30"] if x["corr30"] is not None else 9))
         out = {"rows": rows, "errors": errs, "ts": now}
         self._corr_cache = (now, out)
+        self._beta = {r["t"]: r["beta30"] for r in rows if r.get("beta30") is not None}
+        self._beta["BTC"] = 1.0
         return out
+
+    def _beta_kick(self):
+        """v4.479 : rafraichit les betas en arriere-plan (au plus toutes les 30 min), sans bloquer le scan."""
+        cc = getattr(self, "_corr_cache", None)
+        if (cc and time.time() - cc[0] < 1800) or getattr(self, "_beta_busy", False):
+            return
+        self._beta_busy = True
+
+        def run():
+            try:
+                self.corr_btc(force=True)
+            except Exception as e:
+                self.last_error = f"beta : {type(e).__name__}: {e}"
+            finally:
+                self._beta_busy = False
+                if not getattr(self, "_corr_cache", None):
+                    self._corr_cache = (time.time() - 900, {"rows": [], "errors": ["echec"], "ts": time.time()})     # reessai dans 15 min
+        threading.Thread(target=run, daemon=True).start()
+
+    def beta_of(self, t):
+        """Beta 30 j de l actif par rapport a BTC (None si inconnu)."""
+        return (getattr(self, "_beta", None) or {}).get(t)
+
+    def btc_exposure(self, mode):
+        """v4.479 : exposition equivalente BTC des positions Scalp ouvertes = somme de (notionnel x beta), par sens. Beta inconnu = 1."""
+        lg = sh = nl = ns = 0.0
+        cl = cs_ = 0
+        unknown = []
+        for it in list(self.manual.items.values()):
+            if it.get("strategy_source") != STRATEGY or it.get("mode") != mode or it.get("status") not in ("opening", "open", "closing"):
+                continue
+            tk = it.get("ticker")
+            b = self.beta_of(tk)
+            if b is None:
+                unknown.append(tk)
+                b = 1.0
+            nt = float(it.get("notional_usd") or 0)
+            if it.get("direction") == "long":
+                lg += nt * b; nl += nt; cl += 1
+            else:
+                sh += nt * b; ns += nt; cs_ += 1
+        cc = getattr(self, "_corr_cache", None)
+        return {"long": round(lg, 2), "short": round(sh, 2), "net": round(lg - sh, 2), "notional_long": round(nl, 2), "notional_short": round(ns, 2),
+                "n_long": cl, "n_short": cs_, "unknown": sorted(set(unknown)), "age_min": (round((time.time() - cc[0]) / 60) if cc else None)}
+
+    def beta_adjust(self, t, side, notional, mode):
+        """v4.479 : (notionnel, refus) apres les deux options bêta (desactivees par defaut).
+        SCALP_BETA_SIZE_ON : si beta > SCALP_BETA_REF, taille x REF / beta (jamais augmentee), plancher SCALP_BETA_MIN_FACTOR.
+        SCALP_BETA_CAP_PCT : refuse si l exposition equivalente BTC dans ce sens depasserait N % du capital courant (0 = pas de plafond)."""
+        c = self.cfg
+        b = self.beta_of(t)
+        lo = 10.5 if mode == "live" else 1.0
+        if int(c.get("SCALP_BETA_SIZE_ON", 0)) and b is not None and b > 0:
+            ref = float(c.get("SCALP_BETA_REF", 1.0) or 1.0)
+            if b > ref:
+                f = max(ref / b, float(c.get("SCALP_BETA_MIN_FACTOR", 0.4)))
+                notional = max(notional * f, lo)
+        cap = float(c.get("SCALP_BETA_CAP_PCT", 0) or 0)
+        if cap > 0:
+            cap_usd = self.capital_state(mode)["now"] * cap / 100.0
+            ex = self.btc_exposure(mode)["short" if side == "short" else "long"]
+            add = notional * (b if b is not None else 1.0)
+            if ex + add > cap_usd + 0.01:
+                return notional, (f"exposition BTC {side.upper()} : {ex:.0f} $ déjà + {add:.0f} $ (bêta {b if b is not None else '?'}) > plafond {cap_usd:.0f} $ ({cap:g} % du capital)")
+        return notional, None
 
     def diag_line(self, t):
         """v4.470 : ligne du diagnostic d entree pour un actif : pourquoi le Scalp crypto entre ou n entre pas."""
@@ -1279,6 +1347,10 @@ class ScalpEngine:
         sp = float(c.get("SCALP_CORR_SIZE_PCT", 100))
         if reg.get("label") == "correle" and 0 < sp < 100:      # v4.442 : marche correle = un seul pari ; on reduit la taille de chaque ligne
             notional = max(notional * sp / 100.0, 10.5 if mode == "live" else 1.0)
+        notional, why_beta = self.beta_adjust(t, sig["side"], notional, mode)      # v4.479 : options beta (taille, plafond d exposition)
+        if why_beta:
+            self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_beta}")
+            return
         cluster_before = self._cluster_count(sig["side"], mode)
         params = {"strategy": STRATEGY, "ticker": t, "direction": sig["side"], "market": "perp", "mode": mode,
                   "execution": "now", "leverage": int(c.get("SCALP_LEVERAGE", 3)),
@@ -1332,6 +1404,7 @@ class ScalpEngine:
                                                  "SCALP_MIN_SCORE", "SCALP_SHORT_MIN_SCORE", "SCALP_TREND_MODE", "SCALP_SHORT_BTC_BLOCK", "SCALP_SHORT_BTC_MAX_PCT", "SCALP_RUN_ENABLED", "SCALP_RUN_TRAIL_PCT", "SCALP_BE_ENABLED", "SCALP_BE_ARM_PCT", "SCALP_BE_LOCK_PCT", "SCALP_FLOW_ALL_ON", "SCALP_FLOW_ALL_MIN", "SCALP_FLOW_ALL_MIN_TRADES", "SCALP_RETEST_ON", "SCALP_RETEST_BARS", "SCALP_RETEST_TOL_ATR", "SCALP_RETEST_BOUNCE_ATR", "SCALP_COUNTER_ENABLED", "SCALP_COUNTER_MIN_SCORE", "SCALP_COUNTER_FLOW_MIN", "SCALP_COUNTER_MIN_TRADES", "SCALP_CONFIRM_BARS", "SCALP_NOISE_ATR", "SCALP_CORR_HIGH", "SCALP_DAILY_LOSS_USD", "SCALP_MAX_PER_DAY", "SCALP_MAX_HOLD_MIN", "SCALP_TOP_N")},
                 "capital": dict(self.capital_state(), safe_assets=self.safe_assets(self.capital_state()["mode"])),
                 "capital_modes": self._capital_both(),
+                "btc_exposure": self.btc_exposure("live" if self.cfg.get("SCALP_MODE") == "live" else "paper"),
                 "defense": self.defense_state("live" if self.cfg.get("SCALP_MODE") == "live" else "paper"),
                 "regime": {k: v for k, v in self.regime.items()}, "peer_wait": [{"ticker": t, "side": w["side"], "age_min": round((time.time() - w["ts"]) / 60, 1)} for t, w in self.peer_wait.items()],
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),

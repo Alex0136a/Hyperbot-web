@@ -1425,3 +1425,10 @@ Constat : BTC, ETH, HYPE, TAO, SUI sont réservés à Swing Support, donc Tendan
 ## v4.478 — Corrélation de chaque actif avec BTC
 - Nouvelle carte **📉 CORRÉLATION AVEC BTC** dans l'onglet Manuel (sous « Diagnostic Scalp ») : pour chaque actif crypto du Scalp, corrélation des rendements 1 h avec BTC sur **7 jours** et **30 jours**, corrélation **quand BTC baisse**, et **bêta 30 j**. Trié du moins corrélé au plus corrélé ; couleurs vert < 0,4 / jaune 0,4–0,7 / rouge > 0,7 ; boutons Copier, Télécharger, Masquer, Recalculer.
 - Endpoint `GET /api/scalp/corr-btc` (cache 30 min). Bougies lues directement chez Hyperliquid (pas dans le cache partagé du bot). Mesure seule, aucun effet sur les décisions.
+
+## v4.479 — Bêta : exposition équivalente BTC, plafond, taille ajustée
+- **Betas automatiques** : le bêta 30 j de chaque actif du Scalp par rapport à BTC est rafraîchi en arrière-plan (au plus toutes les 30 min, sans bloquer le scan).
+- **Option 1 — exposition équivalente BTC** (toujours affichée, mesure seule) : sous le thermomètre, pour les positions ouvertes, somme de (notionnel × bêta) par sens, avec le notionnel réel et le net. Bêta inconnu = 1.
+- **Option 2 — plafond d'exposition** `SCALP_BETA_CAP_PCT` (0 = désactivé) : refuse une entrée si l'exposition équivalente BTC dans ce sens dépasserait N % du capital courant. Refus journalisé « exposition BTC SHORT/LONG … ».
+- **Option 3 — taille ajustée au bêta** `SCALP_BETA_SIZE_ON` (0 par défaut), `SCALP_BETA_REF` (1,0), `SCALP_BETA_MIN_FACTOR` (0,4) : si bêta > référence, taille × référence ÷ bêta (jamais augmentée, plancher 40 %).
+- Les options 2 et 3 sont désactivées par défaut : comportement inchangé tant qu'elles ne sont pas activées.
