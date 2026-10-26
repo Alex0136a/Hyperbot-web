@@ -74,13 +74,32 @@ def trail_stop(side, best, dist, current_sl):
     return max(current_sl, new) if side == "long" else min(current_sl, new)
 
 
-def trend_end(side, d1_label, h4_label, h4_reverse_exit=True):
-    """La tendance a-t-elle cesse ? Daily qui n est plus dans le sens du trade (neutre inclus), ou H4 franchement retournee.
-    Retourne (finie, motif)."""
+def trend_end(side, d1_label, h4_label, h4_reverse_exit=1, h1_label=None, h1_exit=0):
+    """La tendance a-t-elle cesse ? Retourne (finie, motif).
+    - Daily qui n est plus dans le sens du trade (neutre inclus) : toujours.
+    - H4 : mode 1 = franchement retournee ; mode 2 = n est plus dans le sens (neutre inclus) ; 0 = ignoree.
+    - H1 (v4.476) : mode 1 = franchement retournee ; mode 2 = n est plus dans le sens (neutre inclus) ; 0 = ignoree."""
     want = want_trend(side)
     opp = "baissiere" if side == "long" else "haussiere"
+    known = ("haussiere", "baissiere", "neutre")
     if d1_label is not None and d1_label != want:
         return True, f"TENDANCE FINIE (Daily : {d1_label})"
-    if h4_reverse_exit and h4_label == opp:
+    m4 = int(h4_reverse_exit or 0)
+    if m4 == 1 and h4_label == opp:
         return True, f"TENDANCE FINIE (H4 : {h4_label})"
+    if m4 >= 2 and h4_label in known and h4_label != want:
+        return True, f"TENDANCE FINIE (H4 : {h4_label})"
+    m1 = int(h1_exit or 0)
+    if m1 == 1 and h1_label == opp:
+        return True, f"TENDANCE FINIE (H1 : {h1_label})"
+    if m1 >= 2 and h1_label in known and h1_label != want:
+        return True, f"TENDANCE FINIE (H1 : {h1_label})"
     return False, None
+
+
+def gain_lock(peak_pct, gain_pct, arm_pct, giveback_pct):
+    """Gain acquis (v4.476) : une fois le gain maximal >= arm_pct, on sort si le gain retombe de giveback_pct % de ce maximum.
+    arm_pct <= 0 : desactive."""
+    if not arm_pct or arm_pct <= 0 or peak_pct < arm_pct:
+        return False
+    return gain_pct <= peak_pct * (1 - max(min(giveback_pct, 100.0), 0.0) / 100.0)

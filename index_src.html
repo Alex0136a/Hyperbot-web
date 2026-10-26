@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.475";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.476";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -4587,6 +4587,7 @@ Confirmer ?`
                         <span style={{color:a.open?"#86efac":(a.evaluated?"#cbd5e1":"#64748b")}}>{a.open?"tendance ouverte":(a.evaluated?(a.blocker||"entrée évaluée"):"pas encore évalué")}</span>
                       </div>))}
                     <div style={{color:"#64748b",marginTop:4}}>Réglages : risque {P.settings.TRENDF_RISK_PCT} % du capital · notionnel max {P.settings.TRENDF_MAX_NOTIONAL_USD} $ · levier {P.settings.TRENDF_LEVERAGE} · {P.settings.TRENDF_MAX_TRADES} positions au plus · stop {P.settings.TRENDF_STOP_ATR} x ATR H4 ({P.settings.TRENDF_MIN_STOP_PCT}-{P.settings.TRENDF_MAX_STOP_PCT} %) · entrée {P.settings.TRENDF_ENTRY_MODE===1?`sur cassure des ${P.settings.TRENDF_BREAK_BARS} dernières heures`:"dès la tendance confirmée"} · flux min {P.settings.TRENDF_MIN_FLOW} · shorts {P.settings.TRENDF_ALLOW_SHORT?"autorisés":"interdits"} · sortie H4 {P.settings.TRENDF_EXIT_H4_REVERSE?"oui":"non"} · durée max {P.settings.TRENDF_MAX_HOLD_DAYS} j (réglages avancés).</div>
+                    <div style={{color:"#64748b",marginTop:2}}>Entrée : Daily + H4{Number(P.settings.TRENDF_REQUIRE_H1)?" + H1":""} alignés · actifs Swing Support {Number(P.settings.TRENDF_IGNORE_RESERVE)?"autorisés":"exclus"} · Sortie : Daily perdue · H4 {({0:"ignorée",1:"retournée",2:"plus dans le sens"})[Number(P.settings.TRENDF_EXIT_H4_REVERSE)]} · H1 {({0:"ignorée",1:"retournée",2:"plus dans le sens"})[Number(P.settings.TRENDF_EXIT_H1||0)]} · gain acquis {Number(P.settings.TRENDF_LOCK_ARM_PCT)>0?`protégé dès ${P.settings.TRENDF_LOCK_ARM_PCT} % (sortie si ${P.settings.TRENDF_LOCK_GIVEBACK_PCT} % du pic rendu)`:"non protégé"}</div>
                     {P.perf.n>0 && <div style={{marginTop:4}}><b>{P.perf.n}</b> trade(s) fermé(s), {P.perf.win_rate}% gagnants, <b style={{color:P.perf.net>=0?"#86efac":"#fca5a5"}}>{sg(P.perf.net)} USDC net</b> (brut {sg(P.perf.gross)} − frais {f(P.perf.fees)}){P.perf.n<30 && <span style={{color:"#fbbf24"}}> · moins de 30 trades : à ne pas interpréter.</span>}</div>}
                     {P.open.map((o,i)=>(
                       <div key={i} style={{background:"#07140d",border:"1px solid #14532d",borderRadius:8,padding:8,marginTop:5,display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6}}>

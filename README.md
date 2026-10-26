@@ -1407,3 +1407,12 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 ## v4.475 — Scalp : résultats par heure en net, boutons Copier / Télécharger
 - « Résultats par heure » affiche désormais le **net de frais** (comme le thermomètre et « AUJOURD'HUI »), avec l'heure locale entre parenthèses. La copie/le fichier donne aussi le brut et les frais.
 - Boutons **Copier** et **Télécharger** (.txt) pour la table par heure et pour le journal des signaux.
+
+## v4.476 — Tendance : entrée H1, sortie sur H1/H4 ou gain acquis, actifs crypto
+Constat : BTC, ETH, HYPE, TAO, SUI sont réservés à Swing Support, donc Tendance n'a eu aucun signal crypto (seulement EUR, JPY, PAXG). Tous les nouveaux réglages sont **désactivés par défaut** (comportement inchangé).
+- `TRENDF_IGNORE_RESERVE` (0/1) : Tendance peut aussi trader ces 5 actifs ; un actif déjà ouvert par un autre mode reste exclu (pas de double position).
+- `TRENDF_REQUIRE_H1` (0/1) : entrée seulement si la tendance H1 (EMA 50/200) est aussi dans le sens, en plus de Daily et H4.
+- `TRENDF_EXIT_H4_REVERSE` : 0 ignorée, 1 H4 franchement retournée (comme avant), **2** dès que H4 n'est plus dans le sens (neutre inclus).
+- `TRENDF_EXIT_H1` : 0 ignorée, 1 H1 franchement retournée, 2 H1 n'est plus dans le sens. Jugée sur bougies clôturées après l'entrée.
+- `TRENDF_LOCK_ARM_PCT` / `TRENDF_LOCK_GIVEBACK_PCT` : gain acquis. Une fois le gain maximal ≥ N % du prix, sortie si le gain retombe de X % de son pic (motif « TENDANCE GAIN PROTEGE »).
+- Le stop suiveur ATR reste actif ; le stop maximal (`TRENDF_MAX_STOP_PCT`, jusqu'à 20) et le levier (`TRENDF_LEVERAGE`, jusqu'à 10) sont déjà réglables.

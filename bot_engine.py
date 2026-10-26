@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.475"
+BOT_VERSION = "4.476"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -1494,7 +1494,12 @@ PROFILE_SWING = {
     "TRENDF_MAX_SPREAD_PCT": 0.05,
     "TRENDF_MAX_HOLD_DAYS": 30,
     "TRENDF_COOLDOWN_SEC": 14400,
-    "TRENDF_EXIT_H4_REVERSE": 1,          # 1 = sort aussi quand la tendance H4 se retourne franchement
+    "TRENDF_EXIT_H4_REVERSE": 1,          # 1 = sort aussi quand la tendance H4 se retourne franchement ; 2 = des que H4 n est plus dans le sens (neutre inclus)
+    "TRENDF_IGNORE_RESERVE": 0,           # v4.476 : 1 = Tendance peut trader les actifs reserves a Swing Support (BTC, ETH, HYPE, TAO, SUI) ; un actif deja ouvert par un autre mode reste exclu
+    "TRENDF_REQUIRE_H1": 0,               # v4.476 : 1 = entree seulement si la tendance H1 (EMA 50/200) est aussi dans le sens
+    "TRENDF_EXIT_H1": 0,                  # v4.476 : sortie sur H1 : 1 = H1 franchement retournee ; 2 = H1 n est plus dans le sens (neutre inclus) ; 0 = ignoree
+    "TRENDF_LOCK_ARM_PCT": 0.0,           # v4.476 : gain acquis : une fois le gain maximal >= N % du prix, on protege (0 = desactive)
+    "TRENDF_LOCK_GIVEBACK_PCT": 35.0,     # v4.476 : ... on sort si le gain retombe de N % de son maximum
     "SUPSW_ENABLED": 0,
     "SUPSW_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"],
     "SUPSW_SL_PCT": 5.0,                  # stop catastrophe (% du prix)
@@ -11900,7 +11905,9 @@ class BotEngine:
             "entry_mode": int(c.get("TRENDF_ENTRY_MODE", 0)), "break_bars": max(int(c.get("TRENDF_BREAK_BARS", 12)), 3),
             "min_flow": float(c.get("TRENDF_MIN_FLOW", 0.2)), "max_ext": float(c.get("TRENDF_MAX_EXT_ATR", 0.0)),
             "max_spread": float(c.get("TRENDF_MAX_SPREAD_PCT", 0.05)), "hold_days": float(c.get("TRENDF_MAX_HOLD_DAYS", 30)),
-            "cooldown": int(c.get("TRENDF_COOLDOWN_SEC", 14400)), "h4_exit": bool(c.get("TRENDF_EXIT_H4_REVERSE", 1)),
+            "cooldown": int(c.get("TRENDF_COOLDOWN_SEC", 14400)), "h4_exit": int(c.get("TRENDF_EXIT_H4_REVERSE", 1)),
+            "ignore_reserve": bool(int(c.get("TRENDF_IGNORE_RESERVE", 0))), "req_h1": bool(int(c.get("TRENDF_REQUIRE_H1", 0))),
+            "h1_exit": int(c.get("TRENDF_EXIT_H1", 0)), "lock_arm": float(c.get("TRENDF_LOCK_ARM_PCT", 0.0)), "lock_give": float(c.get("TRENDF_LOCK_GIVEBACK_PCT", 35.0)),
             "slip": float(c.get("FOREX_SCALP_SLIPPAGE_PCT", 0.005)), "fee": float(c.get("FEE_ROUND_TRIP_PCT", 0.09)),
         }
 
@@ -11925,6 +11932,8 @@ class BotEngine:
                     try:
                         self._mtf_candles(tk, "1d", 230)
                         self._mtf_candles(tk, "4h", 260)
+                        if int(self.cfg.get("TRENDF_EXIT_H1", 0)):
+                            self._mtf_candles(tk, "1h", 230)
                     except Exception as e:
                         print(f"[TENDANCE] prechargement {tk} ignore : {type(e).__name__}: {e}")
 
@@ -11985,7 +11994,7 @@ class BotEngine:
             return
         snap = {"ts": now, "blocker": None}
         state.trendf_snapshot = snap
-        if self._supsw_reserved(ticker):
+        if self._supsw_reserved(ticker) and not K["ignore_reserve"]:
             snap["blocker"] = "actif reserve a Swing Support"
             return
         occ = None
@@ -12032,6 +12041,16 @@ class BotEngine:
         if not ok:
             snap["blocker"] = f"tendance {side.upper()} confirmee (Daily {v['trend']}, H4 {tr4}) — attente : {why}"
             return
+        if K["req_h1"]:       # v4.476 : la tendance H1 (EMA 50/200 sur 230 bougies 1 h) doit aussi etre dans le sens
+            try:
+                c1h_long = self._mtf_candles(ticker, "1h", 230)
+                tr1 = mtf.trend(c1h_long)[0] if c1h_long and len(c1h_long) >= 200 else "inconnue"
+            except Exception:
+                tr1 = "inconnue"
+            snap["h1"] = tr1
+            if tr1 != trf.want_trend(side):
+                snap["blocker"] = f"tendance {side.upper()} confirmee (Daily {v['trend']}, H4 {tr4}) — attente : tendance H1 {tr1} (il faut {trf.want_trend(side)})"
+                return
         flow = None
         try:
             flow = self._compute_trade_flow_pressure(ticker, price)
@@ -12151,6 +12170,8 @@ class BotEngine:
             reason = "TENDANCE STOP SUIVEUR" if tf.get("moved") else "TENDANCE STOP INITIAL"
         elif time.time() - tf["opened_ts"] >= K["hold_days"] * 86400:
             reason = "TENDANCE DUREE MAX"
+        elif trf.gain_lock(tf.get("peak_pct", 0.0), gain_pct, K["lock_arm"], K["lock_give"]):
+            reason = f"TENDANCE GAIN PROTEGE (pic {tf.get('peak_pct', 0.0):.2f} % -> {gain_pct:.2f} %)"
         else:
             try:                                  # tendance jugee sur bougies CLOTUREES apres l entree (jamais sur le prix du moment)
                 c1d = self._mtf_candles(ticker, "1d", 230, cache_only=True)
@@ -12159,7 +12180,12 @@ class BotEngine:
                     d1_label = mtf.trend(c1d)[0]
                 if c4 and len(c4) >= 200 and c4[-1]["t"] / 1000 + 14400 > tf["opened_ts"]:
                     h4_label = mtf.trend(c4)[0]
-                ended, why = trf.trend_end(side, d1_label, h4_label, K["h4_exit"])
+                h1_label = None
+                if K["h1_exit"]:
+                    c1h = self._mtf_candles(ticker, "1h", 230, cache_only=True)
+                    if c1h and len(c1h) >= 200 and c1h[-1]["t"] / 1000 + 3600 > tf["opened_ts"]:
+                        h1_label = mtf.trend(c1h)[0]
+                ended, why = trf.trend_end(side, d1_label, h4_label, K["h4_exit"], h1_label, K["h1_exit"])
                 if ended:
                     reason = why
             except Exception as e:

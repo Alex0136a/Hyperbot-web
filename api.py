@@ -1115,7 +1115,12 @@ ADVANCED_SETTINGS = {
     "TRENDF_MAX_SPREAD_PCT":    {"label": "Tendance - spread maximal (%)", "default": 0.05},
     "TRENDF_MAX_HOLD_DAYS":     {"label": "Tendance - duree maximale d une position (jours)", "default": 30},
     "TRENDF_COOLDOWN_SEC":      {"label": "Tendance - pause sur un actif apres une sortie (secondes)", "default": 14400},
-    "TRENDF_EXIT_H4_REVERSE":   {"label": "Tendance - sortir aussi quand la tendance H4 se retourne (1 = oui ; 0 = seulement Daily perdue / stop)", "default": 1},
+    "TRENDF_EXIT_H4_REVERSE":   {"label": "Tendance - sortie sur H4 : 1 = H4 franchement retournee ; 2 = des que H4 n est plus dans le sens (neutre inclus) ; 0 = ignoree (seulement Daily perdue / stop)", "default": 1},
+    "TRENDF_IGNORE_RESERVE":    {"label": "Tendance - 1 = peut aussi trader les actifs reserves a Swing Support (BTC, ETH, HYPE, TAO, SUI) ; un actif deja ouvert par un autre mode reste exclu", "default": 0},
+    "TRENDF_REQUIRE_H1":        {"label": "Tendance - 1 = entree seulement si la tendance H1 (EMA 50/200) est aussi dans le sens (en plus de Daily et H4)", "default": 0},
+    "TRENDF_EXIT_H1":           {"label": "Tendance - sortie sur H1 : 1 = H1 franchement retournee ; 2 = des que H1 n est plus dans le sens (neutre inclus) ; 0 = ignoree", "default": 0},
+    "TRENDF_LOCK_ARM_PCT":      {"label": "Tendance - gain acquis : une fois le gain maximal atteint N % du prix, on le protege (0 = desactive)", "default": 0.0},
+    "TRENDF_LOCK_GIVEBACK_PCT": {"label": "Tendance - gain acquis : on sort si le gain retombe de N % de son maximum (ex. 35)", "default": 35.0},
     # v4.353 — scalp Forex (sous-mode du Forex, PAPER uniquement)
     "FOREX_SCALP_ENABLED":         {"label": "Scalp Forex - active (1) ou eteint (0). PAPER uniquement ; le mode Forex n est pas modifie", "default": 0},
     "FOREX_SCALP_NOTIONAL_USD":    {"label": "Scalp Forex - notionnel par trade ($, paper)", "default": 30.0},
@@ -1351,7 +1356,7 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"FUNDING_EXCLUDE_WEAK_COINS","FUNDING_STALE_ENABLED","FOREX_STALE_ENABLED","MANUAL_DEFAULT_SWING","FOREX_SCALP_STALE_ENABLED","FOREX_SCALP_EARLYFAIL_ENABLED","FXSWING_ENABLED","SUPSW_LEVER_SCALE","SUPSW_RESERVE_ASSETS","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+_ZERO_ALLOWED_INT_KEYS = {"FUNDING_EXCLUDE_WEAK_COINS","FUNDING_STALE_ENABLED","FOREX_STALE_ENABLED","MANUAL_DEFAULT_SWING","FOREX_SCALP_STALE_ENABLED","FOREX_SCALP_EARLYFAIL_ENABLED","FXSWING_ENABLED","SUPSW_LEVER_SCALE","SUPSW_RESERVE_ASSETS","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_IGNORE_RESERVE","TRENDF_REQUIRE_H1","TRENDF_EXIT_H1","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
                           "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
@@ -1464,8 +1469,14 @@ def _coerce_advanced_value(key: str, value):
         return False, "entre 0 et 3"
     if key == "SUPSW_EXIT_FLOW" and not -1 <= value <= 1:
         return False, "entre -1 et 1"
-    if key in ("TRENDF_ENABLED", "TRENDF_ALLOW_SHORT", "TRENDF_ENTRY_MODE", "TRENDF_EXIT_H4_REVERSE") and value not in (0, 1):
+    if key in ("TRENDF_ENABLED", "TRENDF_ALLOW_SHORT", "TRENDF_ENTRY_MODE", "TRENDF_IGNORE_RESERVE", "TRENDF_REQUIRE_H1") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
+    if key in ("TRENDF_EXIT_H4_REVERSE", "TRENDF_EXIT_H1") and value not in (0, 1, 2):
+        return False, "0 (ignoree), 1 (franchement retournee) ou 2 (n est plus dans le sens)"
+    if key == "TRENDF_LOCK_ARM_PCT" and not 0 <= value <= 50:
+        return False, "entre 0 et 50 % (0 = desactive)"
+    if key == "TRENDF_LOCK_GIVEBACK_PCT" and not 5 <= value <= 100:
+        return False, "entre 5 et 100 %"
     if key == "TRENDF_RISK_PCT" and not 0.05 <= value <= 3:
         return False, "entre 0,05 et 3 % du capital"
     if key == "TRENDF_MAX_NOTIONAL_USD" and not 5 <= value <= 300:
@@ -2833,7 +2844,7 @@ _SCALP_NUM = {   # cle : (min, max, entier ?)
     "SCALP_DAILY_LOSS_USD": (0, 10000, False), "SCALP_PAUSE_AFTER_LOSSES": (0, 20, True), "SCALP_PAUSE_MIN": (1, 1440, True),
     "SCALP_COOLDOWN_MIN": (0, 1440, True), "SCALP_ZONE_COOLDOWN_MIN": (0, 1440, True), "SCALP_SHORT_BTC_BLOCK": (0, 1, True), "SCALP_SHORT_BTC_MAX_PCT": (-2, 3, False), "SCALP_RUN_ENABLED": (0, 1, True), "SCALP_CORR_WINDOW_MIN": (30, 275, True), "SCALP_CORR_HIGH": (0.1, 0.95, False), "SCALP_BREADTH_MIN": (50, 95, True),
     "SCALP_CORR_DIR_ON": (0, 1, True), "SCALP_CORR_RELSTR_ON": (0, 1, True), "SCALP_CLUSTER_MAX": (0, 20, True), "SCALP_CLUSTER_WINDOW_MIN": (5, 240, True), "SCALP_CLUSTER_RETRACE_PCT": (0, 3, False),
-    "SCALP_DAY_OFFSET_H": (-12, 14, True), "SCALP_COMPOUND_ON": (0, 1, True), "SCALP_CAPITAL_USD": (10, 100000, False), "SCALP_COMPOUND_PCT": (10, 300, False), "SCALP_CAPITAL_FROM_HL": (0, 1, True), "SCALP_CAPITAL_CAP_USD": (0, 1000000, False),
+    "SCALP_DAY_OFFSET_H": (-12, 14, True), "SCALP_COMPOUND_ON": (0, 1, True), "SCALP_SLOTS": (0, 20, True), "SCALP_SLOTS_USE_PCT": (5, 100, False), "SCALP_CAPITAL_USD": (10, 100000, False), "SCALP_COMPOUND_PCT": (10, 300, False), "SCALP_CAPITAL_FROM_HL": (0, 1, True), "SCALP_CAPITAL_CAP_USD": (0, 1000000, False),
     "SCALP_GOAL_PCT": (0, 50, False), "SCALP_GOAL_STOP_ALL": (0, 1, True), "SCALP_SAFE_WINDOW": (5, 100, True), "SCALP_SAFE_MIN_TRADES": (3, 100, True),
     "SCALP_SAFE_MIN_WINRATE": (30, 100, False), "SCALP_SAFE_REBOND_ONLY": (0, 1, True), "SCALP_SAFE_MAX_SCORE": (0, 100, False), "SCALP_SAFE_MIN_TOUCHES": (0, 10, True), "SCALP_SAFE_MIN_ROOM_PCT": (0, 10, False),
     "SCALP_CORR_SIZE_PCT": (10, 100, True), "SCALP_PEER_MIN": (0, 5, True), "SCALP_PEER_WINDOW_MIN": (5, 120, True), "SCALP_CORR_BASKET_EXIT_ON": (0, 1, True),
@@ -4393,7 +4404,8 @@ def supsw_export(days: int = Query(60, ge=1, le=120), email: str = Depends(requi
 # ───────────────── v4.365 — TENDANCE CONFIRMEE (paper) : suivi, statistiques, export ─────────────────
 _TRENDF_KEYS = ("TRENDF_ALLOW_SHORT", "TRENDF_RISK_PCT", "TRENDF_MAX_NOTIONAL_USD", "TRENDF_LEVERAGE", "TRENDF_MAX_TRADES", "TRENDF_STOP_ATR",
                 "TRENDF_MIN_STOP_PCT", "TRENDF_MAX_STOP_PCT", "TRENDF_ENTRY_MODE", "TRENDF_BREAK_BARS", "TRENDF_MIN_FLOW", "TRENDF_MAX_EXT_ATR",
-                "TRENDF_MAX_SPREAD_PCT", "TRENDF_MAX_HOLD_DAYS", "TRENDF_COOLDOWN_SEC", "TRENDF_EXIT_H4_REVERSE")
+                "TRENDF_MAX_SPREAD_PCT", "TRENDF_MAX_HOLD_DAYS", "TRENDF_COOLDOWN_SEC", "TRENDF_EXIT_H4_REVERSE",
+                "TRENDF_IGNORE_RESERVE", "TRENDF_REQUIRE_H1", "TRENDF_EXIT_H1", "TRENDF_LOCK_ARM_PCT", "TRENDF_LOCK_GIVEBACK_PCT")
 
 
 def _trendf_est(e, fee):
