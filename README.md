@@ -1432,3 +1432,6 @@ Constat : BTC, ETH, HYPE, TAO, SUI sont réservés à Swing Support, donc Tendan
 - **Option 2 — plafond d'exposition** `SCALP_BETA_CAP_PCT` (0 = désactivé) : refuse une entrée si l'exposition équivalente BTC dans ce sens dépasserait N % du capital courant. Refus journalisé « exposition BTC SHORT/LONG … ».
 - **Option 3 — taille ajustée au bêta** `SCALP_BETA_SIZE_ON` (0 par défaut), `SCALP_BETA_REF` (1,0), `SCALP_BETA_MIN_FACTOR` (0,4) : si bêta > référence, taille × référence ÷ bêta (jamais augmentée, plancher 40 %).
 - Les options 2 et 3 sont désactivées par défaut : comportement inchangé tant qu'elles ne sont pas activées.
+
+## v4.480 — Tendance : cryptos de l'univers du Scalp
+- Correction : les cryptos du Scalp (SOL, XRP, LINK, etc.) sont bien suivies par le bot ; seule la liste `TRENDF_SYMBOLS` limitait Tendance. Nouveau réglage `TRENDF_SCALP_UNIVERSE` (0 par défaut) : 1 = Tendance évalue aussi les cryptos de l'univers du Scalp, en plus de la liste habituelle. Les 5 actifs réservés à Swing Support restent exclus sauf `TRENDF_IGNORE_RESERVE` = 1. Les conditions d'entrée (Daily + H4 [+ H1], flux) et de sortie sont inchangées.

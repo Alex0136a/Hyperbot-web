@@ -1116,6 +1116,7 @@ ADVANCED_SETTINGS = {
     "TRENDF_MAX_HOLD_DAYS":     {"label": "Tendance - duree maximale d une position (jours)", "default": 30},
     "TRENDF_COOLDOWN_SEC":      {"label": "Tendance - pause sur un actif apres une sortie (secondes)", "default": 14400},
     "TRENDF_EXIT_H4_REVERSE":   {"label": "Tendance - sortie sur H4 : 1 = H4 franchement retournee ; 2 = des que H4 n est plus dans le sens (neutre inclus) ; 0 = ignoree (seulement Daily perdue / stop)", "default": 1},
+    "TRENDF_SCALP_UNIVERSE":    {"label": "Tendance - 1 = évalue aussi les cryptos de l'univers du Scalp (suivies par le bot), en plus de la liste habituelle", "default": 0},
     "TRENDF_IGNORE_RESERVE":    {"label": "Tendance - 1 = peut aussi trader les actifs reserves a Swing Support (BTC, ETH, HYPE, TAO, SUI) ; un actif deja ouvert par un autre mode reste exclu", "default": 0},
     "TRENDF_REQUIRE_H1":        {"label": "Tendance - 1 = entree seulement si la tendance H1 (EMA 50/200) est aussi dans le sens (en plus de Daily et H4)", "default": 0},
     "TRENDF_EXIT_H1":           {"label": "Tendance - sortie sur H1 : 1 = H1 franchement retournee ; 2 = des que H1 n est plus dans le sens (neutre inclus) ; 0 = ignoree", "default": 0},
@@ -1356,7 +1357,7 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"FUNDING_EXCLUDE_WEAK_COINS","FUNDING_STALE_ENABLED","FOREX_STALE_ENABLED","MANUAL_DEFAULT_SWING","FOREX_SCALP_STALE_ENABLED","FOREX_SCALP_EARLYFAIL_ENABLED","FXSWING_ENABLED","SUPSW_LEVER_SCALE","SUPSW_RESERVE_ASSETS","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_IGNORE_RESERVE","TRENDF_REQUIRE_H1","TRENDF_EXIT_H1","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+_ZERO_ALLOWED_INT_KEYS = {"FUNDING_EXCLUDE_WEAK_COINS","FUNDING_STALE_ENABLED","FOREX_STALE_ENABLED","MANUAL_DEFAULT_SWING","FOREX_SCALP_STALE_ENABLED","FOREX_SCALP_EARLYFAIL_ENABLED","FXSWING_ENABLED","SUPSW_LEVER_SCALE","SUPSW_RESERVE_ASSETS","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_SCALP_UNIVERSE","TRENDF_IGNORE_RESERVE","TRENDF_REQUIRE_H1","TRENDF_EXIT_H1","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
                           "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
@@ -1469,7 +1470,7 @@ def _coerce_advanced_value(key: str, value):
         return False, "entre 0 et 3"
     if key == "SUPSW_EXIT_FLOW" and not -1 <= value <= 1:
         return False, "entre -1 et 1"
-    if key in ("TRENDF_ENABLED", "TRENDF_ALLOW_SHORT", "TRENDF_ENTRY_MODE", "TRENDF_IGNORE_RESERVE", "TRENDF_REQUIRE_H1") and value not in (0, 1):
+    if key in ("TRENDF_ENABLED", "TRENDF_ALLOW_SHORT", "TRENDF_ENTRY_MODE", "TRENDF_SCALP_UNIVERSE", "TRENDF_IGNORE_RESERVE", "TRENDF_REQUIRE_H1") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
     if key in ("TRENDF_EXIT_H4_REVERSE", "TRENDF_EXIT_H1") and value not in (0, 1, 2):
         return False, "0 (ignoree), 1 (franchement retournee) ou 2 (n est plus dans le sens)"
@@ -3969,7 +3970,7 @@ def _supsw_diag_line(ticker, state):
 def _trendf_diag_line(ticker, state):
     """Ligne du diagnostic par actif pour le module Tendance (None si non concerne)."""
     try:
-        if not cfg.get("TRENDF_ENABLED", 0) or ticker not in cfg.get("TRENDF_SYMBOLS", ["BTC", "ETH", "HYPE", "TAO", "SUI", "PAXG", "xyz:EUR", "xyz:JPY"]):
+        if not cfg.get("TRENDF_ENABLED", 0) or ticker not in bot._trendf_symbols():
             return None
         sn = getattr(state, "trendf_snapshot", None)
         if not sn:
@@ -4411,7 +4412,7 @@ def supsw_export(days: int = Query(60, ge=1, le=120), email: str = Depends(requi
 _TRENDF_KEYS = ("TRENDF_ALLOW_SHORT", "TRENDF_RISK_PCT", "TRENDF_MAX_NOTIONAL_USD", "TRENDF_LEVERAGE", "TRENDF_MAX_TRADES", "TRENDF_STOP_ATR",
                 "TRENDF_MIN_STOP_PCT", "TRENDF_MAX_STOP_PCT", "TRENDF_ENTRY_MODE", "TRENDF_BREAK_BARS", "TRENDF_MIN_FLOW", "TRENDF_MAX_EXT_ATR",
                 "TRENDF_MAX_SPREAD_PCT", "TRENDF_MAX_HOLD_DAYS", "TRENDF_COOLDOWN_SEC", "TRENDF_EXIT_H4_REVERSE",
-                "TRENDF_IGNORE_RESERVE", "TRENDF_REQUIRE_H1", "TRENDF_EXIT_H1", "TRENDF_LOCK_ARM_PCT", "TRENDF_LOCK_GIVEBACK_PCT")
+                "TRENDF_SCALP_UNIVERSE", "TRENDF_IGNORE_RESERVE", "TRENDF_REQUIRE_H1", "TRENDF_EXIT_H1", "TRENDF_LOCK_ARM_PCT", "TRENDF_LOCK_GIVEBACK_PCT")
 
 
 def _trendf_est(e, fee):
@@ -4491,7 +4492,7 @@ def trend_status(email: str = Depends(require_user)):
                              "moved": bool(tf.get("moved")), "d1": tf.get("d1"), "h4": tf.get("h4"), "ctx": tf.get("ctx"),
                              "flow_entry": tf.get("flow_entry"), "ext_atr": tf.get("ext_atr"),
                              "age_h": round((time.time() - tf.get("opened_ts", time.time())) / 3600, 1)})
-    syms = cfg.get("TRENDF_SYMBOLS", ["BTC", "ETH", "HYPE", "TAO", "SUI", "PAXG", "xyz:EUR", "xyz:JPY"])
+    syms = bot._trendf_symbols()
     for sk, st in list(bot.states.items()):
         tk = be.ticker_from_slot_key(sk)
         if tk in syms:

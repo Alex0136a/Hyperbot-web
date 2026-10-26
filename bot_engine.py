@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.479"
+BOT_VERSION = "4.480"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -1495,6 +1495,7 @@ PROFILE_SWING = {
     "TRENDF_MAX_HOLD_DAYS": 30,
     "TRENDF_COOLDOWN_SEC": 14400,
     "TRENDF_EXIT_H4_REVERSE": 1,          # 1 = sort aussi quand la tendance H4 se retourne franchement ; 2 = des que H4 n est plus dans le sens (neutre inclus)
+    "TRENDF_SCALP_UNIVERSE": 0,           # v4.480 : 1 = Tendance evalue aussi les cryptos du Scalp (suivies par le bot) en plus de TRENDF_SYMBOLS
     "TRENDF_IGNORE_RESERVE": 0,           # v4.476 : 1 = Tendance peut trader les actifs reserves a Swing Support (BTC, ETH, HYPE, TAO, SUI) ; un actif deja ouvert par un autre mode reste exclu
     "TRENDF_REQUIRE_H1": 0,               # v4.476 : 1 = entree seulement si la tendance H1 (EMA 50/200) est aussi dans le sens
     "TRENDF_EXIT_H1": 0,                  # v4.476 : sortie sur H1 : 1 = H1 franchement retournee ; 2 = H1 n est plus dans le sens (neutre inclus) ; 0 = ignoree
@@ -11894,10 +11895,24 @@ class BotEngine:
     # ───────────────────────── v4.365 — TENDANCE CONFIRMEE (module separe, PAPER) ─────────────────────────
     # Entree quand la tendance est CONFIRMEE (Daily ET H4 dans le meme sens + momentum 1 h + flux), longs et shorts ; on reste tant
     # qu elle tient : stop suiveur (multiple de l ATR H4), sortie quand la tendance cesse. Slot unique par actif (comme Hyperliquid).
+    def _trendf_symbols(self):
+        """v4.480 : actifs evalues par Tendance = TRENDF_SYMBOLS (+ cryptos de l univers du Scalp, suivies par le bot, si TRENDF_SCALP_UNIVERSE = 1)."""
+        c = self.cfg
+        syms = list(c.get("TRENDF_SYMBOLS", ["BTC", "ETH", "HYPE", "TAO", "SUI", "PAXG", "xyz:EUR", "xyz:JPY"]))
+        if int(c.get("TRENDF_SCALP_UNIVERSE", 0)):
+            try:
+                tracked = {ticker_from_slot_key(sk) for sk in self.states}
+                for t in self.manual.scalp.universe():
+                    if t in tracked and t not in syms:
+                        syms.append(t)
+            except Exception:
+                pass
+        return syms
+
     def _trendf_cfg(self):
         c = self.cfg
         return {
-            "syms": c.get("TRENDF_SYMBOLS", ["BTC", "ETH", "HYPE", "TAO", "SUI", "PAXG", "xyz:EUR", "xyz:JPY"]),
+            "syms": self._trendf_symbols(),
             "allow_short": bool(c.get("TRENDF_ALLOW_SHORT", 1)), "risk_pct": float(c.get("TRENDF_RISK_PCT", 1.0)),
             "max_notional": float(c.get("TRENDF_MAX_NOTIONAL_USD", 60.0)), "lev": max(int(c.get("TRENDF_LEVERAGE", 3)), 1),
             "max_trades": int(c.get("TRENDF_MAX_TRADES", 3)), "stop_atr": float(c.get("TRENDF_STOP_ATR", 3.0)),
