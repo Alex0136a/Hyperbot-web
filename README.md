@@ -1403,3 +1403,7 @@ Fichiers : `scalp_crypto.py`, `bot_engine.py`, `api.py`, `index_src.html`, `inde
 
 ## v4.474 — Historique : onglets LIVE SCALP et PAPER SCALP
 - Dans l'historique, deux nouveaux onglets **LIVE SCALP** et **PAPER SCALP** n'affichent que les trades du Scalp crypto du mode correspondant (avec compteur). Les onglets LIVE et PAPER restent inchangés (tous les trades du mode). Filtre par actif, par date, « Par jour », export CSV et suppression fonctionnent sur l'onglet affiché ; le CSV est nommé `historique_live_scalp_…`.
+
+## v4.475 — Scalp : résultats par heure en net, boutons Copier / Télécharger
+- « Résultats par heure » affiche désormais le **net de frais** (comme le thermomètre et « AUJOURD'HUI »), avec l'heure locale entre parenthèses. La copie/le fichier donne aussi le brut et les frais.
+- Boutons **Copier** et **Télécharger** (.txt) pour la table par heure et pour le journal des signaux.

@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.474";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.475";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1198,6 +1198,7 @@ function ScalpPanel({ token }) {
   const live = d.mode === "live";
   const S = live ? d.stats_live : d.stats_paper;
   const _off = Number(d.config.SCALP_DAY_OFFSET_H ?? -4); const dayLbl = _off===0 ? "jour UTC" : `jour UTC${_off>0?"+":"−"}${Math.abs(_off)}`;
+  const dlTxt = (name, txt) => { const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob(["\ufeff"+txt],{type:"text/plain;charset=utf-8"})); a.download=name; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },500); };
   const pr = (a) => a && a.n ? `${a.n} trades · ${a.win_rate.toFixed(0)} % gagnants · ${fmtUsd(a.pnl)} brut · ${fmtUsd(a.pnl_net)} net` : "aucun trade";
   const LBL = {SCALP_LEVERAGE:"Levier",SCALP_NOTIONAL_USD:"Taille ($)",SCALP_SL_PCT:"Stop (% prix)",SCALP_TP_PCT:"Objectif (% prix)",SCALP_TOP_N:"Nb d'actifs (top volume)",
     SCALP_MIN_SCORE:"Filtre note min LONG (0 = aucun)",SCALP_SHORT_MIN_SCORE:"Exigence SHORT : note min (0 = aucune)",SCALP_TREND_MODE:"Sans contre-tendance (1 = oui, 0 = non)",SCALP_CONFIRM_BARS:"Rebond : bougies 5 min pour confirmer (0 = entrer tout de suite)",SCALP_NOISE_ATR:"Bruit toléré à contre-sens (× ATR 5 min)",SCALP_MIN_ATR15_PCT:"Filtre volatilité 15 min min % (0 = aucun)",SCALP_MIN_ROOM_PCT:"Filtre place min avant zone % (0 = aucun)",
@@ -1319,10 +1320,12 @@ function ScalpPanel({ token }) {
           <button style={{...MT.btn("#60a5fa"),marginTop:10}} onClick={()=>send({hours_utc:hours,values:vals},"Réglages de corrélation enregistrés.")}>Enregistrer</button>
         </div>}
         {sub==="res" && <div>
-        <div style={{...MT.title,marginTop:4}}>RÉSULTATS PAR HEURE (UTC, {live?"live":"paper"})</div>
+        <div style={{...MT.title,marginTop:4}}>RÉSULTATS PAR HEURE — NET de frais (heure UTC, entre parenthèses l'heure {_off===0?"UTC":"locale"}, {live?"live":"paper"})</div>
         {Object.keys(S.by_hour).length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Pas encore de trade clôturé.</div> :
-          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{Object.entries(S.by_hour).map(([h,a])=><div key={h} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"4px 8px",fontSize:11,color:a.pnl>=0?"#22c55e":"#ef4444"}}>{h} h · {a.n} · {a.win_rate.toFixed(0)} % · {fmtUsd(a.pnl)}</div>)}</div>}
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{Object.entries(S.by_hour).map(([h,a])=><div key={h} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"4px 8px",fontSize:11,color:a.pnl>=0?"#22c55e":"#ef4444"}}>{h} h{_off!==0?` (${((Number(h)+_off)%24+24)%24} h)`:""} · {a.n} · {a.win_rate.toFixed(0)} % · {fmtUsd(a.pnl_net)}</div>)}</div>}
+        {Object.keys(S.by_hour).length>0 && <div style={{marginTop:6}}>{(()=>{ const txt=`RÉSULTATS PAR HEURE — NET de frais (heure UTC, ${live?"live":"paper"})\n`+Object.entries(S.by_hour).map(([h,a])=>`${h} h · ${a.n} · ${a.win_rate.toFixed(0)} % · net ${fmtUsd(a.pnl_net)} (brut ${fmtUsd(a.pnl)}, frais ${fmtUsd(a.fees)})`).join("\n"); return <><button style={MT.btn("#334155","#e2e8f0")} onClick={()=>{ try { navigator.clipboard.writeText(txt); } catch(e) {} }}>📋 Copier</button> <button style={{...MT.btn("#334155","#e2e8f0"),marginLeft:6}} onClick={()=>dlTxt(`scalp_par_heure_${live?"live":"paper"}.txt`,txt)}>⬇ Télécharger</button></>; })()}</div>}
         <div style={{...MT.title,marginTop:14}}>JOURNAL DES SIGNAUX</div>
+        {(d.events||[]).length>0 && (()=>{ const txt="JOURNAL DES SIGNAUX\n"+d.events.map(e=>`${fmtTime(e.ts)} ${e.kind} ${e.ticker} — ${e.text}`).join("\n"); return <div style={{marginBottom:6}}><button style={MT.btn("#334155","#e2e8f0")} onClick={()=>{ try { navigator.clipboard.writeText(txt); } catch(e) {} }}>📋 Copier</button> <button style={{...MT.btn("#334155","#e2e8f0"),marginLeft:6}} onClick={()=>dlTxt("scalp_journal_signaux.txt",txt)}>⬇ Télécharger</button></div>; })()}
         {(d.events||[]).length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucun signal pour l'instant.</div> :
           <div style={{maxHeight:240,overflowY:"auto",fontSize:11,color:"#cbd5e1"}}>{d.events.map((e,i)=><div key={i} style={{padding:"3px 0",borderBottom:"1px solid #131d33"}}><span style={{color:"#64748b"}}>{fmtTime(e.ts)}</span> <b style={{color:e.kind==="entree"?"#22c55e":e.kind==="refus"?"#fbbf24":e.kind==="erreur"?"#ef4444":"#94a3b8"}}>{e.kind}</b> {e.ticker} — {e.text}</div>)}</div>}
         </div>}
