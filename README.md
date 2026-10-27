@@ -1438,3 +1438,7 @@ Constat : BTC, ETH, HYPE, TAO, SUI sont réservés à Swing Support, donc Tendan
 
 ## v4.481 — Historique : SL du ticket et SL à la sortie
 - Chaque trade fermé de l'historique affiche « 🛑 SL du ticket X % · SL à la sortie ±Y % du prix d'entrée » avec la mention « modifié depuis l'ouverture » si le SL a bougé. Le CSV a deux colonnes de plus : `sl_ticket_pct`, `sl_final_pct`. Permet de vérifier d'un coup d'œil si un stop a été respecté.
+
+## v4.482 — Mesure : bruit du marché vs stop (aucun effet sur les décisions)
+- Le Scalp enregistre l'ATR 5 min (en % du prix) de chaque trade, en plus de l'ATR 15 min déjà gardé.
+- Le CSV de l'historique a quatre colonnes de plus : `atr15_pct`, `atr5_pct`, `sl_sur_atr15`, `sl_sur_atr5` (distance du stop en multiples d'ATR). Permet de vérifier si les stops touchés sont ceux qui sont trop serrés par rapport au bruit. Les anciens trades ont l'ATR 15 min (pas l'ATR 5 min).

@@ -1375,7 +1375,7 @@ class ScalpEngine:
                 if it is not None:
                     it["scalp"] = {"kind": sig["kind"], "score": sig["score"], "level": sig["level"], "room": round(sig["room"], 2),
                                    "reasons": sig["reasons"], "volume_ratio": round(sig["volume_ratio"], 2),
-                                   "atr15_pct": round(sig["atr15_pct"], 3), "counter": bool(sig.get("counter")),
+                                   "atr15_pct": round(sig["atr15_pct"], 3), "atr5_pct": (round(sig["atr5"] / sig["price"] * 100, 3) if sig.get("atr5") and sig.get("price") else None), "counter": bool(sig.get("counter")),
                                    "regime": {"label": reg.get("label", "inconnu"), "corr": reg.get("corr"), "up": reg.get("up"), "down": reg.get("down"),
                                               "basket30": reg.get("basket30"), "rel30": (round(reg["ch30"].get(t, 0) - reg["basket30"], 3) if reg.get("ch30") and reg.get("basket30") is not None else None),
                                               "cluster": cluster_before, "peers": sig.get("peers")},
