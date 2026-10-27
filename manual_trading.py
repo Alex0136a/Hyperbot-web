@@ -2057,6 +2057,14 @@ class ManualTrading:
                         item["strategy_source"] = "libre"
                     item["require_valid"] = False
                 item["mode"] = new_mode
+                ss = changes.get("strategy_source")      # v4.487 : changer le type d un ordre programme
+                if ss and ss != item.get("strategy_source"):
+                    if ss not in FREE_LIKE:
+                        raise ManualError("Type invalide : Ordre libre, Swing Support ou Scalp.")
+                    old_ss = item.get("strategy_source")
+                    item["strategy_source"] = ss
+                    item["require_valid"] = False
+                    self._log(f"Ordre programme #{item['id']} {item['ticker']} : type {STRATEGY_LABELS.get(old_ss, old_ss)} → {STRATEGY_LABELS.get(ss, ss)}", "info")
                 if changes.get("expiry_hours"):
                     h = float(changes["expiry_hours"])
                     if not 0.1 <= h <= 24 * 30:

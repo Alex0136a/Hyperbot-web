@@ -1457,3 +1457,11 @@ Constat : BTC, ETH, HYPE, TAO, SUI sont réservés à Swing Support, donc Tendan
 
 ## v4.485 — Mode vigilant : contre-tendance sécurisée admise
 - `SCALP_DEFENSE_COUNTER` = 1 (défaut) : une contre-tendance déjà validée par le moteur (rebond, zone testée ≥ 2 fois, flux, BTC, note) est admise en mode vigilant, à `SCALP_DEFENSE_COUNTER_SIZE_PCT` % de la taille normale (40). 0 = refusée comme avant.
+
+## v4.486 — Trades manuels comptés dans l'objectif du jour
+- `SCALP_GOAL_INCLUDE_MANUAL` = 1 (défaut) : les trades manuels clôturés (tickets libres), en paper comme en live, entrent dans le capital, l'objectif du jour et le mode défensif, avec leur propre mode (paper avec paper, live avec live). 0 = Scalp seul.
+- Le thermomètre affiche « dont N manuels +X $ » (aujourd'hui, hier, date ou tout). Les statistiques du Scalp (réussite, historique par actif du mode prudent) restent calculées sur les seuls trades Scalp.
+
+## v4.487 — Changer le type d'un ordre programmé
+- Dans « ORDRES PROGRAMMÉS » → Modifier : nouveau sélecteur **TYPE** (Ordre libre / Swing Support / Scalp). Le type enregistré peut être remplacé par un autre ; un ordre issu d'une opportunité du bot (Accumulation, etc.) peut devenir libre / Swing Support / Scalp (le contrôle de validité de l'opportunité est alors retiré). L'inverse (vers une opportunité du bot) n'est pas possible : il faudrait qu'elle soit confirmée.
+- Le type détermine l'historique (onglets LIVE / PAPER ou SCALP) et les statistiques du Scalp après l'ouverture. La colonne « Opportunité » affiche désormais « Scalp » pour un ordre Scalp.
