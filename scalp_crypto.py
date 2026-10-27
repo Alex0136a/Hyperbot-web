@@ -1273,6 +1273,49 @@ class ScalpEngine:
             return None
         return None
 
+    def _defense_soft(self, t, sig, mode, why_def):
+        """v4.483 : mode defensif VIGILANT. N interdit pas les entrees : verifie que le trade a de la place pour se
+        developper et qu il n est pas dans le bruit, exige plus de qualite, et reduit la taille.
+        Retourne (texte du refus ou None, facteur de taille)."""
+        c = self.cfg
+        pre = f"vigilance ({why_def}) : "
+        sl = float(c.get("SCALP_SL_PCT", 0.65))
+        size = max(0.1, min(1.0, float(c.get("SCALP_DEFENSE_SIZE_PCT", 60) or 100) / 100.0))
+        # 1) amplitude disponible avant la zone suivante (mouvements repetes : il faut de la place pour le TP, avec marge)
+        rx = float(c.get("SCALP_DEFENSE_ROOM_X", 1.5) or 0)
+        room = float(sig.get("room") or 0)
+        if rx > 0 and room < rx * sl:
+            return pre + f"amplitude disponible {room:.2f} % < {rx:g} × le stop ({sl:g} % → {rx * sl:.2f} %)", size
+        # 2) stop dans le bruit : le stop doit depasser k x ATR 5 min
+        kx = float(c.get("SCALP_DEFENSE_SL_ATR", 1.0) or 0)
+        a5, px = sig.get("atr5"), sig.get("price")
+        if kx > 0 and a5 and px:
+            a5p = a5 / px * 100.0
+            if sl < kx * a5p:
+                return pre + f"stop {sl:g} % dans le bruit (ATR 5 min {a5p:.2f} % × {kx:g} = {kx * a5p:.2f} %)", size
+        # 3) sens / qualite d entree
+        if sig.get("counter"):
+            return pre + "contre-tendance non admise", size
+        ctx = sig.get("ctx") or {}
+        fb = ctx.get("flow_buy")
+        if sig.get("kind") == "cassure":
+            # entree tendancielle (cassure) : seulement avec la tendance H1 ET un flux dans le sens
+            want = "haussiere" if sig["side"] == "long" else "baissiere"
+            if ctx.get("t1h") != want:
+                return pre + f"cassure sans tendance H1 dans le sens (H1 {ctx.get('t1h')})", size
+            if fb is not None and ((sig["side"] == "long" and fb < 0.55) or (sig["side"] == "short" and fb > 0.45)):
+                return pre + f"cassure sans flux dans le sens ({fb * 100:.0f} % d'achats agressifs)", size
+        else:
+            mt = int(float(c.get("SCALP_SAFE_MIN_TOUCHES", 2) or 0))
+            if mt > 0 and int(sig.get("touches") or 1) < mt:
+                return pre + f"zone testée {int(sig.get('touches') or 1)} fois (il en faut ≥ {mt})", size
+        # 4) actif : on n ecarte que ceux dont l historique recent est clairement mauvais
+        rec = self._asset_record(mode).get(t)
+        mn = int(float(c.get("SCALP_SAFE_MIN_TRADES", 6)))
+        if rec and rec[0] >= mn and rec[2] < 0 and rec[1] < float(c.get("SCALP_SAFE_MIN_WINRATE", 55)):
+            return pre + f"{t} a un historique négatif ({rec[1]:.0f} % de réussite, {rec[2]:+.2f} $ sur {rec[0]} trades)", size
+        return None, size
+
     def _goal_refusal(self, t, sig, mode):
         """Entree trop risquee en mode prudent : objectif du jour atteint OU mode defensif. Texte du refus ou None."""
         c = self.cfg
@@ -1287,6 +1330,8 @@ class ScalpEngine:
         if pre is None:
             why_def = self.defense_state(mode)
             if why_def:
+                if int(float(c.get("SCALP_DEFENSE_SOFT", 1) or 0)):
+                    return self._defense_soft(t, sig, mode, why_def)[0]      # v4.483 : defensif = vigilance, pas blocage
                 pre = f"mode défensif ({why_def}) : "
         if pre is None:
             return None
@@ -1351,6 +1396,10 @@ class ScalpEngine:
         if why_beta:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_beta}")
             return
+        if self.defense_state(mode) and not (float(c.get("SCALP_GOAL_PCT", 0) or 0) > 0 and self.capital_state(mode)["goal_reached"]) \
+                and int(float(c.get("SCALP_DEFENSE_SOFT", 1) or 0)):      # v4.483 : vigilance -> taille reduite
+            f_ = max(0.1, min(1.0, float(c.get("SCALP_DEFENSE_SIZE_PCT", 60) or 100) / 100.0))
+            notional = max(notional * f_, 10.5 if mode == "live" else 1.0)
         cluster_before = self._cluster_count(sig["side"], mode)
         params = {"strategy": STRATEGY, "ticker": t, "direction": sig["side"], "market": "perp", "mode": mode,
                   "execution": "now", "leverage": int(c.get("SCALP_LEVERAGE", 3)),

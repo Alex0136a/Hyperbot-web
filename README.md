@@ -1442,3 +1442,12 @@ Constat : BTC, ETH, HYPE, TAO, SUI sont réservés à Swing Support, donc Tendan
 ## v4.482 — Mesure : bruit du marché vs stop (aucun effet sur les décisions)
 - Le Scalp enregistre l'ATR 5 min (en % du prix) de chaque trade, en plus de l'ATR 15 min déjà gardé.
 - Le CSV de l'historique a quatre colonnes de plus : `atr15_pct`, `atr5_pct`, `sl_sur_atr15`, `sl_sur_atr5` (distance du stop en multiples d'ATR). Permet de vérifier si les stops touchés sont ceux qui sont trop serrés par rapport au bruit. Les anciens trades ont l'ATR 15 min (pas l'ATR 5 min).
+
+## v4.483 — Mode défensif « vigilant »
+- Le mode défensif (journée ≤ -X % ou N pertes de suite) ne bloque plus presque tout : il **vérifie** chaque entrée (`SCALP_DEFENSE_SOFT` = 1, par défaut) :
+  1. amplitude disponible avant la zone suivante ≥ `SCALP_DEFENSE_ROOM_X` × le stop (1,5 par défaut) ;
+  2. stop plus grand que `SCALP_DEFENSE_SL_ATR` × ATR 5 min (1,0) — sinon le stop est dans le bruit ;
+  3. pas de contre-tendance ; cassure seulement avec la tendance H1 et un flux dans le sens ; rebond seulement sur zone testée ≥ 2 fois ;
+  4. un actif n'est écarté que si son historique récent est clairement négatif (plus de « pas assez de trades »).
+- Les trades acceptés sont pris à `SCALP_DEFENSE_SIZE_PCT` % de la taille normale (60 par défaut).
+- `SCALP_DEFENSE_SOFT` = 0 rétablit les anciens filtres stricts. L'objectif atteint reste strict.
