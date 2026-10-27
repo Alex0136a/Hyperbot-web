@@ -1451,3 +1451,9 @@ Constat : BTC, ETH, HYPE, TAO, SUI sont réservés à Swing Support, donc Tendan
   4. un actif n'est écarté que si son historique récent est clairement négatif (plus de « pas assez de trades »).
 - Les trades acceptés sont pris à `SCALP_DEFENSE_SIZE_PCT` % de la taille normale (60 par défaut).
 - `SCALP_DEFENSE_SOFT` = 0 rétablit les anciens filtres stricts. L'objectif atteint reste strict.
+
+## v4.484 — Mode vigilant : cassures
+- Correction : le mode vigilant exigeait une tendance H1 franche pour les cassures, alors que le moteur accepte déjà la tendance 15 min quand H1 est neutre. Toutes les cassures étaient refusées en marché « fond neutre ». L'exigence est retirée ; restent : pas de contre-tendance, flux dans le sens (> 55 %), amplitude, stop supérieur au bruit.
+
+## v4.485 — Mode vigilant : contre-tendance sécurisée admise
+- `SCALP_DEFENSE_COUNTER` = 1 (défaut) : une contre-tendance déjà validée par le moteur (rebond, zone testée ≥ 2 fois, flux, BTC, note) est admise en mode vigilant, à `SCALP_DEFENSE_COUNTER_SIZE_PCT` % de la taille normale (40). 0 = refusée comme avant.

@@ -1295,14 +1295,15 @@ class ScalpEngine:
                 return pre + f"stop {sl:g} % dans le bruit (ATR 5 min {a5p:.2f} % × {kx:g} = {kx * a5p:.2f} %)", size
         # 3) sens / qualite d entree
         if sig.get("counter"):
-            return pre + "contre-tendance non admise", size
+            if not int(float(c.get("SCALP_DEFENSE_COUNTER", 1) or 0)):
+                return pre + "contre-tendance non admise", size
+            # v4.485 : contre-tendance deja securisee par le moteur (rebond, zone >= 2, flux, BTC, note) : admise, taille encore reduite
+            size = min(size, max(0.1, float(c.get("SCALP_DEFENSE_COUNTER_SIZE_PCT", 40) or 40) / 100.0))
         ctx = sig.get("ctx") or {}
         fb = ctx.get("flow_buy")
         if sig.get("kind") == "cassure":
-            # entree tendancielle (cassure) : seulement avec la tendance H1 ET un flux dans le sens
-            want = "haussiere" if sig["side"] == "long" else "baissiere"
-            if ctx.get("t1h") != want:
-                return pre + f"cassure sans tendance H1 dans le sens (H1 {ctx.get('t1h')})", size
+            # entree tendancielle (cassure) : l alignement avec la tendance (H1, ou 15 min si H1 neutre) est deja garanti
+            # par le moteur (sig["counter"] False) ; on exige en plus un flux dans le sens.
             if fb is not None and ((sig["side"] == "long" and fb < 0.55) or (sig["side"] == "short" and fb > 0.45)):
                 return pre + f"cassure sans flux dans le sens ({fb * 100:.0f} % d'achats agressifs)", size
         else:
@@ -1398,7 +1399,7 @@ class ScalpEngine:
             return
         if self.defense_state(mode) and not (float(c.get("SCALP_GOAL_PCT", 0) or 0) > 0 and self.capital_state(mode)["goal_reached"]) \
                 and int(float(c.get("SCALP_DEFENSE_SOFT", 1) or 0)):      # v4.483 : vigilance -> taille reduite
-            f_ = max(0.1, min(1.0, float(c.get("SCALP_DEFENSE_SIZE_PCT", 60) or 100) / 100.0))
+            f_ = self._defense_soft(t, sig, mode, "")[1]
             notional = max(notional * f_, 10.5 if mode == "live" else 1.0)
         cluster_before = self._cluster_count(sig["side"], mode)
         params = {"strategy": STRATEGY, "ticker": t, "direction": sig["side"], "market": "perp", "mode": mode,
