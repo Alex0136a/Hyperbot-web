@@ -1390,17 +1390,27 @@ class ScalpEngine:
             c1h = self.bot._mtf_candles(t, "1h", 60) or []
             if len(c1h) >= 40:
                 info["slope"] = mtf.slope_features(c1h)
+                info["_c1h"] = c1h
         except Exception:
             pass
         er_max = float(c.get("SCALP_ASC_ER_MAX", 0.25))
         info["asc"] = bool(info["er_1m"] is not None and info["er_1m"] < er_max)
         sg = 1 if sig["side"] == "long" else -1
         sl_ = info["slope"] or {}
-        # 1) la pente 1 h ne doit pas aller contre le trade (quand la tendance est reguliere)
-        if int(c.get("SCALP_SLOPE_FILTER_ON", 1)) and sl_.get("pente_atr") is not None and sl_.get("pente_r2") is not None:
-            if sl_["pente_r2"] >= float(c.get("SCALP_SLOPE_MIN_R2", 0.4)) and sg * sl_["pente_atr"] < 0:
-                return (f"pente 1 h contre le trade (pente {sl_['pente_atr']:+.2f} ATR par bougie, régularité {sl_['pente_r2']:.2f})", info)
-            info["rules"].append("pente ok")
+        # 1) la pente 1 h ne doit pas aller contre le trade (quand la tendance est reguliere). v4.491 : fenetre COURTE (SCALP_SLOPE_BARS, 12 h)
+        #    pour suivre la tendance actuelle ; la pente sur 36 h reste enregistree pour l analyse.
+        nb = max(int(float(c.get("SCALP_SLOPE_BARS", 12) or 12)), 6)
+        sv = sl_
+        try:
+            if nb != 36 and info.get("_c1h"):
+                sv = mtf.slope_features(info["_c1h"], n=nb, lookback=max(48, nb))
+        except Exception:
+            sv = sl_
+        info["pente_veto_atr"], info["pente_veto_r2"], info["pente_veto_bars"] = sv.get("pente_atr"), sv.get("pente_r2"), nb
+        if int(c.get("SCALP_SLOPE_FILTER_ON", 1)) and sv.get("pente_atr") is not None and sv.get("pente_r2") is not None:
+            if sv["pente_r2"] >= float(c.get("SCALP_SLOPE_MIN_R2", 0.4)) and sg * sv["pente_atr"] < 0:
+                return (f"pente {nb} h contre le trade (pente {sv['pente_atr']:+.2f} ATR par bougie, régularité {sv['pente_r2']:.2f})", info)
+            info["rules"].append(f"pente {nb} h ok ({sv['pente_atr']:+.2f})")
         # 2) ascenseur : pas de cassure ; un rebond doit etre pres de la ligne inclinee de support (long) / resistance (short)
         if info["asc"] and int(c.get("SCALP_ASC_ENTRY_ON", 1)):
             if sig["kind"] == "cassure":
@@ -1507,6 +1517,7 @@ class ScalpEngine:
                                    "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg)}
                     if asc is not None:
                         it["scalp"]["asc"] = {"er_1m": asc.get("er_1m"), "range_atr": asc.get("range_atr"), "ascenseur": asc.get("asc"),
+                                              "pente_veto_atr": asc.get("pente_veto_atr"), "pente_veto_r2": asc.get("pente_veto_r2"), "pente_veto_bars": asc.get("pente_veto_bars"),
                                               "regles": " ; ".join(asc.get("rules") or []), "sl_mou_pct": round(sl_soft, 3),
                                               "sl_secours_pct": (round(sl_hard, 3) if sl_hard else None)}
                         it["scalp"]["tq"] = {**(it["scalp"].get("tq") or {}), **{k: v for k, v in (asc.get("slope") or {}).items() if v is not None}}

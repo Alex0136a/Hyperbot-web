@@ -1485,3 +1485,8 @@ Toutes les règles ci-dessous s'appliquent de la même façon en paper et en liv
 - **Stop sur clôture 5 min** (`SCALP_ASC_CLOSE_STOP_ON`) : le stop « mou » ne ferme que si la dernière bougie 5 min clôturée (après l'entrée) a clôturé au-delà ET que le prix y est encore, tant que la pente 1 h reste dans le sens du trade ; si la pente se retourne, il agit au prix (« STOP LOSS »). Un **stop de secours** à `SCALP_ASC_HARD_MULT` × le stop (2 par défaut) est posé comme SL du ticket, donc **natif sur Hyperliquid en live** : en cas de mèche violente, la perte maximale est ce stop de secours. Motif de sortie : « STOP SUR CLOTURE 5 min ». Dès que le seuil de rentabilité, le verrou ou le TP1 prennent le relais, le stop normal s'applique.
 - Le CSV de l'historique gagne `asc_er_1m`, `asc_range_atr`, `ascenseur`, `sl_mou_pct`, `sl_secours_pct`, `regles_asc`.
 - Swing Support et Tendance : pentes enregistrées (v4.489), règles pas encore appliquées.
+
+## v4.491 — Filtre de pente : fenêtre courte (12 h)
+- Le filtre de pente du Scalp comparait le sens du trade à la pente des 36 dernières bougies 1 h. Après un repli récent, cette pente restait positive alors que la situation était « BAISSE SAINE » et refusait les shorts (8 refus en une heure le 28/10). Le filtre utilise maintenant `SCALP_SLOPE_BARS` = 12 bougies 1 h (12 h). La pente sur 36 h reste enregistrée dans les colonnes `pente_*_1h`.
+- Nouvelles colonnes du CSV : `pente_filtre_atr`, `pente_filtre_r2`, `pente_filtre_bougies` (pente réellement utilisée par le filtre). Motif de refus : « pente N h contre le trade ».
+- `SCALP_SLOPE_BARS` = 36 rétablit l'ancien comportement ; `SCALP_SLOPE_FILTER_ON` = 0 désactive le filtre.
