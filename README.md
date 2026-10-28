@@ -1513,3 +1513,14 @@ Toutes les règles ci-dessous s'appliquent de la même façon en paper et en liv
 
 ## v4.495 — Actifs en mauvaise passe : essai après 24 h
 - Correction de la v4.493 : un actif écarté ne trade plus, donc sa série récente ne change plus et il restait écarté indéfiniment. `SCALP_ASSET_BLOCK_HOURS` (24 par défaut, 0 = jamais d'essai) autorise un trade d'essai quand le dernier trade de l'actif date de plus de N heures ; si l'essai est perdant, l'actif est de nouveau écarté.
+
+## v4.496 — Stop sur clôture 5 min : seulement en ascenseur
+- Le stop sur clôture 5 min (v4.490) s'appliquait à tous les trades Scalp : stop de secours à 2 × le stop normal (1 % au lieu de 0,5 %). Cas TAO #553 (28/10 17:21) : trade jamais positif (pic de gain 0,02 %), baisse de −1,04 % en 9 minutes, sortie au stop de secours (−1,00 %, −0,87 $ net) au lieu de −0,5 %.
+- Nouveau réglage `SCALP_ASC_CLOSE_STOP_ASC_ONLY` = 1 (défaut) : le stop sur clôture ne s'applique qu'aux trades pris en ascenseur ; les autres gardent le stop classique `SCALP_SL_PCT`. 0 rétablit le comportement v4.490–v4.495.
+- Paper et live identiques. Les trades déjà ouverts ne changent pas.
+
+## v4.497 — Shorts prudents quand BTC monte modérément (paper et live)
+- Constat (journal du 28/10, 12h35–14h10) : 10 shorts refusés par « BTC en hausse > +0,10 % / 1 h », alors que ce sont les moments où se présentent les rebonds sur résistance.
+- `SCALP_SHORT_BTC_SOFT_MAX_PCT` = 0,4 (0 = désactivé) : entre +0,10 % et +0,40 %, un short est admis seulement s'il s'agit d'un rebond sur une résistance testée au moins 2 fois. Le blocage normal reste total au-dessus de +0,40 %.
+- Prudence : taille réduite à `SCALP_SHORT_BTC_SOFT_SIZE_PCT` = 50 % ; flux vendeur d'au moins `SCALP_SHORT_BTC_SOFT_FLOW` = 55 % de ventes agressives ; les autres filtres (tendance, objectif, ascenseur, actif en mauvaise passe) s'appliquent comme d'habitude.
+- Le CSV de l'historique gagne `short_prudent_btc` (variation de BTC au moment de l'entrée) pour comparer ces shorts aux autres.
