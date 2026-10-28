@@ -1490,3 +1490,17 @@ Toutes les règles ci-dessous s'appliquent de la même façon en paper et en liv
 - Le filtre de pente du Scalp comparait le sens du trade à la pente des 36 dernières bougies 1 h. Après un repli récent, cette pente restait positive alors que la situation était « BAISSE SAINE » et refusait les shorts (8 refus en une heure le 28/10). Le filtre utilise maintenant `SCALP_SLOPE_BARS` = 12 bougies 1 h (12 h). La pente sur 36 h reste enregistrée dans les colonnes `pente_*_1h`.
 - Nouvelles colonnes du CSV : `pente_filtre_atr`, `pente_filtre_r2`, `pente_filtre_bougies` (pente réellement utilisée par le filtre). Motif de refus : « pente N h contre le trade ».
 - `SCALP_SLOPE_BARS` = 36 rétablit l'ancien comportement ; `SCALP_SLOPE_FILTER_ON` = 0 désactive le filtre.
+
+## v4.492 — Ascenseur : seuil recalibré, ligne inclinée en mesure seule
+- Journal du 28/10 (12h35–14h10) : 5 cassures refusées avec une efficacité 1 min de 0,01 à 0,16 et 2 rebonds shorts refusés car le prix était à +1,40 % et +4,42 % de la ligne inclinée de résistance. Un prix aléatoire donne environ 0,15 sur 30 bougies : le seuil de 0,25 classait presque tout en « ascenseur ».
+- `SCALP_ASC_ER_MAX` : 0,25 → **0,08** (va-et-vient nettement plus marqués que le hasard).
+- `SCALP_ASC_NEAR_LINE_PCT` : 0,5 → **0** (0 = mesure seule : l'écart à la ligne inclinée est enregistré dans `regles_asc` mais ne refuse plus). Une valeur > 0 rétablit le refus.
+- Paper et live identiques. Aucun autre changement.
+
+## v4.493 — Scalp : audit, interrupteur cassures, actifs en mauvaise passe, mesures de la zone
+- Audit (401 trades paper, 19→28/10) : brut +9,41 $, frais 26,70 $, net −17,29 $. Sorties « durée maximale » : 91 trades, −21,8 $ (62 avaient atteint +0,2 % au plus haut). Cassures : 84 trades, −10,6 $ net. Note ≥ 80 : 172 trades, −14,3 $.
+- `SCALP_BREAKOUT_ON` (1 par défaut = inchangé) : 0 = seuls les rebonds sont pris (paper et live).
+- `SCALP_ASSET_BLOCK_ON` (0 par défaut) : met de côté un actif si, sur ses `SCALP_SAFE_WINDOW` derniers trades (20), au moins `SCALP_ASSET_BLOCK_MIN_TRADES` (15) sont fermés, la réussite est sous `SCALP_ASSET_BLOCK_WINRATE` (42 %) et le net est négatif. L'actif revient tout seul quand sa série s'améliore.
+- Sortie anticipée sur la durée : pas de nouveau code, le stop au seuil de rentabilité existe déjà (`SCALP_BE_ENABLED` = 1, `SCALP_BE_ARM_PCT` = 0,25, `SCALP_BE_LOCK_PCT` = 0,1).
+- Mesures seules (aucun effet sur les décisions), ajoutées au CSV de l'historique : `room_pct`, `zone_touches`, `zone_largeur_pct`, `dist_niveau_pct`, `volume_ratio`.
+- Recherche d'un filtre sur la base existante (apprentissage 19→22/10, test 23→28/10) : aucun seuil sur les mesures enregistrées (flux, BTC, tendances H1/15 min, efficacités, note) ne tient sur les deux périodes. Les lignes obliques et les zones n'étaient pas enregistrées avant la v4.489.

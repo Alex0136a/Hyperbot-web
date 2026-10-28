@@ -1393,7 +1393,7 @@ class ScalpEngine:
                 info["_c1h"] = c1h
         except Exception:
             pass
-        er_max = float(c.get("SCALP_ASC_ER_MAX", 0.25))
+        er_max = float(c.get("SCALP_ASC_ER_MAX", 0.08))
         info["asc"] = bool(info["er_1m"] is not None and info["er_1m"] < er_max)
         sg = 1 if sig["side"] == "long" else -1
         sl_ = info["slope"] or {}
@@ -1415,11 +1415,11 @@ class ScalpEngine:
         if info["asc"] and int(c.get("SCALP_ASC_ENTRY_ON", 1)):
             if sig["kind"] == "cassure":
                 return (f"ascenseur (efficacité 1 min {info['er_1m']:.2f} < {er_max:g}) : cassure refusée, on attend un repli", info)
-            near = float(c.get("SCALP_ASC_NEAR_LINE_PCT", 0.5))
+            near = float(c.get("SCALP_ASC_NEAR_LINE_PCT", 0) or 0)      # v4.492 : 0 = mesure seule (la ligne 1 h prolongee peut etre tres loin)
             d = sl_.get("lig_sup_dist_pct") if sig["side"] == "long" else sl_.get("lig_res_dist_pct")
-            if d is not None and not (-0.15 <= d <= near):
+            if near > 0 and d is not None and not (-0.15 <= d <= near):
                 return (f"ascenseur : prix à {d:+.2f} % de la ligne inclinée de {'support' if sig['side'] == 'long' else 'résistance'} (maximum {near:g} %)", info)
-            info["rules"].append("ascenseur : rebond près de la ligne")
+            info["rules"].append("ascenseur" + (f" : ligne inclinée à {d:+.2f} %" if d is not None else ""))
         return None, info
 
     def _take(self, t, sig):
@@ -1429,6 +1429,15 @@ class ScalpEngine:
         if why_goal:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_goal}")
             return
+        if not int(c.get("SCALP_BREAKOUT_ON", 1)) and sig.get("kind") == "cassure":      # v4.493 : cassures coupees (paper et live)
+            self._ev("refus", t, "cassure " + sig["side"] + " refusée : cassures désactivées (SCALP_BREAKOUT_ON = 0)")
+            return
+        if int(c.get("SCALP_ASSET_BLOCK_ON", 0)):          # v4.493 : actif en mauvaise passe (sur ses derniers trades) mis de cote
+            rec = self._asset_record(mode).get(t)
+            mn, wr = int(float(c.get("SCALP_ASSET_BLOCK_MIN_TRADES", 15))), float(c.get("SCALP_ASSET_BLOCK_WINRATE", 42))
+            if rec and rec[0] >= mn and rec[1] < wr and rec[2] < 0:
+                self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {t} en mauvaise passe ({rec[1]:.0f} % de réussite, {rec[2]:+.2f} $ sur ses {rec[0]} derniers trades ; seuil {wr:g} %)")
+                return
         asc = None
         if int(c.get("SCALP_ASC_ON", 1)):          # v4.490 : ascenseur + pente (paper et live)
             why_asc, asc = self._asc_eval(t, sig)
@@ -1514,7 +1523,10 @@ class ScalpEngine:
                                    "regime": {"label": reg.get("label", "inconnu"), "corr": reg.get("corr"), "up": reg.get("up"), "down": reg.get("down"),
                                               "basket30": reg.get("basket30"), "rel30": (round(reg["ch30"].get(t, 0) - reg["basket30"], 3) if reg.get("ch30") and reg.get("basket30") is not None else None),
                                               "cluster": cluster_before, "peers": sig.get("peers")},
-                                   "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg)}
+                                   "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg),
+                                   "touches": sig.get("touches"),      # v4.493 : mesures de la zone horizontale (aucun effet sur les decisions)
+                                   "zone_width_pct": (round((sig["zone"][1] - sig["zone"][0]) / sig["price"] * 100, 3) if sig.get("zone") and sig.get("price") else None),
+                                   "dist_level_pct": (round((sig["price"] / sig["level"] - 1) * 100, 3) if sig.get("level") and sig.get("price") else None)}
                     if asc is not None:
                         it["scalp"]["asc"] = {"er_1m": asc.get("er_1m"), "range_atr": asc.get("range_atr"), "ascenseur": asc.get("asc"),
                                               "pente_veto_atr": asc.get("pente_veto_atr"), "pente_veto_r2": asc.get("pente_veto_r2"), "pente_veto_bars": asc.get("pente_veto_bars"),
