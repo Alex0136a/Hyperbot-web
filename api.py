@@ -1075,6 +1075,7 @@ ADVANCED_SETTINGS = {
     "SUPSW_RECENT_HOURS":       {"label": "Swing Support · DERNIÈRES HEURES — fenêtre examinée en heures", "default": 4},
     "SUPSW_RECENT_ASSET_MIN_PCT": {"label": "Swing Support · DERNIÈRES HEURES — refus si l'actif a perdu plus de N % sur la fenêtre", "default": 1.5},
     "SUPSW_RECENT_BTC_MIN_PCT": {"label": "Swing Support · DERNIÈRES HEURES — refus si BTC a perdu plus de N % sur la fenêtre", "default": 0.5},
+    "SUPSW_MAX_TOUCHES":        {"label": "Swing Support · ZONE — pas d'entrée si la zone de support a été testée plus de N fois (0 = aucune limite ; les zones très testées ont perdu davantage)", "default": 0},
     "SUPSW_RES_FILTER_ON":      {"label": "Swing Support · RÉSISTANCE — 1 = pas d'entrée si une résistance Daily est trop proche au-dessus du prix (retournement probable)", "default": 1},
     "SUPSW_RES_MIN_PCT":        {"label": "Swing Support · RÉSISTANCE — distance minimale en % du prix entre le prix et le bas de la résistance Daily pour accepter l'entrée", "default": 3.0},
     "SUPSW_RIDE_ON":            {"label": "Swing Support · VISER LA RÉSISTANCE — 1 = l'objectif est la résistance Daily moins un tampon (au lieu de l'objectif fixe) ; le gain est verrouillé dès l'objectif fixe", "default": 1},
@@ -1357,7 +1358,7 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"FUNDING_EXCLUDE_WEAK_COINS","FUNDING_STALE_ENABLED","FOREX_STALE_ENABLED","MANUAL_DEFAULT_SWING","FOREX_SCALP_STALE_ENABLED","FOREX_SCALP_EARLYFAIL_ENABLED","FXSWING_ENABLED","SUPSW_LEVER_SCALE","SUPSW_RESERVE_ASSETS","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_SCALP_UNIVERSE","TRENDF_IGNORE_RESERVE","TRENDF_REQUIRE_H1","TRENDF_EXIT_H1","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+_ZERO_ALLOWED_INT_KEYS = {"SUPSW_TRAIL_ON","SUPSW_REENTRY_ON","SUPSW_BTC_GATE_ON","SUPSW_RECENT_ON","SUPSW_RES_FILTER_ON","SUPSW_RIDE_ON","SUPSW_BTC_H4_MODE","SUPSW_MAX_TOUCHES","FUNDING_EXCLUDE_WEAK_COINS","FUNDING_STALE_ENABLED","FOREX_STALE_ENABLED","MANUAL_DEFAULT_SWING","FOREX_SCALP_STALE_ENABLED","FOREX_SCALP_EARLYFAIL_ENABLED","FXSWING_ENABLED","SUPSW_LEVER_SCALE","SUPSW_RESERVE_ASSETS","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_SCALP_UNIVERSE","TRENDF_IGNORE_RESERVE","TRENDF_REQUIRE_H1","TRENDF_EXIT_H1","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
                           "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
@@ -1444,12 +1445,20 @@ def _coerce_advanced_value(key: str, value):
     if key == "SUPSW_MIN_SL_PCT" and not 0.3 <= value <= 10:
         return False, "entre 0,3 et 10 %"
     if key in ("SUPSW_TP_LEV1", "SUPSW_TP_LEV2", "SUPSW_TP_LEV3",
-               "SUPSW_TRAIL_ON", "SUPSW_TRAIL_LOCK_PCT", "SUPSW_TRAIL_PCT", "SUPSW_REENTRY_ON", "SUPSW_REENTRY_HOURS", "SUPSW_REENTRY_TOL_PCT",
-               "SUPSW_BTC_GATE_ON", "SUPSW_BTC24_MIN", "SUPSW_BTC_H4_MODE", "SUPSW_RECENT_ON", "SUPSW_RECENT_HOURS", "SUPSW_RECENT_ASSET_MIN_PCT", "SUPSW_RECENT_BTC_MIN_PCT",
-               "SUPSW_RES_FILTER_ON", "SUPSW_RES_MIN_PCT", "SUPSW_RIDE_ON", "SUPSW_RES_BUFFER_PCT", "SUPSW_RIDE_MAX_PCT", "SUPSW_RIDE_TRAIL_PCT") and not 0.3 <= value <= 15:
+               "SUPSW_TRAIL_PCT", "SUPSW_REENTRY_HOURS", "SUPSW_REENTRY_TOL_PCT",
+               "SUPSW_RECENT_HOURS", "SUPSW_RECENT_ASSET_MIN_PCT", "SUPSW_RECENT_BTC_MIN_PCT",
+               "SUPSW_RES_MIN_PCT", "SUPSW_RES_BUFFER_PCT", "SUPSW_RIDE_MAX_PCT", "SUPSW_RIDE_TRAIL_PCT") and not 0.3 <= value <= 15:
         return False, "entre 0,3 et 15 %"
-    if key in ("SUPSW_ENABLED", "SUPSW_EXIT_REQUIRE_H4_END", "SUPSW_EXIT_LEVEL") and value not in (0, 1):
+    if key in ("SUPSW_ENABLED", "SUPSW_EXIT_REQUIRE_H4_END", "SUPSW_EXIT_LEVEL", "SUPSW_TRAIL_ON", "SUPSW_REENTRY_ON", "SUPSW_BTC_GATE_ON", "SUPSW_RECENT_ON", "SUPSW_RES_FILTER_ON", "SUPSW_RIDE_ON") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
+    if key == "SUPSW_BTC24_MIN" and not -20 <= value <= 20:
+        return False, "entre -20 et 20 %"
+    if key == "SUPSW_BTC_H4_MODE" and value not in (0, 1, 2):
+        return False, "0, 1 ou 2"
+    if key == "SUPSW_TRAIL_LOCK_PCT" and not 0 <= value <= 15:
+        return False, "entre 0 et 15 %"
+    if key == "SUPSW_MAX_TOUCHES" and not 0 <= value <= 50:
+        return False, "entre 0 (aucune limite) et 50"
     if key == "SUPSW_SL_PCT" and not 0.5 <= value <= 15:
         return False, "entre 0,5 et 15 %"
     if key == "SUPSW_TP_PCT" and not 0.3 <= value <= 15:

@@ -1465,3 +1465,8 @@ Constat : BTC, ETH, HYPE, TAO, SUI sont réservés à Swing Support, donc Tendan
 ## v4.487 — Changer le type d'un ordre programmé
 - Dans « ORDRES PROGRAMMÉS » → Modifier : nouveau sélecteur **TYPE** (Ordre libre / Swing Support / Scalp). Le type enregistré peut être remplacé par un autre ; un ordre issu d'une opportunité du bot (Accumulation, etc.) peut devenir libre / Swing Support / Scalp (le contrôle de validité de l'opportunité est alors retiré). L'inverse (vers une opportunité du bot) n'est pas possible : il faudrait qu'elle soit confirmée.
 - Le type détermine l'historique (onglets LIVE / PAPER ou SCALP) et les statistiques du Scalp après l'ouverture. La colonne « Opportunité » affiche désormais « Scalp » pour un ordre Scalp.
+
+## v4.488 — Swing Support : interrupteurs à 0 et plafond de tests de zone
+- **Correction** : plusieurs interrupteurs Swing Support refusaient la valeur 0 à l'enregistrement (`SUPSW_RES_FILTER_ON`, `SUPSW_BTC_GATE_ON`, `SUPSW_RECENT_ON`, `SUPSW_TRAIL_ON`, `SUPSW_REENTRY_ON`, `SUPSW_RIDE_ON`, `SUPSW_BTC_H4_MODE` à 0 ou 1, `SUPSW_BTC24_MIN` négatif, `SUPSW_TRAIL_LOCK_PCT` à 0). Ils acceptent maintenant 0 (et 0/1/2 pour le mode H4).
+- **Nouveau** `SUPSW_MAX_TOUCHES` (0 = aucune limite, par défaut) : pas d'entrée si la zone de support a été testée plus de N fois. Motif de refus : « zone testee N fois (maximum M) ».
+- Essai paper proposé : `SUPSW_RES_FILTER_ON` = 0 (retire le refus « résistance Daily trop proche ») et `SUPSW_MAX_TOUCHES` = 7. À juger sur au moins 30 trades.

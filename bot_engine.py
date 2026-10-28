@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.487"
+BOT_VERSION = "4.488"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -1524,6 +1524,7 @@ PROFILE_SWING = {
     "SUPSW_RECENT_HOURS": 4,              # ... fenetre en heures
     "SUPSW_RECENT_ASSET_MIN_PCT": 1.5,    # ... refuse si l actif a perdu plus de N % sur la fenetre
     "SUPSW_RECENT_BTC_MIN_PCT": 0.5,      # ... refuse si BTC a perdu plus de N % sur la fenetre
+    "SUPSW_MAX_TOUCHES": 0,               # v4.488 : 0 = aucune limite ; sinon pas d entree si la zone a ete testee plus de N fois
     "SUPSW_RES_FILTER_ON": 1,             # v4.391 : 1 = pas d entree si une resistance Daily est trop proche au-dessus (retournement probable)
     "SUPSW_RES_MIN_PCT": 3.0,             # ... distance minimale (% du prix) entre le prix et le bas de la resistance Daily
     "SUPSW_RIDE_ON": 1,                   # v4.391 : 1 = on vise la resistance : objectif = resistance - tampon (au lieu de l objectif fixe)
@@ -11264,7 +11265,7 @@ class BotEngine:
             "btc_h4_mode": int(c.get("SUPSW_BTC_H4_MODE", 2)),
             "rec_on": bool(int(c.get("SUPSW_RECENT_ON", 1))), "rec_h": max(int(c.get("SUPSW_RECENT_HOURS", 4)), 1),
             "rec_asset": float(c.get("SUPSW_RECENT_ASSET_MIN_PCT", 1.5)), "rec_btc": float(c.get("SUPSW_RECENT_BTC_MIN_PCT", 0.5)),
-            "res_on": bool(int(c.get("SUPSW_RES_FILTER_ON", 1))), "res_min": float(c.get("SUPSW_RES_MIN_PCT", 3.0)),
+            "max_touches": int(float(c.get("SUPSW_MAX_TOUCHES", 0) or 0)), "res_on": bool(int(c.get("SUPSW_RES_FILTER_ON", 1))), "res_min": float(c.get("SUPSW_RES_MIN_PCT", 3.0)),
             "ride_on": bool(int(c.get("SUPSW_RIDE_ON", 1))), "res_buf": float(c.get("SUPSW_RES_BUFFER_PCT", 0.3)),
             "ride_max": float(c.get("SUPSW_RIDE_MAX_PCT", 6.0)), "ride_trail": max(float(c.get("SUPSW_RIDE_TRAIL_PCT", 1.0)), 0.1),
             "re_on": bool(int(c.get("SUPSW_REENTRY_ON", 1))), "re_h": float(c.get("SUPSW_REENTRY_HOURS", 12)),
@@ -11519,6 +11520,8 @@ class BotEngine:
         elif K["res_on"] and ctx.get("res_dist_pct") is not None and ctx["res_dist_pct"] < K["res_min"]:
             blocker = (f"resistance Daily trop proche ({ctx['res_dist_pct']:.1f} % au-dessus, minimum {K['res_min']:g} %) "
                        f"— retournement probable")
+        elif K["max_touches"] > 0 and int(zone.get("touches") or 0) > K["max_touches"]:
+            blocker = f"zone testee {int(zone.get('touches') or 0)} fois (maximum {K['max_touches']})"
         else:
             blocker = self._supsw_reentry_blocker(ticker, c1h, price, now, K)
         if watch:                          # v4.378 : actif hors des 5 du mode -> alerte seulement, jamais d ouverture ni de journal
