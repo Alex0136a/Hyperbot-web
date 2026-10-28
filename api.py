@@ -4405,7 +4405,7 @@ def supsw_export(days: int = Query(60, ge=1, le=120), email: str = Depends(requi
             "zone_low", "zone_high", "zone_touches", "held", "pierce_pct", "price", "entry_ref", "sl", "tp", "inval", "risk_pct", "reward_pct", "decision",
             "trade_uid", "evaluated", "outcome", "hit_h", "mfe24", "mae24", "mfe72", "mae72", "fin24", "fin72", "exit_ts", "exit_price",
             "exit_reason", "early_exit", "pnl_pct", "hold_h", "flow_exit", "h4_intact_exit", "d1_trend_exit", "post_eval", "fin1h", "fin4h", "fin24h",
-            "after_outcome", "after_hit_h", "after_mfe", "after_mae", "too_early", "alerts_max", "alerts_exit", "alerts_json", "btc_chg24", "btc_h4", "h4_trend", "peak_pct", "trail_armed", "res_low", "res_dist_pct", "chg_recent", "btc_chg_recent"]
+            "after_outcome", "after_hit_h", "after_mfe", "after_mae", "too_early", "alerts_max", "alerts_exit", "alerts_json", "btc_chg24", "btc_h4", "h4_trend", "peak_pct", "trail_armed", "res_low", "res_dist_pct", "chg_recent", "btc_chg_recent", "pente_atr", "pente_pct", "pente_r2", "lig_sup_dist_pct", "lig_sup_pente_pct", "lig_res_dist_pct", "lig_res_pente_pct", "canal_pct"]
     w.writerow(["cloture du signal (UTC)"] + cols)
     for e in ev:
         row = [datetime.fromtimestamp(e["signal_t"] / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M")]
@@ -4551,7 +4551,7 @@ def trend_export(days: int = Query(60, ge=1, le=120), email: str = Depends(requi
     cols = ["asset", "side", "d1_trend", "h4_trend", "weekly_trend", "btc_trend", "funding_ann", "flow", "atr_pct", "ext_atr", "hour_utc", "price",
             "entry_ref", "sl", "risk_pct", "entry_mode", "decision", "trade_uid", "evaluated", "outcome", "hit_h", "mfe24", "mae24", "mfe72",
             "mae72", "fin24", "fin72", "exit_ts", "exit_price", "exit_reason", "pnl_pct", "hold_h", "peak_pct", "d1_trend_exit", "h4_trend_exit",
-            "post_eval", "fin1h", "fin4h", "fin24h", "after_mfe", "after_mae"]
+            "post_eval", "fin1h", "fin4h", "fin24h", "after_mfe", "after_mae", "pente_atr", "pente_pct", "pente_r2", "lig_sup_dist_pct", "lig_sup_pente_pct", "lig_res_dist_pct", "lig_res_pente_pct", "canal_pct"]
     w.writerow(["cloture du signal (UTC)"] + cols)
     for e in ev:
         row = [datetime.fromtimestamp(e["signal_t"] / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M")]

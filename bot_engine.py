@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.488"
+BOT_VERSION = "4.489"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -11428,7 +11428,7 @@ class BotEngine:
                 "zone_low": zone.get("low"), "zone_high": zone.get("high"), "zone_touches": zone.get("touches"),
                 "held": setup.get("held") if setup else None, "pierce_pct": setup.get("pierce_pct") if setup else None,
                 "price": price, "entry_ref": ref, "sl": ref * (1 - K["sl_pct"] / 100), "tp": ref * (1 + K["tp_pct"] / 100),
-                "risk_pct": K["sl_pct"], "reward_pct": K["tp_pct"], "decision": decision, "prio": prio, "trade_uid": None})
+                "risk_pct": K["sl_pct"], "reward_pct": K["tp_pct"], "decision": decision, "prio": prio, "trade_uid": None, **mtf.slope_features(c1h)})
             seen[key] = (prio, eid)
             return eid, signal_t
         except Exception as e:
@@ -11997,7 +11997,7 @@ class BotEngine:
                 "funding_ann": ctx.get("funding_ann"), "flow": flow, "atr_pct": (v["atr"] / price * 100) if price else None,
                 "ext_atr": ext, "hour_utc": datetime.utcfromtimestamp(now).hour, "price": price, "entry_ref": ref,
                 "sl": ref - sgn * sdist, "risk_pct": round(sdist / ref * 100, 3), "entry_mode": K["entry_mode"],
-                "decision": decision, "prio": prio, "trade_uid": None})
+                "decision": decision, "prio": prio, "trade_uid": None, **mtf.slope_features(c1h)})
             seen[key] = (prio, eid, signal_t)
             return eid, signal_t
         except Exception as e:

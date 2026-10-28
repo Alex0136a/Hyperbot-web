@@ -192,6 +192,12 @@ def init_db():
                    ("chg_recent", "REAL"), ("btc_chg_recent", "REAL")):      # v4.387 : contexte de marche
             if _c not in _sup_cols:
                 conn.execute(f"ALTER TABLE supsw_events ADD COLUMN {_c} {_t}")
+        # v4.489 : pentes et lignes inclinees (mesure seule), Swing Support et Tendance
+        for _tb in ("supsw_events", "trendf_events"):
+            _have = [r[1] for r in conn.execute(f"PRAGMA table_info({_tb})").fetchall()]
+            for _c in ("pente_atr", "pente_pct", "pente_r2", "lig_sup_dist_pct", "lig_sup_pente_pct", "lig_res_dist_pct", "lig_res_pente_pct", "canal_pct"):
+                if _c not in _have:
+                    conn.execute(f"ALTER TABLE {_tb} ADD COLUMN {_c} REAL")
         # Migration : ajoute la colonne rsi si la table trades existait deja
         # (CREATE TABLE IF NOT EXISTS n ajoute pas les colonnes manquantes a
         # une table deja creee par une version anterieure du code).
@@ -1328,7 +1334,8 @@ def swing_events_prune(older_than_ms):
 # ── v4.362 — Journal du SWING SUPPORT ───────────────────────────────────────────────────────
 _SUPSW_FIELDS = ("ts", "signal_t", "asset", "side", "setup", "setup_kind", "trend", "weekly_trend", "btc_trend", "funding_ann", "flow",
                  "atr_pct", "hour_utc", "zone_low", "zone_high", "zone_touches", "held", "pierce_pct", "price", "entry_ref", "sl", "tp",
-                 "risk_pct", "reward_pct", "decision", "prio", "trade_uid", "btc_chg24", "btc_h4", "h4_trend", "res_low", "res_dist_pct", "chg_recent", "btc_chg_recent")
+                 "risk_pct", "reward_pct", "decision", "prio", "trade_uid", "btc_chg24", "btc_h4", "h4_trend", "res_low", "res_dist_pct", "chg_recent", "btc_chg_recent",
+                 "pente_atr", "pente_pct", "pente_r2", "lig_sup_dist_pct", "lig_sup_pente_pct", "lig_res_dist_pct", "lig_res_pente_pct", "canal_pct")
 
 
 def supsw_upsert(ev):
@@ -1416,7 +1423,8 @@ def supsw_events_prune(older_than_ms):
 
 # ── v4.365 — Journal du module TENDANCE CONFIRMEE ───────────────────────────────────────────
 _TRENDF_FIELDS = ("ts", "signal_t", "asset", "side", "d1_trend", "h4_trend", "weekly_trend", "btc_trend", "funding_ann", "flow", "atr_pct",
-                  "ext_atr", "hour_utc", "price", "entry_ref", "sl", "risk_pct", "entry_mode", "decision", "prio", "trade_uid")
+                  "ext_atr", "hour_utc", "price", "entry_ref", "sl", "risk_pct", "entry_mode", "decision", "prio", "trade_uid",
+                  "pente_atr", "pente_pct", "pente_r2", "lig_sup_dist_pct", "lig_sup_pente_pct", "lig_res_dist_pct", "lig_res_pente_pct", "canal_pct")
 
 
 def trendf_upsert(ev):

@@ -231,3 +231,74 @@ def plan_trade(direction, price, zone, target_zone, pattern_extreme, major_atr, 
     return {"sl": sl, "tp": tp, "risk_pct": risk / price * 100,
             "reward_pct": (reward / price * 100) if reward else None,
             "rr": (reward / risk) if reward else None}
+
+
+def _linreg(ys):
+    """(pente par barre, R2) de la regression lineaire de ys sur 0..n-1."""
+    n = len(ys)
+    if n < 3:
+        return None, None
+    mx, my = (n - 1) / 2.0, sum(ys) / n
+    sxx = sum((i - mx) ** 2 for i in range(n))
+    sxy = sum((i - mx) * (y - my) for i, y in enumerate(ys))
+    syy = sum((y - my) ** 2 for y in ys)
+    if sxx <= 0:
+        return None, None
+    b = sxy / sxx
+    r2 = (sxy * sxy / (sxx * syy)) if syy > 0 else 0.0
+    return b, r2
+
+
+def slope_features(candles, n=36, lookback=48, piv=2):
+    """v4.489 — MESURE SEULE (aucune decision n en depend) : pente de la tendance et lignes de support / resistance inclinees.
+    - pente_atr   : pente de la regression des clotures sur les n dernieres bougies, en multiples d ATR par bougie ;
+    - pente_pct   : meme pente en % du prix par bougie (1 h : % par heure) ;
+    - pente_r2    : qualite de la tendance (1 = droite parfaite, 0 = bruit) ;
+    - lig_sup_dist_pct / lig_sup_pente_pct : ecart du prix a la ligne de support (par les deux derniers creux) et sa pente (% prix / bougie) ;
+    - lig_res_dist_pct / lig_res_pente_pct : idem pour la resistance (deux derniers sommets) ;
+    - canal_pct   : ecart resistance - support au prix actuel, en % du prix (si les deux lignes existent).
+    Valeurs None quand les donnees manquent."""
+    out = {k: None for k in ("pente_atr", "pente_pct", "pente_r2", "lig_sup_dist_pct", "lig_sup_pente_pct", "lig_res_dist_pct", "lig_res_pente_pct", "canal_pct")}
+    try:
+        if not candles or len(candles) < max(n, 12):
+            return out
+        last = float(candles[-1]["c"])
+        if last <= 0:
+            return out
+        closes = [float(c["c"]) for c in candles[-n:]]
+        b, r2 = _linreg(closes)
+        a = atr(candles[-(n + 1):])
+        if b is not None:
+            out["pente_pct"] = round(b / last * 100, 4)
+            out["pente_r2"] = round(r2, 3)
+            if a:
+                out["pente_atr"] = round(b / a, 4)
+        w = candles[-lookback:]
+        L = len(w)
+        lows, highs = [], []
+        for i in range(piv, L - piv):
+            neigh = [w[j] for j in range(i - piv, i + piv + 1) if j != i]
+            if all(float(w[i]["l"]) < float(x["l"]) for x in neigh):
+                lows.append((i, float(w[i]["l"])))
+            if all(float(w[i]["h"]) > float(x["h"]) for x in neigh):
+                highs.append((i, float(w[i]["h"])))
+        def line(pts):
+            if len(pts) < 2:
+                return None
+            (i1, y1), (i2, y2) = pts[-2], pts[-1]
+            if i2 == i1:
+                return None
+            m = (y2 - y1) / (i2 - i1)
+            return m, y2 + m * ((L - 1) - i2)       # pente par bougie, valeur projetee sur la derniere bougie
+        sl_, rl_ = line(lows), line(highs)
+        if sl_:
+            out["lig_sup_dist_pct"] = round((last - sl_[1]) / last * 100, 3)
+            out["lig_sup_pente_pct"] = round(sl_[0] / last * 100, 4)
+        if rl_:
+            out["lig_res_dist_pct"] = round((rl_[1] - last) / last * 100, 3)
+            out["lig_res_pente_pct"] = round(rl_[0] / last * 100, 4)
+        if sl_ and rl_:
+            out["canal_pct"] = round((rl_[1] - sl_[1]) / last * 100, 3)
+    except Exception:
+        pass
+    return out

@@ -918,6 +918,12 @@ class ScalpEngine:
                 out["ecart_moy_1h_pct"] = round((a[-1] - m) / m * 100, 3)
         except Exception:
             pass
+        try:      # v4.489 : pente de la tendance et lignes inclinees (bougies 1 h, mesure seule)
+            c1 = self.bot._mtf_candles(t, "1h", 60) or []
+            if len(c1) >= 40:
+                out.update({k: v for k, v in mtf.slope_features(c1[:-1] if len(c1) > 1 else c1).items() if v is not None})
+        except Exception:
+            pass
         for k in ("basket_er_2h", "basket_er_4h", "basket_2h"):
             if reg.get(k) is not None:
                 out[k] = reg[k]
@@ -930,21 +936,21 @@ class ScalpEngine:
                 else (float(d.get("fees_est") or 0) or float(d.get("notional_usd") or 0) * 0.0009))
         return float(d.get("pnl") or 0) - fees
 
-    def _closed_rows(self, mode):
-        """Trades Scalp clotures du mode (plus recents d abord), cache 30 s."""
+    def _closed_rows(self, mode, with_manual=False):
+        """Trades Scalp clotures du mode (plus recents d abord), cache 30 s. v4.486 : with_manual ajoute les trades manuels (tickets libres)."""
         ts, m, rows = getattr(self, "_rows_cache", (0, None, None))
-        if rows is not None and m == mode and time.time() - ts < 30:
+        if rows is not None and m == (mode, with_manual) and time.time() - ts < 30:
             return rows
         rows = []
         try:
             for r in db.manual_history(800):
                 d = r["data"]
-                if d.get("strategy_source") == STRATEGY and r.get("status") == "closed" and d.get("mode") == mode:
+                if r.get("status") == "closed" and d.get("mode") == mode and (d.get("strategy_source") == STRATEGY or (with_manual and d.get("strategy_source") == "manual")):
                     rows.append(d)
         except Exception as e:
             self.last_error = f"capital : {type(e).__name__}: {e}"
         rows.sort(key=lambda d: float(d.get("closed_at") or 0), reverse=True)
-        self._rows_cache = (time.time(), mode, rows)
+        self._rows_cache = (time.time(), (mode, with_manual), rows)
         return rows
 
     def hl_balance(self):
@@ -1000,12 +1006,15 @@ class ScalpEngine:
                     base, src = cap, f"solde Hyperliquid plafonné à {cap:g} $"
             else:
                 src = "réglage (solde Hyperliquid illisible)"
-        rows = self._closed_rows(mode)
+        wm = bool(int(float(c.get("SCALP_GOAL_INCLUDE_MANUAL", 1) or 0)))      # v4.486 : trades manuels comptes dans l objectif
+        rows = self._closed_rows(mode, wm)
         midnight = self.day_start_ts()
         net_all = sum(self._row_net(d) for d in rows if float(d.get("closed_at") or 0) >= since)
         net_today = sum(self._row_net(d) for d in rows if float(d.get("closed_at") or 0) >= (midnight if from_hl else max(midnight, since)))
         td = [d for d in rows if float(d.get("closed_at") or 0) >= (midnight if from_hl else max(midnight, since))]
         gross_today = sum(float(d.get("pnl") or 0) for d in td)
+        tdm = [d for d in td if d.get("strategy_source") == "manual"]
+        man_net, man_n = sum(self._row_net(d) for d in tdm), len(tdm)
         now_cap = max(base + net_all, 0.0)
         day_start = max(now_cap - net_today, 0.01)
         goal = float(c.get("SCALP_GOAL_PCT", 0) or 0)
@@ -1025,17 +1034,18 @@ class ScalpEngine:
                 lst = by[k]
                 net = sum(self._row_net(d) for d in lst)
                 gr = sum(float(d.get("pnl") or 0) for d in lst)
-                days.append({"d": datetime.fromtimestamp(k * 86400, timezone.utc).strftime("%Y-%m-%d"), "n": len(lst),
+                lm = [d for d in lst if d.get("strategy_source") == "manual"]
+                days.append({"d": datetime.fromtimestamp(k * 86400, timezone.utc).strftime("%Y-%m-%d"), "n": len(lst), "mn": len(lm), "mnet": round(sum(self._row_net(d) for d in lm), 2),
                              "net": round(net, 2), "gross": round(gr, 2), "fees": round(gr - net, 2), "start": round(max(run, 0.01), 2),
                              "pct": round(net / max(run, 0.01) * 100, 2)})
                 run += net
             allnet = run - b0
             allsum = {"net": round(allnet, 2), "gross": round(sum(x["gross"] for x in days), 2), "fees": round(sum(x["fees"] for x in days), 2),
-                      "n": sum(x["n"] for x in days), "start": round(b0, 2), "pct": round(allnet / max(b0, 0.01) * 100, 2), "active_days": len(days)}
+                      "n": sum(x["n"] for x in days), "mn": sum(x["mn"] for x in days), "mnet": round(sum(x["mnet"] for x in days), 2), "start": round(b0, 2), "pct": round(allnet / max(b0, 0.01) * 100, 2), "active_days": len(days)}
         except Exception:
             allsum = None
         return {"days": days[-120:], "all": allsum, "mode": mode, "compound": bool(int(c.get("SCALP_COMPOUND_ON", 0))), "base": round(base, 2), "now": round(now_cap, 2), "source": src,
-                "since": since or None, "day_start": round(day_start, 2), "day_net": round(net_today, 2), "day_gross": round(gross_today, 2), "day_fees": round(gross_today - net_today, 2), "day_pct": round(day_pct, 2),
+                "since": since or None, "day_start": round(day_start, 2), "day_net": round(net_today, 2), "day_gross": round(gross_today, 2), "day_fees": round(gross_today - net_today, 2), "day_pct": round(day_pct, 2), "include_manual": wm, "day_manual_n": man_n, "day_manual_net": round(man_net, 2),
                 "slots": int(float(c.get("SCALP_SLOTS", 0) or 0)),
                 "slot_notional": (round(day_start * min(max(float(c.get("SCALP_SLOTS_USE_PCT", 100) or 100), 5.0), 100.0) / 100.0 * max(int(c.get("SCALP_LEVERAGE", 3)), 1) / int(float(c.get("SCALP_SLOTS", 0))), 2) if int(float(c.get("SCALP_SLOTS", 0) or 0)) > 0 else None),
                 "goal_pct": goal, "goal_reached": bool(goal > 0 and day_pct >= goal)}
