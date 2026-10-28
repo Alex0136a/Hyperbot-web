@@ -1504,3 +1504,9 @@ Toutes les règles ci-dessous s'appliquent de la même façon en paper et en liv
 - Sortie anticipée sur la durée : pas de nouveau code, le stop au seuil de rentabilité existe déjà (`SCALP_BE_ENABLED` = 1, `SCALP_BE_ARM_PCT` = 0,25, `SCALP_BE_LOCK_PCT` = 0,1).
 - Mesures seules (aucun effet sur les décisions), ajoutées au CSV de l'historique : `room_pct`, `zone_touches`, `zone_largeur_pct`, `dist_niveau_pct`, `volume_ratio`.
 - Recherche d'un filtre sur la base existante (apprentissage 19→22/10, test 23→28/10) : aucun seuil sur les mesures enregistrées (flux, BTC, tendances H1/15 min, efficacités, note) ne tient sur les deux périodes. Les lignes obliques et les zones n'étaient pas enregistrées avant la v4.489.
+
+## v4.494 — Scalp : trois règles de l'audit activées par défaut (paper et live)
+- `SCALP_BE_ENABLED` = 1, `SCALP_BE_ARM_PCT` = 0,25 (`SCALP_BE_LOCK_PCT` = 0,1 inchangé) : stop au seuil de rentabilité dès +0,25 % de gain maximal.
+- `SCALP_ASSET_BLOCK_ON` = 1 : actif mis de côté quand sa série récente est mauvaise (réussite < 42 %, net négatif, 15 trades minimum sur 20).
+- `SCALP_BREAKOUT_ON` = 0 : seuls les rebonds sont pris.
+- Les réglages déjà enregistrés par l'utilisateur gardent la priorité sur ces défauts.
