@@ -32,6 +32,7 @@ from datetime import datetime
 
 import db
 import bot_engine as be
+import mtf_analysis as mtf_a
 import scalp_crypto                  # v4.421 : mode Scalp crypto (paper / live)
 import swing_support as sups     # v4.381 : niveaux Swing Support (ticket prepare depuis une alerte)
 
@@ -2275,6 +2276,44 @@ class ManualTrading:
         finally:
             self._fire_busy.discard(item["id"])
 
+    def _soft_stop_reason(self, item, price, sign):
+        """v4.490 : STOP SUR CLOTURE 5 min (paper et live). Le stop « mou » (sl_soft_pct) ne ferme que si la derniere bougie 5 min CLOTUREE
+        (ouverte apres l entree) a cloture au-dela ET que le prix y est encore, tant que la pente 1 h reste dans le sens du trade ;
+        si la pente s est retournee, le stop mou agit au prix. Le stop de secours (sl_price, natif sur Hyperliquid en live) reste pose plus loin.
+        Retourne le motif de sortie ou None."""
+        try:
+            if not item.get("sl_close") or item.get("be_done") or item.get("lock_active") or item.get("tp1_done") or item.get("tp_run_armed"):
+                return None
+            ep, sp = float(item.get("entry_price") or 0), float(item.get("sl_soft_pct") or 0)
+            if ep <= 0 or sp <= 0:
+                return None
+            soft = ep * (1 - sign * sp / 100.0)
+            if not ((sign > 0 and price <= soft) or (sign < 0 and price >= soft)):
+                return None
+            cache = getattr(self, "_ti_cache", None)
+            if cache is None:
+                cache = self._ti_cache = {}
+            ts_, ok = cache.get(item["ticker"], (0, None))
+            if time.time() - ts_ > 60:
+                c1h = self.bot._mtf_candles(item["ticker"], "1h", 60, cache_only=True) or []
+                pa = mtf_a.slope_features(c1h).get("pente_atr") if len(c1h) >= 40 else None
+                ok = bool(pa is not None and sign * pa > 0)
+                cache[item["ticker"]] = (time.time(), ok)
+            if not ok:
+                return "STOP LOSS (manuel)"            # pente retournee (ou inconnue) : le stop agit au prix
+            cs = self.bot._mtf_candles(item["ticker"], "5m", 4, cache_only=True) or []
+            now_ms = time.time() * 1000
+            opened = float(item.get("opened_at") or item.get("created_at") or 0) * 1000
+            closed = next((c for c in reversed(cs) if c["t"] + 300000 <= now_ms and c["t"] >= opened), None)
+            if closed is None:
+                return None
+            cc = float(closed["c"])
+            if (sign > 0 and cc <= soft) or (sign < 0 and cc >= soft):
+                return "STOP SUR CLOTURE 5 min (manuel)"
+        except Exception:
+            return None
+        return None
+
     def _manage(self, item):
         if item["id"] in self._busy:
             return
@@ -2351,7 +2390,11 @@ class ManualTrading:
             item["tp1_try_ts"] = time.time()
             threading.Thread(target=self._partial_close, args=(item, price), daemon=True).start()
             return
-        if (sign > 0 and price <= item["sl_price"]) or (sign < 0 and price >= item["sl_price"]):
+        _hit_sl = (sign > 0 and price <= item["sl_price"]) or (sign < 0 and price >= item["sl_price"])
+        _soft_reason = None if _hit_sl else self._soft_stop_reason(item, price, sign)
+        if _soft_reason:
+            reason = _soft_reason
+        elif _hit_sl:
             reason = ("TRAILING TAKE PROFIT (manuel)" if item.get("tp_run_armed")
                       else "STOP SEUIL RENTABILITE (manuel)" if item.get("be_done")
                       else "STOP DYNAMIQUE (manuel)" if item.get("lock_active")

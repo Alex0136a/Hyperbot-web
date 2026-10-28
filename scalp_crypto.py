@@ -1366,6 +1366,52 @@ class ScalpEngine:
             return pre + f"note {sig['score']:.0f} ≥ {mx:g} (les notes les plus hautes ont perdu davantage)"
         return None
 
+    def _asc_eval(self, t, sig):
+        """v4.490 : « ascenseur » (le prix monte et descend dans la meme bougie sans avancer) et pente de la tendance 1 h.
+        Retourne (refus ou None, info). Meme logique en paper et en live. Mesures : ER 1 min sur 30 bougies, amplitude des 3 dernieres
+        bougies 5 min en ATR, pente / regularite 1 h, lignes inclinees."""
+        c = self.cfg
+        info = {"er_1m": None, "range_atr": None, "asc": False, "rules": [], "slope": {}}
+        try:
+            c1 = self.bot._mtf_candles(t, "1m", 40) or []
+            if len(c1) >= 31:
+                info["er_1m"] = round(_eff_ratio([float(x["c"]) for x in c1[-31:]]), 3)
+        except Exception:
+            pass
+        try:
+            c5 = self.bot._mtf_candles(t, "5m", 24) or []
+            if len(c5) >= 15:
+                a = mtf.atr(c5[:-3])
+                if a:
+                    info["range_atr"] = round(sum(float(x["h"]) - float(x["l"]) for x in c5[-3:]) / 3 / a, 2)
+        except Exception:
+            pass
+        try:
+            c1h = self.bot._mtf_candles(t, "1h", 60) or []
+            if len(c1h) >= 40:
+                info["slope"] = mtf.slope_features(c1h)
+        except Exception:
+            pass
+        er_max = float(c.get("SCALP_ASC_ER_MAX", 0.25))
+        info["asc"] = bool(info["er_1m"] is not None and info["er_1m"] < er_max)
+        sg = 1 if sig["side"] == "long" else -1
+        sl_ = info["slope"] or {}
+        # 1) la pente 1 h ne doit pas aller contre le trade (quand la tendance est reguliere)
+        if int(c.get("SCALP_SLOPE_FILTER_ON", 1)) and sl_.get("pente_atr") is not None and sl_.get("pente_r2") is not None:
+            if sl_["pente_r2"] >= float(c.get("SCALP_SLOPE_MIN_R2", 0.4)) and sg * sl_["pente_atr"] < 0:
+                return (f"pente 1 h contre le trade (pente {sl_['pente_atr']:+.2f} ATR par bougie, régularité {sl_['pente_r2']:.2f})", info)
+            info["rules"].append("pente ok")
+        # 2) ascenseur : pas de cassure ; un rebond doit etre pres de la ligne inclinee de support (long) / resistance (short)
+        if info["asc"] and int(c.get("SCALP_ASC_ENTRY_ON", 1)):
+            if sig["kind"] == "cassure":
+                return (f"ascenseur (efficacité 1 min {info['er_1m']:.2f} < {er_max:g}) : cassure refusée, on attend un repli", info)
+            near = float(c.get("SCALP_ASC_NEAR_LINE_PCT", 0.5))
+            d = sl_.get("lig_sup_dist_pct") if sig["side"] == "long" else sl_.get("lig_res_dist_pct")
+            if d is not None and not (-0.15 <= d <= near):
+                return (f"ascenseur : prix à {d:+.2f} % de la ligne inclinée de {'support' if sig['side'] == 'long' else 'résistance'} (maximum {near:g} %)", info)
+            info["rules"].append("ascenseur : rebond près de la ligne")
+        return None, info
+
     def _take(self, t, sig):
         c = self.cfg
         mode = "live" if c.get("SCALP_MODE") == "live" else "paper"
@@ -1373,6 +1419,12 @@ class ScalpEngine:
         if why_goal:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_goal}")
             return
+        asc = None
+        if int(c.get("SCALP_ASC_ON", 1)):          # v4.490 : ascenseur + pente (paper et live)
+            why_asc, asc = self._asc_eval(t, sig)
+            if why_asc:
+                self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_asc}")
+                return
         slots = int(float(c.get("SCALP_SLOTS", 0) or 0))
         if slots > 0:      # v4.472 : emplacements pleins -> pas de nouvelle entree
             n_open = sum(1 for it in self.manual.items.values()
@@ -1411,11 +1463,24 @@ class ScalpEngine:
                 and int(float(c.get("SCALP_DEFENSE_SOFT", 1) or 0)):      # v4.483 : vigilance -> taille reduite
             f_ = self._defense_soft(t, sig, mode, "")[1]
             notional = max(notional * f_, 10.5 if mode == "live" else 1.0)
+        sl_soft = float(c.get("SCALP_SL_PCT", 0.65))
+        sl_hard = None
+        if asc and asc.get("asc") and int(c.get("SCALP_ASC_SL_ON", 1)) and sig.get("atr5") and sig.get("price"):
+            a5p = sig["atr5"] / sig["price"] * 100.0      # stop elargi au-dessus du bruit, taille reduite pour garder la meme perte en $
+            new_sl = min(max(sl_soft, float(c.get("SCALP_ASC_SL_ATR", 1.5)) * a5p), float(c.get("SCALP_ASC_SL_MAX_PCT", 1.5)))
+            if new_sl > sl_soft + 1e-9:
+                notional = max(notional * sl_soft / new_sl, 10.5 if mode == "live" else 1.0)
+                asc["rules"].append(f"stop élargi {sl_soft:g} % → {new_sl:.2f} % (bruit ATR 5 min {a5p:.2f} %), taille réduite")
+                sl_soft = new_sl
+        if int(c.get("SCALP_ASC_CLOSE_STOP_ON", 1)):
+            sl_hard = min(sl_soft * float(c.get("SCALP_ASC_HARD_MULT", 2.0)), 50.0)
+            if asc is not None:
+                asc["rules"].append(f"stop sur clôture 5 min (secours {sl_hard:.2f} %)")
         cluster_before = self._cluster_count(sig["side"], mode)
         params = {"strategy": STRATEGY, "ticker": t, "direction": sig["side"], "market": "perp", "mode": mode,
                   "execution": "now", "leverage": int(c.get("SCALP_LEVERAGE", 3)),
                   "notional_usd": round(notional, 2),
-                  "sl_pct": float(c.get("SCALP_SL_PCT", 0.65)), "tp_pct": float(c.get("SCALP_TP_PCT", 0.6)),
+                  "sl_pct": (sl_hard if sl_hard else sl_soft), "tp_pct": float(c.get("SCALP_TP_PCT", 0.6)),
                   "confirm_live": mode == "live"}
         if int(c.get("SCALP_RUN_ENABLED", 1)):     # v4.434 : laisser courir apres l objectif ; sortie si le prix recule de X % depuis son plus haut
             params.update({"tp_run": True, "tp_run_lock_pct": 0.0, "tp_run_trail_pct": float(c.get("SCALP_RUN_TRAIL_PCT", 0.2))})
@@ -1440,6 +1505,13 @@ class ScalpEngine:
                                               "basket30": reg.get("basket30"), "rel30": (round(reg["ch30"].get(t, 0) - reg["basket30"], 3) if reg.get("ch30") and reg.get("basket30") is not None else None),
                                               "cluster": cluster_before, "peers": sig.get("peers")},
                                    "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg)}
+                    if asc is not None:
+                        it["scalp"]["asc"] = {"er_1m": asc.get("er_1m"), "range_atr": asc.get("range_atr"), "ascenseur": asc.get("asc"),
+                                              "regles": " ; ".join(asc.get("rules") or []), "sl_mou_pct": round(sl_soft, 3),
+                                              "sl_secours_pct": (round(sl_hard, 3) if sl_hard else None)}
+                        it["scalp"]["tq"] = {**(it["scalp"].get("tq") or {}), **{k: v for k, v in (asc.get("slope") or {}).items() if v is not None}}
+                    if sl_hard:
+                        it["sl_close"], it["sl_soft_pct"], it["sl_hard_pct"] = True, round(sl_soft, 4), round(sl_hard, 4)
                     it["reasons"] = sig["reasons"]
                     self.manual._save(it)
         except Exception as e:
