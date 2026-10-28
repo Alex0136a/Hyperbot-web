@@ -1510,3 +1510,6 @@ Toutes les règles ci-dessous s'appliquent de la même façon en paper et en liv
 - `SCALP_ASSET_BLOCK_ON` = 1 : actif mis de côté quand sa série récente est mauvaise (réussite < 42 %, net négatif, 15 trades minimum sur 20).
 - `SCALP_BREAKOUT_ON` = 0 : seuls les rebonds sont pris.
 - Les réglages déjà enregistrés par l'utilisateur gardent la priorité sur ces défauts.
+
+## v4.495 — Actifs en mauvaise passe : essai après 24 h
+- Correction de la v4.493 : un actif écarté ne trade plus, donc sa série récente ne change plus et il restait écarté indéfiniment. `SCALP_ASSET_BLOCK_HOURS` (24 par défaut, 0 = jamais d'essai) autorise un trade d'essai quand le dernier trade de l'actif date de plus de N heures ; si l'essai est perdant, l'actif est de nouveau écarté.

@@ -1436,6 +1436,11 @@ class ScalpEngine:
             rec = self._asset_record(mode).get(t)
             mn, wr = int(float(c.get("SCALP_ASSET_BLOCK_MIN_TRADES", 15))), float(c.get("SCALP_ASSET_BLOCK_WINRATE", 42))
             if rec and rec[0] >= mn and rec[1] < wr and rec[2] < 0:
+                hrs = float(c.get("SCALP_ASSET_BLOCK_HOURS", 24) or 0)      # v4.495 : un actif ecarte ne trade plus donc sa serie ne bouge plus : essai apres N heures
+                last = next((float(d.get("closed_at") or 0) for d in self._closed_rows(mode) if d.get("ticker") == t), 0)
+                if hrs > 0 and last and time.time() - last >= hrs * 3600:
+                    rec = None
+            if rec and rec[0] >= mn and rec[1] < wr and rec[2] < 0:
                 self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {t} en mauvaise passe ({rec[1]:.0f} % de réussite, {rec[2]:+.2f} $ sur ses {rec[0]} derniers trades ; seuil {wr:g} %)")
                 return
         asc = None
