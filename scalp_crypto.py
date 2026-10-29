@@ -314,47 +314,76 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
     atr15_pct = a15 / price * 100
     if atr15_pct < K["min_atr_pct"]:
         return None, "marche trop calme"
-    closes15 = [c["c"] for c in c15]
-    e20 = mtf.ema(closes15, 20)
-    e50 = mtf.ema(closes15, 50) if len(closes15) >= 50 else None
-    if not (e20 and e50):
-        return None, "historique insuffisant"
-    m15 = "haussiere" if (closes15[-1] > e20 > e50) else ("baissiere" if (closes15[-1] < e20 < e50) else "neutre")
+    short = bool(K.get("cont_short_on", 1))
+    t1h = mtf.trend(c1h)[0]      # info seulement en mode court terme (n entre plus dans la decision)
     early = False
-    if m15 == "neutre" and K.get("cont_early_on", 1):
-        # v4.506 : DEBUT de mouvement. L EMA50 15 min (~12 h) n est croisee qu apres une longue baisse/hausse : on accepte aussi
-        # « prix du bon cote de l EMA20 15 min ET EMA20 orientee dans le sens depuis 1 h » (la pente 1 h reguliere et le mouvement 2 h restent exiges).
-        e20p = mtf.ema(closes15[:-4], 20) if len(closes15) >= 30 else None
-        if e20p:
-            if closes15[-1] > e20 and e20 > e20p:
-                m15, early = "haussiere", True
-            elif closes15[-1] < e20 and e20 < e20p:
-                m15, early = "baissiere", True
-    if side is None:
-        side = "long" if m15 == "haussiere" else ("short" if m15 == "baissiere" else None)
+    if short:
+        # v4.510 : le Scalp dure 10 a 90 min -> la tendance se juge sur SON horizon : les bougies 5 min des 3 dernieres heures
+        # (pente + regularite de la regression des clotures), confirmee par la derniere heure. Ni EMA 15 min / 1 h, ni pente 12 h.
+        nL = max(int(K.get("cont_trend_bars", 36)), 18)
+        closes5 = [c["c"] for c in c5]
+        if len(closes5) < nL + 1:
+            return None, "historique 5 min insuffisant"
+        bL, r2 = mtf._linreg(closes5[-nL:])
+        bS, r2s = mtf._linreg(closes5[-12:])
+        if bL is None or bS is None:
+            return None, "pente 5 min indisponible"
         if side is None:
-            return None, "15 min neutre (pas de tendance)"
-    elif m15 != ("haussiere" if side == "long" else "baissiere"):
-        return None, "15 min pas dans le sens"
-    sg = 1 if side == "long" else -1
-    t1h = mtf.trend(c1h)[0]
-    if (side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere"):
-        return None, f"H1 contraire ({t1h})"
-    nb_s = max(int(K["cont_slope_bars"]), 6)
-    sl_ = mtf.slope_features(c1h, n=nb_s, lookback=max(48, nb_s))
-    pa, r2 = sl_.get("pente_atr"), sl_.get("pente_r2")
-    r2_need = K["cont_min_r2"] * (0.6 if follower else 1.0)
-    if pa is None or r2 is None:
-        return None, "pente 1 h indisponible"
-    if sg * pa <= 0:
-        return None, f"pente 1 h contre le sens ({pa:+.2f} ATR)"
-    if r2 < r2_need:
-        return None, f"pente 1 h irrégulière (R² {r2:.2f} < {r2_need:.2f})"
+            side = "long" if bL > 0 else "short"
+        sg = 1 if side == "long" else -1
+        pa = bL / a5
+        if sg * bL <= 0:
+            return None, f"pente {nL * 5 // 60} h (5 min) contre le sens ({pa:+.2f} ATR 5 min/bougie)"
+        r2_need = K.get("cont_min_r2_5m", 0.3) * (0.6 if follower else 1.0)
+        if r2 < r2_need:
+            return None, f"tendance {nL * 5 // 60} h irrégulière (R² {r2:.2f} < {r2_need:.2f})"
+        if sg * bS <= 0:
+            return None, f"dernière heure en sens contraire (pente 1 h 5 min {bS / a5:+.2f} ATR/bougie) — pas de continuation"
+        m15 = f"5 min {nL * 5 // 60} h"
+        ext_ref = mtf.ema(closes5, nL) or price
+    else:
+        closes15 = [c["c"] for c in c15]
+        e20 = mtf.ema(closes15, 20)
+        e50 = mtf.ema(closes15, 50) if len(closes15) >= 50 else None
+        if not (e20 and e50):
+            return None, "historique insuffisant"
+        m15 = "haussiere" if (closes15[-1] > e20 > e50) else ("baissiere" if (closes15[-1] < e20 < e50) else "neutre")
+        early = False
+        if m15 == "neutre" and K.get("cont_early_on", 1):
+            # v4.506 : DEBUT de mouvement. L EMA50 15 min (~12 h) n est croisee qu apres une longue baisse/hausse : on accepte aussi
+            # « prix du bon cote de l EMA20 15 min ET EMA20 orientee dans le sens depuis 1 h » (la pente 1 h reguliere et le mouvement 2 h restent exiges).
+            e20p = mtf.ema(closes15[:-4], 20) if len(closes15) >= 30 else None
+            if e20p:
+                if closes15[-1] > e20 and e20 > e20p:
+                    m15, early = "haussiere", True
+                elif closes15[-1] < e20 and e20 < e20p:
+                    m15, early = "baissiere", True
+        if side is None:
+            side = "long" if m15 == "haussiere" else ("short" if m15 == "baissiere" else None)
+            if side is None:
+                return None, "15 min neutre (pas de tendance)"
+        elif m15 != ("haussiere" if side == "long" else "baissiere"):
+            return None, "15 min pas dans le sens"
+        sg = 1 if side == "long" else -1
+        t1h = mtf.trend(c1h)[0]
+        if (side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere"):
+            return None, f"H1 contraire ({t1h})"
+        nb_s = max(int(K["cont_slope_bars"]), 6)
+        sl_ = mtf.slope_features(c1h, n=nb_s, lookback=max(48, nb_s))
+        pa, r2 = sl_.get("pente_atr"), sl_.get("pente_r2")
+        r2_need = K["cont_min_r2"] * (0.6 if follower else 1.0)
+        if pa is None or r2 is None:
+            return None, "pente 1 h indisponible"
+        if sg * pa <= 0:
+            return None, f"pente 1 h contre le sens ({pa:+.2f} ATR)"
+        if r2 < r2_need:
+            return None, f"pente 1 h irrégulière (R² {r2:.2f} < {r2_need:.2f})"
+        ext_ref = e20
     mv = (price / float(c5[-25]["c"]) - 1) * 100 * sg
     mv_need = K["cont_min_move_pct"] * (0.5 if follower else 1.0)
     if mv < mv_need:
         return None, f"mouvement 2 h trop faible ({mv:+.2f} % < {mv_need:.2f} %)"
-    ext = (price - e20) / a15 * sg
+    ext = (price - ext_ref) / a15 * sg      # etirement par rapport a la moyenne de reference (3 h en 5 min / EMA20 en 15 min), en ATR 15 min
     if ext > K["cont_max_ext_atr"]:
         return None, f"trop étiré ({ext:.1f} ATR 15 min > {K['cont_max_ext_atr']:g})"
     rsi5 = _rsi([c["c"] for c in c5], 14)
@@ -434,12 +463,13 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
         room = ((price - max(dns)) / price * 100) if dns else 99.0
     if room < K["cont_min_room_pct"]:
         return None, f"continuation {side} refuse : zone H1 à {room:.2f} % seulement (il faut ≥ {K['cont_min_room_pct']:g} %)"
-    aligned_h1 = t1h in ("haussiere", "baissiere")
+    aligned_h1 = (t1h in ("haussiere", "baissiere")) and not short      # v4.510 : en mode court terme, la structure H1 ne compte plus dans la note
     sc_ = 50 + 8 + (12 if aligned_h1 else 0) + (10 if vr >= 1.2 else 0) + (5 if vr >= 2.5 else 0) + int(round(min(1.0, r2) * 8)) + (6 if sub == "repli" else 0)
     if btc_chg is not None and ((side == "long" and btc_chg >= 0.2) or (side == "short" and btc_chg <= -0.2)):
         sc_ += 8
     sc_ = max(0, min(100, sc_))
-    reasons = [f"continuation {side} ({sub}) : tendance 15 min + pente 1 h dans le sens (régularité {r2:.2f}), mouvement {mv:+.2f} % sur 2 h"] + why_t
+    reasons = [(f"continuation {side} ({sub}) : tendance des bougies 5 min sur {nL * 5 // 60} h dans le sens (régularité {r2:.2f}), dernière heure confirmée, mouvement {mv:+.2f} % sur 2 h" if short
+                else f"continuation {side} ({sub}) : tendance 15 min + pente 1 h dans le sens (régularité {r2:.2f}), mouvement {mv:+.2f} % sur 2 h")] + why_t
     if aligned_h1:
         reasons.append("tendance H1 dans le sens")
     reasons.append(f"place avant la zone suivante : {'>3' if room > 3 else f'{room:.1f}'} %")
@@ -448,7 +478,7 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
            "sig_high": last["h"], "sig_low": last["l"], "atr5": a5,
            "ctx": {"flow_buy": (round(flow["buy_ratio"], 3) if flow else None), "flow_n": (flow.get("n") if flow else None),
                    "t1h": t1h, "m15": m15, "btc1h": (round(btc_chg, 3) if btc_chg is not None else None)},
-           "cont": {"sub": sub, "early": early, "mv_pct": round(mv, 3), "r2": round(r2, 3), "pente_atr": round(pa, 3), "ext_atr": round(ext, 2), **extra}}
+           "cont": {"sub": sub, "early": early, "court": short, "mv_pct": round(mv, 3), "r2": round(r2, 3), "pente_atr": round(pa, 3), "ext_atr": round(ext, 2), **extra}}
     return sig, "ok"
 
 
@@ -551,7 +581,8 @@ class ScalpEngine:
                 "cont_min_r2": float(c.get("SCALP_CONT_MIN_R2", 0.4)), "cont_slope_bars": int(c.get("SCALP_SLOPE_BARS", 12) or 12),
                 "cont_max_ext_atr": float(c.get("SCALP_CONT_MAX_EXT_ATR", 2.5)), "cont_rsi_max": float(c.get("SCALP_CONT_RSI_MAX", 78)),
                 "cont_momentum_on": int(c.get("SCALP_CONT_MOMENTUM_ON", 1)), "cont_flow_min": float(c.get("SCALP_CONT_FLOW_MIN", 0.5)),
-                "cont_min_room_pct": float(c.get("SCALP_CONT_MIN_ROOM_PCT", 0.3)), "cont_vol_mult": float(c.get("SCALP_CONT_VOL_MULT", 1.2)), "cont_early_on": int(c.get("SCALP_CONT_EARLY_ON", 1))}
+                "cont_min_room_pct": float(c.get("SCALP_CONT_MIN_ROOM_PCT", 0.3)), "cont_vol_mult": float(c.get("SCALP_CONT_VOL_MULT", 1.2)), "cont_early_on": int(c.get("SCALP_CONT_EARLY_ON", 1)),
+                "cont_short_on": int(c.get("SCALP_CONT_SHORT_ON", 1)), "cont_trend_bars": int(c.get("SCALP_CONT_TREND_BARS", 36)), "cont_min_r2_5m": float(c.get("SCALP_CONT_MIN_R2_5M", 0.3))}
 
     def _clear_err(self, prefix):
         """v4.508 : efface la derniere erreur technique si elle vient de cette source (l appel suivant a reussi)."""
