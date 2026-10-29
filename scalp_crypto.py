@@ -319,27 +319,33 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
     if side is None:
         side = "long" if m15 == "haussiere" else ("short" if m15 == "baissiere" else None)
         if side is None:
-            return None, "aucun signal"
+            return None, "15 min neutre (pas de tendance)"
     elif m15 != ("haussiere" if side == "long" else "baissiere"):
-        return None, "aucun signal"
+        return None, "15 min pas dans le sens"
     sg = 1 if side == "long" else -1
     t1h = mtf.trend(c1h)[0]
     if (side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere"):
-        return None, "aucun signal"
+        return None, f"H1 contraire ({t1h})"
     nb_s = max(int(K["cont_slope_bars"]), 6)
     sl_ = mtf.slope_features(c1h, n=nb_s, lookback=max(48, nb_s))
     pa, r2 = sl_.get("pente_atr"), sl_.get("pente_r2")
-    if pa is None or r2 is None or sg * pa <= 0 or r2 < K["cont_min_r2"] * (0.6 if follower else 1.0):
-        return None, "aucun signal"
+    r2_need = K["cont_min_r2"] * (0.6 if follower else 1.0)
+    if pa is None or r2 is None:
+        return None, "pente 1 h indisponible"
+    if sg * pa <= 0:
+        return None, f"pente 1 h contre le sens ({pa:+.2f} ATR)"
+    if r2 < r2_need:
+        return None, f"pente 1 h irrégulière (R² {r2:.2f} < {r2_need:.2f})"
     mv = (price / float(c5[-25]["c"]) - 1) * 100 * sg
-    if mv < K["cont_min_move_pct"] * (0.5 if follower else 1.0):
-        return None, "aucun signal"
+    mv_need = K["cont_min_move_pct"] * (0.5 if follower else 1.0)
+    if mv < mv_need:
+        return None, f"mouvement 2 h trop faible ({mv:+.2f} % < {mv_need:.2f} %)"
     ext = (price - e20) / a15 * sg
     if ext > K["cont_max_ext_atr"]:
-        return None, "prix trop etire"
+        return None, f"trop étiré ({ext:.1f} ATR 15 min > {K['cont_max_ext_atr']:g})"
     rsi5 = _rsi([c["c"] for c in c5], 14)
     if rsi5 is not None and ((side == "long" and rsi5 >= K["cont_rsi_max"]) or (side == "short" and rsi5 <= 100 - K["cont_rsi_max"])):
-        return None, "prix trop etire (RSI 5 min)"
+        return None, f"RSI 5 min trop {'haut' if side == 'long' else 'bas'} ({rsi5:.0f})"
     last, prev = c5[-1], c5[-2]
     rng, body = last["h"] - last["l"], abs(last["c"] - last["o"])
     vols = [c["v"] for c in c5[-21:-1]]
@@ -349,7 +355,7 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
     if follower:
         e9 = mtf.ema([c["c"] for c in c5], 9)
         if e9 is None or sg * (price - e9) < 0:
-            return None, "aucun signal"
+            return None, "prix du mauvais côté de la moyenne 9 (5 min)"
         sub, level, hi_, lo_ = "suiveur", e9, max(price, e9), min(price, e9)
         why_t = [f"actif corrélé : tendance 15 min et pente 1 h dans le sens, prix du bon côté de la moyenne 9 (5 min)"]
     else:
@@ -371,22 +377,26 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
                 pb = max(x["h"] for x in after)
                 ip = max(i for i, x in enumerate(w) if i > ix and x["h"] == pb)
                 depth = (pb - xv) / a5
-            if not (K["cont_pb_min_atr"] <= depth <= K["cont_pb_max_atr"]) or len(w) - ip > 7:
-                return None, "aucun signal"
+            if not (K["cont_pb_min_atr"] <= depth <= K["cont_pb_max_atr"]):
+                return None, f"repli hors fourchette ({depth:.1f} ATR 5 min, il faut {K['cont_pb_min_atr']:g} à {K['cont_pb_max_atr']:g})"
+            if len(w) - ip > 7:
+                return None, "repli trop ancien (pas de reprise)"
             resume = (last["c"] > last["o"] and last["c"] > prev["h"]) if side == "long" else (last["c"] < last["o"] and last["c"] < prev["l"])
             if not resume:
-                return None, "aucun signal"
+                return None, "repli en cours, pas de bougie de reprise"
             sub, level = "repli", pb
             hi_, lo_ = (xv, pb) if side == "long" else (pb, xv)
             extra = {"pb_depth_atr": round(depth, 2), "swing": xv}
             why_t = [f"repli de {depth:.1f} ATR 5 min depuis {xv:.6g}, puis bougie de reprise"]
         else:
             if not K["cont_momentum_on"]:
-                return None, "aucun signal"
+                return None, "pas de repli (élan désactivé)"
             strong = rng > 0 and body >= 0.5 * a5 and ((last["c"] > last["o"] and (last["c"] - last["l"]) / rng >= 0.7) if side == "long"
                                                        else (last["c"] < last["o"] and (last["h"] - last["c"]) / rng >= 0.7))
-            if not strong or vr < K["cont_vol_mult"]:
-                return None, "aucun signal"
+            if not strong:
+                return None, "pas de repli, dernière bougie sans élan"
+            if vr < K["cont_vol_mult"]:
+                return None, f"élan sans volume (x{vr:.1f} < {K['cont_vol_mult']:g})"
             prior = max(x["h"] for x in w[:-1]) if side == "long" else min(x["l"] for x in w[:-1])
             sub, level = "elan", prior
             hi_, lo_ = max(price, prior), min(price, prior)
@@ -489,6 +499,7 @@ class ScalpEngine:
         self.regime = {"ts": 0, "n": 0, "label": "inconnu"}     # v4.442 : regime du panier (correlation / largeur)
         self._opens = deque(maxlen=200)      # (ts, side, mode, ticker) des ouvertures recentes (grappe)
         self._cont_fan = {}                  # v4.504 : (sens, mode) -> derniere ouverture en grappe de continuation
+        self.cont_diag = {}                  # v4.505 : ticker -> (ts, raison pour laquelle la continuation n est pas prise)
         self._sigs = deque(maxlen=300)       # (ts, ticker, side) signaux vus (confirmation par les pairs)
         self.peer_wait = {}                  # ticker -> signal en attente d un pair
         self._busy = False
@@ -781,6 +792,18 @@ class ScalpEngine:
         self.regime = reg
         return reg
 
+    def _cont_diag_summary(self):
+        """v4.505 : raisons pour lesquelles la continuation n est pas prise, comptees sur les actifs analysés depuis 15 min."""
+        now = time.time()
+        cnt, rows = {}, []
+        for t, (ts, m) in self.cont_diag.items():
+            if now - ts > 900:
+                continue
+            k = m.split(" (")[0]
+            cnt[k] = cnt.get(k, 0) + 1
+            rows.append({"ticker": t, "motif": m})
+        return {"reasons": sorted(cnt.items(), key=lambda x: -x[1]), "rows": sorted(rows, key=lambda r: r["ticker"])}
+
     def _cont_open_count(self, mode):
         return sum(1 for it in self.manual.items.values()
                    if it.get("strategy_source") == STRATEGY and it.get("mode") == mode
@@ -791,9 +814,11 @@ class ScalpEngine:
         c = self.cfg
         sig, motif = cont_eval(c5, c15, c1h, btc, K, self._flow(t))
         if not sig:
+            self.cont_diag[t] = (time.time(), motif or "aucun signal")      # v4.505 : raison de non-entree visible (diagnostic)
             if motif and "refuse" in motif:
                 self._ev("refus", t, motif)
             return False
+        self.cont_diag[t] = (time.time(), "signal de continuation")
         cap = int(c.get("SCALP_CONT_MAX_OPEN", 5))
         n_open = self._cont_open_count(mode)
         if cap > 0 and n_open >= cap:
@@ -1465,6 +1490,9 @@ class ScalpEngine:
             if v:
                 age = time.time() - v[0]
                 parts.append(f"dernier verdict ({age / 60:.0f} min) : {v[2]}")
+            cd_ = self.cont_diag.get(t)
+            if cd_ and int(c.get("SCALP_CONT_ON", 1)):      # v4.505
+                parts.append(f"continuation ({(time.time() - cd_[0]) / 60:.0f} min) : {cd_[1]}")
             else:
                 parts.append("pas encore évalué depuis le démarrage")
             try:
@@ -1906,4 +1934,5 @@ class ScalpEngine:
                 "regime": {k: v for k, v in self.regime.items()}, "peer_wait": [{"ticker": t, "side": w["side"], "age_min": round((time.time() - w["ts"]) / 60, 1)} for t, w in self.peer_wait.items()],
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),
                 "pending": [{"ticker": t, "side": p["sig"]["side"], "trigger": p["trigger"], "expires": p["expires"]} for t, p in self.pending.items()],
+                "cont_diag": self._cont_diag_summary(),
                 "events": list(self.events)[:40], "error": self.last_error}

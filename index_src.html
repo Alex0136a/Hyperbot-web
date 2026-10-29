@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.504";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.505";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1304,6 +1304,7 @@ function ScalpPanel({ token }) {
         <div><span style={MT.label}>REBOND</span>{pr(S.by_kind.rebond)}</div>
         <div><span style={MT.label}>CASSURE</span>{pr(S.by_kind.cassure)}</div>
         <div><span style={MT.label}>CONTINUATION</span>{pr(S.by_kind.continuation)}</div>
+        {d.cont_diag && d.cont_diag.reasons && d.cont_diag.reasons.length>0 && <div style={{flexBasis:"100%",fontSize:10,color:"#94a3b8"}} title={d.cont_diag.rows.map(r=>r.ticker+" : "+r.motif).join("\n")}>Continuation, pourquoi pas de trade (actifs analysés depuis 15 min) : {d.cont_diag.reasons.map(([k,n])=>k+" ×"+n).join(" · ")} — détail par actif en survolant, ou dans le diagnostic</div>}
         <div><span style={MT.label}>AVEC TENDANCE</span>{S.by_trend?pr(S.by_trend.avec):"—"}</div>
         <div><span style={MT.label}>CONTRE-TENDANCE</span>{S.by_trend?pr(S.by_trend.contre):"—"}</div>
         <div><span style={MT.label}>PAPER (rappel)</span>{pr(d.stats_paper.total)}</div>
