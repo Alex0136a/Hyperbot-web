@@ -316,6 +316,16 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
     if not (e20 and e50):
         return None, "historique insuffisant"
     m15 = "haussiere" if (closes15[-1] > e20 > e50) else ("baissiere" if (closes15[-1] < e20 < e50) else "neutre")
+    early = False
+    if m15 == "neutre" and K.get("cont_early_on", 1):
+        # v4.506 : DEBUT de mouvement. L EMA50 15 min (~12 h) n est croisee qu apres une longue baisse/hausse : on accepte aussi
+        # « prix du bon cote de l EMA20 15 min ET EMA20 orientee dans le sens depuis 1 h » (la pente 1 h reguliere et le mouvement 2 h restent exiges).
+        e20p = mtf.ema(closes15[:-4], 20) if len(closes15) >= 30 else None
+        if e20p:
+            if closes15[-1] > e20 and e20 > e20p:
+                m15, early = "haussiere", True
+            elif closes15[-1] < e20 and e20 < e20p:
+                m15, early = "baissiere", True
     if side is None:
         side = "long" if m15 == "haussiere" else ("short" if m15 == "baissiere" else None)
         if side is None:
@@ -434,7 +444,7 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
            "sig_high": last["h"], "sig_low": last["l"], "atr5": a5,
            "ctx": {"flow_buy": (round(flow["buy_ratio"], 3) if flow else None), "flow_n": (flow.get("n") if flow else None),
                    "t1h": t1h, "m15": m15, "btc1h": (round(btc_chg, 3) if btc_chg is not None else None)},
-           "cont": {"sub": sub, "mv_pct": round(mv, 3), "r2": round(r2, 3), "pente_atr": round(pa, 3), "ext_atr": round(ext, 2), **extra}}
+           "cont": {"sub": sub, "early": early, "mv_pct": round(mv, 3), "r2": round(r2, 3), "pente_atr": round(pa, 3), "ext_atr": round(ext, 2), **extra}}
     return sig, "ok"
 
 
@@ -499,6 +509,7 @@ class ScalpEngine:
         self.regime = {"ts": 0, "n": 0, "label": "inconnu"}     # v4.442 : regime du panier (correlation / largeur)
         self._opens = deque(maxlen=200)      # (ts, side, mode, ticker) des ouvertures recentes (grappe)
         self._cont_fan = {}                  # v4.504 : (sens, mode) -> derniere ouverture en grappe de continuation
+        self._last_sig_ts = time.time()      # v4.506 : dernier signal valide vu (alerte « aucun signal »)
         self.cont_diag = {}                  # v4.505 : ticker -> (ts, raison pour laquelle la continuation n est pas prise)
         self._sigs = deque(maxlen=300)       # (ts, ticker, side) signaux vus (confirmation par les pairs)
         self.peer_wait = {}                  # ticker -> signal en attente d un pair
@@ -535,7 +546,7 @@ class ScalpEngine:
                 "cont_min_r2": float(c.get("SCALP_CONT_MIN_R2", 0.4)), "cont_slope_bars": int(c.get("SCALP_SLOPE_BARS", 12) or 12),
                 "cont_max_ext_atr": float(c.get("SCALP_CONT_MAX_EXT_ATR", 2.5)), "cont_rsi_max": float(c.get("SCALP_CONT_RSI_MAX", 78)),
                 "cont_momentum_on": int(c.get("SCALP_CONT_MOMENTUM_ON", 1)), "cont_flow_min": float(c.get("SCALP_CONT_FLOW_MIN", 0.5)),
-                "cont_min_room_pct": float(c.get("SCALP_CONT_MIN_ROOM_PCT", 0.3)), "cont_vol_mult": float(c.get("SCALP_CONT_VOL_MULT", 1.2))}
+                "cont_min_room_pct": float(c.get("SCALP_CONT_MIN_ROOM_PCT", 0.3)), "cont_vol_mult": float(c.get("SCALP_CONT_VOL_MULT", 1.2)), "cont_early_on": int(c.get("SCALP_CONT_EARLY_ON", 1))}
 
     # ── univers : top N par volume 24 h parmi les actifs suivis ──
     def universe(self):
@@ -679,7 +690,7 @@ class ScalpEngine:
 
     def _btc_change(self):
         try:
-            c = self.bot._mtf_candles("BTC", "15m", 30)
+            c = self.bot._mtf_candles("BTC", "15m", 60)      # v4.506 : 60 (et non 30) : le cache est partage, BTC doit rester evaluable (EMA50 15 min)
             if len(c) >= 5:
                 return (c[-1]["c"] / c[-5]["c"] - 1) * 100
         except Exception:
@@ -739,6 +750,8 @@ class ScalpEngine:
                     self.last_error = f"bougies {t} : {type(e).__name__}: {e}"
                     continue
                 sig, motif = evaluate(c5, c15, c1h, btc, K, self._flow(t))
+                if sig:
+                    self._last_sig_ts = time.time()
                 self.verdicts[t] = (time.time(), "analyse", ("signal valide : " + f"{sig['kind']} {sig['side']} note {sig['score']:.0f}") if sig else (motif or "aucun signal"))
                 if not sig:
                     if "refuse" in motif:
@@ -799,10 +812,37 @@ class ScalpEngine:
         for t, (ts, m) in self.cont_diag.items():
             if now - ts > 900:
                 continue
-            k = m.split(" (")[0]
+            k = m[:70] if m.startswith("signal refusé") else m.split(" (")[0]
             cnt[k] = cnt.get(k, 0) + 1
             rows.append({"ticker": t, "motif": m})
         return {"reasons": sorted(cnt.items(), key=lambda x: -x[1]), "rows": sorted(rows, key=lambda r: r["ticker"])}
+
+    def nosig_state(self):
+        """v4.506 : alerte « aucun signal » : le Scalp est actif, le panier bouge d au moins SCALP_NOSIG_MOVE_PCT % sur 30 min et aucun signal
+        valide n a ete vu depuis SCALP_NOSIG_MIN minutes. Sert le bandeau visible sur toutes les pages (acquittement cote page)."""
+        c = self.cfg
+        try:
+            if not int(c.get("SCALP_ENABLED", 0)) or not int(c.get("SCALP_NOSIG_ON", 1)):
+                return {"active": False}
+            ok, _why = self.window_state()
+            if not ok:
+                return {"active": False}
+            now = time.time()
+            last = max(self._last_sig_ts, max((o[0] for o in list(self._opens)), default=0))
+            mins = (now - last) / 60.0
+            need = float(c.get("SCALP_NOSIG_MIN", 30))
+            reg = self.regime or {}
+            mv = reg.get("basket30")
+            mneed = float(c.get("SCALP_NOSIG_MOVE_PCT", 0.5))
+            moving = mv is not None and abs(mv) >= mneed
+            mode = "live" if c.get("SCALP_MODE") == "live" else "paper"
+            summ = self._cont_diag_summary()
+            return {"active": bool(mins >= need and moving), "since_min": int(mins), "need_min": need, "move30": mv, "move_need": mneed,
+                    "dir": ("baisse" if (mv or 0) < 0 else "hausse"), "episode": int(last), "mode": mode,
+                    "label": reg.get("label"), "corr": reg.get("corr"), "defense": self.defense_state(mode),
+                    "reasons": [[k, n] for k, n in summ["reasons"][:4]]}
+        except Exception as e:
+            return {"active": False, "error": f"{type(e).__name__}: {e}"}
 
     def _cont_open_count(self, mode):
         return sum(1 for it in self.manual.items.values()
@@ -819,6 +859,7 @@ class ScalpEngine:
                 self._ev("refus", t, motif)
             return False
         self.cont_diag[t] = (time.time(), "signal de continuation")
+        self._last_sig_ts = time.time()
         cap = int(c.get("SCALP_CONT_MAX_OPEN", 5))
         n_open = self._cont_open_count(mode)
         if cap > 0 and n_open >= cap:
@@ -828,6 +869,10 @@ class ScalpEngine:
         self._take(t, sig)
         if self._cont_open_count(mode) > before:
             self._cont_fanout(t, sig, c5, K, btc, mode)
+        else:      # v4.506 : signal valide mais refuse plus loin (mode defensif, capital, pause...) : le motif exact est visible au diagnostic
+            v = self.verdicts.get(t)
+            if v and v[1] == "refus" and time.time() - v[0] < 10:
+                self.cont_diag[t] = (time.time(), "signal refusé — " + str(v[2]))
         return True
 
     def _cont_fanout(self, t0, sig0, c5_0, K, btc, mode):
@@ -1934,5 +1979,5 @@ class ScalpEngine:
                 "regime": {k: v for k, v in self.regime.items()}, "peer_wait": [{"ticker": t, "side": w["side"], "age_min": round((time.time() - w["ts"]) / 60, 1)} for t, w in self.peer_wait.items()],
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),
                 "pending": [{"ticker": t, "side": p["sig"]["side"], "trigger": p["trigger"], "expires": p["expires"]} for t, p in self.pending.items()],
-                "cont_diag": self._cont_diag_summary(),
+                "cont_diag": self._cont_diag_summary(), "nosig": self.nosig_state(),
                 "events": list(self.events)[:40], "error": self.last_error}
