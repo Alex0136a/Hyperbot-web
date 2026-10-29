@@ -1143,6 +1143,14 @@ ADVANCED_SETTINGS = {
     "FOREX_SCALP_REQUIRE_1M":      {"label": "Scalp Forex - exiger la confirmation de la bougie 1 min (1/0)", "default": 1},
     "FUNDING_MAX_ANNUAL_PCT":      {"label": "Funding · PLAFOND D'ENTREE - pas d'entree si le funding annualise depasse ce niveau (%, 0 = sans plafond)", "default": 40.0},
     "FUNDING_EXCLUDE_WEAK_COINS":  {"label": "Funding · ACTIFS EXCLUS - ne plus ouvrir de Funding sur GMX et RENDER, resultats negatifs (1 = oui, 0 = non)", "default": 1},
+    "FUNDING_BE_ON":               {"label": "Funding · STOP RENTABILITE - sortir quand le gain retombe vers zero apres avoir atteint le seuil d armement (1 = oui, 0 = non)", "default": 1},
+    "FUNDING_BE_ARM_PCT":          {"label": "Funding · STOP RENTABILITE - gain maximal d armement (%, meme unite que le pic affiche)", "default": 0.2},
+    "FUNDING_BE_LOCK_PCT":         {"label": "Funding · STOP RENTABILITE - on sort quand le gain retombe a ce niveau (%)", "default": 0.05},
+    "FUNDING_ASSET_BLOCK_ON":      {"label": "Funding · ACTIF EN MAUVAISE PASSE - ne plus ouvrir sur un actif dont les derniers trades sont mauvais (1 = oui, 0 = non)", "default": 1},
+    "FUNDING_ASSET_BLOCK_MIN_TRADES": {"label": "Funding · mauvaise passe - nombre minimal de trades recents", "default": 15},
+    "FUNDING_ASSET_BLOCK_WINDOW":  {"label": "Funding · mauvaise passe - nombre de derniers trades examines par actif", "default": 20},
+    "FUNDING_ASSET_BLOCK_WINRATE": {"label": "Funding · mauvaise passe - taux de reussite en dessous duquel (%) avec un net negatif", "default": 45},
+    "FUNDING_ASSET_BLOCK_HOURS":   {"label": "Funding · mauvaise passe - un essai est permis apres N heures sans trade sur l actif (0 = jamais)", "default": 24},
     "FUNDING_STALE_ENABLED":       {"label": "Funding · SANS PROGRES - sortir un trade qui n'a jamais pris de gain apres un delai (1 = oui, 0 = non)", "default": 1},
     "FUNDING_STALE_MIN":           {"label": "Funding · SANS PROGRES - delai avant de verifier (minutes)", "default": 20},
     "FUNDING_STALE_PEAK_PCT":      {"label": "Funding · SANS PROGRES - sort si le pic de gain est reste sous ce seuil (% du prix)", "default": 0.15},
@@ -1360,7 +1368,7 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"TRENDF_LIVE_ON","SUPSW_TRAIL_ON","SUPSW_REENTRY_ON","SUPSW_BTC_GATE_ON","SUPSW_RECENT_ON","SUPSW_RES_FILTER_ON","SUPSW_RIDE_ON","SUPSW_BTC_H4_MODE","SUPSW_MAX_TOUCHES","FUNDING_EXCLUDE_WEAK_COINS","FUNDING_STALE_ENABLED","FOREX_STALE_ENABLED","MANUAL_DEFAULT_SWING","FOREX_SCALP_STALE_ENABLED","FOREX_SCALP_EARLYFAIL_ENABLED","FXSWING_ENABLED","SUPSW_LEVER_SCALE","SUPSW_RESERVE_ASSETS","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_SCALP_UNIVERSE","TRENDF_IGNORE_RESERVE","TRENDF_REQUIRE_H1","TRENDF_EXIT_H1","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+_ZERO_ALLOWED_INT_KEYS = {"FUNDING_BE_ON","FUNDING_ASSET_BLOCK_ON","FUNDING_ASSET_BLOCK_HOURS","TRENDF_LIVE_ON","SUPSW_TRAIL_ON","SUPSW_REENTRY_ON","SUPSW_BTC_GATE_ON","SUPSW_RECENT_ON","SUPSW_RES_FILTER_ON","SUPSW_RIDE_ON","SUPSW_BTC_H4_MODE","SUPSW_MAX_TOUCHES","FUNDING_EXCLUDE_WEAK_COINS","FUNDING_STALE_ENABLED","FOREX_STALE_ENABLED","MANUAL_DEFAULT_SWING","FOREX_SCALP_STALE_ENABLED","FOREX_SCALP_EARLYFAIL_ENABLED","FXSWING_ENABLED","SUPSW_LEVER_SCALE","SUPSW_RESERVE_ASSETS","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_SCALP_UNIVERSE","TRENDF_IGNORE_RESERVE","TRENDF_REQUIRE_H1","TRENDF_EXIT_H1","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
                           "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
@@ -1519,6 +1527,20 @@ def _coerce_advanced_value(key: str, value):
         return False, "entre 0 et 172800 secondes"
     if key in ("FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_STALE_ENABLED", "FOREX_SCALP_EARLYFAIL_ENABLED") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
+    if key in ("FUNDING_BE_ON", "FUNDING_ASSET_BLOCK_ON") and value not in (0, 1):
+        return False, "1 (oui) ou 0 (non)"
+    if key == "FUNDING_BE_ARM_PCT" and not 0.05 <= value <= 2:
+        return False, "entre 0,05 et 2"
+    if key == "FUNDING_BE_LOCK_PCT" and not -0.2 <= value <= 1:
+        return False, "entre -0,2 et 1"
+    if key == "FUNDING_ASSET_BLOCK_MIN_TRADES" and not 5 <= value <= 100:
+        return False, "entre 5 et 100"
+    if key == "FUNDING_ASSET_BLOCK_WINDOW" and not 5 <= value <= 200:
+        return False, "entre 5 et 200"
+    if key == "FUNDING_ASSET_BLOCK_WINRATE" and not 10 <= value <= 90:
+        return False, "entre 10 et 90 %"
+    if key == "FUNDING_ASSET_BLOCK_HOURS" and not 0 <= value <= 720:
+        return False, "entre 0 et 720 heures"
     if key in ("FUNDING_EXCLUDE_WEAK_COINS", "FUNDING_STALE_ENABLED", "FOREX_STALE_ENABLED") and value not in (0, 1):
         return False, "1 (oui) ou 0 (non)"
     if key == "FUNDING_MAX_ANNUAL_PCT" and not 0 <= value <= 1000:

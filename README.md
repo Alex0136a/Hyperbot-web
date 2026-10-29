@@ -1532,3 +1532,13 @@ Toutes les règles ci-dessous s'appliquent de la même façon en paper et en liv
 - Suivi : le stop suiveur est répercuté sur le stop natif Hyperliquid (pas minimal `MTF_SL_PUSH_MIN_STEP_PCT`) ; les sorties (stop suiveur, retournement H4/Daily, durée maximale, gain protégé) ferment la position réelle, et la fermeture n'est enregistrée que si l'ordre réel a réussi.
 - Les règles d'entrée et de sortie sont identiques en paper et en réel. Les statistiques Tendance regroupent les trades des deux modes.
 - Les positions ouvertes en paper restent paper même si l'interrupteur est activé ensuite.
+
+## v4.499 — Funding : stop au seuil de rentabilité et actifs en mauvaise passe ; correction Tendance réel
+- **Correction (v4.498)** : `_position_mode` forçait « paper » pour toute position Tendance, même ouverte en réel ; la fermeture d'une position Tendance réelle aurait donc été enregistrée sans ordre de fermeture. Tendance est retirée de cette liste : le mode mémorisé à l'ouverture fait foi. Test refait avec cette fonction réelle (entrée réelle, stop natif suivi, ordre de fermeture envoyé).
+- **Funding · stop au seuil de rentabilité** (`FUNDING_BE_ON` = 0 par défaut) : tant que le suiveur n'est pas armé, si le pic a atteint `FUNDING_BE_ARM_PCT` (0,2) et que le gain retombe à `FUNDING_BE_LOCK_PCT` (0,05), sortie « FUNDING STOP RENTABILITE ». Même unité que le pic affiché. Paper et réel.
+- **Funding · actif en mauvaise passe** (`FUNDING_ASSET_BLOCK_ON` = 0 par défaut) : plus d'ouverture sur un actif dont, sur ses `FUNDING_ASSET_BLOCK_WINDOW` (20) derniers trades Funding du même mode, au moins `FUNDING_ASSET_BLOCK_MIN_TRADES` (15) sont fermés, la réussite est sous `FUNDING_ASSET_BLOCK_WINRATE` (45 %) et le net est négatif. Un essai est permis après `FUNDING_ASSET_BLOCK_HOURS` (24) heures sans trade sur l'actif. Motif visible dans le bloqueur de l'actif.
+- Donnée d'appui (200 trades Funding, 18→28/10) : 18 stops sur 35 avaient atteint +0,2 % avant de se retourner (−1,19 au total) ; OP (16 trades, 19 % de réussite, −0,17) et SEI (21 trades, −0,17) perdent.
+
+## v4.500 — Funding : stop au seuil de rentabilité et actifs en mauvaise passe activés par défaut
+- `FUNDING_BE_ON` = 1 et `FUNDING_ASSET_BLOCK_ON` = 1 (paper et réel). Réglages et seuils inchangés (v4.499).
+- Les valeurs déjà enregistrées par l'utilisateur gardent la priorité sur ces défauts.

@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.498"
+BOT_VERSION = "4.500"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -1552,6 +1552,11 @@ PROFILE_SWING = {
     "FLOW_RECORDER_BIG_TRADE_USD": 5000.0, # v4.349 : seuil d une "grosse" transaction
     "FLOW_RECORDER_KEEP_DAYS": 120,       # v4.349 : duree de conservation
     "FUNDING_MAX_ANNUAL_PCT": 40.0,       # v4.374 : pas d entree si |funding| annualise depasse N % (0 = sans plafond). Constat : tranche 40-60 % = -0,55 $ sur 34 trades (depuis le 28/09)
+    "FUNDING_BE_ON": 1,                   # v4.499 : stop au seuil de rentabilite (1 = oui)
+    "FUNDING_BE_ARM_PCT": 0.2,            # v4.499 : gain maximal a partir duquel le stop est arme (meme unite que le pic affiche)
+    "FUNDING_BE_LOCK_PCT": 0.05,          # v4.499 : on sort si le gain retombe a ce niveau
+    "FUNDING_ASSET_BLOCK_ON": 1,          # v4.499 : met de cote un actif en mauvaise passe (sur ses derniers trades Funding)
+    "FUNDING_ASSET_BLOCK_MIN_TRADES": 15, "FUNDING_ASSET_BLOCK_WINDOW": 20, "FUNDING_ASSET_BLOCK_WINRATE": 45, "FUNDING_ASSET_BLOCK_HOURS": 24,
     "FUNDING_EXCLUDE_WEAK_COINS": 1,      # v4.374 : 1 = n ouvre plus de Funding sur FUNDING_WEAK_COINS (test)
     "FUNDING_WEAK_COINS": ["GMX", "RENDER"],
     "FUNDING_STALE_ENABLED": 1,           # v4.374 : sortie "sans progres" (1/0)
@@ -5362,7 +5367,7 @@ class BotEngine:
         """v4.264 — mode REEL (paper/live) d une position : celui memorise a
         son ouverture. Repli sur le reglage courant de sa strategie pour les
         positions anciennes sans cette information."""
-        if (pos or {}).get("strategy") in ("forex_scalp", "forex_swing", "swing_support", "trend_follow"):      # v4.353 / v4.361 / v4.362 / v4.365 : PAPER par construction
+        if (pos or {}).get("strategy") in ("forex_scalp", "forex_swing", "swing_support"):      # v4.353 / v4.361 / v4.362 : PAPER par construction (v4.499 : Tendance retiree, son mode est memorise a l ouverture)
             return "paper"
         recorded = (pos or {}).get("effective_mode")
         if recorded in ("paper", "live"):
@@ -9284,6 +9289,19 @@ class BotEngine:
                     self._save_open_positions()
                     self._persist_capital_snapshot()
                     return
+            if (cfg.get("FUNDING_BE_ON", 0) and not state.spot_accum_armed and peak_f >= cfg.get("FUNDING_BE_ARM_PCT", 0.2)
+                    and pnl_pct <= cfg.get("FUNDING_BE_LOCK_PCT", 0.05)):      # v4.499 : stop au seuil de rentabilite (paper et reel)
+                _result = self._safe_close_position(state, price, "FUNDING STOP RENTABILITE", ticker, pos, symbol, mode)
+                if _result is None:
+                    return
+                pnl, _, trade = _result
+                self.emit("trade", trade)
+                if pnl > 0:
+                    self._register_win(ticker)
+                self.emit("log", {"msg": f"[{ticker}] 💰 Funding : stop au seuil de rentabilite (pic +{peak_f:.2f}% -> +{pnl_pct:.2f}%) @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "win" if pnl > 0 else "loss"})
+                self._save_open_positions()
+                self._persist_capital_snapshot()
+                return
             if peak_f >= arm_pct_funding:
                 if not state.spot_accum_armed:
                     state.spot_accum_armed = True
@@ -13826,6 +13844,43 @@ class BotEngine:
         except Exception:
             pass
 
+    def _funding_asset_block(self, ticker):
+        """v4.499 : texte du refus si l actif est en mauvaise passe sur ses derniers trades Funding (meme mode), sinon None.
+        Un essai est permis quand son dernier trade date de plus de FUNDING_ASSET_BLOCK_HOURS (sinon il resterait ecarte indefiniment)."""
+        cfg = self.cfg
+        mode = "live" if (self._effective_mode("funding_contrarian") == "live" and cfg.get("FUNDING_MODE_LIVE_ALLOWED", False)) else "paper"
+        ts, m, rec = getattr(self, "_fund_rec_cache", (0, None, None))
+        if rec is None or m != mode or time.time() - ts > 120:
+            win = max(int(cfg.get("FUNDING_ASSET_BLOCK_WINDOW", 20)), 3)
+            per = {}
+            try:
+                rows = [t for t in db.get_all_closed_trades() if t.get("strategy") == "funding_contrarian" and (t.get("trade_mode") or "paper") == mode]
+            except Exception:
+                rows = []
+            for t in reversed(rows):
+                lst = per.setdefault(t.get("coin"), [])
+                if len(lst) < win:
+                    lst.append(t)
+            rec = {}
+            for coin, lst in per.items():
+                pnls = [float(t.get("pnl") or 0) for t in lst]
+                try:
+                    last = datetime.fromisoformat(lst[0]["closed_at"]).timestamp()
+                except Exception:
+                    last = None
+                rec[coin] = (len(lst), sum(1 for x in pnls if x > 0) / len(lst) * 100, sum(pnls), last)
+            self._fund_rec_cache = (time.time(), mode, rec)
+        r = rec.get(ticker)
+        if not r:
+            return None
+        n, wr, net, last = r
+        if n >= int(cfg.get("FUNDING_ASSET_BLOCK_MIN_TRADES", 15)) and wr < float(cfg.get("FUNDING_ASSET_BLOCK_WINRATE", 45)) and net < 0:
+            hrs = float(cfg.get("FUNDING_ASSET_BLOCK_HOURS", 24) or 0)
+            if hrs > 0 and last and time.time() - last >= hrs * 3600:
+                return None
+            return f"actif en mauvaise passe pour le Funding ({wr:.0f} % de réussite, {net:+.2f} $ sur ses {n} derniers trades)"
+        return None
+
     def _check_funding_contrarian_signal(self, symbol, ticker, price, rsi, prices, state):
         """v4.346 — enveloppe de suivi : quand le filtre de qualite du marche bloque une entree Funding, la
         fonction d origine est rejouee SANS ce filtre (tous les autres filtres inchanges) pour savoir si
@@ -13887,6 +13942,11 @@ class BotEngine:
         if cfg.get("FUNDING_EXCLUDE_WEAK_COINS", 1) and ticker in (cfg.get("FUNDING_WEAK_COINS", ["GMX", "RENDER"]) or []):
             snap["blocker"] = "actif exclu du Funding (resultats negatifs, test v4.374)"
             return
+        if cfg.get("FUNDING_ASSET_BLOCK_ON", 0):      # v4.499 : actif en mauvaise passe (paper et reel)
+            _why_ab = self._funding_asset_block(ticker)
+            if _why_ab:
+                snap["blocker"] = _why_ab
+                return
 
         hourly_rate = self.funding_rates.get(ticker)
         if hourly_rate is None:
