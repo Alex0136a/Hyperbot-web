@@ -1524,3 +1524,11 @@ Toutes les règles ci-dessous s'appliquent de la même façon en paper et en liv
 - `SCALP_SHORT_BTC_SOFT_MAX_PCT` = 0,4 (0 = désactivé) : entre +0,10 % et +0,40 %, un short est admis seulement s'il s'agit d'un rebond sur une résistance testée au moins 2 fois. Le blocage normal reste total au-dessus de +0,40 %.
 - Prudence : taille réduite à `SCALP_SHORT_BTC_SOFT_SIZE_PCT` = 50 % ; flux vendeur d'au moins `SCALP_SHORT_BTC_SOFT_FLOW` = 55 % de ventes agressives ; les autres filtres (tendance, objectif, ascenseur, actif en mauvaise passe) s'appliquent comme d'habitude.
 - Le CSV de l'historique gagne `short_prudent_btc` (variation de BTC au moment de l'entrée) pour comparer ces shorts aux autres.
+
+## v4.498 — Tendance : mode réel prêt (désactivé par défaut)
+- Jusqu'ici Tendance était paper par construction. Nouvel interrupteur `TRENDF_LIVE_ON` (0 par défaut) : à 1, Tendance passe de vrais ordres sur Hyperliquid.
+- Entrée réelle : même chemin que les autres stratégies — levier appliqué (marge isolée pour les actifs `xyz:`), ordre au marché avec stop natif, prix de remplissage réel, vérification que la position existe sur Hyperliquid (sinon annulation et aucun suivi), refus si une position manuelle live existe déjà sur l'actif.
+- Taille réelle : `min(capital réel × TRENDF_RISK_PCT ÷ distance du stop, TRENDF_MAX_NOTIONAL_USD, TRENDF_LIVE_MAX_NOTIONAL_USD)`, au minimum 10,5 $. `TRENDF_LIVE_MAX_NOTIONAL_USD` = 15 $ par défaut.
+- Suivi : le stop suiveur est répercuté sur le stop natif Hyperliquid (pas minimal `MTF_SL_PUSH_MIN_STEP_PCT`) ; les sorties (stop suiveur, retournement H4/Daily, durée maximale, gain protégé) ferment la position réelle, et la fermeture n'est enregistrée que si l'ordre réel a réussi.
+- Les règles d'entrée et de sortie sont identiques en paper et en réel. Les statistiques Tendance regroupent les trades des deux modes.
+- Les positions ouvertes en paper restent paper même si l'interrupteur est activé ensuite.

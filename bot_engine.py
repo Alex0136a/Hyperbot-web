@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.497"
+BOT_VERSION = "4.498"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -1482,6 +1482,8 @@ PROFILE_SWING = {
     "TRENDF_ALLOW_SHORT": 1,
     "TRENDF_RISK_PCT": 1.0,               # perte au stop initial = N % du capital (dimensionne la taille)
     "TRENDF_MAX_NOTIONAL_USD": 60.0,
+    "TRENDF_LIVE_ON": 0,                  # v4.498 : 1 = Tendance passe des ordres REELS (0 = paper)
+    "TRENDF_LIVE_MAX_NOTIONAL_USD": 15.0, # v4.498 : notionnel maximal par trade en reel
     "TRENDF_LEVERAGE": 3,
     "TRENDF_MAX_TRADES": 3,
     "TRENDF_STOP_ATR": 3.0,               # distance du stop suiveur = N x ATR H4
@@ -5380,8 +5382,10 @@ class BotEngine:
         (FUNDING_MODE_LIVE_ALLOWED) s applique TOUJOURS en plus, meme si
         cette fonction renvoie "live" pour funding_contrarian — double
         protection, pas de retrait de securite existante."""
-        if strategy in ("forex_scalp", "forex_swing", "swing_support", "trend_follow"):         # v4.353 / v4.361 / v4.362 / v4.365 : PAPER par construction
+        if strategy in ("forex_scalp", "forex_swing", "swing_support"):         # v4.353 / v4.361 / v4.362 : PAPER par construction
             return "paper"
+        if strategy == "trend_follow":      # v4.498 : Tendance peut passer en reel, sur interrupteur explicite (TRENDF_LIVE_ON, 0 par defaut)
+            return "live" if (int(self.cfg.get("TRENDF_LIVE_ON", 0) or 0) and getattr(self, "exchange", None) is not None) else "paper"
         override = self.cfg.get("STRATEGY_MODE_OVERRIDE", {}).get(strategy)
         if override in ("paper", "live"):
             return override
@@ -11918,6 +11922,7 @@ class BotEngine:
             "syms": self._trendf_symbols(),
             "allow_short": bool(c.get("TRENDF_ALLOW_SHORT", 1)), "risk_pct": float(c.get("TRENDF_RISK_PCT", 1.0)),
             "max_notional": float(c.get("TRENDF_MAX_NOTIONAL_USD", 60.0)), "lev": max(int(c.get("TRENDF_LEVERAGE", 3)), 1),
+            "live_max": float(c.get("TRENDF_LIVE_MAX_NOTIONAL_USD", 15.0)),
             "max_trades": int(c.get("TRENDF_MAX_TRADES", 3)), "stop_atr": float(c.get("TRENDF_STOP_ATR", 3.0)),
             "min_stop": float(c.get("TRENDF_MIN_STOP_PCT", 0.8)), "max_stop": float(c.get("TRENDF_MAX_STOP_PCT", 6.0)),
             "entry_mode": int(c.get("TRENDF_ENTRY_MODE", 0)), "break_bars": max(int(c.get("TRENDF_BREAK_BARS", 12)), 3),
@@ -12106,18 +12111,62 @@ class BotEngine:
 
     def _trendf_open(self, symbol, ticker, state, side, ctx, v, tr4, c4, price, spread_pct, flow, ext, res, K):
         sgn = 1 if side == "long" else -1
-        fill = scalp.fill_price(side, price, spread_pct, K["slip"], "entry")
+        live = self._effective_mode("trend_follow") == "live"          # v4.498 : ordres reels si TRENDF_LIVE_ON = 1
+        fill = price if live else scalp.fill_price(side, price, spread_pct, K["slip"], "entry")
         dist = trf.stop_distance(fill, mtf.atr(c4), K["stop_atr"], K["min_stop"], K["max_stop"])
         sl = fill - sgn * dist
         stop_pct = dist / fill * 100
         far_tp = fill * 3 if side == "long" else fill * 0.1            # aucun objectif : sentinelle jamais atteinte
         capital = self.cfg.get("CAPITAL_USD", 100.0)
         notional = max(min(capital * K["risk_pct"] / stop_pct, K["max_notional"]), 10.0)
-        size = round(notional / K["lev"], 4)
+        lev_used = K["lev"]
         trade_uid = make_trade_uid("trend_follow")
-        state.open_position(side, fill, sl, far_tp, size, confidence=60.0, leverage=K["lev"], strategy="trend_follow")
+        if live:
+            # v4.498 — ENTREE REELLE (meme chemin que les autres strategies : levier, ordre marche avec stop natif, verification de la position)
+            if getattr(self, "manual", None) is not None and self.manual.has_live_perp(ticker):
+                self.emit("log", {"msg": f"[{ticker}] Tendance : entree reelle ignoree — position MANUELLE live deja ouverte sur cet actif.", "level": "dim"})
+                return
+            cap_live = getattr(self, "live_equity_real", None) or capital
+            notional = max(min(cap_live * K["risk_pct"] / stop_pct, K["max_notional"], K["live_max"]), 10.5)
+            size = round(notional / lev_used, 4)
+            try:
+                self.exchange.update_leverage(lev_used, ticker, is_cross=not ticker.startswith("xyz:"))
+            except Exception as e:
+                self.emit("log", {"msg": f"[{ticker}] Tendance : echec application levier x{lev_used} : {e} — poursuite avec le levier deja en place.", "level": "warn"})
+            try:
+                db.register_pending_trade(trade_uid, ticker, "LONG" if side == "long" else "SHORT", "trend_follow", symbol, "live", price, False)
+            except Exception as e_reg:
+                print(f"[TRADE-INDEX] Enregistrement prealable {trade_uid} impossible : {e_reg}")
+            ok, order_err, real_fill = place_order(self.exchange, ticker, side == "long", size, price, self.cfg, sl_price=sl, tp_price=None, leverage=lev_used, trade_uid=trade_uid)
+            if not ok:
+                self._discard_pending_trade(trade_uid, ticker)
+                self.emit("log", {"msg": f"[{ticker}] Tendance : ordre reel non execute — {order_err or 'raison inconnue'}", "level": "warn"})
+                return
+            if real_fill is not None and real_fill > 0:
+                fill = real_fill
+            try:
+                confirmed, exch_pos = False, None
+                for _attempt in range(3):
+                    exch_all = fetch_exchange_positions(self.info, self.cfg["WALLET_ADDRESS"], [ticker])
+                    exch_pos = (exch_all or {}).get(ticker)
+                    if exch_pos and exch_pos["szi"] != 0:
+                        confirmed = True
+                        break
+                    time.sleep(0.7)
+                if exch_pos and exch_pos.get("leverage") and exch_pos["leverage"] != lev_used:
+                    self.emit("log", {"msg": f"[{ticker}] Tendance : levier reel x{exch_pos['leverage']} different du levier demande x{lev_used} — suivi corrige.", "level": "warn"})
+                    lev_used = exch_pos["leverage"]
+                if not confirmed:
+                    self._discard_pending_trade(trade_uid, ticker)
+                    self.emit("log", {"msg": f"[{ticker}] Tendance : ANNULE — ordre signale reussi mais AUCUNE position reelle trouvee sur Hyperliquid, suivi non enregistre.", "level": "warn"})
+                    return
+            except Exception as e:
+                print(f"[TENDANCE] verification de la position reelle {ticker} impossible : {e}")
+        else:
+            size = round(notional / lev_used, 4)
+        state.open_position(side, fill, sl, far_tp, size, confidence=60.0, leverage=lev_used, strategy="trend_follow")
         pos = state.position
-        pos["effective_mode"] = "paper"
+        pos["effective_mode"] = "live" if live else "paper"
         pos["trade_uid"] = trade_uid
         pos["slot_key"] = symbol
         pos["engine"] = "trendf"
@@ -12138,9 +12187,9 @@ class BotEngine:
         opened_event = {
             "vol_ratio": quality.get("vol_ratio"), "activity_ratio": quality.get("activity_ratio"), "flow_at_entry": flow,
             "spread_at_entry": spread_pct, "trade_uid": trade_uid, "slot_key": symbol, "is_accum_slot": False, "coin": ticker,
-            "action": label, "confidence": pos.get("confidence"), "leverage": K["lev"], "position_size_pct": None,
+            "action": label, "confidence": pos.get("confidence"), "leverage": lev_used, "position_size_pct": None,
             "size_usd": round(size, 4), "sl_pct_used": round(stop_pct, 4), "ttp_arm1_pct_used": None, "adaptive_sl_ttp": None,
-            "strategy": "trend_follow", "trade_mode": "paper", "risk_reward": None, "timeframe": "TREND_D1H4",
+            "strategy": "trend_follow", "trade_mode": ("live" if live else "paper"), "risk_reward": None, "timeframe": "TREND_D1H4",
             "entry": fill, "stop_loss": sl, "take_profit1": None, "take_profit2": None, "rsi": None,
             "entry_reasons": " | ".join(reasons),
             "confidence_breakdown": json.dumps({"mode": K["entry_mode"], "ext_atr": ext, **{k: v_ for k, v_ in ctx.items()}})}
@@ -12178,6 +12227,16 @@ class BotEngine:
         if (long_side and new_sl > pos["sl"]) or ((not long_side) and new_sl < pos["sl"]):
             pos["sl"] = new_sl
             tf["moved"] = True
+            if pos.get("effective_mode") == "live" and self.exchange is not None:      # v4.498 : le stop natif suit le stop suiveur (par pas minimal)
+                _pushed = tf.get("sl_pushed")
+                if _pushed is None or abs(new_sl - _pushed) / entry * 100 >= float(self.cfg.get("MTF_SL_PUSH_MIN_STEP_PCT", 0.05)):
+                    try:
+                        update_sl_on_hyperliquid(self.exchange, self.info, self.cfg.get("WALLET_ADDRESS"), ticker,
+                                                 {"type": pos["type"], "entry": entry, "size": pos["size"] * pos.get("leverage", 1)}, new_sl, self.cfg)
+                        tf["sl_pushed"] = new_sl
+                    except Exception as e:
+                        print(f"[TENDANCE] mise a jour du stop natif {ticker} impossible : {e}")
+            self._save_open_positions()
         pnl_usd_now = pos["size"] * pos.get("leverage", 1) * sgn * (price - entry) / entry
         if pnl_usd_now > 0 and (state.peak_pnl_usd is None or pnl_usd_now > state.peak_pnl_usd):
             state.peak_pnl_usd = pnl_usd_now
@@ -12215,12 +12274,15 @@ class BotEngine:
             spread_pct = (q.get("spread_pct") if q else None) or 0.02
         except Exception:
             spread_pct = 0.02
-        exit_px = scalp.fill_price(pos["type"], price, spread_pct, K["slip"], "exit")
+        live_pos = pos.get("effective_mode") == "live"
+        exit_px = price if live_pos else scalp.fill_price(pos["type"], price, spread_pct, K["slip"], "exit")
         trade_uid = pos.get("trade_uid")
-        _result = self._safe_close_position(state, exit_px, reason, ticker, pos, symbol, "paper")
+        _result = self._safe_close_position(state, exit_px, reason, ticker, pos, symbol, "live" if live_pos else "paper")
         if _result is None:
             return
         pnl, _, trade = _result
+        if live_pos:
+            exit_px = trade.get("exit") or exit_px
         trade["entry_mechanism"] = f"TENDANCE {side} (Daily {tf.get('d1')} · H4 {tf.get('h4')})"
         state.trendf_last_exit_ts = time.time()
         try:

@@ -1100,11 +1100,13 @@ ADVANCED_SETTINGS = {
     "SUPSW_TP_LEV1":            {"label": "Swing Support · SELON LE LEVIER — objectif en % du prix quand le levier est ×1", "default": 2.0},
     "SUPSW_TP_LEV2":            {"label": "Swing Support · SELON LE LEVIER — objectif en % du prix quand le levier est ×2", "default": 1.5},
     "SUPSW_TP_LEV3":            {"label": "Swing Support · SELON LE LEVIER — objectif en % du prix quand le levier est ×3 ou plus", "default": 1.0},
-    "TRENDF_ENABLED":           {"label": "Tendance - actif (1) ou eteint (0). PAPER uniquement ; entree quand Daily ET H4 confirment, on reste tant que la tendance tient", "default": 0},
+    "TRENDF_ENABLED":           {"label": "Tendance - actif (1) ou eteint (0). Paper, ou reel si TRENDF_LIVE_ON = 1 ; entree quand Daily ET H4 confirment, on reste tant que la tendance tient", "default": 0},
     "TRENDF_ALLOW_SHORT":       {"label": "Tendance - autoriser les SHORT quand la tendance confirmee est baissiere (1 = oui)", "default": 1},
     "TRENDF_RISK_PCT":          {"label": "Tendance - perte au stop initial = N % du capital (dimensionne la taille)", "default": 1.0},
     "TRENDF_MAX_NOTIONAL_USD":  {"label": "Tendance - notionnel maximal par trade ($, paper)", "default": 60.0},
-    "TRENDF_LEVERAGE":          {"label": "Tendance - levier (paper)", "default": 3},
+    "TRENDF_LEVERAGE":          {"label": "Tendance - levier (paper et reel)", "default": 3},
+    "TRENDF_LIVE_ON":           {"label": "Tendance - REEL : 1 = Tendance passe de vrais ordres sur Hyperliquid (stop natif suivi automatiquement) ; 0 = paper. A n activer qu apres un echantillon paper suffisant", "default": 0},
+    "TRENDF_LIVE_MAX_NOTIONAL_USD": {"label": "Tendance - REEL : notionnel maximal par trade ($, minimum Hyperliquid 10 $)", "default": 15.0},
     "TRENDF_MAX_TRADES":        {"label": "Tendance - positions simultanees au plus", "default": 3},
     "TRENDF_STOP_ATR":          {"label": "Tendance - distance du stop suiveur (multiple de l ATR H4)", "default": 3.0},
     "TRENDF_MIN_STOP_PCT":      {"label": "Tendance - distance minimale du stop (% du prix)", "default": 0.8},
@@ -1358,7 +1360,7 @@ def get_advanced_config(email: str = Depends(require_user)):
 # (periodes, cycles, compteurs, heures) sont desormais convertis en int et
 # bornes ; None n est accepte que pour les reglages "herite" (defaut None).
 _RSI_FLOAT_THRESHOLDS = {"RSI_OVERSOLD", "RSI_OVERBOUGHT", "RSI_EXTREME_LOW", "RSI_EXTREME_HIGH"}
-_ZERO_ALLOWED_INT_KEYS = {"SUPSW_TRAIL_ON","SUPSW_REENTRY_ON","SUPSW_BTC_GATE_ON","SUPSW_RECENT_ON","SUPSW_RES_FILTER_ON","SUPSW_RIDE_ON","SUPSW_BTC_H4_MODE","SUPSW_MAX_TOUCHES","FUNDING_EXCLUDE_WEAK_COINS","FUNDING_STALE_ENABLED","FOREX_STALE_ENABLED","MANUAL_DEFAULT_SWING","FOREX_SCALP_STALE_ENABLED","FOREX_SCALP_EARLYFAIL_ENABLED","FXSWING_ENABLED","SUPSW_LEVER_SCALE","SUPSW_RESERVE_ASSETS","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_SCALP_UNIVERSE","TRENDF_IGNORE_RESERVE","TRENDF_REQUIRE_H1","TRENDF_EXIT_H1","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
+_ZERO_ALLOWED_INT_KEYS = {"TRENDF_LIVE_ON","SUPSW_TRAIL_ON","SUPSW_REENTRY_ON","SUPSW_BTC_GATE_ON","SUPSW_RECENT_ON","SUPSW_RES_FILTER_ON","SUPSW_RIDE_ON","SUPSW_BTC_H4_MODE","SUPSW_MAX_TOUCHES","FUNDING_EXCLUDE_WEAK_COINS","FUNDING_STALE_ENABLED","FOREX_STALE_ENABLED","MANUAL_DEFAULT_SWING","FOREX_SCALP_STALE_ENABLED","FOREX_SCALP_EARLYFAIL_ENABLED","FXSWING_ENABLED","SUPSW_LEVER_SCALE","SUPSW_RESERVE_ASSETS","TRENDF_ENABLED","TRENDF_ALLOW_SHORT","TRENDF_ENTRY_MODE","TRENDF_EXIT_H4_REVERSE","TRENDF_SCALP_UNIVERSE","TRENDF_IGNORE_RESERVE","TRENDF_REQUIRE_H1","TRENDF_EXIT_H1","TRENDF_COOLDOWN_SEC","SUPSW_ENABLED","SUPSW_EXIT_REQUIRE_H4_END","SUPSW_EXIT_LEVEL","FEES_IN_STATS","FOREX_SCALP_ENABLED", "FOREX_SCALP_REQUIRE_1M", "FOREX_SCALP_COOLDOWN_SEC","MTF_USE_H4_LOWER", "MTF_SIGNAL_MAX_AGE_SEC", "MTF_DOUBLE_PATTERN_ENABLED", "MTF_TREND_PATH_ENABLED", "MTF_REQUIRE_FLOW_CONFIRM", "MTF_REQUIRE_REAL_TARGET_ZONE", "MTF_REQUIRE_H1_STRUCTURE", "SPOT_ACCUM_TREND_MODE", "ACCUMULATION_TREND_MODE",
                           "CRYPTO_OFFPEAK_HOUR_START_UTC", "CRYPTO_OFFPEAK_HOUR_END_UTC",
                           "CPI_BLACKOUT_BEFORE_MIN", "CPI_BLACKOUT_AFTER_MIN",
                           "ACCUMULATION_LOSS_COOLDOWN_SEC", "SPOT_ACCUM_LOSS_COOLDOWN_SEC", "FUNDING_LOSS_COOLDOWN_SEC",
@@ -1491,6 +1493,10 @@ def _coerce_advanced_value(key: str, value):
         return False, "entre 0,05 et 3 % du capital"
     if key == "TRENDF_MAX_NOTIONAL_USD" and not 5 <= value <= 300:
         return False, "entre 5 $ et 300 $"
+    if key == "TRENDF_LIVE_ON" and value not in (0, 1):
+        return False, "1 (reel) ou 0 (paper)"
+    if key == "TRENDF_LIVE_MAX_NOTIONAL_USD" and not 10.5 <= value <= 300:
+        return False, "entre 10,5 $ et 300 $"
     if key == "TRENDF_LEVERAGE" and not 1 <= value <= 10:
         return False, "entre 1 et 10"
     if key == "TRENDF_MAX_TRADES" and not 1 <= value <= 8:
