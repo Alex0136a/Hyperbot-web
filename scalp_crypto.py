@@ -2090,6 +2090,20 @@ class ScalpEngine:
             notional = max(notional * f_, 10.5 if mode == "live" else 1.0)
         sl_soft = float(c.get("SCALP_CONT_SL_PCT", 0.2)) if cont else float(c.get("SCALP_SL_PCT", 0.65))
         sl_hard = None
+        tp_cont = be_arm_cont = trail_cont = None
+        if cont and int(c.get("SCALP_CONT_SL_ATR_ON", 1)) and sig.get("atr5") and sig.get("price"):
+            # v4.511 : stop de la continuation ADAPTE A LA VOLATILITE (k x ATR 5 min, borne). TAILLE INCHANGEE (decision de l utilisateur) : la perte
+            # maximale par trade augmente avec le stop. Objectif, armement du stop de rentabilite et suiveur sont mis a l echelle du stop.
+            a5p = sig["atr5"] / sig["price"] * 100.0
+            new_sl = min(max(sl_soft, float(c.get("SCALP_CONT_SL_ATR", 1.5)) * a5p), max(float(c.get("SCALP_CONT_SL_MAX_PCT", 0.8)), sl_soft))
+            sig.setdefault("cont", {})["sl_base"], sig["cont"]["atr5_pct"] = round(sl_soft, 3), round(a5p, 3)
+            if new_sl > sl_soft + 1e-9:
+                tp_cont = max(float(c.get("SCALP_CONT_TP_PCT", 0.6)), float(c.get("SCALP_CONT_TP_RR", 2.0)) * new_sl)
+                be_arm_cont = max(float(c.get("SCALP_BE_ARM_PCT", 0.4)), 0.5 * new_sl)
+                trail_cont = max(float(c.get("SCALP_RUN_TRAIL_PCT", 0.2)), 0.5 * new_sl)
+                sl_soft = new_sl
+        if cont:
+            sig.setdefault("cont", {})["sl_eff"] = round(sl_soft, 3)
         osc = self._osc_eval(t, sig, asc) if (int(c.get("SCALP_OSC_ON", 1)) and not cont) else None      # v4.503 : mode oscillation (paper et live)
         if osc:
             base_sl = sl_soft
@@ -2110,12 +2124,12 @@ class ScalpEngine:
         params = {"strategy": STRATEGY, "ticker": t, "direction": sig["side"], "market": "perp", "mode": mode,
                   "execution": "now", "leverage": int(c.get("SCALP_LEVERAGE", 3)),
                   "notional_usd": round(notional, 2),
-                  "sl_pct": (sl_hard if sl_hard else sl_soft), "tp_pct": (osc["tp_pct"] if osc else (float(c.get("SCALP_CONT_TP_PCT", 0.6)) if cont else float(c.get("SCALP_TP_PCT", 0.6)))),
+                  "sl_pct": (sl_hard if sl_hard else sl_soft), "tp_pct": (osc["tp_pct"] if osc else (tp_cont if tp_cont else (float(c.get("SCALP_CONT_TP_PCT", 0.6)) if cont else float(c.get("SCALP_TP_PCT", 0.6))))),
                   "confirm_live": mode == "live"}
         if int(c.get("SCALP_RUN_ENABLED", 1)):     # v4.434 : laisser courir apres l objectif ; sortie si le prix recule de X % depuis son plus haut
-            params.update({"tp_run": True, "tp_run_lock_pct": 0.0, "tp_run_trail_pct": (osc["trail_pct"] if osc else float(c.get("SCALP_RUN_TRAIL_PCT", 0.2)))})
+            params.update({"tp_run": True, "tp_run_lock_pct": 0.0, "tp_run_trail_pct": (osc["trail_pct"] if osc else (trail_cont or float(c.get("SCALP_RUN_TRAIL_PCT", 0.2))))})
         if int(c.get("SCALP_BE_ENABLED", 0)):      # v4.445 : stop au seuil de rentabilite apres un gain de X %
-            params.update({"be_arm_pct": float(c.get("SCALP_BE_ARM_PCT", 0.4)), "be_lock_pct": float(c.get("SCALP_BE_LOCK_PCT", 0.1))})
+            params.update({"be_arm_pct": (be_arm_cont or float(c.get("SCALP_BE_ARM_PCT", 0.4))), "be_lock_pct": float(c.get("SCALP_BE_LOCK_PCT", 0.1))})
         try:
             res = self.manual.submit(params)
         except Exception as e:
