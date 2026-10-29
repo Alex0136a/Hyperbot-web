@@ -20,6 +20,10 @@ from datetime import datetime, timedelta, timezone
 import db
 import bot_engine as be
 import mtf_analysis as mtf
+try:
+    import macro_events      # v4.507 : pause autour des annonces macro (si le fichier n est pas depose, la pause est simplement inactive)
+except Exception:      # pragma: no cover
+    macro_events = None
 
 STRATEGY = "scalp_crypto"
 
@@ -509,6 +513,7 @@ class ScalpEngine:
         self.regime = {"ts": 0, "n": 0, "label": "inconnu"}     # v4.442 : regime du panier (correlation / largeur)
         self._opens = deque(maxlen=200)      # (ts, side, mode, ticker) des ouvertures recentes (grappe)
         self._cont_fan = {}                  # v4.504 : (sens, mode) -> derniere ouverture en grappe de continuation
+        self.macro = macro_events.MacroCalendar() if macro_events else None      # v4.507
         self._last_sig_ts = time.time()      # v4.506 : dernier signal valide vu (alerte « aucun signal »)
         self.cont_diag = {}                  # v4.505 : ticker -> (ts, raison pour laquelle la continuation n est pas prise)
         self._sigs = deque(maxlen=300)       # (ts, ticker, side) signaux vus (confirmation par les pairs)
@@ -548,6 +553,12 @@ class ScalpEngine:
                 "cont_momentum_on": int(c.get("SCALP_CONT_MOMENTUM_ON", 1)), "cont_flow_min": float(c.get("SCALP_CONT_FLOW_MIN", 0.5)),
                 "cont_min_room_pct": float(c.get("SCALP_CONT_MIN_ROOM_PCT", 0.3)), "cont_vol_mult": float(c.get("SCALP_CONT_VOL_MULT", 1.2)), "cont_early_on": int(c.get("SCALP_CONT_EARLY_ON", 1))}
 
+    def _clear_err(self, prefix):
+        """v4.508 : efface la derniere erreur technique si elle vient de cette source (l appel suivant a reussi)."""
+        e = self.last_error
+        if e and str(e).startswith(prefix):
+            self.last_error = None
+
     # ── univers : top N par volume 24 h parmi les actifs suivis ──
     def universe(self):
         now = time.time()
@@ -572,6 +583,7 @@ class ScalpEngine:
             ranked = sorted([t for t in tracked if t in vol], key=lambda t: -vol[t])
             if ranked:
                 self._uni, self._uni_ts = ranked[:n], now
+                self._clear_err("univers :")
                 return self._uni
         except Exception as e:
             self.last_error = f"univers : {type(e).__name__}: {e}"
@@ -746,6 +758,7 @@ class ScalpEngine:
                     c5 = self.bot._mtf_candles(t, "5m", 60)
                     c15 = self.bot._mtf_candles(t, "15m", 60)
                     c1h = self.bot._mtf_candles(t, "1h", 230)
+                    self._clear_err(f"bougies {t} :")
                 except Exception as e:
                     self.last_error = f"bougies {t} : {type(e).__name__}: {e}"
                     continue
@@ -817,12 +830,42 @@ class ScalpEngine:
             rows.append({"ticker": t, "motif": m})
         return {"reasons": sorted(cnt.items(), key=lambda x: -x[1]), "rows": sorted(rows, key=lambda r: r["ticker"])}
 
+    def macro_block(self):
+        """v4.507 : texte de la pause si on est dans la fenetre d une annonce macro USD a fort impact (entrees bloquees, sorties inchangees), sinon None."""
+        c = self.cfg
+        if self.macro is None or not int(c.get("SCALP_MACRO_ON", 1)):
+            return None
+        try:
+            self.macro.refresh_async()
+            now = time.time()
+            e = self.macro.active(now, float(c.get("SCALP_MACRO_BEFORE_MIN", 10)), float(c.get("SCALP_MACRO_AFTER_MIN", 20)))
+            if not e:
+                return None
+            dt = (e["ts"] - now) / 60.0
+            hh = datetime.fromtimestamp(e["ts"], timezone.utc).strftime("%H:%M")
+            return f"pause macro : {e['title']} à {hh} UTC ({'dans ' + format(dt, '.0f') + ' min' if dt > 0 else 'il y a ' + format(-dt, '.0f') + ' min'})"
+        except Exception:
+            return None
+
+    def macro_state(self):
+        c = self.cfg
+        if self.macro is None:
+            return {"on": False, "status": "module macro_events.py non déposé"}
+        try:
+            now = time.time()
+            return {"on": bool(int(c.get("SCALP_MACRO_ON", 1))), "pause": self.macro_block(), "status": self.macro.status(),
+                    "before": float(c.get("SCALP_MACRO_BEFORE_MIN", 10)), "after": float(c.get("SCALP_MACRO_AFTER_MIN", 20)),
+                    "next": [{"title": e["title"], "utc": datetime.fromtimestamp(e["ts"], timezone.utc).strftime("%d/%m %H:%M"), "in_min": int((e["ts"] - now) / 60), "src": e["src"]}
+                             for e in self.macro.upcoming(now, 4)]}
+        except Exception as e:
+            return {"on": False, "status": f"erreur {type(e).__name__}"}
+
     def nosig_state(self):
         """v4.506 : alerte « aucun signal » : le Scalp est actif, le panier bouge d au moins SCALP_NOSIG_MOVE_PCT % sur 30 min et aucun signal
         valide n a ete vu depuis SCALP_NOSIG_MIN minutes. Sert le bandeau visible sur toutes les pages (acquittement cote page)."""
         c = self.cfg
         try:
-            if not int(c.get("SCALP_ENABLED", 0)) or not int(c.get("SCALP_NOSIG_ON", 1)):
+            if not int(c.get("SCALP_ENABLED", 0)) or not int(c.get("SCALP_NOSIG_ON", 1)) or self.macro_block():      # v4.507 : pause macro voulue = pas d alerte
                 return {"active": False}
             ok, _why = self.window_state()
             if not ok:
@@ -1527,6 +1570,9 @@ class ScalpEngine:
             cd = self._cool.get((t, mode), 0) - time.time()
             if cd > 0:
                 parts.append(f"⏳ pause sur cet actif encore {cd / 60:.0f} min")
+            pm_ = self.macro_block()
+            if pm_:
+                parts.append(f"⏸ {pm_}")
             if self._busy_same_mode(t, mode):
                 parts.append("position Scalp déjà ouverte (live : une seule par actif)")
             if t in self.pending:
@@ -1806,6 +1852,10 @@ class ScalpEngine:
     def _take(self, t, sig):
         c = self.cfg
         mode = "live" if c.get("SCALP_MODE") == "live" else "paper"
+        why_macro = self.macro_block()      # v4.507 : pas de nouvelle entree autour d une annonce macro (paper et live, tous types, y compris la grappe)
+        if why_macro:
+            self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_macro}")
+            return
         why_goal = self._goal_refusal(t, sig, mode)          # v4.460 : objectif du jour atteint -> entrees restreintes
         if why_goal:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_goal}")
@@ -1979,5 +2029,5 @@ class ScalpEngine:
                 "regime": {k: v for k, v in self.regime.items()}, "peer_wait": [{"ticker": t, "side": w["side"], "age_min": round((time.time() - w["ts"]) / 60, 1)} for t, w in self.peer_wait.items()],
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),
                 "pending": [{"ticker": t, "side": p["sig"]["side"], "trigger": p["trigger"], "expires": p["expires"]} for t, p in self.pending.items()],
-                "cont_diag": self._cont_diag_summary(), "nosig": self.nosig_state(),
+                "cont_diag": self._cont_diag_summary(), "nosig": self.nosig_state(), "macro": self.macro_state(),
                 "events": list(self.events)[:40], "error": self.last_error}
