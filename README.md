@@ -1597,3 +1597,9 @@ Constat (diagnostic de 14 h 20) : marché en baisse depuis plus d'1 h, mais 15 a
 
 ## v4.508 — « Dernière erreur technique » s'efface quand l'appel suivant réussit
 La dernière erreur technique du Scalp (réglages) restait affichée indéfiniment, même après le retour à la normale (ex. 429 de limite de débit Hyperliquid sur l'univers). Elle est maintenant effacée dès que la même source réussit : mise à jour de l'univers (« univers : … ») et chargement des bougies d'un actif (« bougies X : … »). Les autres erreurs restent affichées jusqu'à leur propre succès ou remplacement. Aucun autre changement.
+
+## v4.509 — suivi après sortie du stop de rentabilité + résultats par situation de marché (observation seule)
+Aucune règle de trading modifiée.
+- **Après la sortie** : pour chaque trade Scalp coupé par le « STOP SEUIL RENTABILITE », 65 min après la sortie le bot relit les bougies 5 min des 60 minutes suivantes et calcule ce qu'aurait donné « tenir » : objectif (`tp_pct`) ou stop initial (`sl_pct`) touché en premier, sinon cours à +60 min ; dans une même bougie 5 min, le stop passe d'abord (prudent). Verdict par trade : **coûté** (tenir > sortie de plus de 0,05 %), **protégé** (tenir < sortie de plus de 0,05 %) ou **neutre**, avec l'écart en % du prix. Les anciens trades sortis par ce stop sont évalués aussi (3 par cycle de 2 min). Résultat stocké dans le trade (`post_exit`), affiché dans l'onglet corrélation du Scalp (« Stop de rentabilité : que se passe-t-il après la sortie ? ») et exporté dans le CSV (`post_sortie_*`, `cont_precoce`).
+- **Tableaux par situation** (onglet corrélation, net de frais, « échantillon faible » sous 10 trades) : par sens, par séance (UTC), par mouvement du panier sur 30 min relatif au sens du trade, par efficacité de l'actif sur 1 h, par type de sortie.
+- Ne pas modifier l'armement / le verrouillage du stop de rentabilité avant ~30 trades évalués.

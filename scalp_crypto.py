@@ -648,10 +648,128 @@ class ScalpEngine:
         for d in rows:
             h = datetime.fromtimestamp(float(d.get("opened_at") or d.get("closed_at") or 0), timezone.utc).hour
             by_hour.setdefault(h, []).append(d)
-        out = {"mode": mode, "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
+        # v4.509 : resultats par situation de marche (n < 10 = echantillon trop faible pour conclure) et bilan « apres sortie » du stop de rentabilite
+        dims = []
+
+        def add_dim(title, fn, order=None):
+            g = {}
+            for d in rows:
+                try:
+                    lab = fn(d)
+                except Exception:
+                    lab = None
+                if lab is not None:
+                    g.setdefault(lab, []).append(d)
+            labs = [l for l in (order or []) if l in g] + sorted([l for l in g if l not in (order or [])], key=lambda l: -len(g[l]))
+            if labs:
+                dims.append({"title": title, "rows": [{"label": l, "agg": agg(g[l])} for l in labs]})
+
+        def _sg(d):
+            return 1 if d.get("direction") == "long" else -1
+
+        def _sess(d):
+            h = datetime.fromtimestamp(float(d.get("opened_at") or d.get("closed_at") or 0), timezone.utc).hour
+            return ("Asie 00–07 UTC" if h < 7 else "Europe 07–13 UTC" if h < 13 else "Europe + États-Unis 13–17 UTC" if h < 17
+                    else "États-Unis soir 17–22 UTC" if h < 22 else "Nuit 22–24 UTC")
+
+        def _bsk(d):
+            b = _rg(d).get("basket30")
+            if b is None:
+                return "Avant mesure"
+            v = float(b) * _sg(d)
+            return "Panier contre le trade (≤ −0,2 %)" if v <= -0.2 else ("Panier dans le sens (≥ +0,2 %)" if v >= 0.2 else "Panier calme (−0,2 à +0,2 %)")
+
+        def _er(d):
+            e = ((d.get("scalp") or {}).get("tq") or {}).get("er_actif_1h")
+            if e is None:
+                return "Avant mesure"
+            return "Actif chaotique (efficacité 1 h < 0,2)" if e < 0.2 else ("Actif intermédiaire (0,2 à 0,4)" if e < 0.4 else "Actif directionnel (≥ 0,4)")
+        add_dim("Par sens", lambda d: "Long" if d.get("direction") == "long" else "Short", ["Long", "Short"])
+        add_dim("Par séance (heure d'ouverture, UTC)", _sess, ["Asie 00–07 UTC", "Europe 07–13 UTC", "Europe + États-Unis 13–17 UTC", "États-Unis soir 17–22 UTC", "Nuit 22–24 UTC"])
+        add_dim("Par mouvement du panier sur 30 min (par rapport au sens du trade)", _bsk, ["Panier contre le trade (≤ −0,2 %)", "Panier calme (−0,2 à +0,2 %)", "Panier dans le sens (≥ +0,2 %)", "Avant mesure"])
+        add_dim("Par efficacité de l'actif sur 1 h (directionnel ou chaotique)", _er, ["Actif chaotique (efficacité 1 h < 0,2)", "Actif intermédiaire (0,2 à 0,4)", "Actif directionnel (≥ 0,4)", "Avant mesure"])
+        add_dim("Par type de sortie", lambda d: (str(d.get("reason") or "?").replace(" (manuel)", "").strip() or "?"))
+        pe = [d["post_exit"] for d in rows if (d.get("post_exit") or {}).get("ok")]
+        be_rows = [d for d in rows if "SEUIL RENTABILITE" in str(d.get("reason") or "")]
+        be_post = {"n": len(pe), "cost": sum(1 for p in pe if p["verdict"] == "coûté"), "protect": sum(1 for p in pe if p["verdict"] == "protégé"),
+                   "neutral": sum(1 for p in pe if p["verdict"] == "neutre"), "avg_delta_pct": (sum(p["delta_pct"] for p in pe) / len(pe)) if pe else None,
+                   "sum_delta_pct": sum(p["delta_pct"] for p in pe) if pe else None,
+                   "pending": sum(1 for d in be_rows if not (d.get("post_exit") or {}).get("ok")), "total_be": len(be_rows)}
+        out = {"mode": mode, "dims": dims, "be_post": be_post, "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
                "by_hour": {h: agg(v) for h, v in sorted(by_hour.items())}, "last_closed": rows[0].get("closed_at") if rows else None}
         self._stats_cache = (time.time(), mode, out)
         return out
+
+    # ── v4.509 : suivi APRES SORTIE des trades coupes par le stop de rentabilite (observation seule) ──
+    PE_WIN_MIN = 60
+
+    def _candles_range(self, t, start_s, end_s):
+        raw = self.bot.info.post("/info", {"type": "candleSnapshot", "req": {"coin": t, "interval": "5m", "startTime": int(start_s * 1000), "endTime": int(end_s * 1000)}})
+        return [{"t": int(c["t"]), "h": float(c["h"]), "l": float(c["l"]), "c": float(c["c"])} for c in raw] if isinstance(raw, list) else []
+
+    @staticmethod
+    def post_exit_calc(d, cs):
+        """Pur : que se serait-il passe si le trade n avait pas ete coupe ? d : trade ferme ; cs : bougies 5 min suivant la sortie (anciennes d abord).
+        « tenir » = objectif (tp_pct) ou stop initial (sl_pct) touche en premier, sinon cours a la fin de la fenetre ; meme bougie : stop d abord (prudent)."""
+        ent = float(d["entry_price"])
+        sg = 1 if d.get("direction") == "long" else -1
+        xp = float(d["exit_price"])
+        exit_pct = sg * (xp - ent) / ent * 100
+        tp = float(d.get("tp_pct") or 0) or None
+        sl = float(d.get("sl_pct") or 0) or None
+        mf, ma, first = 0.0, 0.0, None
+        for c in cs:
+            fav = sg * ((c["h"] if sg > 0 else c["l"]) - ent) / ent * 100
+            adv = sg * ((c["l"] if sg > 0 else c["h"]) - ent) / ent * 100
+            mf, ma = max(mf, fav), min(ma, adv)
+            if first is None:
+                hit_sl = sl is not None and adv <= -sl
+                hit_tp = tp is not None and fav >= tp
+                if hit_sl:
+                    first = "stop"
+                elif hit_tp:
+                    first = "objectif"
+        end_pct = sg * (cs[-1]["c"] - ent) / ent * 100
+        hold = tp if first == "objectif" else (-sl if first == "stop" else end_pct)
+        delta = hold - exit_pct
+        verdict = "coûté" if delta > 0.05 else ("protégé" if delta < -0.05 else "neutre")
+        return {"ok": True, "win_min": 60, "exit_pct": round(exit_pct, 3), "max_fav_pct": round(mf, 3), "max_adv_pct": round(ma, 3), "end_pct": round(end_pct, 3),
+                "first": first or "aucun", "hold_pct": round(hold, 3), "delta_pct": round(delta, 3), "verdict": verdict, "bars": len(cs)}
+
+    def _post_exit_eval(self, limit=3):
+        now = time.time()
+        win = self.PE_WIN_MIN * 60
+        done = 0
+        for r in db.manual_history(400):
+            if done >= limit:
+                break
+            d = r["data"]
+            if r.get("status") != "closed" or d.get("strategy_source") != STRATEGY or "SEUIL RENTABILITE" not in str(d.get("reason") or ""):
+                continue
+            if (d.get("post_exit") or {}).get("ok") or (d.get("post_exit") or {}).get("fail", 0) >= 3:
+                continue
+            ca = float(d.get("closed_at") or 0)
+            if not ca or now - ca < win + 300 or not d.get("entry_price") or not d.get("exit_price"):
+                continue
+            try:
+                cs = [c for c in self._candles_range(d["ticker"], ca, min(ca + win + 300, now)) if ca <= c["t"] / 1000.0 < ca + win]
+                pe = self.post_exit_calc(d, cs) if len(cs) >= 6 else {"ok": False, "fail": (d.get("post_exit") or {}).get("fail", 0) + 1, "why": f"{len(cs)} bougies"}
+            except Exception as e:
+                pe = {"ok": False, "fail": (d.get("post_exit") or {}).get("fail", 0) + 1, "why": f"{type(e).__name__}"}
+            d["post_exit"] = pe
+            db.manual_update(r["id"], "closed", d)
+            done += 1
+        if done:
+            self._stats_cache = (0, None, None)
+            self._rows_cache = (0, None, None)
+
+    def _post_exit_run(self):
+        try:
+            self._post_exit_eval()
+        except Exception as e:
+            self.last_error = f"suivi après sortie : {type(e).__name__}: {e}"
+        finally:
+            self._pe_busy = False
 
     # ── cycle ──
     def on_cycle(self):
@@ -661,6 +779,9 @@ class ScalpEngine:
             self._manage_open(now)
         except Exception as e:
             self.last_error = f"suivi : {type(e).__name__}: {e}"
+        if now - getattr(self, "_pe_last", 0) >= 120 and not getattr(self, "_pe_busy", False):      # v4.509
+            self._pe_last, self._pe_busy = now, True
+            threading.Thread(target=self._post_exit_run, daemon=True).start()
         if not int(self.cfg.get("SCALP_ENABLED", 0)) or self._busy or now - self._last_tick < 15:
             return
         self._last_tick = now
