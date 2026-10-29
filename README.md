@@ -1553,3 +1553,14 @@ Toutes les règles ci-dessous s'appliquent de la même façon en paper et en liv
 - Un seul clic enregistre uniquement les champs modifiés (ni les autres réglages, ni leurs valeurs enregistrées ne sont renvoyés ni revalidés). Plus de fenêtre à valider : une confirmation verte « ✅ Enregistré : … » s'affiche dans la barre.
 - Les boutons du bas des deux onglets et celui de la recherche (v4.501) utilisent le même enregistrement.
 - Comparaison numérique : « 0.10 » et « 0,1 » ne comptent pas comme une modification.
+
+## v4.503 — Scalp : mode oscillation (l'« ascenseur » exploité), paper et live
+- Principe : quand le prix oscille sans avancer, on joue les bords de la boîte au lieu de l'éviter. Même code en paper et en live (le trade passe par le même ticket que le Scalp).
+- **Détection** : efficacité 1 min < `SCALP_OSC_ER_MAX` (0,15 ; indépendant de `SCALP_ASC_ER_MAX`). **Boîte** : plus haut / plus bas des `SCALP_OSC_BOX_BARS` (12) dernières bougies 5 min, amplitude entre `SCALP_OSC_MIN_AMP_PCT` (0,5 %) et `SCALP_OSC_MAX_AMP_PCT` (3 %).
+- **Entrée** : un REBOND (signal normal, donc pente 1 h et autres filtres inchangés) dans les `SCALP_OSC_EDGE_PCT` (35 %) du bas de la boîte (long) ou du haut (short). Hors du bord, le trade se fait normalement (rien n'est interdit).
+- **Objectif** : `SCALP_OSC_TP_SHARE_PCT` (50 %) de l'amplitude, entre `SCALP_OSC_MIN_TP_PCT` (0,25 %, couvre les frais) et `SCALP_OSC_MAX_TP_PCT` (1,2 %). **Laisser courir** : à l'objectif le trade continue avec un stop suiveur serré `SCALP_OSC_RUN_TRAIL_PCT` (0,15 %).
+- **Stop** : juste hors de la boîte (distance au bord + ½ ATR 5 min), entre 0,3 % (ou 1 ATR 5 min) et `SCALP_OSC_SL_MAX_PCT` (0,8 %), stop réel (pas de stop sur clôture ni élargi). Taille : jamais plus grande que la taille normale ; réduite si le stop est plus large que `SCALP_SL_PCT`.
+- **Durée** maximale `SCALP_OSC_MAX_HOLD_MIN` (30 min) ; elle ne s'applique plus une fois l'objectif atteint (laisser courir).
+- `SCALP_OSC_ON` = 1 par défaut. Le stop au seuil de rentabilité reste réglé par `SCALP_BE_*`.
+- CSV de l'historique : `osc`, `osc_er`, `osc_amp_pct`, `osc_pos_boite` (0 = bas, 1 = haut), `osc_tp_pct`, `osc_sl_pct`.
+- Valeurs de départ non calibrées (aucune bougie historique disponible) : à ajuster après 40 à 60 trades en mode oscillation.

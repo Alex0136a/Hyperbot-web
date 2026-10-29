@@ -469,11 +469,12 @@ class ScalpEngine:
         threading.Thread(target=self._scan, daemon=True).start()
 
     def _manage_open(self, now):
-        mx = float(self.cfg.get("SCALP_MAX_HOLD_MIN", 90)) * 60
-        if mx <= 0 and not int(self.cfg.get("SCALP_CORR_BASKET_EXIT_ON", 0)):
+        mx_cfg = float(self.cfg.get("SCALP_MAX_HOLD_MIN", 90)) * 60
+        if mx_cfg <= 0 and not int(self.cfg.get("SCALP_CORR_BASKET_EXIT_ON", 0)) and not int(self.cfg.get("SCALP_OSC_ON", 1)):
             return
         for it in list(self.manual.items.values()):
             if it.get("strategy_source") == STRATEGY and it.get("status") == "open":
+                mx = float(it.get("osc_hold_min") or 0) * 60 or mx_cfg      # v4.503 : duree propre au mode oscillation
                 if int(self.cfg.get("SCALP_CORR_BASKET_EXIT_ON", 0)) and not it.get("tp_run_armed"):
                     try:
                         reg = self.regime
@@ -1430,6 +1431,51 @@ class ScalpEngine:
             info["rules"].append("ascenseur" + (f" : ligne inclinée à {d:+.2f} %" if d is not None else ""))
         return None, info
 
+    def _osc_eval(self, t, sig, asc):
+        """v4.503 : MODE OSCILLATION (« ascenseur » exploite). Quand le prix oscille sans avancer (efficacite 1 min < SCALP_OSC_ER_MAX) et
+        qu un REBOND se presente sur un bord de la boite des dernieres bougies 5 min (dans le sens de la pente 1 h, deja garanti par
+        _asc_eval), le trade vise une part de l amplitude de la boite (SCALP_OSC_TP_SHARE_PCT), avec un stop juste hors de la boite et une
+        duree courte ; au-dela de l objectif on laisse courir (stop suiveur serre). Meme logique en paper et en live. Retourne un dict ou None."""
+        c = self.cfg
+        if sig.get("kind") != "rebond" or not sig.get("price"):
+            return None
+        er = (asc or {}).get("er_1m")
+        if er is None:
+            try:
+                c1 = self.bot._mtf_candles(t, "1m", 40) or []
+                if len(c1) >= 31:
+                    er = round(_eff_ratio([float(x["c"]) for x in c1[-31:]]), 3)
+            except Exception:
+                er = None
+        if er is None or er >= float(c.get("SCALP_OSC_ER_MAX", 0.15)):
+            return None
+        try:
+            c5 = self.bot._mtf_candles(t, "5m", 24) or []
+        except Exception:
+            return None
+        n = max(int(float(c.get("SCALP_OSC_BOX_BARS", 12))), 6)
+        if len(c5) < max(n, 15):
+            return None
+        seg = c5[-n:]
+        hi, lo = max(float(x["h"]) for x in seg), min(float(x["l"]) for x in seg)
+        price = float(sig["price"])
+        if hi <= lo or price <= 0:
+            return None
+        amp = (hi - lo) / price * 100.0
+        if not (float(c.get("SCALP_OSC_MIN_AMP_PCT", 0.5)) <= amp <= float(c.get("SCALP_OSC_MAX_AMP_PCT", 3.0))):
+            return None
+        pos = (price - lo) / (hi - lo)
+        edge = float(c.get("SCALP_OSC_EDGE_PCT", 35)) / 100.0
+        long_side = sig["side"] == "long"
+        if (long_side and pos > edge) or ((not long_side) and pos < 1.0 - edge):
+            return None
+        a5p = (sig["atr5"] / price * 100.0) if sig.get("atr5") else amp / 4.0
+        tp = min(max(float(c.get("SCALP_OSC_TP_SHARE_PCT", 50)) / 100.0 * amp, float(c.get("SCALP_OSC_MIN_TP_PCT", 0.25))), float(c.get("SCALP_OSC_MAX_TP_PCT", 1.2)))
+        d_box = ((price - lo) if long_side else (hi - price)) / price * 100.0
+        sl = min(max(d_box + 0.5 * a5p, max(0.3, a5p)), float(c.get("SCALP_OSC_SL_MAX_PCT", 0.8)))
+        return {"er": er, "box_lo": lo, "box_hi": hi, "amp_pct": round(amp, 3), "pos": round(pos, 3), "tp_pct": round(tp, 3), "sl_pct": round(sl, 3),
+                "trail_pct": float(c.get("SCALP_OSC_RUN_TRAIL_PCT", 0.15)), "hold_min": float(c.get("SCALP_OSC_MAX_HOLD_MIN", 30))}
+
     def _take(self, t, sig):
         c = self.cfg
         mode = "live" if c.get("SCALP_MODE") == "live" else "paper"
@@ -1506,14 +1552,19 @@ class ScalpEngine:
             notional = max(notional * f_, 10.5 if mode == "live" else 1.0)
         sl_soft = float(c.get("SCALP_SL_PCT", 0.65))
         sl_hard = None
-        if asc and asc.get("asc") and int(c.get("SCALP_ASC_SL_ON", 1)) and sig.get("atr5") and sig.get("price"):
+        osc = self._osc_eval(t, sig, asc) if int(c.get("SCALP_OSC_ON", 1)) else None      # v4.503 : mode oscillation (paper et live)
+        if osc:
+            base_sl = sl_soft
+            sl_soft = osc["sl_pct"]
+            notional = max(notional * min(1.0, base_sl / sl_soft), 10.5 if mode == "live" else 1.0)      # meme perte maximale en $ (jamais plus gros que la taille normale)
+        if (not osc) and asc and asc.get("asc") and int(c.get("SCALP_ASC_SL_ON", 1)) and sig.get("atr5") and sig.get("price"):
             a5p = sig["atr5"] / sig["price"] * 100.0      # stop elargi au-dessus du bruit, taille reduite pour garder la meme perte en $
             new_sl = min(max(sl_soft, float(c.get("SCALP_ASC_SL_ATR", 1.5)) * a5p), float(c.get("SCALP_ASC_SL_MAX_PCT", 1.5)))
             if new_sl > sl_soft + 1e-9:
                 notional = max(notional * sl_soft / new_sl, 10.5 if mode == "live" else 1.0)
                 asc["rules"].append(f"stop élargi {sl_soft:g} % → {new_sl:.2f} % (bruit ATR 5 min {a5p:.2f} %), taille réduite")
                 sl_soft = new_sl
-        if int(c.get("SCALP_ASC_CLOSE_STOP_ON", 1)) and (bool(asc and asc.get("asc")) or not int(c.get("SCALP_ASC_CLOSE_STOP_ASC_ONLY", 1))):      # v4.496 : stop sur cloture seulement en ascenseur
+        if (not osc) and int(c.get("SCALP_ASC_CLOSE_STOP_ON", 1)) and (bool(asc and asc.get("asc")) or not int(c.get("SCALP_ASC_CLOSE_STOP_ASC_ONLY", 1))):      # v4.496 : stop sur cloture seulement en ascenseur
             sl_hard = min(sl_soft * float(c.get("SCALP_ASC_HARD_MULT", 2.0)), 50.0)
             if asc is not None:
                 asc["rules"].append(f"stop sur clôture 5 min (secours {sl_hard:.2f} %)")
@@ -1521,10 +1572,10 @@ class ScalpEngine:
         params = {"strategy": STRATEGY, "ticker": t, "direction": sig["side"], "market": "perp", "mode": mode,
                   "execution": "now", "leverage": int(c.get("SCALP_LEVERAGE", 3)),
                   "notional_usd": round(notional, 2),
-                  "sl_pct": (sl_hard if sl_hard else sl_soft), "tp_pct": float(c.get("SCALP_TP_PCT", 0.6)),
+                  "sl_pct": (sl_hard if sl_hard else sl_soft), "tp_pct": (osc["tp_pct"] if osc else float(c.get("SCALP_TP_PCT", 0.6))),
                   "confirm_live": mode == "live"}
         if int(c.get("SCALP_RUN_ENABLED", 1)):     # v4.434 : laisser courir apres l objectif ; sortie si le prix recule de X % depuis son plus haut
-            params.update({"tp_run": True, "tp_run_lock_pct": 0.0, "tp_run_trail_pct": float(c.get("SCALP_RUN_TRAIL_PCT", 0.2))})
+            params.update({"tp_run": True, "tp_run_lock_pct": 0.0, "tp_run_trail_pct": (osc["trail_pct"] if osc else float(c.get("SCALP_RUN_TRAIL_PCT", 0.2)))})
         if int(c.get("SCALP_BE_ENABLED", 0)):      # v4.445 : stop au seuil de rentabilite apres un gain de X %
             params.update({"be_arm_pct": float(c.get("SCALP_BE_ARM_PCT", 0.4)), "be_lock_pct": float(c.get("SCALP_BE_LOCK_PCT", 0.1))})
         try:
@@ -1555,6 +1606,9 @@ class ScalpEngine:
                                               "regles": " ; ".join(asc.get("rules") or []), "sl_mou_pct": round(sl_soft, 3),
                                               "sl_secours_pct": (round(sl_hard, 3) if sl_hard else None)}
                         it["scalp"]["tq"] = {**(it["scalp"].get("tq") or {}), **{k: v for k, v in (asc.get("slope") or {}).items() if v is not None}}
+                    if osc:
+                        it["scalp"]["osc"] = {k: osc[k] for k in ("er", "box_lo", "box_hi", "amp_pct", "pos", "tp_pct", "sl_pct", "hold_min")}
+                        it["osc_hold_min"] = osc["hold_min"]
                     if sl_hard:
                         it["sl_close"], it["sl_soft_pct"], it["sl_hard_pct"] = True, round(sl_soft, 4), round(sl_hard, 4)
                     it["reasons"] = sig["reasons"]
