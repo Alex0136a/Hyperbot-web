@@ -270,6 +270,164 @@ def evaluate(c5, c15, c1h, btc_chg, K, flow=None):
     return best, "ok"
 
 
+def _pair_corr(a, b, n=24):
+    """v4.504 : correlation des rendements 5 min de deux actifs sur les n dernieres bougies (None si indisponible)."""
+    try:
+        ca = [float(x["c"]) for x in a][-(n + 1):]
+        cb = [float(x["c"]) for x in b][-(n + 1):]
+        m = min(len(ca), len(cb))
+        if m < 8:
+            return None
+        ca, cb = ca[-m:], cb[-m:]
+        ra = [ca[i] / ca[i - 1] - 1 for i in range(1, m)]
+        rb = [cb[i] / cb[i - 1] - 1 for i in range(1, m)]
+        ma, mb = sum(ra) / len(ra), sum(rb) / len(rb)
+        da, db_ = [x - ma for x in ra], [x - mb for x in rb]
+        sa, sb = sum(x * x for x in da) ** 0.5, sum(x * x for x in db_) ** 0.5
+        if sa <= 0 or sb <= 0:
+            return None
+        return sum(x * y for x, y in zip(da, db_)) / (sa * sb)
+    except Exception:
+        return None
+
+
+def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
+    """v4.504 : MODE CONTINUATION. Dans une tendance franche (15 min dans le sens, pente 1 h reguliere dans le sens, H1 pas contraire, mouvement
+    net sur 2 h), le bot entre dans le sens de la tendance :
+      - « repli » : le prix a fait un repli de PB_MIN a PB_MAX x ATR 5 min depuis le dernier extreme (12 bougies) puis une bougie de reprise
+        (cloture au-dela de l extreme de la bougie precedente) ;
+      - « elan » : la derniere bougie forte, avec volume, fait un nouvel extreme (aucun repli) — pour ne pas laisser passer un mouvement ;
+      - « suiveur » (follower=True, side impose) : actif correle d un trade de continuation : tendance alignee et prix du bon cote de la
+        moyenne 9 (5 min), sans exiger son propre repli.
+    Garde-fous : prix pas etire (ATR 15 min au-dela de la moyenne 20, RSI), BTC pas contre, flux pas contre, place avant la zone H1 suivante.
+    Retourne (signal ou None, motif) ; un motif contenant « refuse » est journalise."""
+    if len(c5) < 40 or len(c15) < 30 or len(c1h) < 60:
+        return None, "historique insuffisant"
+    price = float(c5[-1]["c"])
+    a5, a15 = mtf.atr(c5, 14), mtf.atr(c15, 14)
+    if not (a5 and a15 and price > 0):
+        return None, "ATR indisponible"
+    atr15_pct = a15 / price * 100
+    if atr15_pct < K["min_atr_pct"]:
+        return None, "marche trop calme"
+    closes15 = [c["c"] for c in c15]
+    e20 = mtf.ema(closes15, 20)
+    e50 = mtf.ema(closes15, 50) if len(closes15) >= 50 else None
+    if not (e20 and e50):
+        return None, "historique insuffisant"
+    m15 = "haussiere" if (closes15[-1] > e20 > e50) else ("baissiere" if (closes15[-1] < e20 < e50) else "neutre")
+    if side is None:
+        side = "long" if m15 == "haussiere" else ("short" if m15 == "baissiere" else None)
+        if side is None:
+            return None, "aucun signal"
+    elif m15 != ("haussiere" if side == "long" else "baissiere"):
+        return None, "aucun signal"
+    sg = 1 if side == "long" else -1
+    t1h = mtf.trend(c1h)[0]
+    if (side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere"):
+        return None, "aucun signal"
+    nb_s = max(int(K["cont_slope_bars"]), 6)
+    sl_ = mtf.slope_features(c1h, n=nb_s, lookback=max(48, nb_s))
+    pa, r2 = sl_.get("pente_atr"), sl_.get("pente_r2")
+    if pa is None or r2 is None or sg * pa <= 0 or r2 < K["cont_min_r2"] * (0.6 if follower else 1.0):
+        return None, "aucun signal"
+    mv = (price / float(c5[-25]["c"]) - 1) * 100 * sg
+    if mv < K["cont_min_move_pct"] * (0.5 if follower else 1.0):
+        return None, "aucun signal"
+    ext = (price - e20) / a15 * sg
+    if ext > K["cont_max_ext_atr"]:
+        return None, "prix trop etire"
+    rsi5 = _rsi([c["c"] for c in c5], 14)
+    if rsi5 is not None and ((side == "long" and rsi5 >= K["cont_rsi_max"]) or (side == "short" and rsi5 <= 100 - K["cont_rsi_max"])):
+        return None, "prix trop etire (RSI 5 min)"
+    last, prev = c5[-1], c5[-2]
+    rng, body = last["h"] - last["l"], abs(last["c"] - last["o"])
+    vols = [c["v"] for c in c5[-21:-1]]
+    vavg = sum(vols) / len(vols) if vols else 0
+    vr = (last["v"] / vavg) if vavg > 0 else 1.0
+    extra, sub = {}, None
+    if follower:
+        e9 = mtf.ema([c["c"] for c in c5], 9)
+        if e9 is None or sg * (price - e9) < 0:
+            return None, "aucun signal"
+        sub, level, hi_, lo_ = "suiveur", e9, max(price, e9), min(price, e9)
+        why_t = [f"actif corrélé : tendance 15 min et pente 1 h dans le sens, prix du bon côté de la moyenne 9 (5 min)"]
+    else:
+        nbw = max(int(K["cont_bars"]), 6)
+        w = c5[-nbw:]
+        if side == "long":
+            xv = max(x["h"] for x in w)
+            ix = max(i for i, x in enumerate(w) if x["h"] == xv)
+        else:
+            xv = min(x["l"] for x in w)
+            ix = max(i for i, x in enumerate(w) if x["l"] == xv)
+        after = w[ix + 1:]
+        if after:
+            if side == "long":
+                pb = min(x["l"] for x in after)
+                ip = max(i for i, x in enumerate(w) if i > ix and x["l"] == pb)
+                depth = (xv - pb) / a5
+            else:
+                pb = max(x["h"] for x in after)
+                ip = max(i for i, x in enumerate(w) if i > ix and x["h"] == pb)
+                depth = (pb - xv) / a5
+            if not (K["cont_pb_min_atr"] <= depth <= K["cont_pb_max_atr"]) or len(w) - ip > 7:
+                return None, "aucun signal"
+            resume = (last["c"] > last["o"] and last["c"] > prev["h"]) if side == "long" else (last["c"] < last["o"] and last["c"] < prev["l"])
+            if not resume:
+                return None, "aucun signal"
+            sub, level = "repli", pb
+            hi_, lo_ = (xv, pb) if side == "long" else (pb, xv)
+            extra = {"pb_depth_atr": round(depth, 2), "swing": xv}
+            why_t = [f"repli de {depth:.1f} ATR 5 min depuis {xv:.6g}, puis bougie de reprise"]
+        else:
+            if not K["cont_momentum_on"]:
+                return None, "aucun signal"
+            strong = rng > 0 and body >= 0.5 * a5 and ((last["c"] > last["o"] and (last["c"] - last["l"]) / rng >= 0.7) if side == "long"
+                                                       else (last["c"] < last["o"] and (last["h"] - last["c"]) / rng >= 0.7))
+            if not strong or vr < K["cont_vol_mult"]:
+                return None, "aucun signal"
+            prior = max(x["h"] for x in w[:-1]) if side == "long" else min(x["l"] for x in w[:-1])
+            sub, level = "elan", prior
+            hi_, lo_ = max(price, prior), min(price, prior)
+            why_t = [f"élan : bougie forte au nouvel extrême des {nbw} dernières bougies 5 min (volume x{vr:.1f})"]
+    if btc_chg is not None:
+        if side == "long" and btc_chg <= -0.5:
+            return None, f"continuation long refuse : BTC en baisse ({btc_chg:+.2f} % / 1 h)"
+        if side == "short" and K.get("short_btc_block", 1) and btc_chg > K.get("short_btc_max", 0.1):
+            return None, f"continuation short refuse : BTC en hausse ({btc_chg:+.2f} % / 1 h)"
+    fmin = float(K.get("cont_flow_min", 0) or 0)
+    if fmin > 0 and flow is not None and flow.get("n", 0) >= K.get("flow_all_trades", 30):
+        br = flow["buy_ratio"]
+        if (side == "long" and br < fmin) or (side == "short" and br > 1 - fmin):
+            return None, f"continuation {side} refuse : flux pas dans le sens ({br * 100:.0f} % d'achats agressifs)"
+    zones = mtf.find_zones(c1h, pivot=2, lookback=120, merge_atr=0.6, max_width_atr=2.0) or []
+    if side == "long":
+        ups = [z["low"] for z in zones if z["low"] > price * 1.0005]
+        room = ((min(ups) - price) / price * 100) if ups else 99.0
+    else:
+        dns = [z["high"] for z in zones if z["high"] < price * 0.9995]
+        room = ((price - max(dns)) / price * 100) if dns else 99.0
+    if room < K["cont_min_room_pct"]:
+        return None, f"continuation {side} refuse : zone H1 à {room:.2f} % seulement (il faut ≥ {K['cont_min_room_pct']:g} %)"
+    aligned_h1 = t1h in ("haussiere", "baissiere")
+    sc_ = 50 + 8 + (12 if aligned_h1 else 0) + (10 if vr >= 1.2 else 0) + (5 if vr >= 2.5 else 0) + int(round(min(1.0, r2) * 8)) + (6 if sub == "repli" else 0)
+    if btc_chg is not None and ((side == "long" and btc_chg >= 0.2) or (side == "short" and btc_chg <= -0.2)):
+        sc_ += 8
+    sc_ = max(0, min(100, sc_))
+    reasons = [f"continuation {side} ({sub}) : tendance 15 min + pente 1 h dans le sens (régularité {r2:.2f}), mouvement {mv:+.2f} % sur 2 h"] + why_t
+    if aligned_h1:
+        reasons.append("tendance H1 dans le sens")
+    reasons.append(f"place avant la zone suivante : {'>3' if room > 3 else f'{room:.1f}'} %")
+    sig = {"side": side, "kind": "continuation", "sub": sub, "zone": (lo_, hi_), "score": sc_, "room": room, "touches": 0,
+           "reasons": reasons, "level": level, "price": price, "atr15_pct": atr15_pct, "volume_ratio": vr,
+           "sig_high": last["h"], "sig_low": last["l"], "atr5": a5,
+           "ctx": {"flow_buy": (round(flow["buy_ratio"], 3) if flow else None), "flow_n": (flow.get("n") if flow else None),
+                   "t1h": t1h, "m15": m15, "btc1h": (round(btc_chg, 3) if btc_chg is not None else None)},
+           "cont": {"sub": sub, "mv_pct": round(mv, 3), "r2": round(r2, 3), "pente_atr": round(pa, 3), "ext_atr": round(ext, 2), **extra}}
+    return sig, "ok"
+
+
 def p_fmt(x):
     return f"{x:.6g}"
 
@@ -330,6 +488,7 @@ class ScalpEngine:
         self._zone_cache = (0, {})           # v4.432 : zones ou un stop vient de tomber
         self.regime = {"ts": 0, "n": 0, "label": "inconnu"}     # v4.442 : regime du panier (correlation / largeur)
         self._opens = deque(maxlen=200)      # (ts, side, mode, ticker) des ouvertures recentes (grappe)
+        self._cont_fan = {}                  # v4.504 : (sens, mode) -> derniere ouverture en grappe de continuation
         self._sigs = deque(maxlen=300)       # (ts, ticker, side) signaux vus (confirmation par les pairs)
         self.peer_wait = {}                  # ticker -> signal en attente d un pair
         self._busy = False
@@ -359,7 +518,13 @@ class ScalpEngine:
                 "counter_enabled": int(c.get("SCALP_COUNTER_ENABLED", 1)), "counter_min_score": float(c.get("SCALP_COUNTER_MIN_SCORE", 65)),
                 "counter_flow": float(c.get("SCALP_COUNTER_FLOW_MIN", 0.58)), "counter_min_trades": int(c.get("SCALP_COUNTER_MIN_TRADES", 30)),
                 "flow_all_on": int(c.get("SCALP_FLOW_ALL_ON", 0)), "flow_all_min": float(c.get("SCALP_FLOW_ALL_MIN", 0.52)),
-                "flow_all_trades": int(c.get("SCALP_FLOW_ALL_MIN_TRADES", 30))}
+                "flow_all_trades": int(c.get("SCALP_FLOW_ALL_MIN_TRADES", 30)),
+                "cont_bars": int(c.get("SCALP_CONT_BARS", 12)), "cont_pb_min_atr": float(c.get("SCALP_CONT_PB_MIN_ATR", 0.3)),
+                "cont_pb_max_atr": float(c.get("SCALP_CONT_PB_MAX_ATR", 2.5)), "cont_min_move_pct": float(c.get("SCALP_CONT_MIN_MOVE_PCT", 0.5)),
+                "cont_min_r2": float(c.get("SCALP_CONT_MIN_R2", 0.4)), "cont_slope_bars": int(c.get("SCALP_SLOPE_BARS", 12) or 12),
+                "cont_max_ext_atr": float(c.get("SCALP_CONT_MAX_EXT_ATR", 2.5)), "cont_rsi_max": float(c.get("SCALP_CONT_RSI_MAX", 78)),
+                "cont_momentum_on": int(c.get("SCALP_CONT_MOMENTUM_ON", 1)), "cont_flow_min": float(c.get("SCALP_CONT_FLOW_MIN", 0.5)),
+                "cont_min_room_pct": float(c.get("SCALP_CONT_MIN_ROOM_PCT", 0.3)), "cont_vol_mult": float(c.get("SCALP_CONT_VOL_MULT", 1.2))}
 
     # ── univers : top N par volume 24 h parmi les actifs suivis ──
     def universe(self):
@@ -435,7 +600,7 @@ class ScalpEngine:
             else:
                 break
         by_kind = {}
-        for k in ("rebond", "cassure"):
+        for k in ("rebond", "cassure", "continuation"):
             by_kind[k] = agg([d for d in rows if (d.get("scalp") or {}).get("kind") == k])
         by_trend = {"avec": agg([d for d in rows if not (d.get("scalp") or {}).get("counter")]),
                     "contre": agg([d for d in rows if (d.get("scalp") or {}).get("counter")])}
@@ -470,11 +635,11 @@ class ScalpEngine:
 
     def _manage_open(self, now):
         mx_cfg = float(self.cfg.get("SCALP_MAX_HOLD_MIN", 90)) * 60
-        if mx_cfg <= 0 and not int(self.cfg.get("SCALP_CORR_BASKET_EXIT_ON", 0)) and not int(self.cfg.get("SCALP_OSC_ON", 1)):
+        if mx_cfg <= 0 and not int(self.cfg.get("SCALP_CORR_BASKET_EXIT_ON", 0)) and not int(self.cfg.get("SCALP_OSC_ON", 1)) and not int(self.cfg.get("SCALP_CONT_ON", 1)):
             return
         for it in list(self.manual.items.values()):
             if it.get("strategy_source") == STRATEGY and it.get("status") == "open":
-                mx = float(it.get("osc_hold_min") or 0) * 60 or mx_cfg      # v4.503 : duree propre au mode oscillation
+                mx = float(it.get("hold_min") or it.get("osc_hold_min") or 0) * 60 or mx_cfg      # v4.504 : duree propre au mode (oscillation, continuation)      # v4.503 : duree propre au mode oscillation
                 if int(self.cfg.get("SCALP_CORR_BASKET_EXIT_ON", 0)) and not it.get("tp_run_armed"):
                     try:
                         reg = self.regime
@@ -567,6 +732,11 @@ class ScalpEngine:
                 if not sig:
                     if "refuse" in motif:
                         self._ev("refus", t, motif)
+                    if int(self.cfg.get("SCALP_CONT_ON", 1)):      # v4.504 : mode continuation (paper et live)
+                        try:
+                            self._cont_try(t, c5, c15, c1h, btc, K, mode)
+                        except Exception as e:
+                            self.last_error = f"continuation {t} : {type(e).__name__}: {e}"
                     continue
                 if self._zone_blocked(t, mode, sig.get("level")):
                     self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : un stop vient de tomber sur cette zone ({sig['level']:.6g}), pause de zone")
@@ -610,6 +780,90 @@ class ScalpEngine:
             pass
         self.regime = reg
         return reg
+
+    def _cont_open_count(self, mode):
+        return sum(1 for it in self.manual.items.values()
+                   if it.get("strategy_source") == STRATEGY and it.get("mode") == mode
+                   and it.get("status") in ("scheduled", "opening", "open", "closing") and (it.get("scalp") or {}).get("kind") == "continuation")
+
+    def _cont_try(self, t, c5, c15, c1h, btc, K, mode):
+        """v4.504 : signal de continuation sur t ; s il est pris et que le marche le confirme, meme sens sur les actifs correles."""
+        c = self.cfg
+        sig, motif = cont_eval(c5, c15, c1h, btc, K, self._flow(t))
+        if not sig:
+            if motif and "refuse" in motif:
+                self._ev("refus", t, motif)
+            return False
+        cap = int(c.get("SCALP_CONT_MAX_OPEN", 5))
+        n_open = self._cont_open_count(mode)
+        if cap > 0 and n_open >= cap:
+            self._ev("refus", t, f"continuation {sig['side']} refusée : {n_open}/{cap} trades de continuation déjà ouverts")
+            return True
+        before = self._cont_open_count(mode)
+        self._take(t, sig)
+        if self._cont_open_count(mode) > before:
+            self._cont_fanout(t, sig, c5, K, btc, mode)
+        return True
+
+    def _cont_fanout(self, t0, sig0, c5_0, K, btc, mode):
+        """v4.504 : tendance confirmee par le panier (au moins SCALP_CONT_BREADTH_MIN % des actifs dans le sens) : meme sens sur les actifs
+        correles a t0 (correlation 5 min >= SCALP_CONT_PEER_CORR), les plus forts d abord, dans la limite de SCALP_CONT_MAX_OPEN trades."""
+        c = self.cfg
+        if not int(c.get("SCALP_CONT_FANOUT_ON", 1)):
+            return
+        side = sig0["side"]
+        now = time.time()
+        if now - self._cont_fan.get((side, mode), 0) < 600:
+            return
+        reg = self._regime()
+        share = reg.get("up") if side == "long" else reg.get("down")
+        need = float(c.get("SCALP_CONT_BREADTH_MIN", 60)) / 100.0
+        if not reg.get("n") or share is None:
+            return
+        if share < need:
+            self._ev("refus", t0, f"continuation {side} : marché non confirmé ({share * 100:.0f} % des actifs vont dans le sens, il en faut ≥ {need * 100:.0f} %) — pas de trade sur les autres actifs")
+            return
+        self._cont_fan[(side, mode)] = now
+        cap = int(c.get("SCALP_CONT_MAX_OPEN", 5))
+        free = (cap - self._cont_open_count(mode)) if cap > 0 else 99
+        if free <= 0:
+            return
+        sg = 1 if side == "long" else -1
+        pc = float(c.get("SCALP_CONT_PEER_CORR", 0.5))
+        open_t = {it.get("ticker") for it in self.manual.items.values()
+                  if it.get("strategy_source") == STRATEGY and it.get("mode") == mode and it.get("status") in ("scheduled", "opening", "open", "closing")}
+        cands = []
+        for t2 in self.universe():
+            if t2 == t0 or t2 in self.pending or t2 in open_t or now < self._cool.get((t2, mode), 0) or self._busy_same_mode(t2, mode):
+                continue
+            ch = (reg.get("ch30") or {}).get(t2)
+            if ch is None or sg * ch <= 0:
+                continue
+            try:
+                b5 = self.bot._mtf_candles(t2, "5m", 60)
+                b15 = self.bot._mtf_candles(t2, "15m", 60)
+                b1h = self.bot._mtf_candles(t2, "1h", 230)
+            except Exception:
+                continue
+            if not (b5 and b15 and b1h):
+                continue
+            rho = _pair_corr(c5_0, b5)
+            if rho is None or rho < pc:
+                continue
+            s2, _m = cont_eval(b5, b15, b1h, btc, K, self._flow(t2), side=side, follower=True)
+            if not s2:
+                continue
+            s2["cont"].update({"peer_of": t0, "peer_corr": round(rho, 2), "breadth_pct": round(share * 100)})
+            s2["reasons"] = list(s2["reasons"]) + [f"même sens que {t0} (corrélation 5 min {rho:.2f}), {share * 100:.0f} % du panier dans le sens"]
+            cands.append((sg * ch, t2, s2))
+        cands.sort(key=lambda x: -x[0])
+        for _r, t2, s2 in cands:
+            if free <= 0:
+                break
+            n0 = self._cont_open_count(mode)
+            self._take(t2, s2)
+            if self._cont_open_count(mode) > n0:
+                free -= 1
 
     def _cluster_count(self, side, mode):
         w = float(self.cfg.get("SCALP_CLUSTER_WINDOW_MIN", 30)) * 60
@@ -1298,7 +1552,7 @@ class ScalpEngine:
         Retourne (texte du refus ou None, facteur de taille)."""
         c = self.cfg
         pre = f"vigilance ({why_def}) : "
-        sl = float(c.get("SCALP_SL_PCT", 0.65))
+        sl = float(c.get("SCALP_CONT_SL_PCT", 0.2)) if sig.get("kind") == "continuation" else float(c.get("SCALP_SL_PCT", 0.65))
         size = max(0.1, min(1.0, float(c.get("SCALP_DEFENSE_SIZE_PCT", 60) or 100) / 100.0))
         # 1) amplitude disponible avant la zone suivante (mouvements repetes : il faut de la place pour le TP, avec marge)
         rx = float(c.get("SCALP_DEFENSE_ROOM_X", 1.5) or 0)
@@ -1325,7 +1579,7 @@ class ScalpEngine:
             # par le moteur (sig["counter"] False) ; on exige en plus un flux dans le sens.
             if fb is not None and ((sig["side"] == "long" and fb < 0.55) or (sig["side"] == "short" and fb > 0.45)):
                 return pre + f"cassure sans flux dans le sens ({fb * 100:.0f} % d'achats agressifs)", size
-        else:
+        elif sig.get("kind") != "continuation":      # v4.504 : la continuation n a pas de zone horizontale
             mt = int(float(c.get("SCALP_SAFE_MIN_TOUCHES", 2) or 0))
             if mt > 0 and int(sig.get("touches") or 1) < mt:
                 return pre + f"zone testée {int(sig.get('touches') or 1)} fois (il en faut ≥ {mt})", size
@@ -1517,8 +1771,17 @@ class ScalpEngine:
             if n_open >= slots:
                 self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {n_open}/{slots} emplacements occupés")
                 return
+        cont = sig.get("kind") == "continuation"      # v4.504 : continuation = 1/5 du capital engage en marge, jamais reduit par la correlation
         base_notional = self.compound_notional(mode)
-        if base_notional is None:
+        if cont:
+            cs_ = self.capital_state(mode)
+            lev_ = max(int(c.get("SCALP_LEVERAGE", 3)), 1)
+            base_notional = max(cs_["now"] * float(c.get("SCALP_CONT_MARGIN_PCT", 20)) / 100.0 * lev_, 10.5 if mode == "live" else 1.0)
+            used_ = self.committed_margin(mode)
+            if used_ + base_notional / lev_ > cs_["now"] + 0.5:
+                self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : capital engagé ({used_:.2f} $ de marge déjà utilisée + {base_notional / lev_:.2f} $ > capital {cs_['now']:.2f} $)")
+                return
+        elif base_notional is None:
             base_notional = float(c.get("SCALP_NOTIONAL_USD", 60.0))
         elif slots > 0:
             pass
@@ -1538,7 +1801,7 @@ class ScalpEngine:
         reg = dict(self.regime) if self.regime.get("n") else {}
         notional = base_notional
         sp = float(c.get("SCALP_CORR_SIZE_PCT", 100))
-        if reg.get("label") == "correle" and 0 < sp < 100:      # v4.442 : marche correle = un seul pari ; on reduit la taille de chaque ligne
+        if reg.get("label") == "correle" and 0 < sp < 100 and not cont:      # v4.442 : marche correle = un seul pari ; on reduit la taille de chaque ligne
             notional = max(notional * sp / 100.0, 10.5 if mode == "live" else 1.0)
         if sig.get("prudent_btc") is not None:      # v4.497 : taille reduite pour un short a contre-courant de BTC
             notional = max(notional * max(0.1, min(1.0, float(c.get("SCALP_SHORT_BTC_SOFT_SIZE_PCT", 50) or 50) / 100.0)), 10.5 if mode == "live" else 1.0)
@@ -1550,21 +1813,21 @@ class ScalpEngine:
                 and int(float(c.get("SCALP_DEFENSE_SOFT", 1) or 0)):      # v4.483 : vigilance -> taille reduite
             f_ = self._defense_soft(t, sig, mode, "")[1]
             notional = max(notional * f_, 10.5 if mode == "live" else 1.0)
-        sl_soft = float(c.get("SCALP_SL_PCT", 0.65))
+        sl_soft = float(c.get("SCALP_CONT_SL_PCT", 0.2)) if cont else float(c.get("SCALP_SL_PCT", 0.65))
         sl_hard = None
-        osc = self._osc_eval(t, sig, asc) if int(c.get("SCALP_OSC_ON", 1)) else None      # v4.503 : mode oscillation (paper et live)
+        osc = self._osc_eval(t, sig, asc) if (int(c.get("SCALP_OSC_ON", 1)) and not cont) else None      # v4.503 : mode oscillation (paper et live)
         if osc:
             base_sl = sl_soft
             sl_soft = osc["sl_pct"]
             notional = max(notional * min(1.0, base_sl / sl_soft), 10.5 if mode == "live" else 1.0)      # meme perte maximale en $ (jamais plus gros que la taille normale)
-        if (not osc) and asc and asc.get("asc") and int(c.get("SCALP_ASC_SL_ON", 1)) and sig.get("atr5") and sig.get("price"):
+        if (not osc) and (not cont) and asc and asc.get("asc") and int(c.get("SCALP_ASC_SL_ON", 1)) and sig.get("atr5") and sig.get("price"):
             a5p = sig["atr5"] / sig["price"] * 100.0      # stop elargi au-dessus du bruit, taille reduite pour garder la meme perte en $
             new_sl = min(max(sl_soft, float(c.get("SCALP_ASC_SL_ATR", 1.5)) * a5p), float(c.get("SCALP_ASC_SL_MAX_PCT", 1.5)))
             if new_sl > sl_soft + 1e-9:
                 notional = max(notional * sl_soft / new_sl, 10.5 if mode == "live" else 1.0)
                 asc["rules"].append(f"stop élargi {sl_soft:g} % → {new_sl:.2f} % (bruit ATR 5 min {a5p:.2f} %), taille réduite")
                 sl_soft = new_sl
-        if (not osc) and int(c.get("SCALP_ASC_CLOSE_STOP_ON", 1)) and (bool(asc and asc.get("asc")) or not int(c.get("SCALP_ASC_CLOSE_STOP_ASC_ONLY", 1))):      # v4.496 : stop sur cloture seulement en ascenseur
+        if (not osc) and (not cont) and int(c.get("SCALP_ASC_CLOSE_STOP_ON", 1)) and (bool(asc and asc.get("asc")) or not int(c.get("SCALP_ASC_CLOSE_STOP_ASC_ONLY", 1))):      # v4.496 : stop sur cloture seulement en ascenseur
             sl_hard = min(sl_soft * float(c.get("SCALP_ASC_HARD_MULT", 2.0)), 50.0)
             if asc is not None:
                 asc["rules"].append(f"stop sur clôture 5 min (secours {sl_hard:.2f} %)")
@@ -1572,7 +1835,7 @@ class ScalpEngine:
         params = {"strategy": STRATEGY, "ticker": t, "direction": sig["side"], "market": "perp", "mode": mode,
                   "execution": "now", "leverage": int(c.get("SCALP_LEVERAGE", 3)),
                   "notional_usd": round(notional, 2),
-                  "sl_pct": (sl_hard if sl_hard else sl_soft), "tp_pct": (osc["tp_pct"] if osc else float(c.get("SCALP_TP_PCT", 0.6))),
+                  "sl_pct": (sl_hard if sl_hard else sl_soft), "tp_pct": (osc["tp_pct"] if osc else (float(c.get("SCALP_CONT_TP_PCT", 0.6)) if cont else float(c.get("SCALP_TP_PCT", 0.6)))),
                   "confirm_live": mode == "live"}
         if int(c.get("SCALP_RUN_ENABLED", 1)):     # v4.434 : laisser courir apres l objectif ; sortie si le prix recule de X % depuis son plus haut
             params.update({"tp_run": True, "tp_run_lock_pct": 0.0, "tp_run_trail_pct": (osc["trail_pct"] if osc else float(c.get("SCALP_RUN_TRAIL_PCT", 0.2)))})
@@ -1609,6 +1872,9 @@ class ScalpEngine:
                     if osc:
                         it["scalp"]["osc"] = {k: osc[k] for k in ("er", "box_lo", "box_hi", "amp_pct", "pos", "tp_pct", "sl_pct", "hold_min")}
                         it["osc_hold_min"] = osc["hold_min"]
+                    if cont:
+                        it["scalp"]["cont"] = dict(sig.get("cont") or {})
+                        it["hold_min"] = float(c.get("SCALP_CONT_MAX_HOLD_MIN", 60))
                     if sl_hard:
                         it["sl_close"], it["sl_soft_pct"], it["sl_hard_pct"] = True, round(sl_soft, 4), round(sl_hard, 4)
                     it["reasons"] = sig["reasons"]
