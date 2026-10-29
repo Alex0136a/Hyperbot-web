@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.500";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.502";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -283,6 +283,8 @@ const ACCUM_OVERRIDE_KEYS = new Set([
 // v4.187 — SUR DEMANDE EXPLICITE : regroupe les reglages avances par mode,
 // selon le prefixe de leur cle — pour un affichage clair, separe par
 // section, plutot qu une seule grille plate de 26+ reglages melanges.
+const _srchNorm = s => String(s == null ? "" : s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();      // v4.501 : recherche sans accents ni majuscules
+const _srchMatch = (q, ...parts) => { const toks = _srchNorm(q).split(/\s+/).filter(Boolean); const hay = _srchNorm(parts.join(" ")); return toks.every(t => hay.includes(t)); };
 function groupAdvancedSettingsByMode(settings) {
   const groups = {forex: [], accumulation: [], funding: [], spot_accum: [], global: []};
   for (const [key, meta] of Object.entries(settings)) {
@@ -1186,6 +1188,8 @@ function ScalpPanel({ token }) {
   const [vals, setVals] = useState({});
   const [hours, setHours] = useState("");
   const [sub, setSub] = useState("reglages");
+  const [q, setQ] = useState("");      // v4.501 : recherche de reglage
+  const [savedMsg, setSavedMsg] = useState("");      // v4.502 : confirmation d enregistrement (sans fenetre a valider)
   const [thSel, setThSel] = useState("today"), [thDate, setThDate] = useState(""), [thMode, setThMode] = useState("");
   const load = useCallback(async () => {
     try { const r = await apiCall("/api/scalp","GET",null,token); setD(r); setErr("");
@@ -1214,6 +1218,25 @@ function ScalpPanel({ token }) {
     SCALP_PEER_MIN:"Règle 5 · Confirmation par les pairs : nb d'autres actifs requis dans le même sens (0 = non)",SCALP_PEER_CORR_ONLY:"Pairs : seulement en marché corrélé (1 = oui, 0 = tous les marchés)",SCALP_PEER_WINDOW_MIN:"Pairs : fenêtre de temps (min)",
     SCALP_CORR_BASKET_EXIT_ON:"Règle 6 · Sortie panier : fermer les trades en perte si le panier se retourne (1 = oui)",SCALP_BASKET_EXIT_PCT:"Sortie panier : part d'actifs contre (%)"};
   const isC = k => k in CLBL;
+  // v4.502 : enregistrement en un clic de CE qui a ete modifie (les autres reglages ne sont pas renvoyes)
+  const _same = (a, b) => { const sa = String(a ?? ""), sb = String(b ?? ""); if (sa === sb) return true; if (sa.trim() === "" || sb.trim() === "") return false; return Number(sa.replace(",", ".")) === Number(sb); };
+  const dirty = Object.fromEntries(Object.entries(vals).filter(([k, v]) => !_same(v, d.config[k])));
+  const hoursDirty = hours !== String(d.config.SCALP_HOURS_UTC || "");
+  const nDirty = Object.keys(dirty).length + (hoursDirty ? 1 : 0);
+  const inpS = k => ({...MT.input, ...(k in dirty ? {borderColor:"#fbbf24", background:"#2a2208"} : {})});
+  const saveDirty = async () => {
+    const names = Object.keys(dirty).concat(hoursDirty ? ["SCALP_HOURS_UTC"] : []);
+    if (!names.length) return;
+    try { await apiCall("/api/scalp/config", "POST", {...(hoursDirty ? {hours_utc: hours} : {}), values: dirty}, token);
+      setSavedMsg("✅ Enregistré : " + names.join(", ")); setTimeout(() => setSavedMsg(""), 7000); load();
+    } catch (e) { alert(e.message); } };
+  const resetDirty = () => { setVals(Object.fromEntries(Object.entries(d.config || {}).filter(([k]) => k !== "SCALP_HOURS_UTC" && k !== "SCALP_ENABLED" && k !== "SCALP_MODE"))); setHours(String(d.config.SCALP_HOURS_UTC || "")); };
+  const saveBar = (nDirty > 0 || savedMsg) ? <div style={{position:"sticky", top:0, zIndex:5, display:"flex", gap:8, alignItems:"center", flexWrap:"wrap", padding:"8px 10px", marginBottom:10, border:"1px solid " + (nDirty ? "#fbbf24" : "#166534"), borderRadius:8, background: nDirty ? "#2a2208" : "#052e16"}}>
+    {nDirty > 0 ? <><button style={MT.btn("#fbbf24", "#1f2937")} onClick={saveDirty}>💾 Enregistrer ({nDirty} modifié{nDirty > 1 ? "s" : ""})</button>
+      <button style={MT.btn("#334155", "#e2e8f0")} onClick={resetDirty}>Annuler les modifications</button>
+      <span style={{fontSize:11, color:"#fde68a"}}>{Object.keys(dirty).concat(hoursDirty ? ["SCALP_HOURS_UTC"] : []).join(", ")}</span></>
+      : <span style={{fontSize:11, color:"#86efac"}}>{savedMsg}</span>}
+  </div> : null;
   const reg = d.regime || {};
   const rgTxt = reg.n ? `${reg.label==="correle"?"CORRÉLÉ":reg.label==="disperse"?"DISPERSÉ":"inconnu"} · corrélation ${reg.corr!=null?reg.corr.toFixed(2):"—"} · ${Math.round((reg.up||0)*100)} % des actifs montent / ${Math.round((reg.down||0)*100)} % baissent (30 min) · panier ${reg.basket30>=0?"+":""}${reg.basket30} %` : "mesure en cours (nécessite le Scalp actif)";
   const prC = (a) => a && a.n ? `${a.n} trades · ${a.win_rate.toFixed(0)} % gagnants · ${fmtUsd(a.pnl_net)} net` : "—";
@@ -1291,19 +1314,38 @@ function ScalpPanel({ token }) {
           {[["reglages","⚙️ Réglages"],["corr","🔗 Corrélation"],["res","📊 Résultats & journal"]].map(([id,l])=><button key={id} style={MT.seg(sub===id,"#60a5fa")} onClick={()=>setSub(id)}>{l}</button>)}
         </div>
         {sub==="reglages" && <div>
+          {saveBar}
           {d.capital && (()=>{ const k=d.capital; return <div style={{fontSize:12,color:"#cbd5e1",marginBottom:10,padding:"8px 10px",border:"1px solid #1e2d4a",borderRadius:8,background:"#0b1220"}}>
             <b>Capital {k.mode==="live"?"LIVE":"PAPER"}</b> : départ {k.base} $ ({k.source}) → <b style={{color:k.now>=k.base?"#22c55e":"#ef4444"}}>{k.now} $</b>{Number(k.slots)>0?` · ${k.slots} emplacements : chaque trade = ${k.slot_notional} $ (marge ${(k.slot_notional/Math.max(Number(d.config.SCALP_LEVERAGE)||1,1)).toFixed(2)} $), fixé pour la journée${Number(d.config.SCALP_SLOTS_USE_PCT||100)<100?` · réserve ${100-Number(d.config.SCALP_SLOTS_USE_PCT)} %`:""}`:(k.compound?` · chaque trade = ${Number(d.config.SCALP_COMPOUND_PCT||100)} % du capital`:" · taille fixe (capital composé désactivé)")}
             {Number(k.goal_pct)>0 && <div>Objectif du jour net de frais ({dayLbl}) : <b style={{color:k.goal_reached?"#22c55e":"#fbbf24"}}>{k.day_pct>=0?"+":""}{k.day_pct} %</b> / {k.goal_pct} % ({k.day_net>=0?"+":""}{k.day_net} $){k.goal_reached?" — atteint : "+(Number(d.config.SCALP_GOAL_STOP_ALL)?"plus d'entrée aujourd'hui":"mode prudent actif"):""}</div>}
             {Number(k.goal_pct)>0 && <div style={{color:"#94a3b8"}}>Actifs « sûrs » ({(k.safe_assets||[]).length}) : {(k.safe_assets||[]).join(", ")||"aucun pour l'instant"}</div>}
             <button style={{...MT.btn("#334155","#e2e8f0"),marginTop:6}} onClick={()=>{ if(window.confirm("Repartir du capital de départ à partir de maintenant ? Les trades déjà clôturés ne comptent plus dans le capital.")) send({reset_capital:true},"Le capital repart du capital de départ."); }}>↺ Repartir du capital de départ</button>
           </div>; })()}
+          <div style={{marginBottom:10}}>
+            <input style={MT.input} placeholder="🔍 Rechercher un réglage (nom ou mot-clé : rentabilité, SCALP_BE, stop, cassure…)" value={q} onChange={e=>setQ(e.target.value)}/>
+          </div>
+          {q.trim() ? (()=>{
+            const ALLL = {...LBL, ...CLBL}; const t0 = _srchNorm(q).split(/\s+/).filter(Boolean)[0] || "";
+            const rows = Object.keys(ALLL).filter(k=>_srchMatch(q, ALLL[k], k)).map(k=>({k, sc: (_srchNorm(k).startsWith(t0)||_srchNorm(ALLL[k]).startsWith(t0)) ? 0 : (_srchNorm(k).includes(t0) ? 1 : 2)}))
+              .sort((a,b)=>a.sc-b.sc || String(ALLL[a.k]).localeCompare(String(ALLL[b.k]),"fr")).map(r=>r.k);
+            const showHours = _srchMatch(q, "tranches horaires heures utc", "SCALP_HOURS_UTC");
+            return <div>
+              <div style={{fontSize:11,color:"#94a3b8",marginBottom:6}}>{rows.length + (showHours?1:0)} réglage(s) trouvé(s). Seuls les champs modifiés sont enregistrés.</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(230px,1fr))",gap:10}}>
+                {showHours && <div><span style={MT.label}>TRANCHES HORAIRES UTC (ex. 7-11,13-21 · vide = tout le temps)</span><input style={{...MT.input, ...(hoursDirty ? {borderColor:"#fbbf24", background:"#2a2208"} : {})}} value={hours} onChange={e=>setHours(e.target.value)}/></div>}
+                {rows.map(k=><div key={k}><span style={MT.label}>{ALLL[k]}</span><input style={inpS(k)} value={vals[k]??""} onChange={e=>setVals({...vals,[k]:e.target.value})}/><div style={{fontSize:9,color:"#64748b",marginTop:2}}>{k}{k in dirty ? " · modifié (actuel : "+String(d.config[k]??"")+")" : ""}</div></div>)}
+              </div>
+              {rows.length===0 && !showHours && <div style={{fontSize:11,color:"#94a3b8"}}>Aucun réglage Scalp ne correspond.</div>}
+            </div>; })() : <>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))",gap:10}}>
             <div><span style={MT.label}>TRANCHES HORAIRES UTC (ex. 7-11,13-21 · vide = tout le temps)</span><input style={MT.input} value={hours} onChange={e=>setHours(e.target.value)}/></div>
-            {Object.keys(LBL).filter(k=>!isC(k)).map(k=><div key={k}><span style={MT.label}>{LBL[k]}</span><input style={MT.input} value={vals[k]??""} onChange={e=>setVals({...vals,[k]:e.target.value})}/></div>)}
+            {Object.keys(LBL).filter(k=>!isC(k)).map(k=><div key={k}><span style={MT.label}>{LBL[k]}</span><input style={inpS(k)} value={vals[k]??""} onChange={e=>setVals({...vals,[k]:e.target.value})}/></div>)}
           </div>
-          <button style={{...MT.btn("#60a5fa"),marginTop:10}} onClick={()=>send({hours_utc:hours,values:vals},"Réglages enregistrés.")}>Enregistrer les réglages</button>
+          <button style={{...MT.btn("#60a5fa"),marginTop:10}} disabled={!nDirty} onClick={saveDirty}>Enregistrer les réglages modifiés{nDirty?` (${nDirty})`:""}</button>
+          </>}
         </div>}
         {sub==="corr" && <div>
+          {saveBar}
           <div style={{fontSize:12,color:"#cbd5e1",marginBottom:6}}><b>Régime du panier ({(d.universe||[]).length} actifs)</b> : <span style={{color:reg.label==="correle"?"#fbbf24":"#34d399"}}>{rgTxt}</span></div>
           <div style={{fontSize:11,color:"#94a3b8",marginBottom:8}}>Corrélé = les actifs bougent ensemble : le panier compte comme UN seul pari, et les règles ci-dessous (désactivées par défaut) s'appliquent. Dispersé = chaque actif fait son chemin : le Scalp trade comme avant. Le régime est enregistré sur chaque trade (visible dans l'historique) pour calibrer les seuils.</div>
           {reg.ch30 && Object.keys(reg.ch30).length>0 && <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>{Object.entries(reg.ch30).sort((x,y)=>y[1]-x[1]).map(([t,v])=><div key={t} style={{background:"#0a0e1a",border:"1px solid #1e2d4a",borderRadius:6,padding:"3px 7px",fontSize:11,color:v>0.05?"#22c55e":v<-0.05?"#ef4444":"#94a3b8"}}>{t} {v>=0?"+":""}{v.toFixed(2)} %</div>)}</div>}
@@ -1317,9 +1359,9 @@ function ScalpPanel({ token }) {
             {S.by_cluster && [["0","0"],["1","1"],["2","2"],["3","3 ou plus"]].map(([k,l])=><div key={k}><span style={MT.label}>{l}</span>{prC(S.by_cluster[k])}</div>)}
           </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(230px,1fr))",gap:10}}>
-            {Object.keys(CLBL).map(k=><div key={k}><span style={MT.label}>{CLBL[k]}</span><input style={MT.input} value={vals[k]??""} onChange={e=>setVals({...vals,[k]:e.target.value})}/></div>)}
+            {Object.keys(CLBL).map(k=><div key={k}><span style={MT.label}>{CLBL[k]}</span><input style={inpS(k)} value={vals[k]??""} onChange={e=>setVals({...vals,[k]:e.target.value})}/></div>)}
           </div>
-          <button style={{...MT.btn("#60a5fa"),marginTop:10}} onClick={()=>send({hours_utc:hours,values:vals},"Réglages de corrélation enregistrés.")}>Enregistrer</button>
+          <button style={{...MT.btn("#60a5fa"),marginTop:10}} disabled={!nDirty} onClick={saveDirty}>Enregistrer les réglages modifiés{nDirty?` (${nDirty})`:""}</button>
         </div>}
         {sub==="res" && <div>
         <div style={{...MT.title,marginTop:4}}>RÉSULTATS PAR HEURE — NET de frais (heure UTC, entre parenthèses l'heure {_off===0?"UTC":"locale"}, {live?"live":"paper"})</div>
@@ -2217,6 +2259,7 @@ function App() {
   const [dailyStats, setDailyStats] = useState(null);
   const [advancedSettings, setAdvancedSettings] = useState(null);
   const [advancedEdits, setAdvancedEdits] = useState({});
+  const [advQ, setAdvQ] = useState("");      // v4.501 : recherche de reglage avance
   const [bilan, setBilan] = useState(null);
   const [bilanLive, setBilanLive] = useState(null);
   const [volatility, setVolatility] = useState(null);
@@ -4209,6 +4252,8 @@ Confirmer ?`
             <div style={{fontSize:10,color:"#94a3b8",marginBottom:12,lineHeight:1.6}}>
               Indicateurs, filtres, confiance et session — pour les utilisateurs avancés. Laisse les valeurs par défaut si tu n'es pas sûr.
             </div>
+            {advancedSettings && <input style={{width:"100%",boxSizing:"border-box",background:"#0b1220",border:"1px solid #1e2d4a",borderRadius:6,padding:"8px 10px",color:"#e2e8f0",fontSize:12,marginBottom:12}}
+              placeholder="🔍 Rechercher un réglage (nom ou mot-clé : funding, tendance, SUPSW, stop…)" value={advQ} onChange={e=>setAdvQ(e.target.value)}/>}
             {!advancedSettings
               ? <div style={{color:"#94a3b8",fontSize:11}}>Chargement...</div>
               : <>
@@ -4225,7 +4270,8 @@ Confirmer ?`
                       apiCall("/api/config/advanced","GET",null,token).then(r=>setAdvancedSettings(r));
                     }catch(e){alert("Erreur: "+e.message);}
                   };
-                  const groups = groupAdvancedSettingsByMode(advancedSettings);
+                  const groups0 = groupAdvancedSettingsByMode(advancedSettings);
+                  const groups = advQ.trim() ? Object.fromEntries(Object.entries(groups0).map(([gk,arr])=>[gk, arr.filter(([key,meta])=>_srchMatch(advQ, meta.label, key)).sort((a,b)=>{ const t0=_srchNorm(advQ).split(/\s+/).filter(Boolean)[0]||""; const sa=(_srchNorm(a[0]).startsWith(t0)||_srchNorm(a[1].label).startsWith(t0))?0:1; const sb=(_srchNorm(b[0]).startsWith(t0)||_srchNorm(b[1].label).startsWith(t0))?0:1; return sa-sb; })])) : groups0;
                   return ADVANCED_GROUP_META.filter(g=>groups[g.key].length>0).map(g=>(
                     <div key={g.key} style={{marginBottom:16}}>
                       <div style={{fontSize:10,fontWeight:700,color:g.color,marginBottom:8,paddingBottom:4,borderBottom:`1px solid ${g.color}33`}}>{g.label}</div>

@@ -1542,3 +1542,14 @@ Toutes les règles ci-dessous s'appliquent de la même façon en paper et en liv
 ## v4.500 — Funding : stop au seuil de rentabilité et actifs en mauvaise passe activés par défaut
 - `FUNDING_BE_ON` = 1 et `FUNDING_ASSET_BLOCK_ON` = 1 (paper et réel). Réglages et seuils inchangés (v4.499).
 - Les valeurs déjà enregistrées par l'utilisateur gardent la priorité sur ces défauts.
+
+## v4.501 — Volets de recherche dans les réglages
+- **Réglages du Scalp** : champ « 🔍 Rechercher un réglage » au-dessus de la grille. Recherche par libellé ou par nom technique (ex. « rentabilité », « SCALP_BE »), sans tenir compte des accents ni des majuscules ; plusieurs mots = tous doivent correspondre. Les résultats couvrent aussi les réglages de corrélation, triés (début du nom d'abord). Chaque champ affiche son nom technique et, s'il est modifié, sa valeur actuelle. Le bouton « Enregistrer les champs modifiés » n'envoie que les champs changés (les autres réglages gardent leur valeur enregistrée).
+- **Réglages avancés** : même champ de recherche au-dessus des groupes ; seuls les groupes et réglages correspondants sont affichés.
+- Sans recherche, les deux écrans fonctionnent comme avant.
+
+## v4.502 — Réglages du Scalp : enregistrement en un clic des seuls champs modifiés
+- Les champs modifiés sont surlignés en jaune. Une barre « 💾 Enregistrer (N modifié(s)) » apparaît en haut des onglets Réglages et Corrélation, avec la liste des champs touchés et un bouton « Annuler les modifications ».
+- Un seul clic enregistre uniquement les champs modifiés (ni les autres réglages, ni leurs valeurs enregistrées ne sont renvoyés ni revalidés). Plus de fenêtre à valider : une confirmation verte « ✅ Enregistré : … » s'affiche dans la barre.
+- Les boutons du bas des deux onglets et celui de la recherche (v4.501) utilisent le même enregistrement.
+- Comparaison numérique : « 0.10 » et « 0,1 » ne comptent pas comme une modification.
