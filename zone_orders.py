@@ -295,9 +295,19 @@ class ZoneOrders:
                 return "la zone n'existe plus (zones recalculées)"
         return None
 
+    def _other_position(self, item):
+        """Vrai si une AUTRE position (ouverte ou en cours d'ouverture) existe sur le meme actif : un ordre sur zone n'en ouvre pas une seconde, surtout pas en sens inverse."""
+        try:
+            return any(i is not item and i.get("ticker") == item.get("ticker") and i.get("status") in ("open", "opening") and i.get("mode") == item.get("mode")
+                       for i in list(self.manual.items.values()))
+        except Exception:
+            return False
+
     def still_valid(self, item):
         """Appele par le moteur manuel au declenchement : (True, '') ou (False, raison)."""
         try:
+            if self._other_position(item):
+                return False, "une position est déjà ouverte sur cet actif (un seul sens à la fois)"
             v = self.view(item["ticker"], cache_only=True, recent=bool((item.get("zone_order") or {}).get("recent")))       # cache seul : appele depuis le fil des prix, aucune requete reseau ici
             r = self.contradiction(item, v)
             if r is None and v is not None:
@@ -381,6 +391,11 @@ class ZoneOrders:
                 with self.manual.lock:      # v4.526 : ordre de l'ancien mode (zones longues) remplace par la lecture de la fenetre recente
                     if it.get("status") == "scheduled":
                         self.manual._finish_order(it, "cancelled", "ordre sur zone annulé : remplacé par la lecture de la fenêtre récente (v4.526)")
+                continue
+            if self._other_position(it):      # v4.528 : l'autre côté s'est déclenché (ou une position existe) : cet ordre n'a plus de raison d'être
+                with self.manual.lock:
+                    if it.get("status") == "scheduled":
+                        self.manual._finish_order(it, "cancelled", "ordre sur zone annulé : une position est déjà ouverte sur cet actif (un seul sens à la fois)")
                 continue
             try:
                 r = self.contradiction(it, self.view(it["ticker"], recent=bool((it.get("zone_order") or {}).get("recent"))))

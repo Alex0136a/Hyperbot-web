@@ -1712,3 +1712,6 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Les niveaux sont maintenant les **sommets / bases intermédiaires** de la fenêtre : pivots 15 min regroupés (à moins de `ZONEORD_REC_MERGE_ATR` x ATR 15 min, largeur maximale `ZONEORD_REC_ZONE_WIDTH_ATR`), au moins 2 pivots par niveau. Résistance = niveau le plus proche au-dessus du prix (short), support = le plus proche en dessous (long).
 - La carte indique visites (pivots), rejet après le dernier contact (% de la fenêtre) et ancienneté.
 - Objectif : niveau opposé le plus proche s'il offre au moins `ZONEORD_MIN_RR` x le stop, sinon extrême de la fenêtre (le plus loin que le prix a déjà été).
+
+## v4.528 — Ordres sur zone : un seul sens à la fois par actif
+- Un long sur la base et un short sur le sommet peuvent être programmés ensemble (le prix touchera l'un des deux en premier). Dès qu'une position (ou une ouverture en cours) existe sur l'actif, l'ordre sur zone opposé est annulé, et un ordre ne se déclenche pas s'il y a déjà une position sur l'actif. Contrôle au cycle (1 min) et juste avant le déclenchement.
