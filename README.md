@@ -1672,3 +1672,7 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Chaque ordre sur zone enregistre la tendance H4 et la position du prix par rapport à la moyenne 20 H4, à la création (`h4_create`) et au déclenchement (`h4_fire`). Aucun effet sur les décisions.
 - La carte « 🎯 ORDRES SUR ZONE » regroupe les trades clos par tendance H4 au déclenchement et selon que le prix était déjà du bon côté de la moyenne 20 H4 (nombre, gagnants, net). Décider à partir d'une vingtaine d'ordres clos.
 - Correctif : le contrôle juste avant l'ouverture (v4.517) ne lit plus que le cache (jamais de requête réseau dans le fil des prix).
+
+## v4.521 — Laboratoire de stops : variante « verrou à +0,2 % »
+- Constat (trades #632, #633, #637, #638) : le stop de rentabilité est posé à +0,10 % alors que les frais font 0,09 % ; les sorties se font à +0,05 / +0,10 %, soit un net de −0,02 à 0,00 $ malgré des pics de 0,27 à 0,63 %.
+- Le laboratoire rejoue maintenant aussi la règle « stop de rentabilité à +0,2 % » (observation seule). Les trades déjà rejoués sont recalculés avec cette variante (2 par passage).

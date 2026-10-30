@@ -906,7 +906,7 @@ class ScalpEngine:
     # ── v4.516 : LABORATOIRE DE STOPS (observation seule) : rejoue chaque trade clos avec d'autres regles de stop ──
     LAB_VARIANTS = (("actuel", "Règle actuelle (stop de rentabilité)"), ("sans_be", "Sans stop de rentabilité"), ("be_tardif", "Rentabilité tardive (à 80 % de l'objectif)"),
                     ("reduit", "Stop réduit (−½ stop) au lieu de la rentabilité"), ("deux_temps", "Deux temps (réduit, puis rentabilité à 80 % de l'objectif)"),
-                    ("progressif", "Verrou progressif (50 % du gain maximal)"), ("atr", "Suiveur sur ATR (gain maximal − 1,5 × ATR 5 min)"))
+                    ("lock2", "Stop de rentabilité à +0,2 % (au lieu de +0,1 %)"), ("progressif", "Verrou progressif (50 % du gain maximal)"), ("atr", "Suiveur sur ATR (gain maximal − 1,5 × ATR 5 min)"))
 
     @staticmethod
     def lab_sim(variant, side, sl, tp, be_arm, be_lock, trail, atr5, cs, fee=0.09):
@@ -924,6 +924,8 @@ class ScalpEngine:
             arm, lock = 0.8 * tp, 0.1
         elif variant == "reduit":
             lock = -0.5 * sl
+        elif variant == "lock2":
+            lock = 0.2
         elif variant == "atr" and not atr5:
             return None
         stop, peak, run = -sl, 0.0, False
@@ -974,7 +976,7 @@ class ScalpEngine:
             if r.get("status") != "closed" or d.get("strategy_source") != STRATEGY or d.get("mode") != self.cfg.get("SCALP_MODE", "paper"):
                 continue
             lab = d.get("lab") or {}
-            if lab.get("ok") or lab.get("fail", 0) >= 3 or not d.get("entry_price") or not d.get("exit_price") or not d.get("opened_at"):
+            if (lab.get("ok") and "lock2" in (lab.get("v") or {})) or lab.get("fail", 0) >= 3 or not d.get("entry_price") or not d.get("exit_price") or not d.get("opened_at"):
                 continue
             hold = float(d.get("hold_min") or d.get("osc_hold_min") or self.cfg.get("SCALP_MAX_HOLD_MIN", 90) or 90) * 60
             op = float(d["opened_at"])
