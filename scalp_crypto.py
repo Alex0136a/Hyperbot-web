@@ -1083,6 +1083,9 @@ class ScalpEngine:
                     continue
                 if mx > 0 and now - float(it.get("opened_at") or now) > mx:
                     try:
+                        if int(self.cfg.get("SCALP_HOLD_RUN_ON", 1)) and self.manual.arm_trail_at_hold(it["id"]):      # v4.531 : en gain a la fin de la duree : le suiveur prend le relais
+                            self._ev("sortie", it["ticker"], f"#{it['id']} duree maximale {mx / 60:.0f} min atteinte EN GAIN : pas de fermeture, le suiveur s'enclenche")
+                            continue
                         self.manual.close(it["id"], "SCALP DUREE MAX")
                         self._ev("sortie", it["ticker"], f"#{it['id']} ferme : duree maximale {mx / 60:.0f} min atteinte")
                     except Exception as e:

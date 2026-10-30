@@ -2446,10 +2446,42 @@ class ManualTrading:
                 self._save(item)
             if item.get("armed") and move <= item["peak_pct"] - (item.get("ttp_trail_pct") or 0.5):
                 reason = "TRAILING TAKE PROFIT (manuel)"
+        _mh = item.get("max_hold_h")      # v4.530 : duree maximale (ordres sur zone) ; sans effet une fois le suiveur enclenche
+        if not reason and _mh and not item.get("tp_run_armed") and time.time() - float(item.get("opened_at") or time.time()) > float(_mh) * 3600:
+            if not self._arm_trail_at_hold(item, move, sign):      # v4.531 : un trade en gain n est pas coupe : il passe sur le suiveur et court tant qu il progresse
+                reason = "DUREE MAXIMALE (manuel)"
         if not reason and item.get("trend_exit"):
             reason = self._trend_exit_reason(item, price, sign)
         if reason:
             threading.Thread(target=self._close, args=(item, reason, price), daemon=True).start()
+
+    def _arm_trail_at_hold(self, item, move, sign):
+        """v4.531 — fin de la duree maximale : si le trade est en gain et dispose d un suiveur, on ne le coupe pas : le suiveur s enclenche (stop = plus haut - suiveur,
+        il ne fait que monter / descendre). Le trade court tant qu il progresse et sort des qu il recule du suiveur. Retourne True si le suiveur est enclenche."""
+        tr = float(item.get("tp_run_trail_pct") or 0)
+        if not item.get("tp_run") or tr <= 0 or move <= 0 or item.get("tp_run_armed"):
+            return False
+        pk = item["entry_price"] * (1 + sign * max(float(item.get("peak_pct") or 0), move) / 100)
+        new = pk * (1 - sign * tr / 100)
+        if (sign > 0 and new > item["sl_price"]) or (sign < 0 and new < item["sl_price"]):
+            item["sl_price"] = new
+        item["tp_run_armed"], item["tp_run_peak_px"] = True, pk
+        self._log(f"#{item['id']} {item['ticker']} : duree maximale atteinte en gain (+{move:.2f}%) — pas de fermeture, le suiveur s enclenche (SL {item['sl_price']:.6g}) : le trade court tant qu il progresse", "signal")
+        self._save(item)
+        self._maybe_push_sl(item, item["sl_price"])
+        return True
+
+    def arm_trail_at_hold(self, item_id):
+        """Appele par le Scalp a la fin de la duree maximale d un trade. True si le suiveur a ete enclenche (le trade reste ouvert)."""
+        with self.lock:
+            item = self.items.get(item_id)
+            if not item or item.get("status") != "open":
+                return False
+            price = self.price(item["ticker"], item["market"]) or item.get("last_price")
+            if not price:
+                return False
+            sign = 1 if item["direction"] == "long" else -1
+            return self._arm_trail_at_hold(item, sign * (price - item["entry_price"]) / item["entry_price"] * 100, sign)
 
     def _trend_exit_reason(self, item, price, sign):
         """v4.343 — regle de sortie choisie sur la tendance H4 : "opposee" = la tendance devient l inverse

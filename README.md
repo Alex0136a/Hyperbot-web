@@ -1719,3 +1719,12 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 ## v4.529 — Origine visible des ordres et trades
 - Pastille d'origine dans les ordres programmés, les positions ouvertes et l'historique (colonne « Source » et colonne « source » du CSV) : « 🎯 Auto zone » (ordre programmé par le bot sur la fenêtre récente), « ✋ Manuel » (ordre libre créé à la main), « Scalp », ou le nom de la stratégie (Swing Support, Accumulation...).
 - Filtre « Origine » dans l'historique pour isoler chaque famille (statistiques et export CSV du filtre affiché). Champ `origin` ajouté aux ordres et aux lignes d'historique.
+
+## v4.530 — Ordres sur zone : verrou progressif et durée maximale (y compris sur les positions déjà ouvertes)
+- Verrou progressif (`ZONEORD_LOCK_ON`) : dès que le gain maximal atteint 33 % de la distance à l'objectif (`ZONEORD_LOCK_ARM_FRAC`), le stop garantit 50 % du gain maximal (`ZONEORD_LOCK_FRACTION`) ; il ne fait que monter (long) / descendre (short). Mécanisme du Trading Manuel existant (v4.343), sortie « STOP DYNAMIQUE ».
+- Durée maximale (`ZONEORD_HOLD_H` = 6 h, 0 = illimitée) : la position est fermée au marché (« DUREE MAXIMALE ») ; sans effet une fois le suiveur de l'objectif enclenché.
+- Les positions sur zone DÉJÀ OUVERTES reçoivent ces règles au cycle suivant (1 min) ; la durée se compte depuis leur ouverture réelle.
+
+## v4.531 — Un trade qui progresse n'est plus coupé par la durée maximale
+- À l'échéance de la durée maximale (ordres sur zone : `ZONEORD_HOLD_H` ; Scalp : durée du mode, `SCALP_HOLD_RUN_ON` = 1), un trade **en gain** n'est plus fermé : le suiveur de l'objectif s'enclenche (stop = plus haut − suiveur, ne fait que monter / descendre) et le trade court tant qu'il progresse ; il sort dès qu'il recule du suiveur.
+- Un trade en perte ou à zéro à l'échéance est fermé comme avant. `SCALP_HOLD_RUN_ON` = 0 rétablit la fermeture à l'échéance pour le Scalp.
