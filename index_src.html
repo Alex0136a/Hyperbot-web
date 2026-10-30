@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.516";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.517";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1459,6 +1459,7 @@ function CorrBtcBox({ token }) {
 
 function ManualTradingTab({ token, prep, onPrepDone }) {
   const [st, setSt] = useState(null);
+  const [zo, setZo] = useState(null);
   const [err, setErr] = useState("");
   const [sel, setSel] = useState(null);          // opportunite choisie
   const [prop, setProp] = useState(null);        // proposition du bot
@@ -1479,7 +1480,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
   const [histSel, setHistSel] = useState({});            // v4.426 — lignes cochees pour suppression
 
   const load = useCallback(async () => {
-    try { setSt(await apiCall("/api/manual/state","GET",null,token)); setErr(""); }
+    try { setSt(await apiCall("/api/manual/state","GET",null,token)); setErr(""); apiCall("/api/zone-orders","GET",null,token).then(setZo).catch(()=>{}); }
     catch(e) { setErr(e.message); }
   }, [token]);
   useEffect(() => { load(); const t = setInterval(load, 4000); return () => clearInterval(t); }, [load]);
@@ -1876,6 +1877,13 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
         </div>
       )}
 
+      {zo && zo.on && <div style={MT.card}>
+        <div style={MT.title}>🎯 ORDRES SUR ZONE — programmés par le bot <span style={{fontWeight:400,color:zo.live?"#f87171":"#34d399"}}>({zo.live?"LIVE":"paper"})</span></div>
+        <div style={{fontSize:11,color:"#cbd5e1",lineHeight:1.6}}>
+          {["paper","live"].filter(k=>k==="paper"||zo.summary.live.closed+zo.summary.live.scheduled+zo.summary.live.open>0).map(k=>{ const s=zo.summary[k]; return <div key={k}><b>{k==="live"?"Live":"Paper"}</b> : {s.scheduled} en attente · {s.open} ouvert{s.open>1?"s":""} · {s.closed} clos ({s.wins} gagnant{s.wins>1?"s":""}, net <b style={{color:s.net_usd>=0?"#34d399":"#f87171"}}>{s.net_usd>=0?"+":""}{s.net_usd.toFixed(2)} $</b>) · {s.cancelled} annulé{s.cancelled>1?"s":""} · {s.expired} expiré{s.expired>1?"s":""}</div>; })}
+          {Object.entries(zo.diag).filter(([t])=>t[0]!=="_").map(([t,v])=><div key={t} style={{color:"#94a3b8"}}><b style={{color:"#e2e8f0"}}>{t}</b> — {v.txt}</div>)}
+        </div>
+      </div>}
       {/* ORDRES PROGRAMMES */}
       <div style={MT.card}>
         <div style={MT.title}>⏰ ORDRES PROGRAMMÉS ({st.scheduled.length})</div>

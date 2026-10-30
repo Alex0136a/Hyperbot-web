@@ -1031,6 +1031,22 @@ ADVANCED_SETTINGS = {
     "MTF_USE_H1":                      {"label": "Top-down - unite du signal H1 (1) ou M15 (0)", "default": 0},
     "MTF_SCENARIO_ON":                 {"label": "Top-down - fourchette et scenario argumente affiches et enregistres (information, 1/0)", "default": 1},
     "MTF_RANGE_BARS":                  {"label": "Top-down - fourchette : nombre de bougies Daily (10 a 60)", "default": 20},
+    "ZONEORD_ON":                      {"label": "Ordres sur zone - le bot programme un rebond sur le support / la résistance Daily qu'il vient de quitter, dans le sens de la tendance (1/0)", "default": 1},
+    "ZONEORD_LIVE":                    {"label": "Ordres sur zone - LIVE (1) ou paper (0). À passer à 1 seulement après avoir jugé les résultats paper", "default": 0},
+    "ZONEORD_MIN_DIST_ATR":            {"label": "Ordres sur zone - distance minimale du prix à la zone, en ATR Daily (en dessous : prix encore dans la zone)", "default": 0.5},
+    "ZONEORD_MAX_DIST_ATR":            {"label": "Ordres sur zone - distance maximale du prix à la zone, en ATR Daily", "default": 4.0},
+    "ZONEORD_CONFIRM_PCT":             {"label": "Ordres sur zone - rebond de confirmation depuis le plus bas / haut après retour au niveau (%)", "default": 0.3},
+    "ZONEORD_SL_BUFFER_ATR":           {"label": "Ordres sur zone - stop placé au-delà de la zone de N x ATR Daily", "default": 0.3},
+    "ZONEORD_SL_MAX_PCT":              {"label": "Ordres sur zone - stop maximal accepté (% du prix) ; au-delà, pas d'ordre", "default": 6.0},
+    "ZONEORD_MIN_RR":                  {"label": "Ordres sur zone - gain visé minimal en multiples du stop", "default": 1.5},
+    "ZONEORD_TP_BUFFER_PCT":           {"label": "Ordres sur zone - objectif placé avant la zone opposée (tampon, % du prix)", "default": 0.3},
+    "ZONEORD_MAX_RR":                  {"label": "Ordres sur zone - objectif plafonné à N fois le stop (ensuite le suiveur laisse courir)", "default": 4.0},
+    "ZONEORD_NOTIONAL_USD":            {"label": "Ordres sur zone - taille de l'ordre (notionnel, $)", "default": 60.0},
+    "ZONEORD_LEVERAGE":                {"label": "Ordres sur zone - levier", "default": 3},
+    "ZONEORD_MAX_ORDERS":              {"label": "Ordres sur zone - nombre maximal d'ordres programmés en même temps", "default": 5},
+    "ZONEORD_EXPIRY_H":                {"label": "Ordres sur zone - un ordre non déclenché est annulé après N heures", "default": 48},
+    "ZONEORD_BREAK_ATR":               {"label": "Ordres sur zone - zone considérée cassée au-delà de N x ATR Daily (ordre annulé)", "default": 0.5},
+    "ZONEORD_TRAIL_PCT":               {"label": "Ordres sur zone - suiveur après l'objectif (% du prix, au moins un quart du stop)", "default": 1.0},
     "MTF_RANGE_MAX_ATR":               {"label": "Top-down - fourchette : hauteur maximale en ATR Daily pour parler de consolidation", "default": 7.0},
     "MTF_RISK_PCT":                    {"label": "Top-down - risque par trade (% du capital)", "default": 0.5},
     "MTF_MIN_RR":                      {"label": "Top-down - rapport gain/risque minimal", "default": 1.5},
@@ -1379,7 +1395,7 @@ _ZERO_ALLOWED_INT_KEYS = {"FUNDING_BE_ON","FUNDING_ASSET_BLOCK_ON","FUNDING_ASSE
                           "ACCUMULATION_MAX_ENTRIES_PER_WINDOW", "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW",
                           "SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND",
                           "MARKET_REGIME_FILTER_ENABLED", "SPOT_ACCUM_TRADE_HOUR_START_UTC", "ANTI_RANGE_RELATIVE_ENABLED", "SITUATION_RULES_ENABLED", "SITUATION_ALLOW_COUNTERTREND", "CONTINUATION_ENABLED", "CONTINUATION_PAPER_ONLY", "ENTRY_ENGINE_SIMPLE", "SIMPLE_ENGINE_DYNAMIC_LEVERAGE", "FUNDING_MODE_LIVE_ALLOWED", "LIVE_MIN_NOTIONAL_BUMP",
-                          "ENTRY_ENGINE_MTF", "MTF_USE_DAILY", "MTF_USE_H1", "MTF_SCENARIO_ON",
+                          "ENTRY_ENGINE_MTF", "MTF_USE_DAILY", "MTF_USE_H1", "MTF_SCENARIO_ON", "ZONEORD_ON", "ZONEORD_LIVE",
                           "SPOT_ACCUM_BYPASS_REQUIRE_TREND", "SPOT_ACCUM_BYPASS_FLOW_VETO", "SPOT_ACCUM_RISING_SUPPORT_ENABLED",
                           "SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND", "ACCUMULATION_FRESH_BREAKOUT_COUNTER_TREND",
                           "ACCUMULATION_BYPASS_REQUIRE_TREND", "ACCUMULATION_BYPASS_FLOW_VETO", "ACCUMULATION_TRADE_HOUR_START_UTC",
@@ -2923,6 +2939,15 @@ def scalp_status(email: str = Depends(require_user)):
 def scalp_nosig(email: str = Depends(require_user)):
     """v4.506 : etat de l alerte « aucun signal » (leger, interroge par la page sur tous les onglets)."""
     return bot.manual.scalp.nosig_state()
+
+
+@app.get("/api/zone-orders")
+def zone_orders_state(email: str = Depends(require_user)):
+    """v4.517 : ordres sur zone : bilan paper / live et raison de chaque decision par actif."""
+    z = bot.manual.zones
+    now = time.time()
+    return {"on": bool(int(z.c("ZONEORD_ON"))), "live": bool(int(z.c("ZONEORD_LIVE"))), "summary": z.summary(),
+            "diag": {t: {"age_s": round(now - v[0]), "txt": v[1]} for t, v in list(z.diag.items())}}
 
 
 @app.get("/api/server/status")

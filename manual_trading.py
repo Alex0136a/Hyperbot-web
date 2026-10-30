@@ -34,6 +34,7 @@ import db
 import bot_engine as be
 import mtf_analysis as mtf_a
 import scalp_crypto                  # v4.421 : mode Scalp crypto (paper / live)
+import zone_orders                   # v4.517 : ordres sur zone programmes par le bot
 import swing_support as sups     # v4.381 : niveaux Swing Support (ticket prepare depuis une alerte)
 
 STRATEGY_LABELS = {
@@ -69,6 +70,7 @@ class ManualTrading:
         self._last_persist = {}
         self._load()
         self.scalp = scalp_crypto.ScalpEngine(bot, self)      # v4.421
+        self.zones = zone_orders.ZoneOrders(bot, self)      # v4.517
 
     # ─────────────────────────────── outils ──────────────────────────────
     @property
@@ -2189,6 +2191,10 @@ class ManualTrading:
             self.scalp.on_cycle()      # v4.421
         except Exception as e:
             print(f"[SCALP] cycle ignore : {type(e).__name__}: {e}")
+        try:
+            self.zones.on_cycle()      # v4.517
+        except Exception as e:
+            print(f"[ZONES] cycle ignore : {type(e).__name__}: {e}")
         if not self.bot._is_ws_healthy():
             self.on_tick()
         if time.time() - getattr(self, "_recon_exit_ts", 0) >= 3600:
@@ -2229,6 +2235,11 @@ class ManualTrading:
                 and not self.get_opportunity(item["strategy_source"], item["ticker"], item["direction"])):
             self._finish_order(item, "cancelled", "declenche mais l opportunite n est plus valable — ordre annule")
             return
+        if item.get("zone_order"):      # v4.517 : dernier controle (zone cassee / tendance retournee) juste avant l ouverture
+            _ok, _why = self.zones.still_valid(item)
+            if not _ok:
+                self._finish_order(item, "cancelled", f"declenche mais ordre sur zone annule : {_why}")
+                return
         self._log(f"Ordre programme #{item['id']} declenche ({self._trigger_text(item)}) — ouverture", "signal")
         self._fire_busy.add(item["id"])
         threading.Thread(target=self._fire, args=(item,), daemon=True).start()

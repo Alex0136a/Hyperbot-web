@@ -1651,3 +1651,11 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Lecture** : onglet Scalp › « corr », bloc « 🧪 LABORATOIRE DE STOPS » : net cumulé par règle, tous trades et par classe de pic (< 0,4 / 0,4–0,8 / ≥ 0,8 %), comparé au réel. « Règle actuelle » doit rester proche du réel (calibrage). Décider à partir de 30 trades ou plus par classe.
 - **Limite** : bougies 5 min (l'ordre des ticks dans une bougie est inconnu) ; trades de moins de 5 min peu informatifs.
 - Réglage : `SCALP_LAB_ON` (1 par défaut ; 0 = arrêt). Fichiers : scalp_crypto.py, bot_engine.py, api.py, index_src.html, index.html.
+
+## v4.517 — Ordres sur zone (programmés par le bot)
+- **Principe** : toutes les minutes, pour chaque actif de `ZONEORD_SYMBOLS` (BTC, ETH, HYPE, TAO, SUI), le bot lit les zones Daily et la tendance Daily. Si le prix a quitté un support (à plus de 0,5 ATR Daily, moins de 4) il programme un **rebond** (ordre « rebond confirmé » du Trading Manuel) sur le haut de cette zone ; symétriquement un **recul** sur le bas de la résistance quittée.
+- **Sens et tendance** : pas d'achat si la tendance Daily est baissière, pas de vente si elle est haussière.
+- **Stop / objectif** : stop au-delà de la zone (0,3 ATR Daily, maximum 6 %) ; objectif avant la zone opposée (tampon 0,3 %), plafonné à 4 × le stop, minimum 1,5 × le stop (sinon pas d'ordre) ; puis suiveur (« laisser courir »).
+- **Annulation automatique** : zone cassée (0,5 ATR Daily au-delà), tendance Daily devenue contraire, zone disparue après recalcul, ou 48 h sans déclenchement. Contrôle refait juste avant l'ouverture.
+- **Paper puis live** : `ZONEORD_LIVE` = 0 (paper) par défaut ; à passer à 1 après avoir jugé le bilan (carte « 🎯 ORDRES SUR ZONE » en haut des ordres programmés : en attente, ouverts, clos, net, annulés, expirés, et la raison de chaque décision par actif). Les ordres paper et live sont comptés séparément.
+- Réglages `ZONEORD_*` (Réglages avancés). Les ordres sont des « ordres libres » (étiquette conservée) portant la marque `zone_order`. Fichiers : zone_orders.py (nouveau), manual_trading.py, bot_engine.py, api.py, index_src.html, index.html.
