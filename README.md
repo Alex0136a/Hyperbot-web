@@ -1676,3 +1676,7 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 ## v4.521 — Laboratoire de stops : variante « verrou à +0,2 % »
 - Constat (trades #632, #633, #637, #638) : le stop de rentabilité est posé à +0,10 % alors que les frais font 0,09 % ; les sorties se font à +0,05 / +0,10 %, soit un net de −0,02 à 0,00 $ malgré des pics de 0,27 à 0,63 %.
 - Le laboratoire rejoue maintenant aussi la règle « stop de rentabilité à +0,2 % » (observation seule). Les trades déjà rejoués sont recalculés avec cette variante (2 par passage).
+
+## v4.522 — Ordres sur zone : largeur de zone plafonnée, messages chiffrés
+- Constat (premier bilan) : presque aucun ordre possible : zones Daily démesurées sur consolidation (stop 5,4 % sur BTC, 9,9 % sur TAO ; prix « dans la zone » en permanence). Plafond de largeur propre aux ordres sur zone : `ZONEORD_ZONE_MAX_WIDTH_ATR` = 2 ATR Daily (n'affecte pas le Top-Down).
+- Les raisons affichées donnent maintenant les bornes de la zone, la distance en ATR et les limites.

@@ -6,7 +6,7 @@ import threading
 
 import mtf_analysis as mtf
 
-DEFAULTS = {"ZONEORD_ON": 1, "ZONEORD_LIVE": 0, "ZONEORD_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"], "ZONEORD_MIN_DIST_ATR": 0.5, "ZONEORD_MAX_DIST_ATR": 1.5,
+DEFAULTS = {"ZONEORD_ON": 1, "ZONEORD_LIVE": 0, "ZONEORD_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"], "ZONEORD_ZONE_MAX_WIDTH_ATR": 2.0, "ZONEORD_MIN_DIST_ATR": 0.5, "ZONEORD_MAX_DIST_ATR": 1.5,
             "ZONEORD_CONFIRM_PCT": 0.3, "ZONEORD_SL_BUFFER_ATR": 0.3, "ZONEORD_SL_MAX_PCT": 6.0, "ZONEORD_MIN_RR": 1.5, "ZONEORD_MAX_RR": 4.0, "ZONEORD_TP_BUFFER_PCT": 0.3,
             "ZONEORD_NOTIONAL_USD": 60.0, "ZONEORD_LEVERAGE": 3, "ZONEORD_MAX_ORDERS": 5, "ZONEORD_EXPIRY_H": 48, "ZONEORD_BREAK_ATR": 0.5, "ZONEORD_TRAIL_PCT": 1.0}
 
@@ -40,7 +40,7 @@ class ZoneOrders:
         a = mtf.atr(d1) or 0
         if a <= 0:
             return None
-        zones = mtf.find_zones(d1, lookback=self.bot.cfg.get("MTF_ZONE_LOOKBACK", 120), max_width_atr=(self.bot.cfg.get("MTF_ZONE_MAX_WIDTH_ATR", 0) or None))
+        zones = mtf.find_zones(d1, lookback=self.bot.cfg.get("MTF_ZONE_LOOKBACK", 120), max_width_atr=(float(self.c("ZONEORD_ZONE_MAX_WIDTH_ATR")) or self.bot.cfg.get("MTF_ZONE_MAX_WIDTH_ATR", 0) or None))
         sup, res = mtf.nearest_zones(zones, float(price))
         tr, _, _ = mtf.trend(d1 + [{**d1[-1], "c": float(price)}])
         return {"price": float(price), "atr": a, "sup": sup, "res": res, "trend": tr, "zones": zones}
@@ -70,14 +70,17 @@ class ZoneOrders:
             return None, "aucun support" if side == "long" else "aucune résistance"
         edge = z["high"] if side == "long" else z["low"]            # bord de la zone du cote du prix
         dist = (p - edge) / a if side == "long" else (edge - p) / a
+        zt = f"{'support' if side == 'long' else 'résistance'} {z['low']:.6g}–{z['high']:.6g}"
+        if dist < 0:
+            return None, f"prix dans {zt}" if z["low"] <= p <= z["high"] else f"prix au-delà de {zt}"
         if dist < c["ZONEORD_MIN_DIST_ATR"]:
-            return None, "prix encore dans la zone ou trop près"
+            return None, f"prix trop près de {zt} ({dist:.2f} ATR Daily, minimum {c['ZONEORD_MIN_DIST_ATR']:g})"
         if dist > c["ZONEORD_MAX_DIST_ATR"]:
-            return None, f"zone trop loin ({dist:.1f} ATR Daily)"
+            return None, f"{zt} trop loin ({dist:.1f} ATR Daily, maximum {c['ZONEORD_MAX_DIST_ATR']:g})"
         far = z["low"] - c["ZONEORD_SL_BUFFER_ATR"] * a if side == "long" else z["high"] + c["ZONEORD_SL_BUFFER_ATR"] * a
         sl = abs(edge - far) / edge * 100
         if sl > c["ZONEORD_SL_MAX_PCT"]:
-            return None, f"stop trop large ({sl:.1f} %)"
+            return None, f"stop trop large ({sl:.1f} %) pour {zt}, largeur {(z['high'] - z['low']) / a:.1f} ATR"
         buf = c["ZONEORD_TP_BUFFER_PCT"] / 100.0
         if opp is not None:
             tpx = opp["low"] * (1 - buf) if side == "long" else opp["high"] * (1 + buf)
@@ -87,7 +90,7 @@ class ZoneOrders:
         if (side == "long" and opp is not None and opp["low"] <= edge) or (side == "short" and opp is not None and opp["high"] >= edge):
             tp = 2 * sl
         if tp < c["ZONEORD_MIN_RR"] * sl:
-            return None, f"gain visé trop faible ({tp:.2f} % pour un stop de {sl:.2f} %)"
+            return None, f"gain visé trop faible ({tp:.2f} % pour un stop de {sl:.2f} %, {zt})"
         tp = min(tp, c["ZONEORD_MAX_RR"] * sl)          # objectif plafonne : la zone opposee peut etre tres loin ; ensuite le suiveur laisse courir
         return {"edge": edge, "sl_pct": round(max(sl, 0.2), 3), "tp_pct": round(tp, 3), "zone": [z["low"], z["high"]], "dist_atr": round(dist, 2)}, None
 
