@@ -1659,3 +1659,16 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Annulation automatique** : zone cassée (0,5 ATR Daily au-delà), tendance Daily devenue contraire, zone disparue après recalcul, ou 48 h sans déclenchement. Contrôle refait juste avant l'ouverture.
 - **Paper puis live** : `ZONEORD_LIVE` = 0 (paper) par défaut ; à passer à 1 après avoir jugé le bilan (carte « 🎯 ORDRES SUR ZONE » en haut des ordres programmés : en attente, ouverts, clos, net, annulés, expirés, et la raison de chaque décision par actif). Les ordres paper et live sont comptés séparément.
 - Réglages `ZONEORD_*` (Réglages avancés). Les ordres sont des « ordres libres » (étiquette conservée) portant la marque `zone_order`. Fichiers : zone_orders.py (nouveau), manual_trading.py, bot_engine.py, api.py, index_src.html, index.html.
+
+## v4.518 — Ordres sur zone : portée réaliste
+- Correctif : un ordre pouvait être programmé sur un niveau à 11 % du prix (ETH, #636) avec 48 h de validité. Distance maximale ramenée de 4 à **1,5 ATR Daily** (≈ ce que le prix parcourt en 2 jours).
+- Un ordre déjà programmé est **annulé** si le prix s'éloigne à plus de 1,5 fois cette distance (« le retour n'est plus attendu »). Les ordres trop lointains déjà en place sont donc annulés au cycle suivant (1 min).
+
+## v4.519 — Ordres sur zone : données Daily chargées par le module
+- Correctif : les ordres sur zone lisaient les bougies Daily dans le cache seul, rempli par d'autres modules (Top-Down, Swing Support) : un actif non suivi par eux restait sans données. Le module charge maintenant lui-même les bougies Daily de ses actifs (une requête par bougie Daily et par actif).
+- Garde-fou : bougies Daily plus vieilles de 2,2 jours ou moins de 60 bougies = aucun ordre, et la raison s'affiche dans la carte « 🎯 ORDRES SUR ZONE ».
+
+## v4.520 — Ordres sur zone : tendance H4 enregistrée (observation seule)
+- Chaque ordre sur zone enregistre la tendance H4 et la position du prix par rapport à la moyenne 20 H4, à la création (`h4_create`) et au déclenchement (`h4_fire`). Aucun effet sur les décisions.
+- La carte « 🎯 ORDRES SUR ZONE » regroupe les trades clos par tendance H4 au déclenchement et selon que le prix était déjà du bon côté de la moyenne 20 H4 (nombre, gagnants, net). Décider à partir d'une vingtaine d'ordres clos.
+- Correctif : le contrôle juste avant l'ouverture (v4.517) ne lit plus que le cache (jamais de requête réseau dans le fil des prix).

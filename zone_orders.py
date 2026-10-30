@@ -6,7 +6,7 @@ import threading
 
 import mtf_analysis as mtf
 
-DEFAULTS = {"ZONEORD_ON": 1, "ZONEORD_LIVE": 0, "ZONEORD_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"], "ZONEORD_MIN_DIST_ATR": 0.5, "ZONEORD_MAX_DIST_ATR": 4.0,
+DEFAULTS = {"ZONEORD_ON": 1, "ZONEORD_LIVE": 0, "ZONEORD_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"], "ZONEORD_MIN_DIST_ATR": 0.5, "ZONEORD_MAX_DIST_ATR": 1.5,
             "ZONEORD_CONFIRM_PCT": 0.3, "ZONEORD_SL_BUFFER_ATR": 0.3, "ZONEORD_SL_MAX_PCT": 6.0, "ZONEORD_MIN_RR": 1.5, "ZONEORD_MAX_RR": 4.0, "ZONEORD_TP_BUFFER_PCT": 0.3,
             "ZONEORD_NOTIONAL_USD": 60.0, "ZONEORD_LEVERAGE": 3, "ZONEORD_MAX_ORDERS": 5, "ZONEORD_EXPIRY_H": 48, "ZONEORD_BREAK_ATR": 0.5, "ZONEORD_TRAIL_PCT": 1.0}
 
@@ -17,15 +17,22 @@ class ZoneOrders:
         self.diag = {}          # ticker -> (ts, texte) : pourquoi un ordre est (ou n'est pas) programme
         self._last = 0
         self._busy = False
+        self.why = ""
 
     def c(self, k):
         v = self.bot.cfg.get(k)
         return DEFAULTS[k] if v is None else v
 
     # ── lecture du marche (pure vis-a-vis du trading) ──
-    def view(self, ticker):
-        d1 = self.bot._mtf_candles(ticker, "1d", 230, cache_only=True)
+    def view(self, ticker, cache_only=False):
+        # Chargement PROPRE (hors cache seul) : le module ne depend plus d un autre pour avoir les bougies Daily ; la fonction ne rappelle
+        # le reseau qu une fois par bougie Daily et par actif (temporisation interne).
+        d1 = self.bot._mtf_candles(ticker, "1d", 230, cache_only=cache_only)
         if not d1 or len(d1) < 60:
+            self.why = f"historique Daily insuffisant ({len(d1 or [])} bougies)"
+            return None
+        if time.time() * 1000 - int(d1[-1]["t"]) > 2.2 * 86400 * 1000:
+            self.why = "bougies Daily trop anciennes (non rafraîchies)"
             return None
         price = self.manual.price(ticker, "perp")
         if not price:
@@ -37,6 +44,18 @@ class ZoneOrders:
         sup, res = mtf.nearest_zones(zones, float(price))
         tr, _, _ = mtf.trend(d1 + [{**d1[-1], "c": float(price)}])
         return {"price": float(price), "atr": a, "sup": sup, "res": res, "trend": tr, "zones": zones}
+
+    def h4_info(self, ticker, price, cache_only=True):
+        """Observation seule (v4.520) : tendance H4 et position du prix par rapport a sa moyenne 20 H4. Jamais bloquant, None si indisponible."""
+        try:
+            h4 = self.bot._mtf_candles(ticker, "4h", 260, cache_only=cache_only)
+            if not h4 or len(h4) < 60 or not price:
+                return None
+            tr, _, _ = mtf.trend(h4 + [{**h4[-1], "c": float(price)}])
+            e20 = mtf.ema([x["c"] for x in h4], 20)
+            return {"trend": tr, "vs_ema20_pct": round((float(price) / e20 - 1) * 100, 2) if e20 else None}
+        except Exception:
+            return None
 
     @staticmethod
     def plan(side, v, c):
@@ -85,6 +104,10 @@ class ZoneOrders:
             return "support cassé"
         if not long_ and p > hi + brk:
             return "résistance cassée"
+        edge = hi if long_ else lo
+        dist = (p - edge) / a if long_ else (edge - p) / a
+        if dist > 1.5 * float(self.c("ZONEORD_MAX_DIST_ATR")):
+            return f"le prix s'est trop éloigné de la zone ({dist:.1f} ATR Daily) : le retour n'est plus attendu"
         if (long_ and v["trend"] == "baissiere") or (not long_ and v["trend"] == "haussiere"):
             return "la tendance Daily est devenue contraire"
         z = v["sup"] if long_ else v["res"]
@@ -96,7 +119,10 @@ class ZoneOrders:
     def still_valid(self, item):
         """Appele par le moteur manuel au declenchement : (True, '') ou (False, raison)."""
         try:
-            r = self.contradiction(item, self.view(item["ticker"]))
+            v = self.view(item["ticker"], cache_only=True)       # cache seul : appele depuis le fil des prix, aucune requete reseau ici
+            r = self.contradiction(item, v)
+            if r is None and v is not None:
+                (item.get("zone_order") or {})["h4_fire"] = self.h4_info(item["ticker"], v["price"], cache_only=True)      # v4.520 : observation
             return (r is None), (r or "")
         except Exception:
             return True, ""
@@ -141,7 +167,34 @@ class ZoneOrders:
                 o["wins"] += 1 if pnl > 0 else 0
             elif st in ("cancelled", "expired"):
                 o[st] += 1
+        out["h4"] = self._h4_breakdown()
         return out
+
+    def _h4_breakdown(self):
+        """Observation (v4.520) : trades clos (paper + live) par tendance H4 au declenchement, et selon que le prix etait deja du bon cote de la moyenne 20 H4."""
+        import db
+        grp = {}
+        for r in db.manual_history(400):
+            d = r["data"]
+            zo = d.get("zone_order")
+            if not zo or r.get("status") != "closed" or not d.get("entry_price"):
+                continue
+            h = zo.get("h4_fire") or zo.get("h4_create")
+            if not h:
+                continue
+            sgn = 1 if d.get("direction") == "long" else -1
+            vs = h.get("vs_ema20_pct")
+            keys = ["H4 " + str(h.get("trend"))]
+            if vs is not None:
+                keys.append("H4 : prix du bon côté de la moyenne 20" if sgn * vs > 0 else "H4 : prix encore du mauvais côté de la moyenne 20")
+            pnl = float(d.get("pnl") or 0)
+            for k in keys:
+                g = grp.setdefault(k, {"label": k, "n": 0, "wins": 0, "net_usd": 0.0})
+                g["n"] += 1
+                g["wins"] += 1 if pnl > 0 else 0
+                g["net_usd"] = round(g["net_usd"] + pnl, 2)
+        return sorted(grp.values(), key=lambda g: g["label"])
+
 
     def _cancel_pass(self):
         for it in self._mine():
@@ -160,9 +213,10 @@ class ZoneOrders:
             if len(self._mine()) >= int(c["ZONEORD_MAX_ORDERS"]):
                 self.diag[t] = (time.time(), "nombre maximal d'ordres sur zone atteint")
                 continue
+            self.why = ""
             v = self.view(t)
             if v is None:
-                self.diag[t] = (time.time(), "données Daily ou prix indisponibles")
+                self.diag[t] = (time.time(), self.why or "prix indisponible")
                 continue
             msgs = []
             for side in ("long", "short"):
@@ -191,7 +245,7 @@ class ZoneOrders:
                 res = self.manual.submit(params)
                 it = self.manual.items.get(res.get("id")) if isinstance(res, dict) else None
                 if it is not None:
-                    it["zone_order"] = {"zone": pl["zone"], "trend": v["trend"], "created": time.time(), "dist_atr": pl["dist_atr"]}
+                    it["zone_order"] = {"zone": pl["zone"], "trend": v["trend"], "created": time.time(), "dist_atr": pl["dist_atr"], "h4_create": self.h4_info(t, v["price"], cache_only=False)}
                     it["reasons"] = [f"🎯 Ordre sur zone (programmé par le bot) : {'support' if up else 'résistance'} Daily {pl['zone'][0]:.6g}–{pl['zone'][1]:.6g} quitté "
                                      f"(prix à {pl['dist_atr']} ATR Daily), tendance Daily {v['trend']}. Se déclenche sur "
                                      f"{'un rebond' if up else 'un recul'} de {c['ZONEORD_CONFIRM_PCT']:g} % après retour au niveau ; annulé si la zone casse, si la tendance se retourne ou après {c['ZONEORD_EXPIRY_H']:g} h."]
