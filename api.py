@@ -1035,6 +1035,8 @@ ADVANCED_SETTINGS = {
     "ZONEORD_RECENT_ON":               {"label": "Ordres sur zone - lecture de la FENÊTRE RÉCENTE (1 : sommet / base des dernières heures en bougies 15 min) ou zones H4 / Daily (0)", "default": 1},
     "ZONEORD_REC_HOURS":               {"label": "Ordres sur zone (fenêtre récente) - durée de la fenêtre en heures", "default": 10},
     "ZONEORD_REC_MIN_VISITS":          {"label": "Ordres sur zone (fenêtre récente) - visites minimales du sommet / de la base (2 : un pic isolé ne compte pas)", "default": 2},
+    "ZONEORD_REC_MERGE_ATR":           {"label": "Ordres sur zone (fenêtre récente) - deux sommets (ou bases) à moins de N x ATR 15 min forment un même niveau", "default": 0.6},
+    "ZONEORD_REC_ZONE_WIDTH_ATR":      {"label": "Ordres sur zone (fenêtre récente) - largeur maximale d'un niveau en ATR 15 min", "default": 2.0},
     "ZONEORD_REC_MAX_DIST_FRAC":       {"label": "Ordres sur zone (fenêtre récente) - distance maximale du prix au niveau, en part de la hauteur de la fenêtre (0,6 = 60 %)", "default": 0.6},
     "ZONEORD_REC_MIN_RANGE_ATR":       {"label": "Ordres sur zone (fenêtre récente) - hauteur minimale de la fenêtre en ATR 15 min (sinon : bruit, pas d'ordre)", "default": 3.0},
     "ZONEORD_REC_SL_ATR":              {"label": "Ordres sur zone (fenêtre récente) - stop au-delà du niveau de N x ATR 15 min", "default": 1.0},

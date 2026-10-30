@@ -6,7 +6,7 @@ import threading
 
 import mtf_analysis as mtf
 
-DEFAULTS = {"ZONEORD_ON": 1, "ZONEORD_LIVE": 0, "ZONEORD_RECENT_ON": 1, "ZONEORD_REC_HOURS": 10, "ZONEORD_REC_MIN_VISITS": 2, "ZONEORD_REC_MAX_DIST_FRAC": 0.6, "ZONEORD_REC_MIN_RANGE_ATR": 3.0, "ZONEORD_REC_SL_ATR": 1.0, "ZONEORD_REC_BREAK_ATR": 1.0, "ZONEORD_REC_EXPIRY_H": 4, "ZONEORD_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"], "ZONEORD_ZONE_MAX_WIDTH_ATR": 1.0, "ZONEORD_ZONE_H4": 1, "ZONEORD_MIN_TOUCHES": 2, "ZONEORD_MIN_DIST_ATR": 0.1, "ZONEORD_SL_MAX_ATR": 1.0, "ZONEORD_MAX_DIST_ATR": 1.5,
+DEFAULTS = {"ZONEORD_ON": 1, "ZONEORD_LIVE": 0, "ZONEORD_RECENT_ON": 1, "ZONEORD_REC_HOURS": 10, "ZONEORD_REC_MIN_VISITS": 2, "ZONEORD_REC_MERGE_ATR": 0.6, "ZONEORD_REC_ZONE_WIDTH_ATR": 2.0, "ZONEORD_REC_MAX_DIST_FRAC": 0.6, "ZONEORD_REC_MIN_RANGE_ATR": 3.0, "ZONEORD_REC_SL_ATR": 1.0, "ZONEORD_REC_BREAK_ATR": 1.0, "ZONEORD_REC_EXPIRY_H": 4, "ZONEORD_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"], "ZONEORD_ZONE_MAX_WIDTH_ATR": 1.0, "ZONEORD_ZONE_H4": 1, "ZONEORD_MIN_TOUCHES": 2, "ZONEORD_MIN_DIST_ATR": 0.1, "ZONEORD_SL_MAX_ATR": 1.0, "ZONEORD_MAX_DIST_ATR": 1.5,
             "ZONEORD_CONFIRM_PCT": 0.3, "ZONEORD_SL_BUFFER_ATR": 0.3, "ZONEORD_SL_MAX_PCT": 6.0, "ZONEORD_MIN_RR": 1.5, "ZONEORD_MAX_RR": 4.0, "ZONEORD_TP_BUFFER_PCT": 0.3,
             "ZONEORD_NOTIONAL_USD": 60.0, "ZONEORD_LEVERAGE": 3, "ZONEORD_MAX_ORDERS": 5, "ZONEORD_EXPIRY_H": 48, "ZONEORD_BREAK_ATR": 0.5, "ZONEORD_TRAIL_PCT": 1.0}
 
@@ -80,14 +80,38 @@ class ZoneOrders:
         if a <= 0:
             return None
         win = cs[-bars:]
-        tol = max(0.15 * a, 0.0005 * float(price))
-        top, base = self.window_levels(win, tol, int(self.c("ZONEORD_REC_MIN_VISITS")))
         hi, lo = max(c["h"] for c in win), min(c["l"] for c in win)
+        # v4.527 : niveaux = sommets / bases INTERMEDIAIRES de la fenetre (pivots 15 min regroupes), pas seulement ses extremes absolus :
+        # quand le marche descend, le haut absolu est au debut de la fenetre et la base est celle qui se forme maintenant (1 visite).
+        zs = mtf.find_zones(win, pivot=2, lookback=bars, merge_atr=float(self.c("ZONEORD_REC_MERGE_ATR")), min_touches=int(self.c("ZONEORD_REC_MIN_VISITS")),
+                            max_width_atr=float(self.c("ZONEORD_REC_ZONE_WIDTH_ATR")) or None)
+        sup, res = mtf.nearest_zones(zs, float(price))
+        top, base = self._lvl(res, win, "top"), self._lvl(sup, win, "base")
         d1 = self.bot._mtf_candles(ticker, "1d", 230, cache_only=cache_only)
         tr = mtf.trend(d1 + [{**d1[-1], "c": float(price)}])[0] if d1 and len(d1) >= 60 else "inconnue"
         mom = (float(price) - win[-4]["c"]) / (hi - lo) * 100 if hi > lo else 0.0
         return {"recent": True, "price": float(price), "atr15": a, "top": top, "base": base, "win_hi": hi, "win_lo": lo, "R": hi - lo, "trend": tr,
                 "mom_pct": round(mom), "hours": hours}
+
+    @staticmethod
+    def _lvl(zn, win, kind):
+        """Pur : habille une zone de la fenetre (visites = pivots regroupes, rejet apres le dernier contact, anciennete)."""
+        if zn is None:
+            return None
+        R = max(c["h"] for c in win) - min(c["l"] for c in win)
+        n = len(win)
+        last = None
+        for i in range(n - 2, -1, -1):
+            if win[i]["l"] <= zn["high"] and win[i]["h"] >= zn["low"]:
+                last = i
+                break
+        react = 0
+        if last is not None and R > 0:
+            nxt = win[last + 1:last + 9]
+            if nxt:
+                react = round(((max(c["h"] for c in nxt) - zn["high"]) if kind == "base" else (zn["low"] - min(c["l"] for c in nxt))) / R * 100)
+        return {"low": zn["low"], "high": zn["high"], "level": zn["high"] if kind == "base" else zn["low"], "visits": zn["touches"], "react_pct": max(react, 0),
+                "last_bars_ago": (n - 1 - last) if last is not None else n}
 
     def plan_recent(self, side, v, c):
         """Pur : ordre sur le sommet (short) ou la base (long) de la fenetre recente, ou (None, raison)."""
@@ -99,9 +123,9 @@ class ZoneOrders:
         if R < c["ZONEORD_REC_MIN_RANGE_ATR"] * a:
             return None, f"fenêtre {v['hours']:g} h trop étroite ({R / p * 100:.2f} % de hauteur, {R / a:.1f} ATR 15 min ; minimum {c['ZONEORD_REC_MIN_RANGE_ATR']:g})"
         z = v["top"] if side == "short" else v["base"]
-        nom = "sommet" if side == "short" else "base"
+        nom = "sommet" if side == "short" else "base"      # niveaux intermediaires de la fenetre
         if z is None:
-            return None, f"{nom} de la fenêtre {v['hours']:g} h : moins de {int(c['ZONEORD_REC_MIN_VISITS'])} visites (pic isolé)"
+            return None, f"{nom} de la fenêtre {v['hours']:g} h : aucun niveau visité {int(c['ZONEORD_REC_MIN_VISITS'])} fois ou plus au-{'dessus' if side == 'short' else 'dessous'} du prix"
         edge = z["low"] if side == "short" else z["high"]
         zt = f"{nom} {z['level']:.6g} ({z['visits']} visites, rejet moyen {z['react_pct']} % de la fenêtre, dernière il y a {z['last_bars_ago'] * 15} min)"
         dist = (edge - p) if side == "short" else (p - edge)
@@ -114,8 +138,13 @@ class ZoneOrders:
         if sl > c["ZONEORD_SL_MAX_PCT"]:
             return None, f"stop trop large ({sl:.2f} %) pour le {nom}"
         opp = v["base"] if side == "short" else v["top"]
-        tx = (opp["high"] if side == "short" else opp["low"]) if opp is not None else (edge - 0.6 * R if side == "short" else edge + 0.6 * R)
-        tp = abs(edge - tx) / edge * 100
+        # objectif : le niveau opposé le plus proche s'il offre assez de gain, sinon l'extrême de la fenêtre (le plus loin que le prix a déjà été)
+        cands = ([(opp["high"] if side == "short" else opp["low"])] if opp is not None else []) + [v["win_lo"] if side == "short" else v["win_hi"]]
+        tp = 0.0
+        for tx in cands:
+            tp = abs(edge - tx) / edge * 100 if ((side == "short" and tx < edge) or (side == "long" and tx > edge)) else 0.0
+            if tp >= c["ZONEORD_MIN_RR"] * sl:
+                break
         if tp < c["ZONEORD_MIN_RR"] * sl:
             return None, f"gain visé trop faible ({tp:.2f} % pour un stop de {sl:.2f} %, {zt})"
         tp = min(tp, c["ZONEORD_MAX_RR"] * sl)
@@ -136,7 +165,7 @@ class ZoneOrders:
         if (short and v["trend"] == "haussiere") or ((not short) and v["trend"] == "baissiere"):
             return "la tendance Daily est devenue contraire"
         z = v["top"] if short else v["base"]
-        if z is None or abs(z["level"] - ((hi) if short else (lo))) > max(0.5 * a, 0.0007 * p):
+        if z is None or abs((z["low"] if short else z["high"]) - (lo if short else hi)) > max(0.5 * a, 0.0007 * p):
             return f"le {'sommet' if short else 'bas'} n'est plus un niveau de la fenêtre {v['hours']:g} h (recalcul)"
         dist = (z["low"] - p) if short else (p - z["high"])
         if dist > 1.5 * float(self.c("ZONEORD_REC_MAX_DIST_FRAC")) * R:

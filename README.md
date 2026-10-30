@@ -1706,3 +1706,9 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - La carte indique pour chaque actif : la fenêtre (bas–haut), le prix, l'élan de la dernière heure, et pour chaque niveau : visites, rejet moyen (recul dans les 4 bougies qui suivent chaque visite, en % de la fenêtre) et ancienneté de la dernière visite.
 - Annulation : niveau dépassé / cassé de 1 ATR 15 min, tendance Daily contraire, niveau disparu de la fenêtre au recalcul, prix trop éloigné, ou **4 h** sans déclenchement (`ZONEORD_REC_EXPIRY_H`).
 - `ZONEORD_RECENT_ON` = 0 revient aux zones H4 / Daily de la v4.525. Les ordres de l'ancien mode encore programmés sont annulés au cycle suivant.
+
+## v4.527 — Fenêtre récente : sommets et bases intermédiaires
+- Constat (bilan v4.526) : marché en baisse sur la dernière heure, donc le haut absolu des 10 h est en début de fenêtre et la base se forme maintenant : une seule visite chacun, aucun ordre.
+- Les niveaux sont maintenant les **sommets / bases intermédiaires** de la fenêtre : pivots 15 min regroupés (à moins de `ZONEORD_REC_MERGE_ATR` x ATR 15 min, largeur maximale `ZONEORD_REC_ZONE_WIDTH_ATR`), au moins 2 pivots par niveau. Résistance = niveau le plus proche au-dessus du prix (short), support = le plus proche en dessous (long).
+- La carte indique visites (pivots), rejet après le dernier contact (% de la fenêtre) et ancienneté.
+- Objectif : niveau opposé le plus proche s'il offre au moins `ZONEORD_MIN_RR` x le stop, sinon extrême de la fenêtre (le plus loin que le prix a déjà été).
