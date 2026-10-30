@@ -737,7 +737,7 @@ class ScalpEngine:
                    "neutral": sum(1 for p in pe if p["verdict"] == "neutre"), "avg_delta_pct": (sum(p["delta_pct"] for p in pe) / len(pe)) if pe else None,
                    "sum_delta_pct": sum(p["delta_pct"] for p in pe) if pe else None,
                    "pending": sum(1 for d in be_rows if not (d.get("post_exit") or {}).get("ok")), "total_be": len(be_rows)}
-        out = {"mode": mode, "dims": dims, "be_post": be_post, "shadow": self.shadow_summary(), "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
+        out = {"mode": mode, "dims": dims, "be_post": be_post, "shadow": self.shadow_summary(), "lab": self.lab_summary(rows), "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
                "by_hour": {h: agg(v) for h, v in sorted(by_hour.items())}, "last_closed": rows[0].get("closed_at") if rows else None}
         self._stats_cache = (time.time(), mode, out)
         return out
@@ -903,10 +903,138 @@ class ScalpEngine:
                 "last": [{"ticker": s["ticker"], "side": s["side"], "ts": s["ts"], "breadth_pct": s.get("breadth_pct"), "first": (s.get("res") or {}).get("first"),
                           "net_pct": (s.get("res") or {}).get("net_pct")} for s in reversed(self.cont_shadow[-8:])]}
 
+    # ── v4.516 : LABORATOIRE DE STOPS (observation seule) : rejoue chaque trade clos avec d'autres regles de stop ──
+    LAB_VARIANTS = (("actuel", "Règle actuelle (stop de rentabilité)"), ("sans_be", "Sans stop de rentabilité"), ("be_tardif", "Rentabilité tardive (à 80 % de l'objectif)"),
+                    ("reduit", "Stop réduit (−½ stop) au lieu de la rentabilité"), ("deux_temps", "Deux temps (réduit, puis rentabilité à 80 % de l'objectif)"),
+                    ("progressif", "Verrou progressif (50 % du gain maximal)"), ("atr", "Suiveur sur ATR (gain maximal − 1,5 × ATR 5 min)"))
+
+    @staticmethod
+    def lab_sim(variant, side, sl, tp, be_arm, be_lock, trail, atr5, cs, fee=0.09):
+        """Pur : rejoue des bougies 5 min (anciennes d'abord, APRES l'entree) avec une regle de stop. Tout en % du prix d'entree, cote favorable positif.
+        Dans une bougie : le stop (celui d'AVANT la bougie) est teste d'abord (prudent), puis le gain maximal met le stop a jour. A l'objectif : sortie,
+        sauf si trail > 0 (laisser courir : stop = plus haut - trail). Fin des bougies : cours de cloture. Retourne le net (apres frais) ou None."""
+        sg = 1 if side == "long" else -1
+        sl = abs(float(sl or 0))
+        if not sl or not cs:
+            return None
+        arm, lock = be_arm, be_lock if be_lock is not None else 0.1
+        if variant == "sans_be":
+            arm = None
+        elif variant == "be_tardif":
+            arm, lock = 0.8 * tp, 0.1
+        elif variant == "reduit":
+            lock = -0.5 * sl
+        elif variant == "atr" and not atr5:
+            return None
+        stop, peak, run = -sl, 0.0, False
+        for c in cs:
+            fav = c["fav"]; adv = c["adv"]; cl = c["cl"]
+            if adv <= stop:
+                return round(stop - fee, 3)
+            peak = max(peak, fav)
+            if tp and not run and peak >= tp:
+                if not trail:
+                    return round(tp - fee, 3)
+                run = True
+            if run:
+                stop = max(stop, peak - trail)
+            elif variant == "progressif":
+                if arm is not None and peak >= arm:
+                    stop = max(stop, 0.5 * peak)
+            elif variant == "atr":
+                stop = max(stop, peak - 1.5 * atr5) if peak > 0 else stop
+            elif variant == "deux_temps":
+                if arm is not None and peak >= arm:
+                    stop = max(stop, -0.25 * sl)
+                if peak >= 0.8 * tp:
+                    stop = max(stop, 0.1)
+            elif arm is not None and peak >= arm:
+                stop = max(stop, lock)
+            stop = max(stop, -sl)
+        return round(cs[-1]["cl"] - fee, 3)
+
+    @staticmethod
+    def lab_bars(side, entry, cs):
+        sg = 1 if side == "long" else -1
+        out = []
+        for c in cs:
+            out.append({"fav": sg * ((c["h"] if sg > 0 else c["l"]) - entry) / entry * 100, "adv": sg * ((c["l"] if sg > 0 else c["h"]) - entry) / entry * 100,
+                        "cl": sg * (c["c"] - entry) / entry * 100})
+        return out
+
+    def _lab_eval(self, limit=2):
+        if not int(self.cfg.get("SCALP_LAB_ON", 1)):
+            return
+        now = time.time()
+        done = 0
+        for r in db.manual_history(400):
+            if done >= limit:
+                break
+            d = r["data"]
+            if r.get("status") != "closed" or d.get("strategy_source") != STRATEGY or d.get("mode") != self.cfg.get("SCALP_MODE", "paper"):
+                continue
+            lab = d.get("lab") or {}
+            if lab.get("ok") or lab.get("fail", 0) >= 3 or not d.get("entry_price") or not d.get("exit_price") or not d.get("opened_at"):
+                continue
+            hold = float(d.get("hold_min") or d.get("osc_hold_min") or self.cfg.get("SCALP_MAX_HOLD_MIN", 90) or 90) * 60
+            op = float(d["opened_at"])
+            if now < op + hold + 360:
+                continue
+            done += 1
+            ent = float(d["entry_price"])
+            side = d.get("direction")
+            try:
+                t0 = (int(op // 300) + 1) * 300
+                raw = [c for c in self._candles_range(d["ticker"], t0, op + hold + 300) if t0 * 1000 <= c["t"] < (op + hold) * 1000]
+                if len(raw) < 3:
+                    lab = {"ok": False, "fail": lab.get("fail", 0) + 1, "why": f"{len(raw)} bougies"}
+                else:
+                    cs = self.lab_bars(side, ent, raw)
+                    sl = float(d.get("sl_pct") or 0)
+                    tp = float(d.get("tp_pct") or 0)
+                    ba = float(d.get("be_arm_pct") or 0) or None
+                    bl = d.get("be_lock_pct")
+                    trail = float(d.get("tp_run_trail_pct") or 0) if d.get("tp_run") else 0.0
+                    a5 = (((d.get("scalp") or {}).get("cont") or {}).get("atr5_pct"))
+                    a5 = float(a5) if a5 else None
+                    sg = 1 if side == "long" else -1
+                    real = sg * (float(d["exit_price"]) - ent) / ent * 100 - 0.09
+                    v = {}
+                    for k, _ in self.LAB_VARIANTS:
+                        x = self.lab_sim(k, side, sl, tp, ba, float(bl) if bl is not None else None, trail, a5, cs)
+                        if x is not None:
+                            v[k] = x
+                    pk = max([b["fav"] for b in cs] + [0.0])
+                    lab = {"ok": True, "v": v, "real": round(real, 3), "peak": round(max(pk, float(d.get("peak_pct") or 0)), 3), "bars": len(cs)}
+            except Exception as e:
+                lab = {"ok": False, "fail": lab.get("fail", 0) + 1, "why": type(e).__name__}
+            d["lab"] = lab
+            db.manual_update(r["id"], "closed", d)
+        if done:
+            self._stats_cache = (0, None, None)
+            self._rows_cache = (0, None, None)
+
+    def lab_summary(self, rows):
+        ev = [d["lab"] for d in rows if (d.get("lab") or {}).get("ok")]
+        if not ev:
+            return {"n": 0, "pending": sum(1 for d in rows if not (d.get("lab") or {}).get("ok") and (d.get("lab") or {}).get("fail", 0) < 3)}
+        def agg(sub):
+            out = []
+            for k, lbl in self.LAB_VARIANTS:
+                xs = [l["v"][k] for l in sub if k in l["v"]]
+                if xs:
+                    out.append({"k": k, "label": lbl, "n": len(xs), "sum": round(sum(xs), 2), "avg": round(sum(xs) / len(xs), 3), "wins": sum(1 for x in xs if x > 0.02)})
+            return out
+        cls = {"low": [l for l in ev if l["peak"] < 0.4], "mid": [l for l in ev if 0.4 <= l["peak"] < 0.8], "high": [l for l in ev if l["peak"] >= 0.8]}
+        return {"n": len(ev), "pending": sum(1 for d in rows if not (d.get("lab") or {}).get("ok") and (d.get("lab") or {}).get("fail", 0) < 3),
+                "real_sum": round(sum(l["real"] for l in ev), 2), "variants": agg(ev),
+                "classes": {c: {"n": len(v), "real_sum": round(sum(l["real"] for l in v), 2), "variants": agg(v)} for c, v in cls.items() if v}}
+
     def _post_exit_run(self):
         try:
             self._post_exit_eval()
             self._shadow_eval()
+            self._lab_eval()
         except Exception as e:
             self.last_error = f"suivi après sortie : {type(e).__name__}: {e}"
         finally:
