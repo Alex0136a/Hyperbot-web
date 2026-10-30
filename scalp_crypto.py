@@ -12,6 +12,7 @@ zone suivante). NOTE NON CALIBREE sur des resultats : le paper sert justement a 
 Les trades sont ouverts par le moteur de trading manuel (strategie "scalp_crypto") : memes stops natifs, memes historiques,
 meme suivi des prix de sortie. Aucune logique n est partagee avec les autres modes automatiques.
 """
+import json
 import threading
 import time
 from collections import deque
@@ -545,6 +546,7 @@ class ScalpEngine:
         self._cont_fan = {}                  # v4.504 : (sens, mode) -> derniere ouverture en grappe de continuation
         self.macro = macro_events.MacroCalendar() if macro_events else None      # v4.507
         self._last_sig_ts = time.time()      # v4.506 : dernier signal valide vu (alerte « aucun signal »)
+        self.cont_shadow = self._shadow_load()      # v4.514 : meneurs de continuation refuses (suivi hypothetique)
         self.cont_diag = {}                  # v4.505 : ticker -> (ts, raison pour laquelle la continuation n est pas prise)
         self._sigs = deque(maxlen=300)       # (ts, ticker, side) signaux vus (confirmation par les pairs)
         self.peer_wait = {}                  # ticker -> signal en attente d un pair
@@ -719,6 +721,15 @@ class ScalpEngine:
         add_dim("Par séance (heure d'ouverture, UTC)", _sess, ["Asie 00–07 UTC", "Europe 07–13 UTC", "Europe + États-Unis 13–17 UTC", "États-Unis soir 17–22 UTC", "Nuit 22–24 UTC"])
         add_dim("Par mouvement du panier sur 30 min (par rapport au sens du trade)", _bsk, ["Panier contre le trade (≤ −0,2 %)", "Panier calme (−0,2 à +0,2 %)", "Panier dans le sens (≥ +0,2 %)", "Avant mesure"])
         add_dim("Par efficacité de l'actif sur 1 h (directionnel ou chaotique)", _er, ["Actif chaotique (efficacité 1 h < 0,2)", "Actif intermédiaire (0,2 à 0,4)", "Actif directionnel (≥ 0,4)", "Avant mesure"])
+        def _brd(d):
+            k = (d.get("scalp") or {}).get("cont")
+            if not k:
+                return None
+            b = k.get("breadth_pct")
+            if b is None:
+                return "Avant mesure"
+            return "Panier ≥ 60 % dans le sens (grappe confirmée)" if b >= 60 else "Panier < 60 % (meneur seul)"
+        add_dim("Continuation : étendue du panier au déclenchement", _brd, ["Panier ≥ 60 % dans le sens (grappe confirmée)", "Panier < 60 % (meneur seul)", "Avant mesure"])
         add_dim("Par type de sortie", lambda d: (str(d.get("reason") or "?").replace(" (manuel)", "").strip() or "?"))
         pe = [d["post_exit"] for d in rows if (d.get("post_exit") or {}).get("ok")]
         be_rows = [d for d in rows if "SEUIL RENTABILITE" in str(d.get("reason") or "")]
@@ -726,7 +737,7 @@ class ScalpEngine:
                    "neutral": sum(1 for p in pe if p["verdict"] == "neutre"), "avg_delta_pct": (sum(p["delta_pct"] for p in pe) / len(pe)) if pe else None,
                    "sum_delta_pct": sum(p["delta_pct"] for p in pe) if pe else None,
                    "pending": sum(1 for d in be_rows if not (d.get("post_exit") or {}).get("ok")), "total_be": len(be_rows)}
-        out = {"mode": mode, "dims": dims, "be_post": be_post, "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
+        out = {"mode": mode, "dims": dims, "be_post": be_post, "shadow": self.shadow_summary(), "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
                "by_hour": {h: agg(v) for h, v in sorted(by_hour.items())}, "last_closed": rows[0].get("closed_at") if rows else None}
         self._stats_cache = (time.time(), mode, out)
         return out
@@ -794,9 +805,108 @@ class ScalpEngine:
             self._stats_cache = (0, None, None)
             self._rows_cache = (0, None, None)
 
+    # ── v4.514 : meneur de continuation sans confirmation du panier = REFUSE, mais SUIVI (apprentissage) ──
+    @staticmethod
+    def shadow_plan(c, price, atr5):
+        """Pur : stop et objectif (en % du prix) que _take donnerait a ce signal de continuation (memes formules que la v4.511)."""
+        sl = float(c.get("SCALP_CONT_SL_PCT", 0.2))
+        tp = float(c.get("SCALP_CONT_TP_PCT", 0.6))
+        if int(c.get("SCALP_CONT_SL_ATR_ON", 1)) and atr5 and price:
+            a5p = atr5 / price * 100.0
+            new_sl = min(max(sl, float(c.get("SCALP_CONT_SL_ATR", 1.5)) * a5p), max(float(c.get("SCALP_CONT_SL_MAX_PCT", 0.8)), sl))
+            if new_sl > sl + 1e-9:
+                tp = max(tp, float(c.get("SCALP_CONT_TP_RR", 2.0)) * new_sl)
+                sl = new_sl
+        return sl, tp
+
+    @staticmethod
+    def shadow_calc(side, entry, sl, tp, cs, fee=0.09):
+        """Pur : issue hypothetique d'un signal refuse. cs : bougies 5 min APRES l'entree (anciennes d'abord). Stop ou objectif touche en premier
+        (meme bougie : stop d'abord), sinon cours a la fin des bougies. Net = resultat - frais aller-retour (fee, en % du prix)."""
+        sg = 1 if side == "long" else -1
+        mf = ma = 0.0
+        first = None
+        for c in cs:
+            fav = sg * ((c["h"] if sg > 0 else c["l"]) - entry) / entry * 100
+            adv = sg * ((c["l"] if sg > 0 else c["h"]) - entry) / entry * 100
+            mf, ma = max(mf, fav), min(ma, adv)
+            if first is None:
+                if adv <= -sl:
+                    first = "stop"
+                elif fav >= tp:
+                    first = "objectif"
+        end_pct = sg * (cs[-1]["c"] - entry) / entry * 100 if cs else 0.0
+        res = tp if first == "objectif" else (-sl if first == "stop" else end_pct)
+        return {"first": first or "aucun", "res_pct": round(res, 3), "net_pct": round(res - fee, 3), "max_fav_pct": round(mf, 3), "max_adv_pct": round(ma, 3),
+                "end_pct": round(end_pct, 3), "bars": len(cs)}
+
+    def _shadow_load(self):
+        try:
+            raw = db.get_meta("scalp_cont_shadow", None)
+            v = json.loads(raw) if isinstance(raw, str) else (raw or [])
+            return v if isinstance(v, list) else []
+        except Exception:
+            return []
+
+    def _shadow_save(self):
+        try:
+            db.set_meta("scalp_cont_shadow", json.dumps(self.cont_shadow[-300:]))
+        except Exception as e:
+            self.last_error = f"suivi des refus : {type(e).__name__}: {e}"
+
+    def _shadow_add(self, t, sig, share, need):
+        if not int(self.cfg.get("SCALP_CONT_SHADOW_ON", 1)):
+            return
+        now = time.time()
+        for s in reversed(self.cont_shadow[-40:]):
+            if s.get("ticker") == t and s.get("side") == sig["side"] and now - float(s.get("ts", 0)) < 900:
+                return                      # le meme signal revient toutes les 5 min : un suivi par 15 min suffit
+        sl, tp = self.shadow_plan(self.cfg, sig.get("price"), sig.get("atr5"))
+        self.cont_shadow.append({"ts": now, "ticker": t, "side": sig["side"], "price": float(sig["price"]), "sl_pct": round(sl, 3), "tp_pct": round(tp, 3),
+                                 "breadth_pct": round(share * 100), "need_pct": round(need * 100), "sub": (sig.get("cont") or {}).get("sub")})
+        self._shadow_save()
+
+    def _shadow_eval(self, limit=3):
+        now = time.time()
+        done = 0
+        changed = False
+        for s in self.cont_shadow:
+            if done >= limit:
+                break
+            if s.get("res") or s.get("fail", 0) >= 3 or now - float(s.get("ts", now)) < (self.PE_WIN_MIN + 5) * 60:
+                continue
+            done += 1
+            try:
+                t0 = (int(s["ts"] // 300) + 1) * 300          # premiere bougie ENTIEREMENT apres le signal (pas de regard dans le futur)
+                cs = self._candles_range(s["ticker"], t0, t0 + self.PE_WIN_MIN * 60)
+                cs = [c for c in cs if c["t"] >= t0 * 1000]
+                if len(cs) < 6:
+                    s["fail"] = s.get("fail", 0) + 1
+                else:
+                    s["res"] = self.shadow_calc(s["side"], s["price"], s["sl_pct"], s["tp_pct"], cs)
+            except Exception as e:
+                s["fail"] = s.get("fail", 0) + 1
+                self.last_error = f"suivi des refus : {type(e).__name__}: {e}"
+            changed = True
+        if changed:
+            self._shadow_save()
+
+    def shadow_summary(self):
+        ev = [s for s in self.cont_shadow if s.get("res")]
+        if not self.cont_shadow:
+            return None
+        nets = [s["res"]["net_pct"] for s in ev]
+        return {"total": len(self.cont_shadow), "n": len(ev), "pending": sum(1 for s in self.cont_shadow if not s.get("res") and s.get("fail", 0) < 3),
+                "wins": sum(1 for x in nets if x > 0.02), "losses": sum(1 for x in nets if x < -0.02),
+                "obj": sum(1 for s in ev if s["res"]["first"] == "objectif"), "stop": sum(1 for s in ev if s["res"]["first"] == "stop"),
+                "sum_net_pct": round(sum(nets), 2) if nets else None, "avg_net_pct": round(sum(nets) / len(nets), 3) if nets else None,
+                "last": [{"ticker": s["ticker"], "side": s["side"], "ts": s["ts"], "breadth_pct": s.get("breadth_pct"), "first": (s.get("res") or {}).get("first"),
+                          "net_pct": (s.get("res") or {}).get("net_pct")} for s in reversed(self.cont_shadow[-8:])]}
+
     def _post_exit_run(self):
         try:
             self._post_exit_eval()
+            self._shadow_eval()
         except Exception as e:
             self.last_error = f"suivi après sortie : {type(e).__name__}: {e}"
         finally:
@@ -1060,6 +1170,22 @@ class ScalpEngine:
         if cap > 0 and n_open >= cap:
             self._ev("refus", t, f"continuation {sig['side']} refusée : {n_open}/{cap} trades de continuation déjà ouverts")
             return True
+        # v4.514 : le MENEUR n'entre que si le panier suit (meme seuil que la grappe). Constat 29-30/10 : 7 groupes confirmes +1,74 $, 8 meneurs seuls -2,26 $.
+        # Signal refuse = suivi (_shadow_*) pour verifier apres coup si le refus etait juste. Etendue inconnue : on n'empeche pas (comportement d'avant).
+        try:
+            reg = self._regime()
+            share = reg.get("up") if sig["side"] == "long" else reg.get("down")
+            need = float(c.get("SCALP_CONT_BREADTH_MIN", 60)) / 100.0
+            if reg.get("n") and share is not None:
+                sig.setdefault("cont", {})["breadth_pct"] = round(share * 100)
+                if int(c.get("SCALP_CONT_LEADER_BREADTH_ON", 1)) and share < need:
+                    txt = f"marché non confirmé ({share * 100:.0f} % des actifs vont dans le sens, il en faut ≥ {need * 100:.0f} %) — le meneur n'entre que si le panier suit"
+                    self._ev("refus", t, f"continuation {sig['side']} refusée : {txt}")
+                    self.cont_diag[t] = (time.time(), "signal refusé — " + txt)
+                    self._shadow_add(t, sig, share, need)
+                    return True
+        except Exception as e:
+            self.last_error = f"étendue du panier : {type(e).__name__}: {e}"
         before = self._cont_open_count(mode)
         self._take(t, sig)
         if self._cont_open_count(mode) > before:
