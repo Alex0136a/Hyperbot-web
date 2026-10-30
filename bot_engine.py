@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.511"
+BOT_VERSION = "4.512"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -1386,6 +1386,9 @@ PROFILE_SWING = {
     "MTF_LOWER_TF": "15m",             # "15m" ou "1h"
     "MTF_USE_DAILY": 0,                # 1 = unite majeure Daily au lieu de H4
     "MTF_USE_H1": 0,                   # 1 = unite inferieure H1 au lieu de M15
+    "MTF_SCENARIO_ON": 1,              # v4.512 : fourchette + scenario argumente (information seulement, aucun filtre)
+    "MTF_RANGE_BARS": 20,              # v4.512 : nombre de bougies Daily pour la fourchette
+    "MTF_RANGE_MAX_ATR": 7.0,          # v4.512 : fourchette = consolidation si sa hauteur <= N ATR Daily (et >= 2 contacts de chaque cote)
     "MTF_ZONE_MAX_WIDTH_ATR": 0,       # v4.357 : largeur maximale d une zone en ATR de l unite majeure (0 = sans limite, comportement d origine)
     "MTF_USE_H4_LOWER": 0,             # v4.352 : 1 = signal sur bougies H4 (profil Swing, avec MTF_USE_DAILY=1)
     "MTF_SIGNAL_MAX_AGE_SEC": 0,       # v4.352 : > 0 = entree seulement dans les N s qui suivent la cloture de la bougie du signal
@@ -12768,6 +12771,20 @@ class BotEngine:
         except Exception as e:
             print(f"[MTF] Rafraichissement des actifs occupes : erreur ignoree : {e}")
 
+    def mtf_scenario(self, ticker, price, cache_only=True):
+        """v4.512 — fourchette et scenario argumente (texte, ou None). Information seulement ; ne bloque ni ne declenche rien."""
+        try:
+            cfg = self.cfg
+            if not int(cfg.get("MTF_SCENARIO_ON", 1)) or not price:
+                return None
+            d1 = self._mtf_candles(ticker, "1d", 230, cache_only=cache_only)
+            h4 = self._mtf_candles(ticker, "4h", 260, cache_only=cache_only)
+            r = mtf.range_scenario(d1, h4, float(price), bars=int(cfg.get("MTF_RANGE_BARS", 20)),
+                                   max_atr=float(cfg.get("MTF_RANGE_MAX_ATR", 7.0)))
+            return r["texte"] if r else None
+        except Exception as e:
+            return f"scenario indisponible ({type(e).__name__})"
+
     def mtf_view(self, ticker, price, cache_only=False, force_tf=None):
         """Lecture complete pour le diagnostic et l entree. force_tf = (unite majeure, unite inferieure) : Swing Forex."""
         cfg = self.cfg
@@ -13177,6 +13194,9 @@ class BotEngine:
         path = (f"{path_lbl} : tendance {M} {trend_txt} · zone de {kind} {M} {self._zone_txt(zone)} · signal {L} : {name} · {flow_txt} · "
                 f"SL {plan['sl']:.6g} (-{plan['risk_pct']:.2f} %) · objectif {plan['tp']:.6g} (+{plan['reward_pct']:.2f} %, R:R {plan['rr']:.1f}) · {score_txt}")
         reasons = [f"{label} — voie : {path}", f"RSI {rsi:.1f}" if rsi is not None else "RSI ?"]
+        _scn = self.mtf_scenario(ticker, price)       # v4.512 : scenario argumente enregistre avec le trade (information)
+        if _scn:
+            reasons.append(f"scenario : {_scn}")
         cand = {"symbol": symbol, "ticker": ticker, "state": state if long_side else pos_state,
                 "signal": "long" if long_side else "short", "price": price, "confidence": confidence,
                 "rsi": rsi, "rsi_mode": mode, "reasons": reasons, "prices": prices, "conf_breakdown": {},

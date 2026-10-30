@@ -1616,3 +1616,12 @@ Constat (trades #585 BTC et #586 AAVE, 17 h 30) : stop de 0,2 % = 0,34 × et 0,1
 - `SCALP_CONT_SL_ATR_ON` (1) : stop = max(stop de base 0,2 %, `SCALP_CONT_SL_ATR` (1,5) × ATR 5 min), plafonné à `SCALP_CONT_SL_MAX_PCT` (0,8 %). **La taille reste 1/5 du capital en marge** (choix de l'utilisateur) : la perte maximale par trade monte avec le stop (à ×3 : 0,12 % du capital à 0,2 %, 0,48 % à 0,8 % ; jusqu'à 5 trades corrélés d'une grappe).
 - Quand le stop est élargi : objectif = max(`SCALP_CONT_TP_PCT`, `SCALP_CONT_TP_RR` (2) × stop) ; armement du stop de rentabilité = max(armement global, 0,5 × stop) ; suiveur = max(suiveur global, 0,5 × stop).
 - Rien n'est refusé pour volatilité excessive ; au-delà du plafond, le stop reste à 0,8 % (donc dans le bruit si l'ATR 5 min dépasse ~0,55 %). `sl_ticket_pct` (CSV) donne le stop effectif ; `cont.sl_base`, `cont.sl_eff`, `cont.atr5_pct` sont enregistrés dans le trade.
+
+## v4.512 — Top-down : fourchette et scénario argumenté (information seulement)
+Demande : situation de consolidation après une forte baisse (BTC −3,85 % puis stabilisation) → lecture « swing » avec fourchette entre le niveau le plus bas et le plus haut, et prédiction argumentée.
+- Nouvelle fonction `mtf_analysis.range_scenario` : fourchette = plus bas / plus haut des `MTF_RANGE_BARS` (20) dernières bougies Daily ; « consolidation » si sa hauteur ≤ `MTF_RANGE_MAX_ATR` (7) ATR Daily et ≥ 2 contacts de chaque côté ; nombre d'allers-retours = traversées du milieu ; position du prix en % de la fourchette.
+- Arguments chiffrés (+1 / 0 / −1) : tendance Daily, tendance H4, position dans la fourchette (haut = rejet probable, bas = rebond probable), momentum H4 sur 24 h → « penche haussier / baissier / neutre » (|score| ≥ 2).
+- Deux scénarios écrits avec leurs niveaux : A) rejet ou rebond sur la borne, retour vers le milieu puis l'autre borne, invalidé par une clôture Daily au-delà de la borne ± 0,25 ATR ; B) cassure, objectif = hauteur de la fourchette projetée.
+- Affiché dans le diagnostic de l'onglet Indicateurs (ligne « 🔮 SCÉNARIO ») et enregistré dans les raisons de chaque trade Top-down ouvert (« scenario : … »).
+- **Aucun filtre, aucune entrée ne dépend de ce calcul.** Désactivable : `MTF_SCENARIO_ON` = 0. Lecture en cache seul (aucune requête en plus).
+- Les entrées restent celles du moteur existant : zone Daily/H4 + signal de bougie (+ figure double sommet/creux avec `MTF_DOUBLE_PATTERN_ENABLED`) ; la tolérance de tendance se règle par `ACCUMULATION_TREND_MODE` / `SPOT_ACCUM_TREND_MODE`.

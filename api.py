@@ -1028,6 +1028,9 @@ ADVANCED_SETTINGS = {
     "ENTRY_ENGINE_MTF":                {"label": "Moteur TOP-DOWN multi-unites de temps pour Spot-Accum / Accumulation (1/0)", "default": 1},
     "MTF_USE_DAILY":                   {"label": "Top-down - unite majeure Daily (1) ou H4 (0)", "default": 0},
     "MTF_USE_H1":                      {"label": "Top-down - unite du signal H1 (1) ou M15 (0)", "default": 0},
+    "MTF_SCENARIO_ON":                 {"label": "Top-down - fourchette et scenario argumente affiches et enregistres (information, 1/0)", "default": 1},
+    "MTF_RANGE_BARS":                  {"label": "Top-down - fourchette : nombre de bougies Daily (10 a 60)", "default": 20},
+    "MTF_RANGE_MAX_ATR":               {"label": "Top-down - fourchette : hauteur maximale en ATR Daily pour parler de consolidation", "default": 7.0},
     "MTF_RISK_PCT":                    {"label": "Top-down - risque par trade (% du capital)", "default": 0.5},
     "MTF_MIN_RR":                      {"label": "Top-down - rapport gain/risque minimal", "default": 1.5},
     "MTF_MAX_NOTIONAL_USD":            {"label": "Top-down - notionnel maximal par trade ($)", "default": 30.0},
@@ -1375,7 +1378,7 @@ _ZERO_ALLOWED_INT_KEYS = {"FUNDING_BE_ON","FUNDING_ASSET_BLOCK_ON","FUNDING_ASSE
                           "ACCUMULATION_MAX_ENTRIES_PER_WINDOW", "SPOT_ACCUM_MAX_ENTRIES_PER_WINDOW",
                           "SPOT_ACCUM_SL_FLOW_MAX_WAIT_SEC", "SPOT_ACCUM_SL_PATIENCE_REQUIRE_TREND",
                           "MARKET_REGIME_FILTER_ENABLED", "SPOT_ACCUM_TRADE_HOUR_START_UTC", "ANTI_RANGE_RELATIVE_ENABLED", "SITUATION_RULES_ENABLED", "SITUATION_ALLOW_COUNTERTREND", "CONTINUATION_ENABLED", "CONTINUATION_PAPER_ONLY", "ENTRY_ENGINE_SIMPLE", "SIMPLE_ENGINE_DYNAMIC_LEVERAGE", "FUNDING_MODE_LIVE_ALLOWED", "LIVE_MIN_NOTIONAL_BUMP",
-                          "ENTRY_ENGINE_MTF", "MTF_USE_DAILY", "MTF_USE_H1",
+                          "ENTRY_ENGINE_MTF", "MTF_USE_DAILY", "MTF_USE_H1", "MTF_SCENARIO_ON",
                           "SPOT_ACCUM_BYPASS_REQUIRE_TREND", "SPOT_ACCUM_BYPASS_FLOW_VETO", "SPOT_ACCUM_RISING_SUPPORT_ENABLED",
                           "SPOT_ACCUM_FRESH_BREAKOUT_COUNTER_TREND", "ACCUMULATION_FRESH_BREAKOUT_COUNTER_TREND",
                           "ACCUMULATION_BYPASS_REQUIRE_TREND", "ACCUMULATION_BYPASS_FLOW_VETO", "ACCUMULATION_TRADE_HOUR_START_UTC",
@@ -2642,6 +2645,7 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
         else:
             blocker_funding = f"signal {(_fs.get('direction') or '').upper()} ({_fs.get('annual_pct')}%/an) — candidat genere"
         mtf_line = None
+        scenario_line = None
         if ":" not in ticker and cfg.get("ENTRY_ENGINE_MTF", 1):
             try:  # v4.299 — lecture top-down (bougies en cache uniquement : diagnostic instantane)
                 _p = float((bot.all_mids or {}).get(ticker) or 0) or state.current_price
@@ -2675,8 +2679,13 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
                     mtf_line = mv.get("why")
             except Exception as e_m:
                 mtf_line = f"indisponible ({e_m})"
+            try:   # v4.512 — fourchette + scenario argumente (cache seul, information)
+                scenario_line = bot.mtf_scenario(ticker, _p)
+            except Exception:
+                scenario_line = None
         results.append({
             "mtf": mtf_line,
+            "scenario": scenario_line,
             "blocker_funding": blocker_funding,
             "situation": situation,
             "levels": levels,
