@@ -1133,6 +1133,8 @@ class ManualTrading:
                 "tp1_pct": float(p["tp1_pct"]) if p.get("tp1_pct") not in (None, "", 0) else None,
                 "tp1_close_pct": float(p.get("tp1_close_pct") or 50), "tp1_be": bool(p.get("tp1_be", True)),
                 "tp1_done": False, "realized_pnl": 0.0, "realized_fees": 0.0,
+                # v4.524 — ECHELLE DE VERROUS (Scalp) : paliers en % du prix ; apres un gain maximal >= palier + progression, le stop monte au palier
+                "lock_ladder": [float(x) for x in p["lock_ladder"]] if p.get("lock_ladder") else None, "ladder_prog_pct": float(p.get("ladder_prog_pct") or 0.03), "ladder_lvl": 0.0,
                 # v4.343 — verrou progressif du SL + criteres de tendance (choix manuels)
                 "lock_arm_pct": p.get("lock_arm_pct"), "lock_fraction": p.get("lock_fraction"), "lock_active": False,
                 "trend_entry": p.get("trend_entry"), "trend_exit": p.get("trend_exit"),
@@ -2370,6 +2372,20 @@ class ManualTrading:
             else:
                 item["be_done"] = True
 
+        # v4.524 — echelle de verrous : on laisse courir tant que le prix progresse ; des qu un palier est depasse de ladder_prog_pct, le stop monte
+        # AU palier (sortie si le prix y revient). Ne fait que monter (long) / descendre (short).
+        _ld = item.get("lock_ladder")
+        if _ld:
+            _pg = float(item.get("ladder_prog_pct") or 0.03)
+            for _L in sorted(_ld):
+                if item["peak_pct"] >= _L + _pg and _L > float(item.get("ladder_lvl") or 0):
+                    _nl = item["entry_price"] * (1 + sign * _L / 100)
+                    if (sign > 0 and _nl > item["sl_price"]) or (sign < 0 and _nl < item["sl_price"]):
+                        item["sl_price"], item["ladder_lvl"] = _nl, _L
+                        self._log(f"#{item['id']} {item['ticker']} : palier +{_L:g}% depasse (pic +{item['peak_pct']:.2f}%) — SL remonte au palier {_nl:.6g}", "signal")
+                        self._save(item)
+                        self._maybe_push_sl(item, _nl)
+
         # v4.395 — LAISSER COURIR AU TP : a l objectif on ne ferme pas ; le SL monte (gain verrouille puis suit le plus haut)
         if item.get("tp_run") and item.get("tp_price"):
             _tp_hit = (sign > 0 and price >= item["tp_price"]) or (sign < 0 and price <= item["tp_price"])
@@ -2407,6 +2423,7 @@ class ManualTrading:
             reason = _soft_reason
         elif _hit_sl:
             reason = ("TRAILING TAKE PROFIT (manuel)" if item.get("tp_run_armed")
+                      else "STOP PALIER (manuel)" if float(item.get("ladder_lvl") or 0) > 0 and abs(item["sl_price"] - item["entry_price"] * (1 + sign * float(item["ladder_lvl"]) / 100)) < 1e-9 * item["entry_price"] + 1e-12
                       else "STOP SEUIL RENTABILITE (manuel)" if item.get("be_done")
                       else "STOP DYNAMIQUE (manuel)" if item.get("lock_active")
                       else "STOP APRES TP1 (manuel)" if item.get("tp1_done") else "STOP LOSS (manuel)")

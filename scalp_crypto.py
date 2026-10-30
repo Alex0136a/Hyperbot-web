@@ -2386,6 +2386,14 @@ class ScalpEngine:
             params.update({"tp_run": True, "tp_run_lock_pct": 0.0, "tp_run_trail_pct": (osc["trail_pct"] if osc else (trail_cont or float(c.get("SCALP_RUN_TRAIL_PCT", 0.2))))})
         if int(c.get("SCALP_BE_ENABLED", 0)):      # v4.445 : stop au seuil de rentabilite apres un gain de X %
             params.update({"be_arm_pct": (be_arm_cont or float(c.get("SCALP_BE_ARM_PCT", 0.4))), "be_lock_pct": float(c.get("SCALP_BE_LOCK_PCT", 0.1))})
+        if int(c.get("SCALP_LADDER_ON", 0)):      # v4.524 : echelle de verrous TP1 / TP2 / TP3, puis suiveur
+            lv = sorted({float(c.get("SCALP_LADDER_TP1", 0.56)), float(c.get("SCALP_LADDER_TP2", 0.6)), float(c.get("SCALP_LADDER_TP3", 1.0))})
+            if params["tp_pct"] >= lv[0]:      # un objectif plus bas que TP1 (oscillation) garde sa propre sortie : l echelle ne l atteindrait pas
+                params["lock_ladder"] = lv
+                params["ladder_prog_pct"] = float(c.get("SCALP_LADDER_PROG_PCT", 0.03))
+                params["tp_pct"] = lv[-1]      # TP3 : a l objectif le suiveur habituel prend le relais (laisser courir)
+                params.update({"tp_run": True, "tp_run_lock_pct": 0.0,
+                                "tp_run_trail_pct": (trail_cont or float(c.get("SCALP_RUN_TRAIL_PCT", 0.2)))})
         try:
             res = self.manual.submit(params)
         except Exception as e:

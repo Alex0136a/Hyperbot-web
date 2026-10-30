@@ -1684,3 +1684,11 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 ## v4.523 — Ordres sur zone : stop selon la volatilité
 - Le stop n'est plus posé au-delà de toute la zone (trop large sur zones épaisses, ex. 5,4 % sur BTC) mais au plus à `ZONEORD_SL_MAX_ATR` (1 ATR Daily) au-delà du bord ; le risque dépend de la volatilité, pas de la largeur de la zone (0 = ancien comportement).
 - `ZONEORD_MIN_DIST_ATR` : 0,5 → 0,1. Un prix qui s'approche de la zone par le bon côté est le meilleur moment pour poser l'ordre ; seul un prix déjà dans la zone est refusé. (Si la valeur 0,5 a été enregistrée dans les réglages, la mettre à 0,1.)
+
+## v4.524 — Scalp : échelle de verrous TP1 / TP2 / TP3 (désactivée par défaut)
+- Réglage `SCALP_LADDER_ON` = 0 par défaut (à activer en paper). Niveaux en % du prix : `SCALP_LADDER_TP1` 0,56, `SCALP_LADDER_TP2` 0,6, `SCALP_LADDER_TP3` 1,0.
+- Tant que le prix progresse le trade court. Quand le gain maximal dépasse un palier de `SCALP_LADDER_PROG_PCT` (0,03 %), le stop monte AU palier : le prix qui revient sur 0,56 % ferme le trade (« STOP PALIER »), idem à 0,6 % puis 1 %. Le stop de rentabilité (+0,1 % dès 0,4 %) reste actif avant TP1.
+- À TP3 (objectif du trade = 1 %) le suiveur habituel (`SCALP_RUN_TRAIL_PCT`, ou l'échelle du stop en continuation) prend le relais.
+- Pourquoi la progression de 0,03 % : sans elle, le stop serait posé au palier à l'instant même où le prix le touche et fermerait aussitôt.
+- Modes : tous ceux dont l'objectif atteint TP1 (continuation, rebond). L'oscillation (objectif < 0,56 %) garde sa sortie. S'applique aux NOUVEAUX trades.
+- Les paliers 0,56 et 0,6 sont distants de 0,04 % : le deuxième ajoute peu (moins que les frais, 0,09 %).
