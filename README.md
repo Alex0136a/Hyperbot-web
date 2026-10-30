@@ -1692,3 +1692,17 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Pourquoi la progression de 0,03 % : sans elle, le stop serait posé au palier à l'instant même où le prix le touche et fermerait aussitôt.
 - Modes : tous ceux dont l'objectif atteint TP1 (continuation, rebond). L'oscillation (objectif < 0,56 %) garde sa sortie. S'applique aux NOUVEAUX trades.
 - Les paliers 0,56 et 0,6 sont distants de 0,04 % : le deuxième ajoute peu (moins que les frais, 0,09 %).
+
+## v4.525 — Ordres sur zone : zones H4 et au moins 2 contacts
+- Constat : le bot visait la zone formée par un seul pic isolé (haut du 29/10 à 23 h) : un pivot suffisait à créer une zone, et les pivots Daily ne sont confirmés qu'après 2 jours.
+- Zones calculées sur le **H4** (`ZONEORD_ZONE_H4` = 1 ; 0 = Daily) : 120 bougies (20 jours), pivot confirmé en 8 h. ATR, distances, stops et tendance restent mesurés/lus en Daily : les réglages `ZONEORD_*` (en ATR Daily) gardent le même sens.
+- **Au moins 2 contacts** par zone (`ZONEORD_MIN_TOUCHES` = 2) : un pic isolé ne forme plus une zone.
+- Largeur maximale d'une zone ramenée de 2 à 1 ATR Daily (≈ 2 ATR H4) pour les zones H4.
+- La carte indique pour chaque zone : unité de temps, nombre de contacts et ancienneté du dernier contact. Les ordres déjà programmés dont la zone n'existe plus dans ce nouveau calcul sont annulés au cycle suivant.
+
+## v4.526 — Ordres sur zone : lecture de la fenêtre récente (10 h, bougies 15 min)
+- Remplace les zones longues (20 jours) par la lecture des **10 dernières heures** (`ZONEORD_REC_HOURS`) en bougies 15 min : **sommet** et **base** de la fenêtre. Un niveau n'existe que s'il a été visité au moins 2 fois (`ZONEORD_REC_MIN_VISITS` ; une visite = des bougies dont la mèche l'atteint, groupées à moins de 2 bougies d'écart) : un pic isolé ne compte pas.
+- Short sur le sommet / long sur la base, si le prix est du bon côté du niveau, à au plus 60 % de la hauteur de la fenêtre, et si la fenêtre est assez ample (≥ 3 ATR 15 min). Stop = 1 ATR 15 min au-delà du niveau ; objectif = niveau opposé (ou 60 % de la fenêtre), plafonné à 4 × le stop, minimum `ZONEORD_MIN_RR` ; suiveur après l'objectif. Tendance Daily conservée comme filtre de sens.
+- La carte indique pour chaque actif : la fenêtre (bas–haut), le prix, l'élan de la dernière heure, et pour chaque niveau : visites, rejet moyen (recul dans les 4 bougies qui suivent chaque visite, en % de la fenêtre) et ancienneté de la dernière visite.
+- Annulation : niveau dépassé / cassé de 1 ATR 15 min, tendance Daily contraire, niveau disparu de la fenêtre au recalcul, prix trop éloigné, ou **4 h** sans déclenchement (`ZONEORD_REC_EXPIRY_H`).
+- `ZONEORD_RECENT_ON` = 0 revient aux zones H4 / Daily de la v4.525. Les ordres de l'ancien mode encore programmés sont annulés au cycle suivant.
