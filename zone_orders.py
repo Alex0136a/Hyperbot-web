@@ -6,7 +6,7 @@ import threading
 
 import mtf_analysis as mtf
 
-DEFAULTS = {"ZONEORD_ON": 1, "ZONEORD_LIVE": 0, "ZONEORD_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"], "ZONEORD_ZONE_MAX_WIDTH_ATR": 2.0, "ZONEORD_MIN_DIST_ATR": 0.5, "ZONEORD_MAX_DIST_ATR": 1.5,
+DEFAULTS = {"ZONEORD_ON": 1, "ZONEORD_LIVE": 0, "ZONEORD_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"], "ZONEORD_ZONE_MAX_WIDTH_ATR": 2.0, "ZONEORD_MIN_DIST_ATR": 0.1, "ZONEORD_SL_MAX_ATR": 1.0, "ZONEORD_MAX_DIST_ATR": 1.5,
             "ZONEORD_CONFIRM_PCT": 0.3, "ZONEORD_SL_BUFFER_ATR": 0.3, "ZONEORD_SL_MAX_PCT": 6.0, "ZONEORD_MIN_RR": 1.5, "ZONEORD_MAX_RR": 4.0, "ZONEORD_TP_BUFFER_PCT": 0.3,
             "ZONEORD_NOTIONAL_USD": 60.0, "ZONEORD_LEVERAGE": 3, "ZONEORD_MAX_ORDERS": 5, "ZONEORD_EXPIRY_H": 48, "ZONEORD_BREAK_ATR": 0.5, "ZONEORD_TRAIL_PCT": 1.0}
 
@@ -78,9 +78,12 @@ class ZoneOrders:
         if dist > c["ZONEORD_MAX_DIST_ATR"]:
             return None, f"{zt} trop loin ({dist:.1f} ATR Daily, maximum {c['ZONEORD_MAX_DIST_ATR']:g})"
         far = z["low"] - c["ZONEORD_SL_BUFFER_ATR"] * a if side == "long" else z["high"] + c["ZONEORD_SL_BUFFER_ATR"] * a
-        sl = abs(edge - far) / edge * 100
+        sl_dist = abs(edge - far)
+        if c.get("ZONEORD_SL_MAX_ATR", 0) > 0:
+            sl_dist = min(sl_dist, c["ZONEORD_SL_MAX_ATR"] * a)      # v4.523 : le risque dépend de la volatilité, pas de la largeur de la zone
+        sl = sl_dist / edge * 100
         if sl > c["ZONEORD_SL_MAX_PCT"]:
-            return None, f"stop trop large ({sl:.1f} %) pour {zt}, largeur {(z['high'] - z['low']) / a:.1f} ATR"
+            return None, f"stop trop large ({sl:.1f} %, maximum {c['ZONEORD_SL_MAX_PCT']:g} %) pour {zt}, ATR Daily {a / edge * 100:.1f} % du prix"
         buf = c["ZONEORD_TP_BUFFER_PCT"] / 100.0
         if opp is not None:
             tpx = opp["low"] * (1 - buf) if side == "long" else opp["high"] * (1 + buf)

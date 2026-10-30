@@ -1680,3 +1680,7 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 ## v4.522 — Ordres sur zone : largeur de zone plafonnée, messages chiffrés
 - Constat (premier bilan) : presque aucun ordre possible : zones Daily démesurées sur consolidation (stop 5,4 % sur BTC, 9,9 % sur TAO ; prix « dans la zone » en permanence). Plafond de largeur propre aux ordres sur zone : `ZONEORD_ZONE_MAX_WIDTH_ATR` = 2 ATR Daily (n'affecte pas le Top-Down).
 - Les raisons affichées donnent maintenant les bornes de la zone, la distance en ATR et les limites.
+
+## v4.523 — Ordres sur zone : stop selon la volatilité
+- Le stop n'est plus posé au-delà de toute la zone (trop large sur zones épaisses, ex. 5,4 % sur BTC) mais au plus à `ZONEORD_SL_MAX_ATR` (1 ATR Daily) au-delà du bord ; le risque dépend de la volatilité, pas de la largeur de la zone (0 = ancien comportement).
+- `ZONEORD_MIN_DIST_ATR` : 0,5 → 0,1. Un prix qui s'approche de la zone par le bon côté est le meilleur moment pour poser l'ordre ; seul un prix déjà dans la zone est refusé. (Si la valeur 0,5 a été enregistrée dans les réglages, la mettre à 0,1.)
