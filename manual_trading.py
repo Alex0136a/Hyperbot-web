@@ -37,6 +37,16 @@ import scalp_crypto                  # v4.421 : mode Scalp crypto (paper / live)
 import zone_orders                   # v4.517 : ordres sur zone programmes par le bot
 import swing_support as sups     # v4.381 : niveaux Swing Support (ticket prepare depuis une alerte)
 
+def origin_label(d):
+    """v4.529 : origine lisible d un trade / ordre : (code, libelle). Ordre sur zone programme par le bot, ordre libre manuel, ou la strategie."""
+    ss = d.get("strategy_source")
+    if d.get("zone_order"):
+        return "zone", "🎯 Auto zone"
+    if ss == "libre":
+        return "manuel", "✋ Manuel"
+    return ("scalp" if ss == "scalp_crypto" else "autre"), STRATEGY_LABELS.get(ss, ss)
+
+
 STRATEGY_LABELS = {
     "libre": "Ordre libre",
     "swing_support": "Swing Support",
@@ -2535,7 +2545,7 @@ class ManualTrading:
     # ─────────────────────────────── affichage ───────────────────────────
     def public(self, item):
         out = {k: v for k, v in item.items()}
-        out["strategy_label"] = STRATEGY_LABELS.get(item.get("strategy_source"), item.get("strategy_source"))
+        out["origin"], out["strategy_label"] = origin_label(item)
         if item.get("status") == "open":
             price = self.price(item["ticker"], item["market"]) or item.get("last_price")
             sign = 1 if item["direction"] == "long" else -1
@@ -2563,7 +2573,7 @@ class ManualTrading:
                 continue
             cnt[md] += 1
             d.update({"id": row["id"], "status": row["status"]})
-            d["strategy_label"] = STRATEGY_LABELS.get(d.get("strategy_source"), d.get("strategy_source"))
+            d["origin"], d["strategy_label"] = origin_label(d)
             try:    # v4.432 : PnL net de frais (le pnl stocke est brut) ; v4.441 : frais + funding REELS Hyperliquid quand connus
                 rc = d.get("real_costs")
                 if rc and d.get("pnl") is not None:

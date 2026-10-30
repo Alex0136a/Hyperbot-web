@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.528";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.529";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1473,6 +1473,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
   const [freeT, setFreeT] = useState("");          // v4.343 — ordre libre : actif
   const [freeDir, setFreeDir] = useState("long");  // v4.343 — ordre libre : sens
   const [histAsset, setHistAsset] = useState("");     // v4.451 : filtre par actif
+  const [histOrigin, setHistOrigin] = useState("");     // v4.529 : filtre par origine (auto zone / manuel / scalp)
   const [histView, setHistView] = useState("trades");     // v4.448 : sous-onglets de l historique (trades / par jour)
   const [histFrom, setHistFrom] = useState(""), [histTo, setHistTo] = useState("");     // v4.447 — filtre par date (AAAA-MM-JJ, heure locale)
   const [oppView, setOppView] = useState("liste");     // v4.454 : opportunites : liste / par mode
@@ -1674,7 +1675,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
   const isScalpH = h => h.strategy_source==="scalp_crypto" || h.strategy_label==="Scalp" || !!h.scalp;
   const inTab = (h,k) => (h.mode==="live"?"live":"paper")===k.split("_")[0] && (!k.endsWith("_scalp") || isScalpH(h));
   const histIsLive = histTab.startsWith("live"), histLbl = (histIsLive?"LIVE":"PAPER")+(histTab.endsWith("_scalp")?" SCALP":"");
-  const histTabAll = st.history.filter(h=>inTab(h,histTab));
+  const histTabAll = st.history.filter(h=>inTab(h,histTab)&&(!histOrigin||h.origin===histOrigin));
   const histAssets = [...new Set(histTabAll.map(h=>h.ticker).filter(Boolean))].sort();
   const histAssetOk = histAssets.includes(histAsset) ? histAsset : "";
   const histTabRows = histAssetOk ? histTabAll.filter(h=>h.ticker===histAssetOk) : histTabAll;
@@ -1896,7 +1897,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
               <td style={MT.td}>{o.market.toUpperCase()}</td><td style={{...MT.td,color:o.mode==="live"?"#ef4444":"#22c55e"}}>{o.mode.toUpperCase()}</td>
               <td style={MT.td}>{o.execution==="price_above"?`prix ≥ ${fmtP(o.trigger_price)}`:o.execution==="price_below"?`prix ≤ ${fmtP(o.trigger_price)}`:o.execution==="bounce_up"?`↘ ${fmtP(o.trigger_price)} puis rebond +${o.confirm_pct||0.3} %${o.bounce_ext?` · ARMÉ (bas ${fmtP(o.bounce_ext)})`:""}`:o.execution==="bounce_down"?`↗ ${fmtP(o.trigger_price)} puis recul −${o.confirm_pct||0.3} %${o.bounce_ext?` · ARMÉ (haut ${fmtP(o.bounce_ext)})`:""}`:`à ${fmtTime(o.trigger_time)}`}</td>
               <td style={MT.td}>{fmtP(o.current_price)}</td>
-              <td style={{...MT.td,color:o.opportunity_valid?"#22c55e":"#fbbf24"}}>{o.strategy_source==="libre"?"ordre libre":(o.strategy_source==="swing_support"?"Swing Support":(o.strategy_source==="scalp_crypto"?"Scalp":(o.opportunity_valid?"valable":"non confirmée")))}</td>
+              <td style={{...MT.td,color:o.opportunity_valid?"#22c55e":"#fbbf24"}}>{o.strategy_source==="libre"?(o.strategy_label||"ordre libre"):(o.strategy_source==="swing_support"?"Swing Support":(o.strategy_source==="scalp_crypto"?"Scalp":(o.opportunity_valid?"valable":"non confirmée")))}</td>
               <td style={MT.td}>{fmtTime(o.expires_at)}</td>
               <td style={MT.td}><button style={MT.btn("#1e2d4a","#93c5fd")} onClick={()=>openSchedEdit(o)}>Modifier</button> <button style={MT.btn("#1e2d4a","#fca5a5")} onClick={()=>cancelOrder(o.id)}>Annuler</button></td>
             </tr>
@@ -2003,6 +2004,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
         </div>
         <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
           {[["trades","📜 Trades"],["jours","📅 Par jour"]].map(([k,l])=><button key={k} style={{...MT.seg(histView===k,"#0ea5e9"),flex:"none",padding:"6px 14px"}} onClick={()=>setHistView(k)}>{l}</button>)}
+          <select style={{...MT.input,width:"auto",marginLeft:8}} value={histOrigin} onChange={e=>setHistOrigin(e.target.value)} title="Filtrer par origine : ordres programmés par le bot, ordres manuels, Scalp"><option value="">Toutes origines</option><option value="zone">🎯 Auto zone</option><option value="manuel">✋ Manuel</option><option value="scalp">Scalp</option><option value="autre">Autres stratégies</option></select>
           <select style={{...MT.input,width:"auto",marginLeft:8}} value={histAssets.includes(histAsset)?histAsset:""} onChange={e=>setHistAsset(e.target.value)} title="Filtrer par actif">
             <option value="">Tous les actifs</option>{histAssets.map(a=><option key={a} value={a}>{a}</option>)}
           </select>

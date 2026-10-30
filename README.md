@@ -1715,3 +1715,7 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 
 ## v4.528 — Ordres sur zone : un seul sens à la fois par actif
 - Un long sur la base et un short sur le sommet peuvent être programmés ensemble (le prix touchera l'un des deux en premier). Dès qu'une position (ou une ouverture en cours) existe sur l'actif, l'ordre sur zone opposé est annulé, et un ordre ne se déclenche pas s'il y a déjà une position sur l'actif. Contrôle au cycle (1 min) et juste avant le déclenchement.
+
+## v4.529 — Origine visible des ordres et trades
+- Pastille d'origine dans les ordres programmés, les positions ouvertes et l'historique (colonne « Source » et colonne « source » du CSV) : « 🎯 Auto zone » (ordre programmé par le bot sur la fenêtre récente), « ✋ Manuel » (ordre libre créé à la main), « Scalp », ou le nom de la stratégie (Swing Support, Accumulation...).
+- Filtre « Origine » dans l'historique pour isoler chaque famille (statistiques et export CSV du filtre affiché). Champ `origin` ajouté aux ordres et aux lignes d'historique.
