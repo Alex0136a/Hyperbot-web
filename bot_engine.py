@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.512"
+BOT_VERSION = "4.513"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -12779,8 +12779,15 @@ class BotEngine:
                 return None
             d1 = self._mtf_candles(ticker, "1d", 230, cache_only=cache_only)
             h4 = self._mtf_candles(ticker, "4h", 260, cache_only=cache_only)
+            sup = res = None
+            try:      # v4.513 : bornes = zones Daily quand un support et une resistance distincts encadrent le prix
+                zs = mtf.find_zones(d1, lookback=cfg.get("MTF_ZONE_LOOKBACK", 120),
+                                    max_width_atr=(cfg.get("MTF_ZONE_MAX_WIDTH_ATR", 0) or None))
+                sup, res = mtf.nearest_zones(zs, float(price))
+            except Exception:
+                sup = res = None
             r = mtf.range_scenario(d1, h4, float(price), bars=int(cfg.get("MTF_RANGE_BARS", 20)),
-                                   max_atr=float(cfg.get("MTF_RANGE_MAX_ATR", 7.0)))
+                                   max_atr=float(cfg.get("MTF_RANGE_MAX_ATR", 7.0)), sup=sup, res=res)
             return r["texte"] if r else None
         except Exception as e:
             return f"scenario indisponible ({type(e).__name__})"

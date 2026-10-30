@@ -304,36 +304,52 @@ def slope_features(candles, n=36, lookback=48, piv=2):
     return out
 
 
-def range_scenario(d1, h4, price, bars=20, max_atr=7.0):
-    """v4.512 — FOURCHETTE et SCENARIO argumente (information seulement : aucun filtre, aucune entree n en depend).
-    d1 / h4 : bougies fermees Daily / H4. Fourchette = plus bas / plus haut des `bars` dernieres bougies Daily.
-    Retourne None si l historique est insuffisant, sinon un dict (lo, hi, mid, width_pct, width_atr, is_range, trips,
-    touch_hi, touch_lo, pos, args [(texte, signe)], score, bias, texte)."""
+def range_scenario(d1, h4, price, bars=20, max_atr=7.0, sup=None, res=None):
+    """v4.512/v4.513 — FOURCHETTE et SCENARIO argumente (information seulement : aucun filtre, aucune entree n en depend).
+    Bornes : si une zone de support ET une zone de resistance Daily distinctes encadrent le prix (sup / res), la fourchette
+    va du HAUT du support au BAS de la resistance ; sinon plus bas / plus haut des `bars` dernieres bougies Daily.
+    Prix hors fourchette (> 0,25 ATR au-dela d une borne) = SORTIE : le scenario decrit la cassure, son objectif (hauteur
+    de la fourchette projetee) et le retour qui l annulerait. Retourne None si historique insuffisant, sinon un dict."""
     if not d1 or len(d1) < max(bars, 15) or not price:
-        return None
-    w = d1[-bars:]
-    lo, hi = min(c["l"] for c in w), max(c["h"] for c in w)
-    if hi <= lo:
         return None
     a = atr(d1) or 0.0
     if a <= 0:
+        return None
+    w = d1[-bars:]
+    src = f"extrêmes des {len(w)} derniers jours"
+    zone_ok = bool(sup and res and sup is not res and sup["high"] < res["low"])
+    if zone_ok:
+        lo, hi = sup["high"], res["low"]
+        src = f"zones Daily (support {sup['low']:.6g}-{sup['high']:.6g}, résistance {res['low']:.6g}-{res['high']:.6g})"
+        touch_lo, touch_hi = int(sup.get("touches", 1)), int(res.get("touches", 1))
+    else:
+        lo, hi = min(c["l"] for c in w), max(c["h"] for c in w)
+        tol0 = 0.25 * a
+        touch_hi = sum(1 for c in w if c["h"] >= hi - tol0)
+        touch_lo = sum(1 for c in w if c["l"] <= lo + tol0)
+    if hi <= lo:
         return None
     mid = (hi + lo) / 2.0
     h = hi - lo
     width_atr = h / a
     tol = 0.25 * a
-    touch_hi = sum(1 for c in w if c["h"] >= hi - tol)
-    touch_lo = sum(1 for c in w if c["l"] <= lo + tol)
     side = [1 if c["c"] > mid else -1 for c in w]
     trips = sum(1 for i in range(1, len(side)) if side[i] != side[i - 1])      # traversees du milieu = allers-retours
     is_range = bool(width_atr <= max_atr and touch_hi >= 2 and touch_lo >= 2)
     pos = (price - lo) / h
+    out_up, out_dn = price > hi + tol, price < lo - tol
+    if zone_ok:      # dans la zone de support / resistance : encore DANS la fourchette (la sortie = au-dela de la zone entiere)
+        out_dn = price < sup["low"] - tol
+        out_up = price > res["high"] + tol
     tr_d = trend(d1)[0]
     tr_4 = trend(h4)[0] if h4 and len(h4) >= 60 else "inconnue"
-    args = []
-    args.append((f"tendance Daily {tr_d}", 1 if tr_d == "haussiere" else -1 if tr_d == "baissiere" else 0))
-    args.append((f"tendance H4 {tr_4}", 1 if tr_4 == "haussiere" else -1 if tr_4 == "baissiere" else 0))
-    if is_range:
+    args = [(f"tendance Daily {tr_d}", 1 if tr_d == "haussiere" else -1 if tr_d == "baissiere" else 0),
+            (f"tendance H4 {tr_4}", 1 if tr_4 == "haussiere" else -1 if tr_4 == "baissiere" else 0)]
+    if out_dn:
+        args.append((f"prix SOUS la fourchette ({(lo - price) / price * 100:.1f} % sous {lo:.6g}) : cassure baissière", -1))
+    elif out_up:
+        args.append((f"prix AU-DESSUS de la fourchette ({(price - hi) / price * 100:.1f} % au-dessus de {hi:.6g}) : cassure haussière", 1))
+    elif is_range:
         if pos >= 0.8:
             args.append((f"prix dans le haut de la fourchette ({pos * 100:.0f} %) : rejet probable", -1))
         elif pos <= 0.2:
@@ -348,21 +364,26 @@ def range_scenario(d1, h4, price, bars=20, max_atr=7.0):
     score = sum(s for _, s in args)
     bias = "haussier" if score >= 2 else "baissier" if score <= -2 else "neutre"
     f = lambda x: f"{x:.6g}"
-    head = (f"{'fourchette' if is_range else 'plage'} Daily {len(w)} j : {f(lo)}-{f(hi)} (largeur {h / mid * 100:.1f} %, {width_atr:.1f} ATR, "
-            f"{trips} aller(s)-retour(s), {touch_hi} contact(s) haut / {touch_lo} bas) · prix à {pos * 100:.0f} %")
-    if not is_range:
+    head = (f"{'fourchette' if is_range else 'plage'} {f(lo)}-{f(hi)} [{src}] (largeur {h / mid * 100:.1f} %, {width_atr:.1f} ATR Daily, "
+            f"{trips} aller(s)-retour(s) sur {len(w)} j, {touch_hi} contact(s) haut / {touch_lo} bas) · prix à {pos * 100:.0f} %")
+    if not is_range and not (out_up or out_dn):
         head += " · pas de consolidation nette (trop large ou peu de contacts)"
     arg_txt = " ; ".join(f"{t} ({'+' if s > 0 else ''}{s})" for t, s in args)
-    inv_up, inv_dn = hi + tol, lo - tol
-    if is_range and pos >= 0.5:
-        sc = (f"A) rejet de {f(hi)} → retour vers {f(mid)} puis {f(lo)}, invalide si une clôture Daily dépasse {f(inv_up)} ; "
-              f"B) cassure : clôture Daily > {f(inv_up)} → objectif {f(hi + h)} (hauteur de la fourchette)")
+    if out_dn:
+        sc = (f"SORTIE PAR LE BAS : cassure de {f(lo)} → objectif {f(lo - h)} (hauteur de la fourchette projetée) ; "
+              f"invalidée si une clôture Daily revient au-dessus de {f(lo)} (retour dans la fourchette, risque de piège baissier)")
+    elif out_up:
+        sc = (f"SORTIE PAR LE HAUT : cassure de {f(hi)} → objectif {f(hi + h)} (hauteur de la fourchette projetée) ; "
+              f"invalidée si une clôture Daily revient sous {f(hi)} (retour dans la fourchette, risque de piège haussier)")
+    elif is_range and pos >= 0.5:
+        sc = (f"A) rejet de {f(hi)} → retour vers {f(mid)} puis {f(lo)}, invalide si une clôture Daily dépasse {f(hi + tol)} ; "
+              f"B) cassure : clôture Daily > {f(hi + tol)} → objectif {f(hi + h)}")
     elif is_range:
-        sc = (f"A) rebond sur {f(lo)} → retour vers {f(mid)} puis {f(hi)}, invalide si une clôture Daily passe sous {f(inv_dn)} ; "
-              f"B) cassure : clôture Daily < {f(inv_dn)} → objectif {f(lo - h)} (hauteur de la fourchette)")
+        sc = (f"A) rebond sur {f(lo)} → retour vers {f(mid)} puis {f(hi)}, invalide si une clôture Daily passe sous {f(lo - tol)} ; "
+              f"B) cassure : clôture Daily < {f(lo - tol)} → objectif {f(lo - h)}")
     else:
         sc = f"niveaux de référence : bas {f(lo)} · haut {f(hi)} (clôture Daily au-delà de ±{f(tol)} = cassure)"
     texte = f"{head} · arguments : {arg_txt} → penche {bias} (score {score:+d}) · {sc}"
     return {"lo": lo, "hi": hi, "mid": mid, "width_pct": h / mid * 100, "width_atr": width_atr, "is_range": is_range,
-            "trips": trips, "touch_hi": touch_hi, "touch_lo": touch_lo, "pos": pos, "args": args, "score": score,
-            "bias": bias, "texte": texte}
+            "trips": trips, "touch_hi": touch_hi, "touch_lo": touch_lo, "pos": pos, "out_up": out_up, "out_dn": out_dn,
+            "from_zones": zone_ok, "args": args, "score": score, "bias": bias, "texte": texte}

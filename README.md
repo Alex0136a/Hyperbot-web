@@ -1625,3 +1625,9 @@ Demande : situation de consolidation après une forte baisse (BTC −3,85 % puis
 - Affiché dans le diagnostic de l'onglet Indicateurs (ligne « 🔮 SCÉNARIO ») et enregistré dans les raisons de chaque trade Top-down ouvert (« scenario : … »).
 - **Aucun filtre, aucune entrée ne dépend de ce calcul.** Désactivable : `MTF_SCENARIO_ON` = 0. Lecture en cache seul (aucune requête en plus).
 - Les entrées restent celles du moteur existant : zone Daily/H4 + signal de bougie (+ figure double sommet/creux avec `MTF_DOUBLE_PATTERN_ENABLED`) ; la tolérance de tendance se règle par `ACCUMULATION_TREND_MODE` / `SPOT_ACCUM_TREND_MODE`.
+
+## v4.513 — Scénario : cassure de fourchette et bornes sur les zones Daily (information seulement)
+Constat (diagnostic du 29/10, 21 h) : BTC sorti par le bas de sa fourchette de 20 jours affichait « prix à −11 % · pas de consolidation nette » au lieu de décrire la cassure ; une fourchette fixée par un seul pic (1 contact de chaque côté).
+- **Sortie de fourchette** : prix au-delà de 0,25 ATR Daily d'une borne → le scénario décrit la **cassure** (« sortie par le bas / par le haut »), son objectif (hauteur de la fourchette projetée) et ce qui l'annule (clôture Daily de retour dans la fourchette = risque de piège). L'argument « prix sous / au-dessus de la fourchette » compte −1 / +1 dans le score.
+- **Bornes** : quand un support et une résistance Daily distincts encadrent le prix, la fourchette va du haut du support au bas de la résistance (source indiquée entre crochets : « zones Daily » ou « extrêmes des N derniers jours »). Dans la zone de support ou de résistance, le prix est encore *dans* la fourchette ; la sortie se compte au-delà de la zone entière.
+- Toujours aucun filtre ni entrée dépendant de ce calcul ; `MTF_SCENARIO_ON` = 0 pour le couper.
