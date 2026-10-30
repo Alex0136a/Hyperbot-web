@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.514"
+BOT_VERSION = "4.515"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -8178,6 +8178,7 @@ class BotEngine:
                 self._save_confidence_thresholds()
                 self._save_indicator_state()
                 self._send_snapshot()
+                self._last_cycle_ts = time.time()      # v4.515 : visible dans le statut serveur
                 time.sleep(cfg["CYCLE_INTERVAL"])
             except Exception as e:
                 # v3.2 — FILET DE SECURITE CRITIQUE : sans ce try/except, une

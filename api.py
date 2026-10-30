@@ -125,6 +125,7 @@ if db.get_meta("reset_at") is None:
 # pas vers un Volume monte. Visible dans /health et dans les logs de
 # demarrage.
 BOOT_COUNT = int(db.get_meta("boot_count", "0")) + 1
+_PROC_START = time.time()      # v4.515 : demarrage du processus (statut serveur)
 db.set_meta("boot_count", str(BOOT_COUNT))
 _startup_warnings = []
 if not _DATA_DIR_CONFIGURED:
@@ -2922,6 +2923,47 @@ def scalp_status(email: str = Depends(require_user)):
 def scalp_nosig(email: str = Depends(require_user)):
     """v4.506 : etat de l alerte « aucun signal » (leger, interroge par la page sur tous les onglets)."""
     return bot.manual.scalp.nosig_state()
+
+
+@app.get("/api/server/status")
+def server_status(email: str = Depends(require_user)):
+    """v4.515 : version en cours et etat du serveur (leger, interroge par la page toutes les 15 s)."""
+    now = time.time()
+    out = {"version": be.BOT_VERSION, "build": be.BOT_BUILD, "boot_count": BOOT_COUNT, "data_dir": _DATA_DIR, "data_dir_configured": bool(_DATA_DIR_CONFIGURED),
+           "started_at": _PROC_START, "uptime_s": round(now - _PROC_START), "server_utc": datetime.now(timezone.utc).strftime("%d/%m %H:%M:%S"),
+           "bot_running": bool(bot.running), "trading_enabled": bool(bot.trading_enabled)}
+    try:
+        lt = getattr(bot, "_last_ws_tick", None)
+        out["ws"] = {"connected": bot.info is not None, "healthy": bool(bot._is_ws_healthy()) if bot.info is not None else False,
+                     "last_tick_age_s": round(now - lt, 1) if lt else None, "stale_after_s": bot.cfg.get("WS_STALE_AFTER_SEC", 20)}
+        lc = getattr(bot, "_last_cycle_ts", None)
+        out["last_cycle_age_s"] = round(now - lc, 1) if lc else None
+        out["cycle_interval_s"] = bot.cfg.get("CYCLE_INTERVAL", 10)
+    except Exception as e:
+        out["ws_error"] = f"{type(e).__name__}: {e}"
+    try:
+        out["db_mb"] = round(os.path.getsize(db.DB_PATH) / 1048576, 1)
+    except Exception:
+        out["db_mb"] = None
+    try:
+        import shutil
+        out["disk_free_mb"] = round(shutil.disk_usage(_DATA_DIR if os.path.isdir(_DATA_DIR) else ".").free / 1048576)
+    except Exception:
+        out["disk_free_mb"] = None
+    try:
+        import resource
+        out["mem_mb"] = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)
+    except Exception:
+        out["mem_mb"] = None
+    try:
+        s = bot.manual.scalp
+        out["scalp"] = {"enabled": bool(int(bot.cfg.get("SCALP_ENABLED", 0))), "mode": bot.cfg.get("SCALP_MODE", "paper"),
+                        "last_scan_age_s": round(now - s._last_tick, 1) if getattr(s, "_last_tick", 0) else None,
+                        "last_error": s.last_error, "macro": (s.macro.status() if getattr(s, "macro", None) else None),
+                        "open": s._open_count() if hasattr(s, "_open_count") else None}
+    except Exception as e:
+        out["scalp"] = {"error": f"{type(e).__name__}: {e}"}
+    return out
 
 
 @app.get("/api/scalp/corr-btc")

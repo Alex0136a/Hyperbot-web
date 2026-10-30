@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.514";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.515";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -2132,6 +2132,11 @@ function App() {
   const [scalpSt, setScalpSt] = useState(null);
   // v4.506 — bandeau « aucun signal » visible sur toutes les pages, avec acquittement (memorise par episode, reaffiche apres 60 min)
   const [nosig, setNosig] = useState(null);
+  // v4.515 — version en cours et statut du serveur (badge de l'en-tete)
+  const [srv, setSrv] = useState(null);
+  const [srvOpen, setSrvOpen] = useState(false);
+  const loadSrv = async () => { try { setSrv(await apiCall("/api/server/status","GET",null,token)); } catch(e) {} };
+  useEffect(() => { loadSrv(); const id = setInterval(loadSrv, 15000); return () => clearInterval(id); }, [token]);
   const [nosigAck, setNosigAck] = useState(() => { try { return JSON.parse(localStorage.getItem("hb_nosig_ack") || "null"); } catch(e) { return null; } });
   const loadNosig = async () => { try { setNosig(await apiCall("/api/scalp/nosig","GET",null,token)); } catch(e) {} };
   useEffect(() => { loadNosig(); const id = setInterval(loadNosig, 20000); return () => clearInterval(id); }, [token]);
@@ -2817,6 +2822,48 @@ Confirmer ?`
               )}
             </div>
           )}
+        </div>
+        <div style={{position:"relative"}}>
+          {(()=>{
+            const ageTxt = (s)=> s==null ? "?" : s<90 ? `${Math.round(s)} s` : s<5400 ? `${Math.round(s/60)} min` : `${Math.floor(s/3600)} h ${Math.round((s%3600)/60)} min`;
+            const mism = !!(srv && srv.version && srv.version !== UI_VERSION);
+            const cyc = srv ? srv.last_cycle_age_s : null, wt = srv && srv.ws ? srv.ws.last_tick_age_s : null;
+            const bad = !srv ? false : (!srv.bot_running || (cyc!=null && cyc>90) || (srv.ws && srv.ws.connected && !srv.ws.healthy));
+            const warn = !srv ? false : (mism || !srv.data_dir_configured || (cyc!=null && cyc>30) || (srv.scalp && srv.scalp.last_error));
+            const col = !srv ? "#94a3b8" : bad ? "#f87171" : warn ? "#fbbf24" : "#34d399";
+            const row = (k,v,c)=><div style={{display:"flex",justifyContent:"space-between",gap:12,fontSize:12,padding:"3px 0",borderBottom:"1px solid #1e2d4a"}}><span style={{color:"#94a3b8"}}>{k}</span><span style={{color:c||"#e2e8f0",textAlign:"right"}}>{v}</span></div>;
+            return <>
+              <div onClick={()=>{ setSrvOpen(!srvOpen); loadSrv(); }} style={{cursor:"pointer",background:col+"22",border:`1px solid ${col}`,borderRadius:20,padding:"4px 12px"}}>
+                <span style={{fontSize:11,fontWeight:700,color:col}}>{srv ? `🖥 v${srv.version}${mism?" ⚠ page v"+UI_VERSION:""} · ${ageTxt(srv.uptime_s)}` : "🖥 serveur…"}</span>
+              </div>
+              {srvOpen && srv && <div style={{position:"absolute",top:"110%",right:0,zIndex:50,width:380,maxHeight:460,overflowY:"auto",background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,boxShadow:"0 8px 24px #000a"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                  <span style={{fontSize:12,fontWeight:700,color:"#60a5fa"}}>Version et statut du serveur</span>
+                  <span onClick={()=>setSrvOpen(false)} style={{cursor:"pointer",color:"#94a3b8",fontSize:14}}>✕</span>
+                </div>
+                {row("Bot (serveur)", `v${srv.version} · build ${srv.build}`)}
+                {row("Page (navigateur)", `v${UI_VERSION}`, mism?"#fbbf24":"#34d399")}
+                {mism && <div style={{fontSize:11,color:"#fbbf24",padding:"4px 0"}}>⚠ La page n'est pas à la version du bot : recharge sans cache (Ctrl+Maj+R) ou vérifie que index.html a été déposé.</div>}
+                {row("En marche depuis", `${ageTxt(srv.uptime_s)} (démarré le ${new Date(srv.started_at*1000).toLocaleString("fr-FR")})`)}
+                {row("Redémarrage n°", srv.boot_count)}
+                {row("Volume persistant", srv.data_dir_configured ? `✓ ${srv.data_dir}` : "⚠ non configuré : les données peuvent être perdues au redéploiement", srv.data_dir_configured?"#34d399":"#fbbf24")}
+                {row("Moteur", srv.bot_running ? "actif" : "ARRÊTÉ", srv.bot_running?"#34d399":"#f87171")}
+                {row("Trading", srv.trading_enabled ? "activé" : "désactivé")}
+                {row("Dernier cycle", cyc==null?"?":`il y a ${ageTxt(cyc)} (cycle ${srv.cycle_interval_s} s)`, cyc!=null&&cyc>90?"#f87171":cyc!=null&&cyc>30?"#fbbf24":"#34d399")}
+                {srv.ws && row("WebSocket", `${srv.ws.healthy?"OK":srv.ws.connected?"instable":"déconnecté"} · dernier prix il y a ${ageTxt(wt)} (alarme après ${srv.ws.stale_after_s} s)`, srv.ws.healthy?"#34d399":"#f87171")}
+                {row("Base de données", srv.db_mb==null?"?":`${srv.db_mb} Mo`)}
+                {row("Disque libre", srv.disk_free_mb==null?"?":`${srv.disk_free_mb} Mo`, srv.disk_free_mb!=null&&srv.disk_free_mb<200?"#f87171":null)}
+                {row("Mémoire (pic)", srv.mem_mb==null?"?":`${srv.mem_mb} Mo`)}
+                {srv.scalp && !srv.scalp.error && <>
+                  {row("Scalp", `${srv.scalp.enabled?"actif":"éteint"} · ${srv.scalp.mode} · ${srv.scalp.open==null?"?":srv.scalp.open} trade(s) ouvert(s)`)}
+                  {row("Dernier scan Scalp", srv.scalp.last_scan_age_s==null?"?":`il y a ${ageTxt(srv.scalp.last_scan_age_s)}`)}
+                  {row("Dernière erreur technique", srv.scalp.last_error || "aucune", srv.scalp.last_error?"#fbbf24":"#34d399")}
+                  {row("Calendrier macro", srv.scalp.macro || "?")}
+                </>}
+                {row("Heure du serveur (UTC)", srv.server_utc)}
+              </div>}
+            </>;
+          })()}
         </div>
       </div>
 
