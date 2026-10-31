@@ -240,6 +240,39 @@ class ZoneOrders:
         except Exception:
             return None
 
+    def flow_info(self, ticker, subscribe=False):
+        """Observation seule (v4.537) : part des achats agressifs sur les 10 dernieres minutes (flux WebSocket du bot), sans filtre. None si pas de flux.
+        subscribe=True : s'abonne a la volee a l'actif (a la creation seulement) ; au declenchement on lit le tampon sans rien ouvrir."""
+        try:
+            buffers = getattr(self.bot, "_ws_trades_buffer", None)
+            if buffers is None:
+                return None
+            if subscribe and ticker not in buffers:
+                try:
+                    self.manual.scalp._flow(ticker)
+                except Exception:
+                    pass
+                return None
+            lim = (time.time() - 600) * 1000
+            b = a = 0.0
+            n = 0
+            for x in list(buffers.get(ticker) or []):
+                if x.get("t", 0) < lim:
+                    continue
+                sz = float(x.get("sz") or 0)
+                if x.get("side") == "B":
+                    b += sz
+                elif x.get("side") == "A":
+                    a += sz
+                else:
+                    continue
+                n += 1
+            if n == 0 or b + a <= 0:
+                return None
+            return {"buy": round(b / (b + a), 3), "n": n}
+        except Exception:
+            return None
+
     @staticmethod
     def plan(side, v, c):
         """Pur : ordre a programmer, ou (None, raison). side : long (rebond sur le support quitte) / short (sur la resistance quittee)."""
@@ -326,6 +359,7 @@ class ZoneOrders:
             r = self.contradiction(item, v)
             if r is None and v is not None:
                 (item.get("zone_order") or {})["h4_fire"] = self.h4_info(item["ticker"], v["price"], cache_only=True)      # v4.520 : observation
+                (item.get("zone_order") or {})["flow_fire"] = self.flow_info(item["ticker"])        # v4.537 : observation (flux 10 min), jamais bloquant
             return (r is None), (r or "")
         except Exception:
             return True, ""
@@ -482,12 +516,13 @@ class ZoneOrders:
                   "trigger_price": pl["edge"], "confirm_pct": c["ZONEORD_CONFIRM_PCT"], "leverage": int(c["ZONEORD_LEVERAGE"]), "notional_usd": c["ZONEORD_NOTIONAL_USD"],
                   "sl_pct": pl["sl_pct"], "tp_pct": pl["tp_pct"], "tp_run": True, "tp_run_lock_pct": 0.0, "tp_run_trail_pct": round(trail, 3),
                   "expiry_hours": (c["ZONEORD_REC_EXPIRY_H"] if pl.get("recent") else c["ZONEORD_EXPIRY_H"]), "require_valid": False, "no_ttp": True, **self.lock_params(pl["tp_pct"], c)}
+        fl0 = self.flow_info(t, subscribe=True)      # v4.537 : avant le verrou (l'abonnement a la volee peut toucher le reseau)
         try:
             with self.manual.lock:
                 res = self.manual.submit(params)
                 it = self.manual.items.get(res.get("id")) if isinstance(res, dict) else None
                 if it is not None:
-                    it["zone_order"] = {"zone": pl["zone"], "trend": v["trend"], "created": time.time(), "dist_atr": pl["dist_atr"], "recent": bool(pl.get("recent")), "obs": pl.get("obs"), "h4_create": self.h4_info(t, v["price"], cache_only=False)}
+                    it["zone_order"] = {"zone": pl["zone"], "trend": v["trend"], "created": time.time(), "dist_atr": pl["dist_atr"], "recent": bool(pl.get("recent")), "obs": pl.get("obs"), "h4_create": self.h4_info(t, v["price"], cache_only=False), "flow_create": fl0}
                     if pl.get("recent"):
                         it["reasons"] = [f"🎯 Ordre sur {'base' if up else 'sommet'} récent (programmé par le bot) : {pl['txt']} ; fenêtre {v['hours']:g} h en bougies 15 min, tendance {v.get('trend_tf', 'Daily')} {v['trend']}. "
                                          f"Se déclenche sur {'un rebond' if up else 'un recul'} de {c['ZONEORD_CONFIRM_PCT']:g} % après retour au niveau ; annulé si le niveau est dépassé / cassé, si la tendance se retourne, "
