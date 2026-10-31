@@ -6,7 +6,7 @@ import threading
 
 import mtf_analysis as mtf
 
-DEFAULTS = {"ZONEORD_ON": 1, "ZONEORD_LIVE": 0, "ZONEORD_LOCK_ON": 1, "ZONEORD_LOCK_ARM_FRAC": 0.33, "ZONEORD_LOCK_FRACTION": 0.5, "ZONEORD_HOLD_H": 6, "ZONEORD_RECENT_ON": 1, "ZONEORD_REC_TREND_H1": 1, "ZONEORD_REC_HOURS": 10, "ZONEORD_REC_MIN_VISITS": 2, "ZONEORD_REC_MERGE_ATR": 0.6, "ZONEORD_REC_ZONE_WIDTH_ATR": 2.0, "ZONEORD_REC_MAX_DIST_FRAC": 0.6, "ZONEORD_REC_MIN_RANGE_ATR": 3.0, "ZONEORD_REC_SL_ATR": 1.0, "ZONEORD_REC_BREAK_ATR": 1.0, "ZONEORD_REC_EXPIRY_H": 4, "ZONEORD_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"], "ZONEORD_ZONE_MAX_WIDTH_ATR": 1.0, "ZONEORD_ZONE_H4": 1, "ZONEORD_MIN_TOUCHES": 2, "ZONEORD_MIN_DIST_ATR": 0.1, "ZONEORD_SL_MAX_ATR": 1.0, "ZONEORD_MAX_DIST_ATR": 1.5,
+DEFAULTS = {"ZONEORD_ON": 1, "ZONEORD_LIVE": 0, "ZONEORD_LOCK_ON": 1, "ZONEORD_LOCK_ARM_FRAC": 0.33, "ZONEORD_LOCK_FRACTION": 0.5, "ZONEORD_HOLD_H": 6, "ZONEORD_RECENT_ON": 1, "ZONEORD_REC_GRACE_H": 2.0, "ZONEORD_REC_TREND_H1": 1, "ZONEORD_REC_HOURS": 10, "ZONEORD_REC_MIN_VISITS": 2, "ZONEORD_REC_MERGE_ATR": 0.6, "ZONEORD_REC_ZONE_WIDTH_ATR": 2.0, "ZONEORD_REC_MAX_DIST_FRAC": 0.6, "ZONEORD_REC_MIN_RANGE_ATR": 3.0, "ZONEORD_REC_SL_ATR": 1.0, "ZONEORD_REC_BREAK_ATR": 1.0, "ZONEORD_REC_EXPIRY_H": 4, "ZONEORD_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"], "ZONEORD_ZONE_MAX_WIDTH_ATR": 1.0, "ZONEORD_ZONE_H4": 1, "ZONEORD_MIN_TOUCHES": 2, "ZONEORD_MIN_DIST_ATR": 0.1, "ZONEORD_SL_MAX_ATR": 1.0, "ZONEORD_MAX_DIST_ATR": 1.5,
             "ZONEORD_CONFIRM_PCT": 0.3, "ZONEORD_SL_BUFFER_ATR": 0.3, "ZONEORD_SL_MAX_PCT": 6.0, "ZONEORD_MIN_RR": 1.5, "ZONEORD_MAX_RR": 4.0, "ZONEORD_TP_BUFFER_PCT": 0.3,
             "ZONEORD_NOTIONAL_USD": 60.0, "ZONEORD_LEVERAGE": 3, "ZONEORD_MAX_ORDERS": 5, "ZONEORD_EXPIRY_H": 48, "ZONEORD_BREAK_ATR": 0.5, "ZONEORD_TRAIL_PCT": 1.0}
 
@@ -94,7 +94,7 @@ class ZoneOrders:
             h1 = self.bot._mtf_candles(ticker, "1h", 230, cache_only=cache_only)
             tr, ttf = (mtf.trend(h1 + [{**h1[-1], "c": float(price)}])[0] if h1 and len(h1) >= 60 else "inconnue"), "H1"
         mom = (float(price) - win[-4]["c"]) / (hi - lo) * 100 if hi > lo else 0.0
-        return {"recent": True, "price": float(price), "atr15": a, "top": top, "base": base, "win_hi": hi, "win_lo": lo, "R": hi - lo, "trend": tr, "trend_tf": ttf, "trend_d": trd,
+        return {"recent": True, "price": float(price), "atr15": a, "top": top, "base": base, "win_hi": hi, "win_lo": lo, "R": hi - lo, "trend": tr, "trend_tf": ttf, "trend_d": trd, "zs": [{"low": q["low"], "high": q["high"]} for q in (zs or [])],
                 "mom_pct": round(mom), "hours": hours}
 
     @staticmethod
@@ -169,9 +169,15 @@ class ZoneOrders:
         if (short and v["trend"] == "haussiere") or ((not short) and v["trend"] == "baissiere"):
             return f"la tendance {v.get('trend_tf', 'Daily')} est devenue contraire"
         z = v["top"] if short else v["base"]
-        if z is None or abs((z["low"] if short else z["high"]) - (lo if short else hi)) > max(0.5 * a, 0.0007 * p):
-            return f"le {'sommet' if short else 'bas'} n'est plus un niveau de la fenêtre {v['hours']:g} h (recalcul)"
-        dist = (z["low"] - p) if short else (p - z["high"])
+        tol = max(0.5 * a, 0.0007 * p)
+        tgt = lo if short else hi
+        ek = (lambda q: q["low"]) if short else (lambda q: q["high"])
+        # v4.534 : la fenetre de 10 h GLISSE : le niveau de l ordre n est pas forcement le plus proche a chaque recalcul. Il reste valable tant qu une zone de
+        # la fenetre le retrouve (meme non la plus proche) ; sinon grace de ZONEORD_REC_GRACE_H heures depuis la creation avant annulation (16 des 19 annulations du 30/10 etaient des « recalculs »).
+        still = any(abs(ek(q) - tgt) <= tol for q in (v.get("zs") or []) if q) or (z is not None and abs(ek(z) - tgt) <= tol)
+        if not still and time.time() - float(zo.get("created") or time.time()) > float(self.c("ZONEORD_REC_GRACE_H")) * 3600:
+            return f"le {'sommet' if short else 'bas'} n'est plus un niveau de la fenêtre {v['hours']:g} h (recalcul, après {float(self.c('ZONEORD_REC_GRACE_H')):g} h de grâce)"
+        dist = (tgt - p) if short else (p - tgt)
         if dist > 1.5 * float(self.c("ZONEORD_REC_MAX_DIST_FRAC")) * R:
             return "le prix s'est trop éloigné du niveau : le retour n'est plus attendu"
         return None

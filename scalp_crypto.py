@@ -380,6 +380,9 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
         if r2 < r2_need:
             return None, f"pente 1 h irrégulière (R² {r2:.2f} < {r2_need:.2f})"
         ext_ref = e20
+    if K.get("cont_h1_block", 1) and ((side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere")):
+        # v4.534 : constat 30/10 : 14 longs de continuation pris H1 baissiere = 2 gagnants, 7 stops, -2,34 $ (0/7 la semaine d avant) ; H1 neutre = 2/2
+        return None, f"continuation {side} refusée : H1 {t1h} (contraire)"
     mv = (price / float(c5[-25]["c"]) - 1) * 100 * sg
     mv_need = K["cont_min_move_pct"] * (0.5 if follower else 1.0)
     if mv < mv_need:
@@ -582,6 +585,9 @@ def sustained_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=Fals
         return None, "marché trop calme"
     sd = m["side"]
     sg = 1 if sd == "long" else -1
+    t1h_ = mtf.trend(c1h)[0]
+    if K.get("cont_h1_block", 1) and ((sd == "long" and t1h_ == "baissiere") or (sd == "short" and t1h_ == "haussiere")):
+        return None, f"continuation {sd} refusée : H1 {t1h_} (contraire)"
     closes5 = [float(x["c"]) for x in c5]
     ref = mtf.ema(closes5, 36) or price
     ext = (price - ref) / a15 * sg
@@ -629,7 +635,7 @@ def sustained_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=Fals
            "reasons": reasons, "level": m["e9"], "price": price, "atr15_pct": atr15_pct, "volume_ratio": vr,
            "sig_high": float(last["h"]), "sig_low": float(last["l"]), "atr5": a5,
            "ctx": {"flow_buy": (round(flow["buy_ratio"], 3) if flow else None), "flow_n": (flow.get("n") if flow else None),
-                   "t1h": None, "m15": f"soutenue {mins} min", "btc1h": (round(btc_chg, 3) if btc_chg is not None else None)},
+                   "t1h": t1h_, "m15": f"soutenue {mins} min", "btc1h": (round(btc_chg, 3) if btc_chg is not None else None)},
            "cont": {"sub": "soutenue", "early": False, "court": True, "mv_pct": round(mv2h, 3), "r2": round(r2, 3), "pente_atr": round(pa, 3),
                     "ext_atr": round(ext, 2), "sus_mv_pct": m["mv_pct"], "sus_er": m["er"], "sus_pb_atr": m["pb_atr"], "sus_noise_pct": m["noise_pct"], "sus_noise_atr": m["noise_atr"], "sus_min": mins}}
     return sig, "ok"
@@ -740,7 +746,7 @@ class ScalpEngine:
                 "cont_momentum_on": int(c.get("SCALP_CONT_MOMENTUM_ON", 1)), "cont_flow_min": float(c.get("SCALP_CONT_FLOW_MIN", 0.5)),
                 "cont_min_room_pct": float(c.get("SCALP_CONT_MIN_ROOM_PCT", 0.3)), "cont_vol_mult": float(c.get("SCALP_CONT_VOL_MULT", 1.2)), "cont_early_on": int(c.get("SCALP_CONT_EARLY_ON", 1)),
                 "cont_short_on": int(c.get("SCALP_CONT_SHORT_ON", 1)), "cont_trend_bars": int(c.get("SCALP_CONT_TREND_BARS", 36)), "cont_min_r2_5m": float(c.get("SCALP_CONT_MIN_R2_5M", 0.3)),
-                "sus_min": int(c.get("SCALP_SUS_MIN", 30)), "sus_min_move_pct": float(c.get("SCALP_SUS_MIN_MOVE_PCT", 0.35)), "sus_min_move_atr": float(c.get("SCALP_SUS_MIN_MOVE_ATR", 2.0)),
+                "cont_h1_block": int(c.get("SCALP_CONT_H1_BLOCK", 1)), "sus_min": int(c.get("SCALP_SUS_MIN", 30)), "sus_min_move_pct": float(c.get("SCALP_SUS_MIN_MOVE_PCT", 0.35)), "sus_min_move_atr": float(c.get("SCALP_SUS_MIN_MOVE_ATR", 2.0)),
                 "sus_min_er": float(c.get("SCALP_SUS_MIN_ER", 0.45)), "sus_max_pb_atr": float(c.get("SCALP_SUS_MAX_PB_ATR", 1.5)), "sus_max_ext_atr": float(c.get("SCALP_SUS_MAX_EXT_ATR", 4.0)),
                 "sus_rsi_max": float(c.get("SCALP_SUS_RSI_MAX", 93)), "sus_end_pb_atr": float(c.get("SCALP_SUS_END_PB_ATR", 1.2))}
 
