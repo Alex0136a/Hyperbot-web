@@ -1756,3 +1756,7 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Export CSV de l'historique : 14 colonnes « zo_* » en fin de ligne (vides pour les autres trades). Les anciens ordres n'ont pas ces valeurs.
 - AUCUNE règle de décision ne change. Après ~20 ordres clos avec ces colonnes, on décide d'un filtre sur les chiffres.
 - Fichiers : zone_orders.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.536 — Diagnostic Scalp : la raison de la tendance soutenue sur chaque ligne (information seule)
+- Le diagnostic par actif n'affichait que le motif de la continuation ; celui de la tendance soutenue n'apparaissait qu'au survol de la carte. Chaque ligne affiche maintenant : « tendance soutenue : EN COURS (hausse depuis N min, mouvement, efficacité, repli) », « terminée il y a N min (motif) » ou « tendance soutenue (N min) : <raison du refus> » (mouvement trop faible, efficacité, repli, étirement, RSI, BTC, flux, zone H1, H1 contraire…).
+- Aucune règle de décision ne change. Fichiers : scalp_crypto.py, bot_engine.py, index.html, index_src.html, README.md.

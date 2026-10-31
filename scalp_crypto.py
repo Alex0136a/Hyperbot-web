@@ -2250,6 +2250,16 @@ class ScalpEngine:
                 parts.append(f"continuation ({(time.time() - cd_[0]) / 60:.0f} min) : {cd_[1]}")
             else:
                 parts.append("pas encore évalué depuis le démarrage")
+            if int(c.get("SCALP_SUS_ON", 1)):      # v4.536 : pourquoi la tendance soutenue (30 min sans repli) est prise ou non (information seule)
+                st_, sw_ = self.sus_state.get(t), self.sus_why.get(t)
+                now_ = time.time()
+                if st_ and st_.get("phase") == "soutenue":
+                    parts.append(f"tendance soutenue : EN COURS ({'hausse' if st_.get('side') == 'long' else 'baisse'} depuis {(now_ - st_.get('since', now_)) / 60:.0f} min, "
+                                 f"{st_.get('mv', 0):+.2f} %, efficacité {st_.get('er', 0):.2f}, repli {st_.get('pb', 0):.1f} ATR)")
+                elif st_ and st_.get("phase") == "fin":
+                    parts.append(f"tendance soutenue : terminée il y a {(now_ - st_.get('ended', now_)) / 60:.0f} min ({st_.get('why')})")
+                elif sw_ and sw_[1]:
+                    parts.append(f"tendance soutenue ({(now_ - sw_[0]) / 60:.0f} min) : {sw_[1]}")
             try:
                 cs = self.capital_state(mode)
                 if cs["goal_reached"]:
