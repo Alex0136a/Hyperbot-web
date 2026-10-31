@@ -1728,3 +1728,12 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 ## v4.531 — Un trade qui progresse n'est plus coupé par la durée maximale
 - À l'échéance de la durée maximale (ordres sur zone : `ZONEORD_HOLD_H` ; Scalp : durée du mode, `SCALP_HOLD_RUN_ON` = 1), un trade **en gain** n'est plus fermé : le suiveur de l'objectif s'enclenche (stop = plus haut − suiveur, ne fait que monter / descendre) et le trade court tant qu'il progresse ; il sort dès qu'il recule du suiveur.
 - Un trade en perte ou à zéro à l'échéance est fermé comme avant. `SCALP_HOLD_RUN_ON` = 0 rétablit la fermeture à l'échéance pour le Scalp.
+
+## v4.532 — Scalp : « tendance soutenue » (mouvement tenu ~30 min sans repli) + détection de sortie de zone
+- **Constat** (467 trades Scalp du 19 au 30/10) : le rebond dans une tendance saine (panier corrélé, 15 min dans le sens) gagnait (+5,95 $ sur 103 trades) ; la continuation (repli ou élan avec volume) ne gagnait pas (−1,45 $ sur 41). Une montée lisse sans repli (SUI/TAO du 30/10 soir) n'était prise par aucun mode.
+- **Détection** (`sus_measure`, pur) sur les bougies 5 min des SUS_MIN dernières minutes (30) : mouvement net ≥ max(0,35 %, 2 ATR 5 min), efficacité ≥ 0,45, repli maximal ≤ 1,5 ATR 5 min, prix du bon côté de la moyenne 9, dernière bougie pas franchement contraire. Les va-et-vient sont tolérés.
+- **Entrée** : repli d'abord, puis (si refusé) tendance soutenue, même sens que le panier, mêmes garde-fous que la continuation (BTC, flux, place avant la zone H1, le meneur n'entre que si le panier suit) + étirement ≤ 4 ATR 15 min, RSI ≤ 93. Les actifs corrélés peuvent suivre.
+- **Stop** : max(SUS_SL_MIN 0,25 %, 1,3 × ATR 5 min, **1,3 × le va-et-vient observé sur 1 h**) borné à 0,8 % ; objectif ≥ 2 × le stop puis suiveur ; stop de rentabilité armé à la moitié du stop. Taille inchangée (1/5 du capital en marge).
+- **Sortie de zone** (`sus_end`) : recul ≥ max(1,2 ATR 5 min, 1,3 × bruit habituel) depuis l'extrême des 30 min, ou 2 clôtures du mauvais côté de la moyenne 9. L'actif passe en phase « fin » (visible), les autres modes continuent de tourner. Trade ouvert EN GAIN : suiveur serré (0,15 %) ; en perte ou nul : durée restante 15 min, stop inchangé.
+- Réglages : SCALP_SUS_ON (1) et SCALP_SUS_* (visibles dans les réglages). Même mode (paper/live) que le Scalp. Bloc « ⟿ Tendance soutenue » dans la carte Scalp ; événements « zone » dans le journal.
+- Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.

@@ -483,6 +483,158 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
     return sig, "ok"
 
 
+def sus_measure(c5, K, side=None):
+    """v4.532 : TENDANCE SOUTENUE (pur). Le mouvement des SUS_MIN dernieres minutes (bougies 5 min) est-il propre — net, efficace, sans repli ?
+    Criteres : mouvement net >= max(SUS_MIN_MOVE_PCT %, SUS_MIN_MOVE_ATR x ATR 5 min) ; ratio d efficacite (net / chemin) >= SUS_MIN_ER ;
+    plus fort recul (meche basse sous la plus haute cloture precedente, pour un long) <= SUS_MAX_PB_ATR x ATR 5 min ; prix du bon cote de la moyenne 9 ;
+    derniere bougie pas franchement contraire. Retourne {ok, why, side, mv_pct, er, pb_atr, n, a5, price}."""
+    n = max(int(K.get("sus_min", 30)) // 5, 3)
+    if len(c5) < max(n + 2, 40):
+        return {"ok": False, "why": "historique insuffisant"}
+    a5 = mtf.atr(c5, 14)
+    price = float(c5[-1]["c"])
+    if not a5 or price <= 0:
+        return {"ok": False, "why": "ATR indisponible"}
+    w = c5[-(n + 1):]
+    cl = [float(x["c"]) for x in w]
+    net = cl[-1] - cl[0]
+    sd = side or ("long" if net > 0 else "short")
+    sg = 1 if sd == "long" else -1
+    mv = sg * net / cl[0] * 100 if cl[0] > 0 else 0.0
+    need = max(float(K.get("sus_min_move_pct", 0.35)), float(K.get("sus_min_move_atr", 2.0)) * a5 / price * 100)
+    base = {"side": sd, "mv_pct": round(mv, 3), "n": n, "a5": a5, "price": price}
+    if mv < need:
+        return {"ok": False, "why": f"mouvement {n * 5} min trop faible dans ce sens ({mv:+.2f} % < {need:.2f} %)", **base}
+    er = _eff_ratio(cl)
+    if er < float(K.get("sus_min_er", 0.45)):
+        return {"ok": False, "why": f"mouvement {n * 5} min pas assez direct (efficacité {er:.2f} < {K.get('sus_min_er', 0.45):g})", "er": round(er, 3), **base}
+    pb = 0.0
+    for i in range(1, len(w)):
+        if sd == "long":
+            pb = max(pb, max(cl[:i]) - float(w[i]["l"]))
+        else:
+            pb = max(pb, float(w[i]["h"]) - min(cl[:i]))
+    pb_atr = pb / a5
+    if pb_atr > float(K.get("sus_max_pb_atr", 1.5)):
+        return {"ok": False, "why": f"repli de {pb_atr:.1f} ATR 5 min dans les {n * 5} min (max {K.get('sus_max_pb_atr', 1.5):g})", "er": round(er, 3), "pb_atr": round(pb_atr, 2), **base}
+    e9 = mtf.ema([float(x["c"]) for x in c5], 9)
+    if e9 is None or sg * (price - e9) < 0:
+        return {"ok": False, "why": "prix du mauvais côté de la moyenne 9 (5 min)", "er": round(er, 3), "pb_atr": round(pb_atr, 2), **base}
+    if sg * (cl[-1] - cl[-2]) < -0.5 * a5:
+        return {"ok": False, "why": "dernière bougie franchement contraire", "er": round(er, 3), "pb_atr": round(pb_atr, 2), **base}
+    # v4.532 : amplitude des va-et-vient sur la derniere heure (12 bougies) : plus fort recul contre le sens, en % du prix et en ATR 5 min.
+    # Une tendance soutenue n exclut pas les allers-retours : le STOP doit passer au-dessus de ce bruit (voir _take).
+    w1 = c5[-13:]
+    cl1 = [float(x["c"]) for x in w1]
+    nz = 0.0
+    for i in range(1, len(w1)):
+        nz = max(nz, (max(cl1[:i]) - float(w1[i]["l"])) if sd == "long" else (float(w1[i]["h"]) - min(cl1[:i])))
+    return {"ok": True, "why": "", "er": round(er, 3), "pb_atr": round(pb_atr, 2), "noise_pct": round(nz / price * 100, 3), "noise_atr": round(nz / a5, 2), "e9": e9, "lo": min(float(x["l"]) for x in w), "hi": max(float(x["h"]) for x in w), **base}
+
+
+def sus_end(c5, side, K, price=None):
+    """v4.532 : FIN de la tendance soutenue (pur). Retourne (fini, motif) : recul >= SUS_END_PB_ATR x ATR 5 min depuis l extreme des 6 dernieres
+    bougies, ou deux dernieres clotures du mauvais cote de la moyenne 9 (5 min). price = dernier prix connu (sinon derniere cloture)."""
+    if len(c5) < 20:
+        return False, ""
+    a5 = mtf.atr(c5, 14)
+    px = float(price) if price else float(c5[-1]["c"])
+    if not a5 or px <= 0:
+        return False, ""
+    w = c5[-7:]
+    sg = 1 if side == "long" else -1
+    ext = max(float(x["h"]) for x in w) if sg > 0 else min(float(x["l"]) for x in w)
+    back = sg * (ext - px) / a5
+    lim = float(K.get("sus_end_pb_atr", 1.2))
+    try:      # le seuil de fin passe au-dessus du bruit habituel de l actif (recul maximal des 11 bougies precedentes x 1,3)
+        w0 = c5[-13:-1]
+        cl0 = [float(x["c"]) for x in w0]
+        nz = 0.0
+        for i in range(1, len(w0)):
+            nz = max(nz, (max(cl0[:i]) - float(w0[i]["l"])) if sg > 0 else (float(w0[i]["h"]) - min(cl0[:i])))
+        lim = max(lim, 1.3 * nz / a5)
+    except Exception:
+        pass
+    if back >= lim:
+        return True, f"recul de {back:.1f} ATR 5 min depuis l'extrême des 30 dernières minutes"
+    e9 = mtf.ema([float(x["c"]) for x in c5], 9)
+    if e9 and sg * (float(c5[-1]["c"]) - e9) < 0 and sg * (float(c5[-2]["c"]) - e9) < 0:
+        return True, "deux clôtures 5 min du mauvais côté de la moyenne 9"
+    return False, ""
+
+
+def sustained_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
+    """v4.532 : signal de TENDANCE SOUTENUE : le mouvement tient depuis ~30 min sans repli (sus_measure) -> entree dans le sens, sans attendre
+    de repli ni de volume. Garde-fous : marche pas trop calme, prix pas trop etire (SUS_MAX_EXT_ATR x ATR 15 min au-dela de la moyenne 3 h),
+    RSI 5 min <= SUS_RSI_MAX, BTC pas contre, flux pas contre, place avant la zone H1 suivante. Le STOP est decide dans _take (ATR 5 min, borne).
+    Retourne (signal ou None, motif). Meme forme que cont_eval (kind « continuation », sub « soutenue »)."""
+    if len(c5) < 40 or len(c15) < 30 or len(c1h) < 60:
+        return None, "historique insuffisant"
+    m = sus_measure(c5, K, side=side)
+    if not m["ok"]:
+        return None, m["why"]
+    price, a5 = m["price"], m["a5"]
+    a15 = mtf.atr(c15, 14)
+    if not a15:
+        return None, "ATR 15 min indisponible"
+    atr15_pct = a15 / price * 100
+    if atr15_pct < K["min_atr_pct"]:
+        return None, "marché trop calme"
+    sd = m["side"]
+    sg = 1 if sd == "long" else -1
+    closes5 = [float(x["c"]) for x in c5]
+    ref = mtf.ema(closes5, 36) or price
+    ext = (price - ref) / a15 * sg
+    if ext > float(K.get("sus_max_ext_atr", 4.0)):
+        return None, f"trop étiré ({ext:.1f} ATR 15 min > {K.get('sus_max_ext_atr', 4.0):g})"
+    rsi5 = _rsi(closes5, 14)
+    rmax = float(K.get("sus_rsi_max", 93))
+    if rsi5 is not None and ((sd == "long" and rsi5 >= rmax) or (sd == "short" and rsi5 <= 100 - rmax)):
+        return None, f"RSI 5 min trop {'haut' if sd == 'long' else 'bas'} ({rsi5:.0f})"
+    if btc_chg is not None:
+        if sd == "long" and btc_chg <= -0.5:
+            return None, f"BTC en baisse ({btc_chg:+.2f} % / 1 h)"
+        if sd == "short" and K.get("short_btc_block", 1) and btc_chg > K.get("short_btc_max", 0.1):
+            return None, f"BTC en hausse ({btc_chg:+.2f} % / 1 h)"
+    fmin = float(K.get("cont_flow_min", 0) or 0)
+    if fmin > 0 and flow is not None and flow.get("n", 0) >= K.get("flow_all_trades", 30):
+        br = flow["buy_ratio"]
+        if (sd == "long" and br < fmin) or (sd == "short" and br > 1 - fmin):
+            return None, f"flux pas dans le sens ({br * 100:.0f} % d'achats agressifs)"
+    zones = mtf.find_zones(c1h, pivot=2, lookback=120, merge_atr=0.6, max_width_atr=2.0) or []
+    if sd == "long":
+        ups = [z["low"] for z in zones if z["low"] > price * 1.0005]
+        room = ((min(ups) - price) / price * 100) if ups else 99.0
+    else:
+        dns = [z["high"] for z in zones if z["high"] < price * 0.9995]
+        room = ((price - max(dns)) / price * 100) if dns else 99.0
+    if room < K["cont_min_room_pct"]:
+        return None, f"zone H1 à {room:.2f} % seulement (il faut ≥ {K['cont_min_room_pct']:g} %)"
+    last = c5[-1]
+    vols = [float(x["v"]) for x in c5[-21:-1]]
+    vavg = sum(vols) / len(vols) if vols else 0
+    vr = (float(last["v"]) / vavg) if vavg > 0 else 1.0
+    nL = max(int(K.get("cont_trend_bars", 36)), 18)
+    bL, r2 = mtf._linreg(closes5[-nL:])
+    pa = (bL / a5) if bL is not None else 0.0
+    r2 = r2 if r2 is not None else 0.0
+    mv2h = (price / float(c5[-25]["c"]) - 1) * 100 * sg
+    sc_ = 50 + 8 + int(round(min(1.0, m["er"]) * 8)) + (10 if vr >= 1.2 else 0) + (5 if vr >= 2.5 else 0) + (8 if btc_chg is not None and ((sd == "long" and btc_chg >= 0.2) or (sd == "short" and btc_chg <= -0.2)) else 0)
+    sc_ = max(0, min(100, sc_))
+    mins = m["n"] * 5
+    reasons = [f"tendance soutenue {sd} : {m['mv_pct']:+.2f} % en {mins} min, efficacité {m['er']:.2f}, repli maximal {m['pb_atr']:.1f} ATR 5 min",
+               f"prix du bon côté de la moyenne 9 (5 min), BTC et flux non contraires, place avant la zone suivante : {'>3' if room > 3 else f'{room:.1f}'} %"]
+    lo_, hi_ = (m["lo"], price) if sd == "long" else (price, m["hi"])
+    sig = {"side": sd, "kind": "continuation", "sub": "soutenue", "zone": (lo_, hi_), "score": sc_, "room": room, "touches": 0,
+           "reasons": reasons, "level": m["e9"], "price": price, "atr15_pct": atr15_pct, "volume_ratio": vr,
+           "sig_high": float(last["h"]), "sig_low": float(last["l"]), "atr5": a5,
+           "ctx": {"flow_buy": (round(flow["buy_ratio"], 3) if flow else None), "flow_n": (flow.get("n") if flow else None),
+                   "t1h": None, "m15": f"soutenue {mins} min", "btc1h": (round(btc_chg, 3) if btc_chg is not None else None)},
+           "cont": {"sub": "soutenue", "early": False, "court": True, "mv_pct": round(mv2h, 3), "r2": round(r2, 3), "pente_atr": round(pa, 3),
+                    "ext_atr": round(ext, 2), "sus_mv_pct": m["mv_pct"], "sus_er": m["er"], "sus_pb_atr": m["pb_atr"], "sus_noise_pct": m["noise_pct"], "sus_noise_atr": m["noise_atr"], "sus_min": mins}}
+    return sig, "ok"
+
+
 def p_fmt(x):
     return f"{x:.6g}"
 
@@ -547,6 +699,9 @@ class ScalpEngine:
         self.macro = macro_events.MacroCalendar() if macro_events else None      # v4.507
         self._last_sig_ts = time.time()      # v4.506 : dernier signal valide vu (alerte « aucun signal »)
         self.cont_shadow = self._shadow_load()      # v4.514 : meneurs de continuation refuses (suivi hypothetique)
+        self.sus_state = {}                  # v4.532 : ticker -> {phase soutenue|fin, side, since, ...} (tendance soutenue / sortie de zone)
+        self.sus_why = {}                    # v4.532 : ticker -> (ts, raison pour laquelle la tendance soutenue n est pas retenue)
+        self._sus_chk = {}                   # v4.532 : id trade -> dernier controle de fin de zone
         self.cont_diag = {}                  # v4.505 : ticker -> (ts, raison pour laquelle la continuation n est pas prise)
         self._sigs = deque(maxlen=300)       # (ts, ticker, side) signaux vus (confirmation par les pairs)
         self.peer_wait = {}                  # ticker -> signal en attente d un pair
@@ -584,7 +739,10 @@ class ScalpEngine:
                 "cont_max_ext_atr": float(c.get("SCALP_CONT_MAX_EXT_ATR", 2.5)), "cont_rsi_max": float(c.get("SCALP_CONT_RSI_MAX", 78)),
                 "cont_momentum_on": int(c.get("SCALP_CONT_MOMENTUM_ON", 1)), "cont_flow_min": float(c.get("SCALP_CONT_FLOW_MIN", 0.5)),
                 "cont_min_room_pct": float(c.get("SCALP_CONT_MIN_ROOM_PCT", 0.3)), "cont_vol_mult": float(c.get("SCALP_CONT_VOL_MULT", 1.2)), "cont_early_on": int(c.get("SCALP_CONT_EARLY_ON", 1)),
-                "cont_short_on": int(c.get("SCALP_CONT_SHORT_ON", 1)), "cont_trend_bars": int(c.get("SCALP_CONT_TREND_BARS", 36)), "cont_min_r2_5m": float(c.get("SCALP_CONT_MIN_R2_5M", 0.3))}
+                "cont_short_on": int(c.get("SCALP_CONT_SHORT_ON", 1)), "cont_trend_bars": int(c.get("SCALP_CONT_TREND_BARS", 36)), "cont_min_r2_5m": float(c.get("SCALP_CONT_MIN_R2_5M", 0.3)),
+                "sus_min": int(c.get("SCALP_SUS_MIN", 30)), "sus_min_move_pct": float(c.get("SCALP_SUS_MIN_MOVE_PCT", 0.35)), "sus_min_move_atr": float(c.get("SCALP_SUS_MIN_MOVE_ATR", 2.0)),
+                "sus_min_er": float(c.get("SCALP_SUS_MIN_ER", 0.45)), "sus_max_pb_atr": float(c.get("SCALP_SUS_MAX_PB_ATR", 1.5)), "sus_max_ext_atr": float(c.get("SCALP_SUS_MAX_EXT_ATR", 4.0)),
+                "sus_rsi_max": float(c.get("SCALP_SUS_RSI_MAX", 93)), "sus_end_pb_atr": float(c.get("SCALP_SUS_END_PB_ATR", 1.2))}
 
     def _clear_err(self, prefix):
         """v4.508 : efface la derniere erreur technique si elle vient de cette source (l appel suivant a reussi)."""
@@ -1079,6 +1237,10 @@ class ScalpEngine:
                                 continue
                     except Exception as e:
                         self.last_error = f"sortie panier : {e}"
+                try:
+                    self._sus_manage(it, now)      # v4.532 : fin de la tendance soutenue -> façon de tenir le trade
+                except Exception as e:
+                    self.last_error = f"fin de zone : {type(e).__name__}: {e}"
                 if it.get("tp_run_armed"):      # v4.434 : objectif atteint, le trade court avec son stop suiveur : la duree max ne s applique plus
                     continue
                 if mx > 0 and now - float(it.get("opened_at") or now) > mx:
@@ -1157,6 +1319,11 @@ class ScalpEngine:
                 except Exception as e:
                     self.last_error = f"bougies {t} : {type(e).__name__}: {e}"
                     continue
+                try:
+                    if int(self.cfg.get("SCALP_SUS_ON", 1)):
+                        self._sus_update(t, c5, K)      # v4.532 : etat de la tendance soutenue (entree / sortie de zone), tous les actifs analyses
+                except Exception as e:
+                    self.last_error = f"tendance soutenue {t} : {type(e).__name__}: {e}"
                 sig, motif = evaluate(c5, c15, c1h, btc, K, self._flow(t))
                 if sig:
                     self._last_sig_ts = time.time()
@@ -1212,6 +1379,76 @@ class ScalpEngine:
             pass
         self.regime = reg
         return reg
+
+    # ── v4.532 : tendance soutenue : etat par actif (entree / sortie de zone) et gestion des trades ouverts ──
+    def _sus_update(self, t, c5, K):
+        """Met a jour la phase de l actif : « soutenue » (mouvement tenu ~30 min sans repli) -> « fin » (sortie de zone, detectee) -> oubli apres 30 min.
+        Aucune decision d entree ici : la prise du signal est dans _cont_try. Les autres modes continuent a analyser l actif dans tous les cas."""
+        now = time.time()
+        st = self.sus_state.get(t)
+        m = sus_measure(c5, K)
+        if m.get("ok"):
+            if not st or st.get("phase") != "soutenue" or st.get("side") != m["side"]:
+                st = {"phase": "soutenue", "side": m["side"], "since": now}
+                self._ev("zone", t, f"tendance soutenue {m['side']} détectée : {m['mv_pct']:+.2f} % en {m['n'] * 5} min, efficacité {m['er']:.2f}")
+            st.update({"ts": now, "last_ok": now, "why": "", "mv": m["mv_pct"], "er": m["er"], "pb": m["pb_atr"]})
+            self.sus_state[t] = st
+            return
+        if st and st.get("phase") == "soutenue":
+            ended, why = sus_end(c5, st["side"], K)
+            if ended or now - st.get("last_ok", now) > 900:
+                dur = (now - st["since"]) / 60.0
+                self.sus_state[t] = {"phase": "fin", "side": st["side"], "since": st["since"], "ended": now, "ts": now,
+                                     "why": why or "mouvement plus assez direct depuis 15 min", "dur_min": round(dur)}
+                self._ev("zone", t, f"sortie de la tendance soutenue {st['side']} après {dur:.0f} min : {why or 'mouvement plus assez direct'} — retour aux autres modes (repli, rebond, cassure)")
+            else:
+                st["ts"], st["why"] = now, m["why"]
+        elif st and st.get("phase") == "fin" and now - st.get("ended", now) > 1800:
+            self.sus_state.pop(t, None)
+
+    def _sus_manage(self, it, now):
+        """Trade de tendance soutenue ouvert : si la zone se termine (recul ou clôtures sous la moyenne 9), la façon de le tenir change :
+        EN GAIN -> suiveur serré enclenché (le gain est protégé, le trade court tant qu il progresse) ; en perte ou nul -> durée restante réduite
+        (SCALP_SUS_END_HOLD_MIN), le stop reste en place. Lecture du cache de bougies (jamais de requete reseau ici)."""
+        sc = it.get("scalp") or {}
+        if (sc.get("cont") or {}).get("sub") != "soutenue" or it.get("sus_end_done"):
+            return
+        if now - self._sus_chk.get(it["id"], 0) < 20:
+            return
+        self._sus_chk[it["id"]] = now
+        c5 = self.bot._mtf_candles(it["ticker"], "5m", 60, cache_only=True)
+        if not c5:
+            return
+        K = self.thresholds()
+        px = float(it.get("last_price") or 0) or None
+        ended, why = sus_end(c5, it["direction"], K, price=px)
+        if not ended:
+            return
+        en = float(it.get("entry_price") or 0)
+        sg = 1 if it["direction"] == "long" else -1
+        move = (sg * (px - en) / en * 100) if (px and en) else 0.0
+        with self.manual.lock:
+            it["sus_end_done"] = True
+            if move > 0 and it.get("tp_run"):
+                tr = float(it.get("tp_run_trail_pct") or 0)
+                it["tp_run_trail_pct"] = min(tr, float(self.cfg.get("SCALP_SUS_END_TRAIL_PCT", 0.15))) if tr > 0 else float(self.cfg.get("SCALP_SUS_END_TRAIL_PCT", 0.15))
+                done = self.manual.arm_trail_at_hold(it["id"])
+                self._ev("zone", it["ticker"], f"#{it['id']} sortie de la tendance soutenue ({why}) EN GAIN ({move:+.2f} %) : suiveur serré {'enclenché' if done else 'prêt'}, le gain est protégé")
+            else:
+                hm = (now - float(it.get("opened_at") or now)) / 60.0 + float(self.cfg.get("SCALP_SUS_END_HOLD_MIN", 15))
+                it["hold_min"] = min(float(it.get("hold_min") or hm), hm)
+                self._ev("zone", it["ticker"], f"#{it['id']} sortie de la tendance soutenue ({why}), trade à {move:+.2f} % : durée restante réduite à {self.cfg.get('SCALP_SUS_END_HOLD_MIN', 15):g} min, stop inchangé")
+            self.manual._save(it)
+
+    def sus_summary(self):
+        now = time.time()
+        rows = []
+        for t, st in self.sus_state.items():
+            rows.append({"ticker": t, "phase": st.get("phase"), "side": st.get("side"), "since_min": int((now - st.get("since", now)) / 60),
+                         "mv": st.get("mv"), "er": st.get("er"), "pb": st.get("pb"), "why": st.get("why"), "age_s": int(now - st.get("ts", now))})
+        why = [{"ticker": t, "why": w[1], "age_s": int(now - w[0])} for t, w in self.sus_why.items() if now - w[0] < 900 and t not in self.sus_state]
+        return {"on": bool(int(self.cfg.get("SCALP_SUS_ON", 1))), "rows": sorted(rows, key=lambda r: (r["phase"] != "soutenue", r["ticker"])),
+                "why": sorted(why, key=lambda r: r["ticker"])}
 
     def _cont_diag_summary(self):
         """v4.505 : raisons pour lesquelles la continuation n est pas prise, comptees sur les actifs analysés depuis 15 min."""
@@ -1291,6 +1528,14 @@ class ScalpEngine:
         """v4.504 : signal de continuation sur t ; s il est pris et que le marche le confirme, meme sens sur les actifs correles."""
         c = self.cfg
         sig, motif = cont_eval(c5, c15, c1h, btc, K, self._flow(t))
+        if not sig and int(c.get("SCALP_SUS_ON", 1)):      # v4.532 : pas de repli / d elan : tendance soutenue (mouvement tenu ~30 min sans repli)
+            s2, m2 = sustained_eval(c5, c15, c1h, btc, K, self._flow(t))
+            if s2:
+                sig, motif = s2, "ok"
+            else:
+                st_ = self.sus_state.get(t)
+                if not st_ or st_.get("phase") != "soutenue":
+                    self.sus_why[t] = (time.time(), m2 or "")
         if not sig:
             self.cont_diag[t] = (time.time(), motif or "aucun signal")      # v4.505 : raison de non-entree visible (diagnostic)
             if motif and "refuse" in motif:
@@ -1375,6 +1620,8 @@ class ScalpEngine:
             if rho is None or rho < pc:
                 continue
             s2, _m = cont_eval(b5, b15, b1h, btc, K, self._flow(t2), side=side, follower=True)
+            if not s2 and int(c.get("SCALP_SUS_ON", 1)):      # v4.532 : le suiveur peut aussi etre en tendance soutenue
+                s2, _m = sustained_eval(b5, b15, b1h, btc, K, self._flow(t2), side=side)
             if not s2:
                 continue
             s2["cont"].update({"peer_of": t0, "peer_corr": round(rho, 2), "breadth_pct": round(share * 100)})
@@ -2350,7 +2597,21 @@ class ScalpEngine:
         sl_soft = float(c.get("SCALP_CONT_SL_PCT", 0.2)) if cont else float(c.get("SCALP_SL_PCT", 0.65))
         sl_hard = None
         tp_cont = be_arm_cont = trail_cont = None
-        if cont and int(c.get("SCALP_CONT_SL_ATR_ON", 1)) and sig.get("atr5") and sig.get("price"):
+        sus = cont and (sig.get("cont") or {}).get("sub") == "soutenue"
+        if sus and sig.get("atr5") and sig.get("price"):
+            # v4.532 : tendance soutenue : STOP = k x ATR 5 min (borne), objectif >= RR x stop (gain vise au moins RR fois la perte maximale),
+            # stop de rentabilite arme a la moitie du stop, suiveur a la moitie du stop. Taille inchangee (1/5 du capital en marge).
+            a5p = sig["atr5"] / sig["price"] * 100.0
+            nz_p = float((sig.get("cont") or {}).get("sus_noise_pct") or 0)      # va-et-vient observes sur 1 h : le stop passe au-dessus
+            new_sl = min(max(float(c.get("SCALP_SUS_SL_MIN", 0.25)), float(c.get("SCALP_SUS_SL_ATR", 1.3)) * a5p, float(c.get("SCALP_SUS_SL_NOISE_K", 1.3)) * nz_p), float(c.get("SCALP_SUS_SL_MAX", 0.8)))
+            sig["cont"]["sl_noise_pct"] = round(nz_p, 3)
+            sig.setdefault("cont", {})["sl_base"], sig["cont"]["atr5_pct"] = round(sl_soft, 3), round(a5p, 3)
+            tp_cont = max(float(c.get("SCALP_CONT_TP_PCT", 0.6)), float(c.get("SCALP_SUS_RR", 2.0)) * new_sl)
+            be_arm_cont = max(float(c.get("SCALP_BE_ARM_PCT", 0.4)), 0.5 * new_sl)
+            trail_cont = max(float(c.get("SCALP_RUN_TRAIL_PCT", 0.2)), 0.5 * new_sl)
+            sl_soft = new_sl
+            sig["cont"]["rr"] = round(tp_cont / new_sl, 2)
+        elif cont and int(c.get("SCALP_CONT_SL_ATR_ON", 1)) and sig.get("atr5") and sig.get("price"):
             # v4.511 : stop de la continuation ADAPTE A LA VOLATILITE (k x ATR 5 min, borne). TAILLE INCHANGEE (decision de l utilisateur) : la perte
             # maximale par trade augmente avec le stop. Objectif, armement du stop de rentabilite et suiveur sont mis a l echelle du stop.
             a5p = sig["atr5"] / sig["price"] * 100.0
@@ -2462,5 +2723,5 @@ class ScalpEngine:
                 "regime": {k: v for k, v in self.regime.items()}, "peer_wait": [{"ticker": t, "side": w["side"], "age_min": round((time.time() - w["ts"]) / 60, 1)} for t, w in self.peer_wait.items()],
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),
                 "pending": [{"ticker": t, "side": p["sig"]["side"], "trigger": p["trigger"], "expires": p["expires"]} for t, p in self.pending.items()],
-                "cont_diag": self._cont_diag_summary(), "nosig": self.nosig_state(), "macro": self.macro_state(),
+                "cont_diag": self._cont_diag_summary(), "sus": self.sus_summary(), "nosig": self.nosig_state(), "macro": self.macro_state(),
                 "events": list(self.events)[:40], "error": self.last_error}
