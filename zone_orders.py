@@ -6,7 +6,7 @@ import threading
 
 import mtf_analysis as mtf
 
-DEFAULTS = {"ZONEORD_ON": 1, "ZONEORD_LIVE": 0, "ZONEORD_RECENT_ON": 1, "ZONEORD_REC_HOURS": 10, "ZONEORD_REC_MIN_VISITS": 2, "ZONEORD_REC_MERGE_ATR": 0.6, "ZONEORD_REC_ZONE_WIDTH_ATR": 2.0, "ZONEORD_REC_MAX_DIST_FRAC": 0.6, "ZONEORD_REC_MIN_RANGE_ATR": 3.0, "ZONEORD_REC_SL_ATR": 1.0, "ZONEORD_REC_BREAK_ATR": 1.0, "ZONEORD_REC_EXPIRY_H": 4, "ZONEORD_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"], "ZONEORD_ZONE_MAX_WIDTH_ATR": 1.0, "ZONEORD_ZONE_H4": 1, "ZONEORD_MIN_TOUCHES": 2, "ZONEORD_MIN_DIST_ATR": 0.1, "ZONEORD_SL_MAX_ATR": 1.0, "ZONEORD_MAX_DIST_ATR": 1.5,
+DEFAULTS = {"ZONEORD_ON": 1, "ZONEORD_LIVE": 0, "ZONEORD_LOCK_ON": 1, "ZONEORD_LOCK_ARM_FRAC": 0.33, "ZONEORD_LOCK_FRACTION": 0.5, "ZONEORD_HOLD_H": 6, "ZONEORD_RECENT_ON": 1, "ZONEORD_REC_TREND_H1": 1, "ZONEORD_REC_HOURS": 10, "ZONEORD_REC_MIN_VISITS": 2, "ZONEORD_REC_MERGE_ATR": 0.6, "ZONEORD_REC_ZONE_WIDTH_ATR": 2.0, "ZONEORD_REC_MAX_DIST_FRAC": 0.6, "ZONEORD_REC_MIN_RANGE_ATR": 3.0, "ZONEORD_REC_SL_ATR": 1.0, "ZONEORD_REC_BREAK_ATR": 1.0, "ZONEORD_REC_EXPIRY_H": 4, "ZONEORD_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"], "ZONEORD_ZONE_MAX_WIDTH_ATR": 1.0, "ZONEORD_ZONE_H4": 1, "ZONEORD_MIN_TOUCHES": 2, "ZONEORD_MIN_DIST_ATR": 0.1, "ZONEORD_SL_MAX_ATR": 1.0, "ZONEORD_MAX_DIST_ATR": 1.5,
             "ZONEORD_CONFIRM_PCT": 0.3, "ZONEORD_SL_BUFFER_ATR": 0.3, "ZONEORD_SL_MAX_PCT": 6.0, "ZONEORD_MIN_RR": 1.5, "ZONEORD_MAX_RR": 4.0, "ZONEORD_TP_BUFFER_PCT": 0.3,
             "ZONEORD_NOTIONAL_USD": 60.0, "ZONEORD_LEVERAGE": 3, "ZONEORD_MAX_ORDERS": 5, "ZONEORD_EXPIRY_H": 48, "ZONEORD_BREAK_ATR": 0.5, "ZONEORD_TRAIL_PCT": 1.0}
 
@@ -88,9 +88,13 @@ class ZoneOrders:
         sup, res = mtf.nearest_zones(zs, float(price))
         top, base = self._lvl(res, win, "top"), self._lvl(sup, win, "base")
         d1 = self.bot._mtf_candles(ticker, "1d", 230, cache_only=cache_only)
-        tr = mtf.trend(d1 + [{**d1[-1], "c": float(price)}])[0] if d1 and len(d1) >= 60 else "inconnue"
+        trd = mtf.trend(d1 + [{**d1[-1], "c": float(price)}])[0] if d1 and len(d1) >= 60 else "inconnue"
+        tr, ttf = trd, "Daily"
+        if int(self.c("ZONEORD_REC_TREND_H1")):      # v4.533 : ordre de 4 h tenu 6 h : la tendance qui compte est celle de l H1 ; le Daily reste affiche (trend_d)
+            h1 = self.bot._mtf_candles(ticker, "1h", 230, cache_only=cache_only)
+            tr, ttf = (mtf.trend(h1 + [{**h1[-1], "c": float(price)}])[0] if h1 and len(h1) >= 60 else "inconnue"), "H1"
         mom = (float(price) - win[-4]["c"]) / (hi - lo) * 100 if hi > lo else 0.0
-        return {"recent": True, "price": float(price), "atr15": a, "top": top, "base": base, "win_hi": hi, "win_lo": lo, "R": hi - lo, "trend": tr,
+        return {"recent": True, "price": float(price), "atr15": a, "top": top, "base": base, "win_hi": hi, "win_lo": lo, "R": hi - lo, "trend": tr, "trend_tf": ttf, "trend_d": trd,
                 "mom_pct": round(mom), "hours": hours}
 
     @staticmethod
@@ -117,9 +121,9 @@ class ZoneOrders:
         """Pur : ordre sur le sommet (short) ou la base (long) de la fenetre recente, ou (None, raison)."""
         p, a, R = v["price"], v["atr15"], v["R"]
         if side == "long" and v["trend"] == "baissiere":
-            return None, "tendance Daily baissière : pas d'achat sur base"
+            return None, f"tendance {v.get('trend_tf', 'Daily')} baissière : pas d'achat sur base"
         if side == "short" and v["trend"] == "haussiere":
-            return None, "tendance Daily haussière : pas de vente sur sommet"
+            return None, f"tendance {v.get('trend_tf', 'Daily')} haussière : pas de vente sur sommet"
         if R < c["ZONEORD_REC_MIN_RANGE_ATR"] * a:
             return None, f"fenêtre {v['hours']:g} h trop étroite ({R / p * 100:.2f} % de hauteur, {R / a:.1f} ATR 15 min ; minimum {c['ZONEORD_REC_MIN_RANGE_ATR']:g})"
         z = v["top"] if side == "short" else v["base"]
@@ -163,7 +167,7 @@ class ZoneOrders:
         if (not short) and p < lo - brk:
             return "base cassée"
         if (short and v["trend"] == "haussiere") or ((not short) and v["trend"] == "baissiere"):
-            return "la tendance Daily est devenue contraire"
+            return f"la tendance {v.get('trend_tf', 'Daily')} est devenue contraire"
         z = v["top"] if short else v["base"]
         if z is None or abs((z["low"] if short else z["high"]) - (lo if short else hi)) > max(0.5 * a, 0.0007 * p):
             return f"le {'sommet' if short else 'bas'} n'est plus un niveau de la fenêtre {v['hours']:g} h (recalcul)"
@@ -323,8 +327,27 @@ class ZoneOrders:
         self._last, self._busy = time.time(), True
         threading.Thread(target=self._run, daemon=True).start()
 
+    def _upgrade_open(self):
+        """v4.530 : applique le verrou progressif et la duree maximale aux positions sur zone DEJA OUVERTES (ouvertes avant cette version)."""
+        c = {k: float(self.c(k)) for k in ("ZONEORD_LOCK_ON", "ZONEORD_LOCK_ARM_FRAC", "ZONEORD_LOCK_FRACTION", "ZONEORD_HOLD_H")}
+        for it in list(self.manual.items.values()):
+            if not it.get("zone_order") or it.get("status") != "open" or it.get("zo_v530"):
+                continue
+            with self.manual.lock:
+                if it.get("status") != "open" or it.get("zo_v530"):
+                    continue
+                lp = self.lock_params(it.get("tp_pct"), c)
+                if lp and not it.get("lock_arm_pct"):
+                    it["lock_arm_pct"], it["lock_fraction"] = lp["lock_arm_pct"], lp["lock_fraction"]
+                if c["ZONEORD_HOLD_H"] > 0 and not it.get("max_hold_h"):
+                    it["max_hold_h"] = c["ZONEORD_HOLD_H"]
+                it["zo_v530"] = True
+                self.manual._save(it)
+                self.manual._log(f"#{it['id']} {it['ticker']} : ordre sur zone déjà ouvert — verrou progressif (dès +{it.get('lock_arm_pct')} %, garantit {int((it.get('lock_fraction') or 0) * 100)} % du pic) et durée maximale {it.get('max_hold_h')} h appliqués", "signal")
+
     def _run(self):
         try:
+            self._upgrade_open()
             self._cancel_pass()
             self._create_pass()
         except Exception as e:
@@ -431,8 +454,16 @@ class ZoneOrders:
                     continue
                 msgs.append(f"{side} : " + self._submit(t, side, v, pl, c))
             if v.get("recent"):
-                msgs.insert(0, f"fenêtre {v['hours']:g} h : {v['win_lo']:.6g}–{v['win_hi']:.6g}, prix {v['price']:.6g}, élan 1 h {v['mom_pct']:+d} % de la fenêtre, tendance Daily {v['trend']}")
+                msgs.insert(0, f"fenêtre {v['hours']:g} h : {v['win_lo']:.6g}–{v['win_hi']:.6g}, prix {v['price']:.6g}, élan 1 h {v['mom_pct']:+d} % de la fenêtre, tendance {v.get('trend_tf', 'Daily')} {v['trend']}{(' (Daily ' + str(v.get('trend_d')) + ')') if v.get('trend_tf') == 'H1' and v.get('trend_d') != v['trend'] else ''}")
             self.diag[t] = (time.time(), " · ".join(msgs))
+
+    @staticmethod
+    def lock_params(tp_pct, c):
+        """Pur : verrou progressif des ordres sur zone : des que le gain maximal atteint une part (ZONEORD_LOCK_ARM_FRAC) de la distance a l'objectif,
+        le stop garantit ZONEORD_LOCK_FRACTION du gain maximal (il ne fait que monter / descendre)."""
+        if not int(c.get("ZONEORD_LOCK_ON", 1)) or not tp_pct:
+            return {}
+        return {"lock_arm_pct": round(max(float(tp_pct) * float(c["ZONEORD_LOCK_ARM_FRAC"]), 0.1), 3), "lock_fraction": float(c["ZONEORD_LOCK_FRACTION"])}
 
     def _submit(self, t, side, v, pl, c):
         up = side == "long"
@@ -440,7 +471,7 @@ class ZoneOrders:
         params = {"strategy": "libre", "ticker": t, "direction": side, "market": "perp", "mode": ("live" if int(self.c("ZONEORD_LIVE")) else "paper"), "confirm_live": bool(int(self.c("ZONEORD_LIVE"))), "execution": "bounce_up" if up else "bounce_down",
                   "trigger_price": pl["edge"], "confirm_pct": c["ZONEORD_CONFIRM_PCT"], "leverage": int(c["ZONEORD_LEVERAGE"]), "notional_usd": c["ZONEORD_NOTIONAL_USD"],
                   "sl_pct": pl["sl_pct"], "tp_pct": pl["tp_pct"], "tp_run": True, "tp_run_lock_pct": 0.0, "tp_run_trail_pct": round(trail, 3),
-                  "expiry_hours": (c["ZONEORD_REC_EXPIRY_H"] if pl.get("recent") else c["ZONEORD_EXPIRY_H"]), "require_valid": False, "no_ttp": True}
+                  "expiry_hours": (c["ZONEORD_REC_EXPIRY_H"] if pl.get("recent") else c["ZONEORD_EXPIRY_H"]), "require_valid": False, "no_ttp": True, **self.lock_params(pl["tp_pct"], c)}
         try:
             with self.manual.lock:
                 res = self.manual.submit(params)
@@ -448,13 +479,16 @@ class ZoneOrders:
                 if it is not None:
                     it["zone_order"] = {"zone": pl["zone"], "trend": v["trend"], "created": time.time(), "dist_atr": pl["dist_atr"], "recent": bool(pl.get("recent")), "h4_create": self.h4_info(t, v["price"], cache_only=False)}
                     if pl.get("recent"):
-                        it["reasons"] = [f"🎯 Ordre sur {'base' if up else 'sommet'} récent (programmé par le bot) : {pl['txt']} ; fenêtre {v['hours']:g} h en bougies 15 min, tendance Daily {v['trend']}. "
+                        it["reasons"] = [f"🎯 Ordre sur {'base' if up else 'sommet'} récent (programmé par le bot) : {pl['txt']} ; fenêtre {v['hours']:g} h en bougies 15 min, tendance {v.get('trend_tf', 'Daily')} {v['trend']}. "
                                          f"Se déclenche sur {'un rebond' if up else 'un recul'} de {c['ZONEORD_CONFIRM_PCT']:g} % après retour au niveau ; annulé si le niveau est dépassé / cassé, si la tendance se retourne, "
                                          f"si le niveau disparaît de la fenêtre ou après {c['ZONEORD_REC_EXPIRY_H']:g} h."]
                     else:
                         it["reasons"] = [f"🎯 Ordre sur zone (programmé par le bot) : {'support' if up else 'résistance'} {v.get('zone_tf', 'Daily')} {pl['zone'][0]:.6g}–{pl['zone'][1]:.6g} quitté "
                                          f"(prix à {pl['dist_atr']} ATR Daily), tendance Daily {v['trend']}. Se déclenche sur "
                                          f"{'un rebond' if up else 'un recul'} de {c['ZONEORD_CONFIRM_PCT']:g} % après retour au niveau ; annulé si la zone casse, si la tendance se retourne ou après {c['ZONEORD_EXPIRY_H']:g} h."]
+                    if float(c.get("ZONEORD_HOLD_H", 0)) > 0:
+                        it["max_hold_h"] = float(c["ZONEORD_HOLD_H"])
+                    it["zo_v530"] = True
                     self.manual._save(it)
             return f"ordre programmé à {pl['edge']:.6g} (stop {pl['sl_pct']} %, objectif {pl['tp_pct']} %)"
         except Exception as e:

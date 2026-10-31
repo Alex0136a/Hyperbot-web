@@ -1737,3 +1737,9 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Sortie de zone** (`sus_end`) : recul ≥ max(1,2 ATR 5 min, 1,3 × bruit habituel) depuis l'extrême des 30 min, ou 2 clôtures du mauvais côté de la moyenne 9. L'actif passe en phase « fin » (visible), les autres modes continuent de tourner. Trade ouvert EN GAIN : suiveur serré (0,15 %) ; en perte ou nul : durée restante 15 min, stop inchangé.
 - Réglages : SCALP_SUS_ON (1) et SCALP_SUS_* (visibles dans les réglages). Même mode (paper/live) que le Scalp. Bloc « ⟿ Tendance soutenue » dans la carte Scalp ; événements « zone » dans le journal.
 - Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
+
+## v4.533 — Ordres sur zone : le sens autorisé suit la tendance H1 (le Daily reste affiché)
+- Constat : un ordre sur zone vit 4 h et est tenu 6 h ; un veto de la tendance Daily (ex. HYPE : short refusé parce que le Daily est haussier alors que le fond 1 h est baissier) est trop lent pour cet horizon. Le Scalp lui-même n'utilise pas le Daily pour entrer.
+- Fenêtre récente : refus d'un long en H1 baissière / d'un short en H1 haussière, et annulation d'un ordre quand l'H1 devient contraire. Le Daily reste affiché dans la carte (« tendance H1 baissiere (Daily haussiere) ») et sur l'ordre.
+- Réglage ZONEORD_REC_TREND_H1 (1 = H1, 0 = Daily comme avant). Les zones H4 / Daily (ZONEORD_RECENT_ON = 0) et le mode Tendance ne sont pas touchés.
+- Fichiers : zone_orders.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
