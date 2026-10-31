@@ -1749,3 +1749,10 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Continuation** (repli, élan, suiveur ET tendance soutenue) : refusée quand l'H1 est contraire au sens (long en H1 baissière, short en H1 haussière). H1 neutre ou dans le sens : inchangé. Motif visible : « continuation long refusée : H1 baissiere (contraire) ». Réglage SCALP_CONT_H1_BLOCK (1 par défaut ; 0 = comme avant). Le mode Tendance et les autres modes (rebond, oscillation) ne sont pas touchés.
 - **Ordres sur zone** : 16 des 19 annulations du 30/10 étaient des « recalculs » (la fenêtre de 10 h glisse, le niveau n'est plus le plus proche) avant d'avoir pu se déclencher. L'ordre reste valable tant qu'une zone de la fenêtre retrouve son niveau (même si ce n'est plus la plus proche), et sinon bénéficie d'une grâce de ZONEORD_REC_GRACE_H heures (2 par défaut ; 0 = annuler tout de suite) depuis sa création. Niveau dépassé, tendance H1 contraire, prix trop éloigné : annulation immédiate comme avant.
 - Fichiers : scalp_crypto.py, zone_orders.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
+
+## v4.535 — Ordres sur zone : qualité du niveau notée sur chaque ordre et exportée (observation seule)
+- Constat 31/10 : 7 ordres sur zone clos cette nuit, 6 stops loss (−2,02 $), pic moyen +0,14 % ; depuis le début 10 clos, 2 gagnants, −0,73 $. Le CSV ne dit rien de la qualité du niveau au moment de l'ordre : impossible de savoir quels setups gagnent.
+- Chaque ordre sur zone (fenêtre récente) enregistre à sa création : visites du niveau, rejet moyen (% de la fenêtre), ancienneté du dernier contact (min), hauteur de la fenêtre (ATR 15 min et %), position du prix dans la fenêtre, élan 1 h, distance au niveau (ATR 15 min, % de la fenêtre), RR, stop en ATR 15 min, ATR 15 min %, tendance H1 et Daily.
+- Export CSV de l'historique : 14 colonnes « zo_* » en fin de ligne (vides pour les autres trades). Les anciens ordres n'ont pas ces valeurs.
+- AUCUNE règle de décision ne change. Après ~20 ordres clos avec ces colonnes, on décide d'un filtre sur les chiffres.
+- Fichiers : zone_orders.py, bot_engine.py, index.html, index_src.html, README.md.

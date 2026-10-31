@@ -152,7 +152,11 @@ class ZoneOrders:
         if tp < c["ZONEORD_MIN_RR"] * sl:
             return None, f"gain visé trop faible ({tp:.2f} % pour un stop de {sl:.2f} %, {zt})"
         tp = min(tp, c["ZONEORD_MAX_RR"] * sl)
-        return {"edge": edge, "sl_pct": round(max(sl, 0.2), 3), "tp_pct": round(tp, 3), "zone": [z["low"], z["high"]], "dist_atr": round(dist / a, 2), "recent": True, "txt": zt}, None
+        obs = {"visits": z["visits"], "react_pct": z["react_pct"], "last_min": z["last_bars_ago"] * 15, "range_atr": round(R / a, 1), "range_pct": round(R / p * 100, 2),
+               "pos_pct": (round((p - v["win_lo"]) / R * 100) if R > 0 else None), "mom_pct": v.get("mom_pct"), "dist_atr": round(dist / a, 2), "dist_pct_win": (round(dist / R * 100) if R > 0 else None),
+               "rr": round(tp / max(sl, 0.2), 2), "sl_atr15": round(max(sl, 0.2) / (a / p * 100), 2), "atr15_pct": round(a / p * 100, 3),
+               "trend_h1": (v["trend"] if v.get("trend_tf") == "H1" else None), "trend_d": v.get("trend_d"), "hours": v.get("hours")}
+        return {"edge": edge, "sl_pct": round(max(sl, 0.2), 3), "tp_pct": round(tp, 3), "zone": [z["low"], z["high"]], "dist_atr": round(dist / a, 2), "recent": True, "txt": zt, "obs": obs}, None
 
     def contradiction_recent(self, item, v):
         zo = item.get("zone_order") or {}
@@ -483,7 +487,7 @@ class ZoneOrders:
                 res = self.manual.submit(params)
                 it = self.manual.items.get(res.get("id")) if isinstance(res, dict) else None
                 if it is not None:
-                    it["zone_order"] = {"zone": pl["zone"], "trend": v["trend"], "created": time.time(), "dist_atr": pl["dist_atr"], "recent": bool(pl.get("recent")), "h4_create": self.h4_info(t, v["price"], cache_only=False)}
+                    it["zone_order"] = {"zone": pl["zone"], "trend": v["trend"], "created": time.time(), "dist_atr": pl["dist_atr"], "recent": bool(pl.get("recent")), "obs": pl.get("obs"), "h4_create": self.h4_info(t, v["price"], cache_only=False)}
                     if pl.get("recent"):
                         it["reasons"] = [f"🎯 Ordre sur {'base' if up else 'sommet'} récent (programmé par le bot) : {pl['txt']} ; fenêtre {v['hours']:g} h en bougies 15 min, tendance {v.get('trend_tf', 'Daily')} {v['trend']}. "
                                          f"Se déclenche sur {'un rebond' if up else 'un recul'} de {c['ZONEORD_CONFIRM_PCT']:g} % après retour au niveau ; annulé si le niveau est dépassé / cassé, si la tendance se retourne, "
