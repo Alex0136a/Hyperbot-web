@@ -2691,26 +2691,48 @@ class ScalpEngine:
                 "trail_pct": float(c.get("SCALP_OSC_RUN_TRAIL_PCT", 0.15)), "hold_min": float(c.get("SCALP_OSC_MAX_HOLD_MIN", 30))}
 
     def _calm_block(self, t, sig):
-        """v4.541 : pause « pas de mouvement ». Les trades pris quand l ATR 15 min est tres bas finissent surtout en DUREE MAX
-        (19 sur 40 sous 0,34 % contre 1 sur 37 au-dessus de 0,75 %). Sous le seuil SCALP_CALM_ATR15_PCT (0 = desactive), aucune
-        entree, quel que soit le mode ; l actif est reevalue a chaque analyse (5 min) et reprend tout seul quand la volatilite revient.
-        Lecture du cache de bougies uniquement ; en cas de doute (donnees absentes), on ne bloque pas."""
+        """v4.542 : pause « pas de mouvement » lue sur les bougies 1 min (remplace le seuil d ATR 15 min de la v4.541, en retard sur le debut
+        d un mouvement). Fenetre = les 5 dernieres bougies 1 min ; reference = la bougie 1 min habituelle des 30 precedentes.
+        On entre si AU MOINS UNE condition est vraie : (1) amplitude 5 min >= SCALP_CALM_AMP5_PCT ; (2) acceleration : amplitude moyenne des
+        2 dernieres bougies >= SCALP_CALM_ACC x l habituelle (debut de mouvement) ; (3) direction : deplacement net 5 min dans le sens du
+        trade >= SCALP_CALM_DIR_PCT avec efficacite >= SCALP_CALM_EFF. Sinon : pause, reevaluee a chaque analyse. Cache de bougies, en cas de
+        doute (moins de 35 bougies) on ne bloque pas. Mesures conservees dans sig['calm1m'] (colonnes CSV calm_*)."""
         try:
-            thr = float(self.cfg.get("SCALP_CALM_ATR15_PCT", 0) or 0)
-            if thr <= 0:
+            c = self.cfg
+            if not int(c.get("SCALP_CALM_ON", 1)):
                 return None
-            c15 = self.bot._mtf_candles(t, "15m", 60)
-            a15 = mtf.atr(c15, 14) if c15 and len(c15) >= 30 else None
-            price = float(sig.get("price") or (c15[-1]["c"] if c15 else 0))
-            if not a15 or price <= 0:
+            c1 = self.bot._mtf_candles(t, "1m", 40) or []
+            if len(c1) < 35:
                 return None
-            pct = a15 / price * 100
-            sig["atr15_calm"] = round(pct, 3)
-            if pct < thr:
-                return f"pause marché calme : ATR 15 min {pct:.2f} % < {thr:g} % (peu de mouvement, les trades finissent en durée max) — reprise quand la volatilité revient"
+            b = c1[-35:]
+            price = float(b[-1]["c"])
+            if price <= 0:
+                return None
+            rng = [(float(x["h"]) - float(x["l"])) / price * 100 for x in b]
+            ref = sorted(rng[:-5])[len(rng[:-5]) // 2]          # mediane des 30 bougies precedentes
+            w = b[-5:]
+            amp5 = (max(float(x["h"]) for x in w) - min(float(x["l"]) for x in w)) / price * 100
+            last2 = (rng[-1] + rng[-2]) / 2
+            acc = (last2 / ref) if ref > 0 else None
+            sg = 1 if sig.get("side") == "long" else -1
+            net = sg * (float(w[-1]["c"]) - float(w[0]["o"])) / price * 100
+            path = sum(abs(float(w[i]["c"]) - float(w[i - 1]["c"])) for i in range(1, 5)) + abs(float(w[0]["c"]) - float(w[0]["o"]))
+            eff = (abs(float(w[-1]["c"]) - float(w[0]["o"])) / path) if path > 0 else 0.0
+            sig["calm1m"] = {"amp5": round(amp5, 3), "acc": None if acc is None else round(acc, 2), "dir": round(net, 3), "eff": round(eff, 2), "ref": round(ref, 3)}
+            amp_min = float(c.get("SCALP_CALM_AMP5_PCT", 0.20))
+            acc_min = float(c.get("SCALP_CALM_ACC", 1.8))
+            dir_min = float(c.get("SCALP_CALM_DIR_PCT", 0.10))
+            eff_min = float(c.get("SCALP_CALM_EFF", 0.6))
+            if amp5 >= amp_min:
+                return None
+            if acc is not None and acc >= acc_min and last2 >= 0.04:
+                return None
+            if net >= dir_min and eff >= eff_min:
+                return None
+            return (f"pause marché calme : sur 5 min l'actif a bougé de {amp5:.2f} % seulement (< {amp_min:g} %), sans accélération "
+                    f"(×{(acc if acc is not None else 0):.1f} de l'habituel, il faut ×{acc_min:g}) ni mouvement net dans le sens du trade ({net:+.2f} %, efficacité {eff:.2f}) — reprise dès que ça bouge")
         except Exception:
             return None
-        return None
 
     def _take(self, t, sig):
         c = self.cfg
@@ -2886,7 +2908,7 @@ class ScalpEngine:
                                    "regime": {"label": reg.get("label", "inconnu"), "corr": reg.get("corr"), "up": reg.get("up"), "down": reg.get("down"),
                                               "basket30": reg.get("basket30"), "rel30": (round(reg["ch30"].get(t, 0) - reg["basket30"], 3) if reg.get("ch30") and reg.get("basket30") is not None else None),
                                               "cluster": cluster_before, "peers": sig.get("peers")},
-                                   "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra,
+                                   "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra, "calm": sig.get("calm1m"),
                                    "touches": sig.get("touches"),      # v4.493 : mesures de la zone horizontale (aucun effet sur les decisions)
                                    "zone_width_pct": (round((sig["zone"][1] - sig["zone"][0]) / sig["price"] * 100, 3) if sig.get("zone") and sig.get("price") else None),
                                    "dist_level_pct": (round((sig["price"] / sig["level"] - 1) * 100, 3) if sig.get("level") and sig.get("price") else None)}

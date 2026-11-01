@@ -1793,7 +1793,7 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Suite** : après ~100 trades Scalp avec ces colonnes, comparer par type de trade « contre le Daily » / « avec » / « neutre », et « avec / sans position contraire corrélée ». Aucun blocage avant.
 - Fichiers : scalp_crypto.py, zone_orders.py, bot_engine.py, index.html, index_src.html, README.md.
 
-## v4.541 — Pause « marché calme » : plus d'entrée Scalp quand l'ATR 15 min est trop bas
+## v4.541 — (REMPLACÉE par la v4.542) Pause « marché calme » sur seuil d'ATR 15 min
 - **Demande** : « Ajoute une pause sur le manque de mouvement qui entraîne une grosse perte en durée max. Quand il n'y a pas de volatilité, il vaut mieux attendre. »
 - **Constat (539 trades Scalp paper, 19/10 → 01/11)** : les sorties « durée max » coûtent −23,7 $ (110 trades, 24 % gagnants). Sur les 149 trades dont l'ATR 15 min est connu : sous 0,34 %, 19 trades sur 40 finissent en durée max (≈ 50 %) ; entre 0,54 et 0,75 %, 1 sur 37 ; au-dessus de 0,75 %, aucun.
 - **Changement (décision, paper et live)** : nouveau réglage `SCALP_CALM_ATR15_PCT` (défaut **0,30 %**, 0 = pause désactivée). Tant que l'ATR 15 min de l'actif est sous ce seuil, aucune entrée Scalp, quel que soit le mode (rebond, oscillation, continuation, cassure). L'actif est réévalué à chaque analyse (5 min) et reprend tout seul quand la volatilité revient. Refus visible dans le journal : « pause marché calme : ATR 15 min x % < 0,3 % ». Sans données de bougies, on ne bloque pas.
@@ -1801,4 +1801,18 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Attention** : BTC et ETH ont naturellement un ATR 15 min bas (≈ 0,15–0,25 %) ; ils seront donc souvent en pause. Les durées max y étaient déjà à 44 % et 42 %.
 - **Effet attendu, à ne pas surestimer** : sous 0,30 %, 28 trades, 13 en durée max, net −2,4 $ (n faible). La pause ne règle qu'une partie des −23,7 $ de durée max ; le reste vient de trades à volatilité normale qui n'avancent pas.
 - **À vérifier** : nombre de refus « pause marché calme », puis net des trades suivants vs avant. Retour arrière : `SCALP_CALM_ATR15_PCT` = 0 dans les réglages Scalp.
+- Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
+
+## v4.542 — Pause « marché calme » lue sur les bougies 1 min (remplace le seuil d'ATR 15 min de la v4.541)
+- **Demande** : annuler le seuil d'ATR 15 min (en retard : il bloque le début d'un mouvement) et le remplacer par une lecture plus fine des bougies 1 min, avec leur comportement sur 5 min et l'amplitude des mouvements.
+- **Mesure** (cache de bougies 1 min, 35 dernières) : amplitude des 5 dernières minutes ; bougie 1 min « habituelle » = médiane des 30 précédentes ; accélération = amplitude moyenne des 2 dernières bougies / habituelle ; mouvement net sur 5 min dans le sens du trade et son efficacité (net / chemin parcouru).
+- **Règle** (décision, paper et live, tous les modes) : le bot entre si AU MOINS UNE condition est vraie, sinon pause réévaluée à chaque analyse (5 min) :
+  1. amplitude 5 min ≥ `SCALP_CALM_AMP5_PCT` (0,20 %) ;
+  2. accélération ≥ `SCALP_CALM_ACC` (×1,8 l'habituel, avec un plancher de 0,04 %) = début de mouvement ;
+  3. déplacement net dans le sens du trade ≥ `SCALP_CALM_DIR_PCT` (0,10 %) avec efficacité ≥ `SCALP_CALM_EFF` (0,6).
+  Moins de 35 bougies 1 min : pas de blocage. `SCALP_CALM_ON` = 0 désactive la pause.
+- **Seuils PROVISOIRES** : je n'ai pas de bougies 1 min historiques pour les caler (les anciens trades n'ont pas ces mesures). Ils sont une traduction de l'ancien seuil (ATR 15 min 0,30 % ≈ amplitude 5 min 0,20 %) complétée par les deux exceptions « début de mouvement ».
+- **Journal** : « pause marché calme : sur 5 min l'actif a bougé de x % seulement … ».
+- **CSV** : `calm_amp5_pct`, `calm_acc`, `calm_dir_pct`, `calm_eff` pour chaque nouveau trade Scalp (valeurs à l'entrée) → après ~100 trades, on recalera les seuils sur les résultats réels.
+- **Ordres Auto zone** : inchangés.
 - Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
