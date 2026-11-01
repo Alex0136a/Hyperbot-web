@@ -2690,6 +2690,43 @@ class ScalpEngine:
         return {"er": er, "box_lo": lo, "box_hi": hi, "amp_pct": round(amp, 3), "pos": round(pos, 3), "tp_pct": round(tp, 3), "sl_pct": round(sl, 3),
                 "trail_pct": float(c.get("SCALP_OSC_RUN_TRAIL_PCT", 0.15)), "hold_min": float(c.get("SCALP_OSC_MAX_HOLD_MIN", 30))}
 
+    def _be_arm_mode(self, sig, osc):
+        """v4.544 : seuil de gain qui arme le verrou de rentabilite, par mode (0 = valeur generale SCALP_BE_ARM_PCT).
+        La continuation a son propre seuil (SCALP_BE_ARM_CONT_PCT, traite plus haut) ; ici rebond / cassure."""
+        c = self.cfg
+        gen = float(c.get("SCALP_BE_ARM_PCT", 0.4))
+        if osc:
+            return gen
+        key = {"rebond": "SCALP_BE_ARM_REB_PCT", "cassure": "SCALP_BE_ARM_CASS_PCT"}.get(sig.get("kind"))
+        v = float(c.get(key, 0) or 0) if key else 0.0
+        return v if v > 0 else gen
+
+    def _disp_block(self, sig, osc, cont):
+        """v4.543 : en regime DISPERSE (les actifs ne bougent pas ensemble), rebond et cassure sont suspendus. Sur 539 trades Scalp paper
+        (19/10 -> 01/11) : rebond disperse 60 trades, 32 % gagnants, -9,2 $ ; rebond correle 204 trades, 53 %, +3,8 $ ; cassure : meme sens.
+        Oscillation et continuation ne sont pas touchees. SCALP_DISP_BLOCK_ON = 0 desactive. Regime inconnu : on ne bloque pas."""
+        try:
+            if osc or cont or sig.get("kind") not in ("rebond", "cassure"):
+                return None
+            if sig.get("kind") == "rebond" and int(self.cfg.get("SCALP_DISP_REB_H1_ON", 1)):
+                # v4.545 : le rebond n est PAS bloque en marche disperse ; il est conditionne a l environnement. Dispersé + H1 deja oriente dans le sens du
+                # trade -> 24 trades, 12 % de gagnants, -8,3 $ (dont 16 shorts, 6 %, -7,4 $) ; dispersé + H1 neutre (la dent de scie) -> 36 trades, 44 %, -0,9 $.
+                t1h = (sig.get("ctx") or {}).get("t1h")
+                if t1h in ("haussiere", "baissiere") and (t1h == "haussiere") == (sig.get("side") == "long"):
+                    reg0 = self._regime()
+                    if reg0.get("n") and reg0.get("label") == "disperse":
+                        return (f"rebond {sig['side']} refusé : marché dispersé (corrélation {reg0.get('corr', 0):.2f}) et H1 déjà {t1h} dans ce sens — "
+                                "en dispersé on ne prend le rebond que sur H1 neutre (dent de scie)")
+            if not int(self.cfg.get("SCALP_DISP_BLOCK_ON", 0)):
+                return None
+            reg = self._regime()
+            if reg.get("n") and reg.get("label") == "disperse":
+                return (f"marché dispersé (corrélation {reg.get('corr', 0):.2f}) : les {sig['kind']}s y perdent (32 % de gagnants contre 53 % en marché corrélé) — "
+                        "on attend que le marché redevienne cohérent")
+        except Exception:
+            return None
+        return None
+
     def _calm_block(self, t, sig):
         """v4.542 : pause « pas de mouvement » lue sur les bougies 1 min (remplace le seuil d ATR 15 min de la v4.541, en retard sur le debut
         d un mouvement). Fenetre = les 5 dernieres bougies 1 min ; reference = la bougie 1 min habituelle des 30 precedentes.
@@ -2838,7 +2875,7 @@ class ScalpEngine:
             sig["cont"]["sl_noise_pct"] = round(nz_p, 3)
             sig.setdefault("cont", {})["sl_base"], sig["cont"]["atr5_pct"] = round(sl_soft, 3), round(a5p, 3)
             tp_cont = max(float(c.get("SCALP_CONT_TP_PCT", 0.6)), float(c.get("SCALP_SUS_RR", 2.0)) * new_sl)
-            be_arm_cont = max(float(c.get("SCALP_BE_ARM_PCT", 0.4)), 0.5 * new_sl)
+            be_arm_cont = max(float(c.get("SCALP_BE_ARM_CONT_PCT", 0) or c.get("SCALP_BE_ARM_PCT", 0.4)), 0.5 * new_sl)
             trail_cont = max(float(c.get("SCALP_RUN_TRAIL_PCT", 0.2)), 0.5 * new_sl)
             sl_soft = new_sl
             sig["cont"]["rr"] = round(tp_cont / new_sl, 2)
@@ -2850,12 +2887,16 @@ class ScalpEngine:
             sig.setdefault("cont", {})["sl_base"], sig["cont"]["atr5_pct"] = round(sl_soft, 3), round(a5p, 3)
             if new_sl > sl_soft + 1e-9:
                 tp_cont = max(float(c.get("SCALP_CONT_TP_PCT", 0.6)), float(c.get("SCALP_CONT_TP_RR", 2.0)) * new_sl)
-                be_arm_cont = max(float(c.get("SCALP_BE_ARM_PCT", 0.4)), 0.5 * new_sl)
+                be_arm_cont = max(float(c.get("SCALP_BE_ARM_CONT_PCT", 0) or c.get("SCALP_BE_ARM_PCT", 0.4)), 0.5 * new_sl)
                 trail_cont = max(float(c.get("SCALP_RUN_TRAIL_PCT", 0.2)), 0.5 * new_sl)
                 sl_soft = new_sl
         if cont:
             sig.setdefault("cont", {})["sl_eff"] = round(sl_soft, 3)
         osc = self._osc_eval(t, sig, asc) if (int(c.get("SCALP_OSC_ON", 1)) and not cont) else None      # v4.503 : mode oscillation (paper et live)
+        why_disp = self._disp_block(sig, osc, cont)      # v4.543 : marche disperse -> ni rebond ni cassure (l oscillation et la continuation restent possibles)
+        if why_disp:
+            self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_disp}")
+            return
         if osc:
             base_sl = sl_soft
             sl_soft = osc["sl_pct"]
@@ -2880,7 +2921,7 @@ class ScalpEngine:
         if int(c.get("SCALP_RUN_ENABLED", 1)):     # v4.434 : laisser courir apres l objectif ; sortie si le prix recule de X % depuis son plus haut
             params.update({"tp_run": True, "tp_run_lock_pct": 0.0, "tp_run_trail_pct": (osc["trail_pct"] if osc else (trail_cont or float(c.get("SCALP_RUN_TRAIL_PCT", 0.2))))})
         if int(c.get("SCALP_BE_ENABLED", 0)):      # v4.445 : stop au seuil de rentabilite apres un gain de X %
-            params.update({"be_arm_pct": (be_arm_cont or float(c.get("SCALP_BE_ARM_PCT", 0.4))), "be_lock_pct": float(c.get("SCALP_BE_LOCK_PCT", 0.1))})
+            params.update({"be_arm_pct": (be_arm_cont or self._be_arm_mode(sig, osc)), "be_lock_pct": float(c.get("SCALP_BE_LOCK_PCT", 0.1))})
         if int(c.get("SCALP_LADDER_ON", 0)):      # v4.524 : echelle de verrous TP1 / TP2 / TP3, puis suiveur
             lv = sorted({float(c.get("SCALP_LADDER_TP1", 0.56)), float(c.get("SCALP_LADDER_TP2", 0.6)), float(c.get("SCALP_LADDER_TP3", 1.0))})
             if params["tp_pct"] >= lv[0]:      # un objectif plus bas que TP1 (oscillation) garde sa propre sortie : l echelle ne l atteindrait pas

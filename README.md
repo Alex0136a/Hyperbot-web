@@ -1816,3 +1816,30 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **CSV** : `calm_amp5_pct`, `calm_acc`, `calm_dir_pct`, `calm_eff` pour chaque nouveau trade Scalp (valeurs à l'entrée) → après ~100 trades, on recalera les seuils sur les résultats réels.
 - **Ordres Auto zone** : inchangés.
 - Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
+
+## v4.543 — (DÉSACTIVÉE par défaut en v4.544) Marché dispersé : rebonds et cassures suspendus
+- **Demande** : « une règle immédiate qui évite la majeure partie des départs à contre-sens, en couvrant les dents de scie et en respectant les tendances ».
+- **Recherche d'une règle d'entrée** (539 trades Scalp paper, 19/10 → 01/11) : aucun filtre ne sépare nettement les départs à contre-sens (≈ 31 % de stops loss quel que soit le flux, le H1 ou le 15 min). Seul le **régime** ressort : dispersé = −9,9 $ sur 113 trades (33 % de gagnants), dont rebond dispersé −9,2 $ sur 60 trades (32 % de gagnants) contre rebond corrélé +3,8 $ sur 204 (53 %). La continuation n'y change pas (−0,5 $ en dispersé, −1,0 $ en corrélé). H1 contre : 14 trades, 0 gagnant au trailing TP, −2,3 $ (trop peu pour une règle).
+- **Changement (décision, paper et live)** : si le régime du panier est « dispersé », le bot refuse les rebonds et les cassures. Oscillation et continuation sont inchangées. Régime inconnu : pas de blocage. Réglage `SCALP_DISP_BLOCK_ON` (1 = actif, 0 = désactivé). Journal : « marché dispersé (corrélation x) : les rebonds y perdent… ».
+- **Effet attendu** : ≈ 71 trades évités sur 539 (rebonds et cassures dispersés), ≈ +9,4 $ sur la période. Sur un échantillon d'une seule période : à surveiller, pas à tenir pour acquis.
+- Le **verrou de rentabilité** n'est pas modifié (sorties au seuil : protégé 21 / coûté 17, équilibre).
+- Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
+
+## v4.544 — Verrou de rentabilité réglable par mode ; blocage « dispersé » désactivé
+- **Demandes** : (1) ajuster le verrou de rentabilité (il coupe autant de gains qu'il évite de pertes) ; (2) « je ne souhaite pas empêcher les rebonds et les cassures ».
+- **Constat verrou** (39 sorties au seuil de rentabilité suivies, 19/10 → 01/11) : protégé 21 (≈ 6,0 $ de perte évitée) contre coûté 17 (≈ 5,9 $ de gain manqué) ; continuation : 15 protégés (3,6 $) / 12 coûtés (4,0 $). Exemple #827 AVAX : verrou armé à +0,25 %, repli, sortie à ~0 $ au bout de 3 min alors que l'objectif était à 0,6 %.
+- **Changement (décision, paper et live)** : l'armement du verrou (gain qui remonte le stop à +0,10 %) devient réglable par mode : `SCALP_BE_ARM_CONT_PCT` (continuation, **0,40 %** au lieu de 0,25 %, avec le minimum existant de la moitié du stop), `SCALP_BE_ARM_REB_PCT` (rebond) et `SCALP_BE_ARM_CASS_PCT` (cassure). **0 = valeur générale** `SCALP_BE_ARM_PCT` : rebond et cassure sont donc inchangés. Le niveau de verrouillage (+0,10 %) ne change pas. L'oscillation garde la valeur générale.
+- **Marché dispersé (v4.543)** : le blocage des rebonds et cassures est **désactivé par défaut** (`SCALP_DISP_BLOCK_ON` = 0). Le code reste disponible mais rebonds et cassures ne sont plus empêchés.
+- **À vérifier** : sorties « STOP SEUIL RENTABILITE » de la continuation (nombre, `post_sortie_verdict` protégé / coûté) et trades de continuation qui atteignent le trailing TP, avant / après la v4.544.
+- Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
+
+## v4.545 — Rebond conditionné à l'environnement en marché dispersé (au lieu d'être bloqué)
+- **Demande** : éviter les pertes des rebonds en marché dispersé SANS bloquer les rebonds (« chaque dent de scie est un rebond »), en les conditionnant à l'environnement ; les cassures, il faut les confirmer plutôt que les bloquer.
+- **Constat** (rebonds en marché dispersé, 60 trades, −9,2 $, 19/10 → 01/11) :
+  - H1 déjà orienté dans le sens du trade : 24 trades, 12 % de gagnants, −8,3 $ (dont 16 shorts : 6 %, −7,4 $) ;
+  - H1 neutre (la dent de scie) : 36 trades, 44 % de gagnants, 42 % de trailing TP, −0,9 $ ;
+  - en marché corrélé, le rebond avec H1 orienté gagne (55 %, +1,6 $) : la différence est propre au marché dispersé.
+- **Changement (décision, paper et live)** : en marché dispersé, un rebond dont le H1 est déjà orienté dans le sens du trade est refusé (« en dispersé on ne prend le rebond que sur H1 neutre »). Rebonds sur H1 neutre, rebonds en marché corrélé, oscillation détectée, continuation et cassures : inchangés. Réglage `SCALP_DISP_REB_H1_ON` (1 = actif, 0 = désactivé). `SCALP_DISP_BLOCK_ON` (blocage complet) reste à 0.
+- **Effet attendu** : ≈ 24 trades évités sur 539, ≈ +8 $ sur la période (une seule période : à surveiller).
+- **Cassures (non modifiées, constat)** : 88 trades, −11,6 $ ; cassure avec tendance 15 min déjà dans le sens (47 trades) : 28 % gagnants, −10,6 $ ; 15 min neutre (36 trades) : 44 %, −2,6 $. Les cassures qui échouent sont surtout celles prises après le mouvement. Piste : confirmer par un retest (réglage existant `SCALP_RETEST_ON`, désactivé) — non testable faute de données.
+- Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
