@@ -1784,3 +1784,11 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Affichage** : dans l'historique manuel, un bloc par catégorie (« Swing Support — stops loss », « Swing Support — fermés à la main en perte »). Les blocs Scalp / ordres sur zone gardent leurs fenêtres 60 min et 3 h. CSV : 24 colonnes `stop_h1_*`, `stop_h3_*`, `stop_h24_*`, `stop_h48_*` (6 par fenêtre : retour entrée, retour objectif, stop survivant, résultats ×1 / ×1,5 / ×2) ; ATTENTION : la v4.538 avait 10 colonnes `stop_*`, la disposition change.
 - AUCUNE règle de décision ne change. Au-dessous de 20 trades mesurés, ne pas conclure.
 - Fichiers : scalp_crypto.py, manual_trading.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.540 — Observation : tendance Daily / H4 de chaque trade Scalp, et positions de sens contraire sur actifs corrélés (aucune règle ne change)
+- **Demandes** : (1) « vérifier si les chiffres ne vont pas en faveur d'un blocage de tous les Scalp posés contre la tendance Daily » ; (2) « pourquoi des trades de sens contraire sur des actifs corrélés ? ». Le CSV du Scalp ne contenait ni Daily ni H4 : sur 50 trades, 10 seulement avaient un Daily reconstituable (9 neutres, 1 contre) → test impossible.
+- **Tendance à l'ouverture** : chaque nouveau trade Scalp note la tendance Daily et H4 de son actif (même calcul que l'H1 : bougies clôturées + prix actuel). Aucun effet sur les décisions.
+- **Positions contraires** : à l'ouverture d'un trade Scalp, et au déclenchement d'un ordre sur zone, le bot liste les positions ouvertes de sens contraire sur d'autres actifs (même mode paper / live) avec la corrélation de leurs rendements 5 min sur 2 h (seuil « corrélé » : 0,6). Jamais bloquant.
+- **CSV** (fin de ligne, après les `stop_*`) : `tend_daily`, `tend_h4`, `daily_vs_sens` (avec / contre / neutre selon le sens du trade), `contra_n_corr60` (nombre de positions contraires avec corrélation ≥ 0,6), `contra_detail` (« actif sens corrélation »). Vide pour les trades déjà passés.
+- **Suite** : après ~100 trades Scalp avec ces colonnes, comparer par type de trade « contre le Daily » / « avec » / « neutre », et « avec / sans position contraire corrélée ». Aucun blocage avant.
+- Fichiers : scalp_crypto.py, zone_orders.py, bot_engine.py, index.html, index_src.html, README.md.

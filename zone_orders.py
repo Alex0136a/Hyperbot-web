@@ -360,6 +360,10 @@ class ZoneOrders:
             if r is None and v is not None:
                 (item.get("zone_order") or {})["h4_fire"] = self.h4_info(item["ticker"], v["price"], cache_only=True)      # v4.520 : observation
                 (item.get("zone_order") or {})["flow_fire"] = self.flow_info(item["ticker"])        # v4.537 : observation (flux 10 min), jamais bloquant
+                try:      # v4.540 : positions de sens contraire ouvertes sur d autres actifs (observation, jamais bloquant)
+                    (item.get("zone_order") or {})["contra_fire"] = self.manual.scalp.contra_open(item["ticker"], item["direction"], item.get("mode"), cache_only=True)
+                except Exception:
+                    pass
             return (r is None), (r or "")
         except Exception:
             return True, ""
@@ -424,6 +428,12 @@ class ZoneOrders:
             elif st in ("cancelled", "expired"):
                 o[st] += 1
         out["h4"] = self._h4_breakdown()
+        try:      # v4.538 : que se passe-t-il apres un STOP LOSS d ordre sur zone (observation)
+            import scalp_crypto
+            its = [("Auto zone", r["data"]) for r in db.manual_history(400) if r["data"].get("zone_order") and r.get("status") == "closed"]
+            out["stops"] = scalp_crypto.post_stop_summary(its).get("Auto zone")
+        except Exception:
+            out["stops"] = None
         return out
 
     def _h4_breakdown(self):

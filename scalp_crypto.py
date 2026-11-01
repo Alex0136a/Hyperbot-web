@@ -1919,6 +1919,36 @@ class ScalpEngine:
             self.last_error = f"flux : {type(e).__name__}: {e}"
             return None
 
+    CONTRA_RHO = 0.6      # v4.540 : correlation (rendements 5 min) a partir de laquelle deux actifs comptent comme « correles » (observation)
+
+    def _trend_obs(self, t, price):
+        """v4.540 : tendance Daily et H4 de l actif a l ouverture d un trade (observation seule, aucune decision) : {"d": ..., "h4": ...}."""
+        out = {"d": None, "h4": None}
+        for key, tf, n in (("d", "1d", 230), ("h4", "4h", 260)):
+            try:
+                cs = self.bot._mtf_candles(t, tf, n)
+                if cs and len(cs) >= 60 and price:
+                    out[key] = mtf.trend(cs + [{**cs[-1], "c": float(price)}])[0]
+            except Exception:
+                pass
+        return out
+
+    def contra_open(self, t, side, mode, cache_only=False):
+        """v4.540 : positions OUVERTES de sens CONTRAIRE sur d autres actifs (meme mode paper / live), avec la correlation de leurs rendements 5 min (observation seule).
+        Retourne [{"t", "side", "rho"}] ; rho = None si les bougies sont indisponibles."""
+        out = []
+        try:
+            mine = self.bot._mtf_candles(t, "5m", 30, cache_only=cache_only)
+            for it in list(self.manual.items.values()):
+                if it.get("status") not in ("open", "opening") or it.get("mode") != mode or it.get("ticker") == t or it.get("direction") == side:
+                    continue
+                other = self.bot._mtf_candles(it["ticker"], "5m", 30, cache_only=cache_only)
+                rho = _pair_corr(mine, other) if (mine and other) else None
+                out.append({"t": it["ticker"], "side": it.get("direction"), "rho": (round(rho, 2) if rho is not None else None)})
+        except Exception:
+            pass
+        return out
+
     def _zone_blocked(self, t, mode, level):
         """v4.432 : apres un stop sur une zone (support/resistance), on n y re-entre pas pendant SCALP_ZONE_COOLDOWN_MIN (0 = off).
         Motivation, pas interdiction du comportement passe : seulement la MEME zone (+-0,3 %), pas le ticker entier."""
@@ -2819,6 +2849,7 @@ class ScalpEngine:
             return
         self._cool[(t, mode)] = time.time() + float(c.get("SCALP_COOLDOWN_MIN", 30)) * 60
         self._opens.append((time.time(), sig["side"], mode, t))
+        tobs, contra = self._trend_obs(t, sig.get("price")), self.contra_open(t, sig["side"], mode)      # v4.540 : observation (hors verrou : peut lire le reseau)
         try:
             with self.manual.lock:
                 it = self.manual.items.get(res["id"])
@@ -2829,7 +2860,7 @@ class ScalpEngine:
                                    "regime": {"label": reg.get("label", "inconnu"), "corr": reg.get("corr"), "up": reg.get("up"), "down": reg.get("down"),
                                               "basket30": reg.get("basket30"), "rel30": (round(reg["ch30"].get(t, 0) - reg["basket30"], 3) if reg.get("ch30") and reg.get("basket30") is not None else None),
                                               "cluster": cluster_before, "peers": sig.get("peers")},
-                                   "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg),
+                                   "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra,
                                    "touches": sig.get("touches"),      # v4.493 : mesures de la zone horizontale (aucun effet sur les decisions)
                                    "zone_width_pct": (round((sig["zone"][1] - sig["zone"][0]) / sig["price"] * 100, 3) if sig.get("zone") and sig.get("price") else None),
                                    "dist_level_pct": (round((sig["price"] / sig["level"] - 1) * 100, 3) if sig.get("level") and sig.get("price") else None)}
