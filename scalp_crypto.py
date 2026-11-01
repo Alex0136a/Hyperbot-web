@@ -2690,6 +2690,28 @@ class ScalpEngine:
         return {"er": er, "box_lo": lo, "box_hi": hi, "amp_pct": round(amp, 3), "pos": round(pos, 3), "tp_pct": round(tp, 3), "sl_pct": round(sl, 3),
                 "trail_pct": float(c.get("SCALP_OSC_RUN_TRAIL_PCT", 0.15)), "hold_min": float(c.get("SCALP_OSC_MAX_HOLD_MIN", 30))}
 
+    def _calm_block(self, t, sig):
+        """v4.541 : pause « pas de mouvement ». Les trades pris quand l ATR 15 min est tres bas finissent surtout en DUREE MAX
+        (19 sur 40 sous 0,34 % contre 1 sur 37 au-dessus de 0,75 %). Sous le seuil SCALP_CALM_ATR15_PCT (0 = desactive), aucune
+        entree, quel que soit le mode ; l actif est reevalue a chaque analyse (5 min) et reprend tout seul quand la volatilite revient.
+        Lecture du cache de bougies uniquement ; en cas de doute (donnees absentes), on ne bloque pas."""
+        try:
+            thr = float(self.cfg.get("SCALP_CALM_ATR15_PCT", 0) or 0)
+            if thr <= 0:
+                return None
+            c15 = self.bot._mtf_candles(t, "15m", 60)
+            a15 = mtf.atr(c15, 14) if c15 and len(c15) >= 30 else None
+            price = float(sig.get("price") or (c15[-1]["c"] if c15 else 0))
+            if not a15 or price <= 0:
+                return None
+            pct = a15 / price * 100
+            sig["atr15_calm"] = round(pct, 3)
+            if pct < thr:
+                return f"pause marché calme : ATR 15 min {pct:.2f} % < {thr:g} % (peu de mouvement, les trades finissent en durée max) — reprise quand la volatilité revient"
+        except Exception:
+            return None
+        return None
+
     def _take(self, t, sig):
         c = self.cfg
         mode = "live" if c.get("SCALP_MODE") == "live" else "paper"
@@ -2700,6 +2722,10 @@ class ScalpEngine:
         why_goal = self._goal_refusal(t, sig, mode)          # v4.460 : objectif du jour atteint -> entrees restreintes
         if why_goal:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_goal}")
+            return
+        why_calm = self._calm_block(t, sig)      # v4.541 : pause tant que le marche de l actif est trop calme (tous les modes)
+        if why_calm:
+            self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_calm}")
             return
         prud = sig.get("prudent_btc")
         if prud is not None:      # v4.497 : short pris alors que BTC monte -> flux vendeur exige

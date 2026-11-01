@@ -1792,3 +1792,13 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **CSV** (fin de ligne, après les `stop_*`) : `tend_daily`, `tend_h4`, `daily_vs_sens` (avec / contre / neutre selon le sens du trade), `contra_n_corr60` (nombre de positions contraires avec corrélation ≥ 0,6), `contra_detail` (« actif sens corrélation »). Vide pour les trades déjà passés.
 - **Suite** : après ~100 trades Scalp avec ces colonnes, comparer par type de trade « contre le Daily » / « avec » / « neutre », et « avec / sans position contraire corrélée ». Aucun blocage avant.
 - Fichiers : scalp_crypto.py, zone_orders.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.541 — Pause « marché calme » : plus d'entrée Scalp quand l'ATR 15 min est trop bas
+- **Demande** : « Ajoute une pause sur le manque de mouvement qui entraîne une grosse perte en durée max. Quand il n'y a pas de volatilité, il vaut mieux attendre. »
+- **Constat (539 trades Scalp paper, 19/10 → 01/11)** : les sorties « durée max » coûtent −23,7 $ (110 trades, 24 % gagnants). Sur les 149 trades dont l'ATR 15 min est connu : sous 0,34 %, 19 trades sur 40 finissent en durée max (≈ 50 %) ; entre 0,54 et 0,75 %, 1 sur 37 ; au-dessus de 0,75 %, aucun.
+- **Changement (décision, paper et live)** : nouveau réglage `SCALP_CALM_ATR15_PCT` (défaut **0,30 %**, 0 = pause désactivée). Tant que l'ATR 15 min de l'actif est sous ce seuil, aucune entrée Scalp, quel que soit le mode (rebond, oscillation, continuation, cassure). L'actif est réévalué à chaque analyse (5 min) et reprend tout seul quand la volatilité revient. Refus visible dans le journal : « pause marché calme : ATR 15 min x % < 0,3 % ». Sans données de bougies, on ne bloque pas.
+- **Ordres sur zone (Auto zone)** : inchangés.
+- **Attention** : BTC et ETH ont naturellement un ATR 15 min bas (≈ 0,15–0,25 %) ; ils seront donc souvent en pause. Les durées max y étaient déjà à 44 % et 42 %.
+- **Effet attendu, à ne pas surestimer** : sous 0,30 %, 28 trades, 13 en durée max, net −2,4 $ (n faible). La pause ne règle qu'une partie des −23,7 $ de durée max ; le reste vient de trades à volatilité normale qui n'avancent pas.
+- **À vérifier** : nombre de refus « pause marché calme », puis net des trades suivants vs avant. Retour arrière : `SCALP_CALM_ATR15_PCT` = 0 dans les réglages Scalp.
+- Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
