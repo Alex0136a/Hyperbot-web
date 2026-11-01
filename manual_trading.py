@@ -2616,8 +2616,17 @@ class ManualTrading:
             except Exception:
                 d["pnl_net"] = None
             history.append(d)
+        try:      # v4.539 : que fait le prix apres un stop loss / une fermeture a la main en perte des trades Swing Support (observation)
+            its = []
+            for d in history:
+                if d.get("strategy_source") == "swing_support" and (d.get("post_stop") or {}).get("ok"):
+                    its.append(("Swing Support — stops loss" if str(d.get("reason") or "").startswith("STOP LOSS") else "Swing Support — fermés à la main en perte", d))
+            stop_post = scalp_crypto.post_stop_summary(its)
+        except Exception:
+            stop_post = {}
         w = self._wallet() or ""
         return {
+            "stop_post": stop_post,
             "wallet_short": (w[:6] + "…" + w[-4:]) if len(w) > 12 else (w or None),   # v4.344 : a comparer a l adresse affichee sur Hyperliquid
             "opportunities": self.list_opportunities(),
             "scheduled": [i for i in items if i["status"] == "scheduled"],

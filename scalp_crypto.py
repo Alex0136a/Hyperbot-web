@@ -13,6 +13,7 @@ Les trades sont ouverts par le moteur de trading manuel (strategie "scalp_crypto
 meme suivi des prix de sortie. Aucune logique n est partagee avec les autres modes automatiques.
 """
 import json
+import re
 import threading
 import time
 from collections import deque
@@ -641,6 +642,91 @@ def sustained_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=Fals
     return sig, "ok"
 
 
+# ── v4.538 : suivi APRES SORTIE des STOP LOSS (Scalp + ordres sur zone) : le prix revient-il, et quel stop aurait survecu ? (observation seule) ──
+# v4.539 : etendu aux trades Swing Support (stops loss + fermetures a la main en perte), fenetres jusqu a 48 h
+PS_WINDOWS = (60, 180)                   # minutes apres la sortie : Scalp, ordres sur zone
+PS_WINDOWS_SWING = (60, 180, 1440, 2880)  # Swing Support (tient des heures / jours)
+PS_MULTS = (1.5, 2.0)                    # « et si » : stop elargi a N fois le stop initial (meme taille, meme objectif)
+PS_MULTS_MANUAL = (1.0, 1.5)             # fermeture a la main : « et si » le stop d origine avait ete garde (x1) ou elargi (x1,5)
+
+
+def post_stop_calc(d, cs, ca, windows=PS_WINDOWS, mults=PS_MULTS):
+    """Pur : d = trade ferme (STOP LOSS, ou fermeture a la main en perte) ; cs = bougies 5 min suivant la sortie (anciennes d abord, t en ms) ; ca = heure de sortie (s).
+    Par fenetre : retour au prix d entree, retour a l objectif (tp_pct), stop qui aurait survecu jusqu a l objectif,
+    et resultat (% du prix) si le stop avait ete N fois le stop initial (cles w10 / w15 / w20). Meme bougie : stop d abord (prudent)."""
+    ent = float(d["entry_price"])
+    sg = 1 if d.get("direction") == "long" else -1
+    exit_pct = sg * (float(d["exit_price"]) - ent) / ent * 100
+    tp = float(d.get("tp_pct") or 0) or None
+    sl = float(d.get("sl_pct") or 0) or abs(exit_pct)
+    out = {"ok": True, "exit_pct": round(exit_pct, 3)}
+    for w in windows:
+        bars = [c for c in cs if ca <= c["t"] / 1000.0 < ca + w * 60]
+        if not bars:
+            out[f"h{w}"] = None
+            continue
+        mf, ma = 0.0, exit_pct
+        ret_e = ret_t = widen = None
+        scen = {m: None for m in mults}
+        for c in bars:
+            fav = sg * ((c["h"] if sg > 0 else c["l"]) - ent) / ent * 100
+            adv = sg * ((c["l"] if sg > 0 else c["h"]) - ent) / ent * 100
+            mf, ma = max(mf, fav), min(ma, adv)
+            mn = int(round((c["t"] / 1000.0 - ca) / 60.0)) + 5
+            if ret_e is None and fav >= 0:
+                ret_e = mn
+            if ret_t is None and tp and fav >= tp:
+                ret_t, widen = mn, round(-ma, 3)
+            for m in mults:
+                if scen[m] is None:
+                    if adv <= -m * sl:
+                        scen[m] = round(-m * sl, 3)
+                    elif tp and fav >= tp:
+                        scen[m] = round(tp, 3)
+        end_pct = sg * (bars[-1]["c"] - ent) / ent * 100
+        h = {"n": len(bars), "ret_entry_min": ret_e, "ret_tp_min": ret_t, "widen_pct": widen, "max_fav_pct": round(mf, 3), "max_adv_pct": round(ma, 3), "end_pct": round(end_pct, 3)}
+        for m in mults:
+            h[f"w{int(round(m * 10))}"] = scen[m] if scen[m] is not None else round(end_pct, 3)
+        out[f"h{w}"] = h
+    return out
+
+
+def post_stop_summary(items):
+    """Pur : items = [(source, trade ferme avec post_stop ok)] -> {source: {n, real_usd, h<minutes>: {...}}}. Les $ sont bruts (hors frais), a taille identique."""
+    out = {}
+    for src, d in items:
+        ps = d.get("post_stop") or {}
+        if not ps.get("ok"):
+            continue
+        g = out.setdefault(src, {"n": 0, "real_usd": 0.0})
+        g["n"] += 1
+        g["real_usd"] += float(d.get("pnl") or 0)
+        nt = float(d.get("notional_usd") or 0)
+        for k, h in ps.items():
+            if not (isinstance(k, str) and re.match(r"^h\d+$", k)) or not h:
+                continue
+            x = g.setdefault(k, {"n": 0, "ret_entry": 0, "ret_tp": 0, "widen": [], "real_usd": 0.0})
+            x["n"] += 1
+            x["ret_entry"] += 1 if h.get("ret_entry_min") is not None else 0
+            x["ret_tp"] += 1 if h.get("ret_tp_min") is not None else 0
+            if h.get("widen_pct") is not None:
+                x["widen"].append(h["widen_pct"])
+            x["real_usd"] += float(d.get("pnl") or 0)
+            for kk, vv in h.items():
+                if re.match(r"^w\d+$", kk):
+                    x[kk + "_usd"] = x.get(kk + "_usd", 0.0) + nt * float(vv or 0) / 100.0
+    for g in out.values():
+        g["real_usd"] = round(g["real_usd"], 2)
+        for k, x in list(g.items()):
+            if isinstance(k, str) and re.match(r"^h\d+$", k):
+                wd = sorted(x.pop("widen"))
+                x["widen_med"] = (wd[len(wd) // 2] if wd else None)
+                for kk in list(x.keys()):
+                    if kk == "real_usd" or kk.endswith("_usd"):
+                        x[kk] = round(x[kk], 2)
+    return out
+
+
 def p_fmt(x):
     return f"{x:.6g}"
 
@@ -901,7 +987,8 @@ class ScalpEngine:
                    "neutral": sum(1 for p in pe if p["verdict"] == "neutre"), "avg_delta_pct": (sum(p["delta_pct"] for p in pe) / len(pe)) if pe else None,
                    "sum_delta_pct": sum(p["delta_pct"] for p in pe) if pe else None,
                    "pending": sum(1 for d in be_rows if not (d.get("post_exit") or {}).get("ok")), "total_be": len(be_rows)}
-        out = {"mode": mode, "dims": dims, "be_post": be_post, "shadow": self.shadow_summary(), "lab": self.lab_summary(rows), "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
+        stop_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok")]).get("Scalp")      # v4.538
+        out = {"mode": mode, "dims": dims, "be_post": be_post, "stop_post": stop_post, "shadow": self.shadow_summary(), "lab": self.lab_summary(rows), "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
                "by_hour": {h: agg(v) for h, v in sorted(by_hour.items())}, "last_closed": rows[0].get("closed_at") if rows else None}
         self._stats_cache = (time.time(), mode, out)
         return out
@@ -963,6 +1050,51 @@ class ScalpEngine:
             except Exception as e:
                 pe = {"ok": False, "fail": (d.get("post_exit") or {}).get("fail", 0) + 1, "why": f"{type(e).__name__}"}
             d["post_exit"] = pe
+            db.manual_update(r["id"], "closed", d)
+            done += 1
+        if done:
+            self._stats_cache = (0, None, None)
+            self._rows_cache = (0, None, None)
+
+    def _post_stop_eval(self, limit=3):
+        """v4.538 : suivi apres sortie des STOP LOSS (Scalp et ordres sur zone), 3 h apres la sortie. Observation seule.
+        v4.539 : + trades Swing Support (stops loss, et fermetures a la main en perte), fenetres jusqu a 48 h. N ecrit qu une note « post_stop » dans le trade ferme."""
+        now = time.time()
+        done = 0
+        for r in db.manual_history(400):
+            if done >= limit:
+                break
+            d = r["data"]
+            if r.get("status") != "closed" or not d.get("entry_price") or not d.get("exit_price"):
+                continue
+            reason = str(d.get("reason") or "")
+            swing = d.get("strategy_source") == "swing_support"
+            if not (swing or d.get("strategy_source") == STRATEGY or d.get("zone_order")):
+                continue
+            if reason.startswith("STOP LOSS"):
+                windows, mults = (PS_WINDOWS_SWING if swing else PS_WINDOWS), PS_MULTS
+            elif swing and reason.startswith("MANUEL"):
+                sg = 1 if d.get("direction") == "long" else -1
+                if sg * (float(d["exit_price"]) - float(d["entry_price"])) >= 0:
+                    continue      # fermeture a la main en gain : hors sujet
+                windows, mults = PS_WINDOWS_SWING, PS_MULTS_MANUAL
+            else:
+                continue
+            ps = d.get("post_stop") or {}
+            if ps.get("ok") or ps.get("fail", 0) >= 3:
+                continue
+            ca = float(d.get("closed_at") or 0)
+            win = max(windows) * 60
+            if not ca or now - ca < win + 300:
+                continue
+            try:
+                cs = [c for c in self._candles_range(d["ticker"], ca, min(ca + win + 300, now)) if ca <= c["t"] / 1000.0 < ca + win]
+                ps = post_stop_calc(d, cs, ca, windows, mults) if len(cs) >= int(0.8 * win / 300) else {"ok": False, "fail": ps.get("fail", 0) + 1, "why": f"{len(cs)} bougies"}
+                if ps.get("ok"):
+                    ps["kind"] = "manuel" if reason.startswith("MANUEL") else "stop"
+            except Exception as e:
+                ps = {"ok": False, "fail": ps.get("fail", 0) + 1, "why": f"{type(e).__name__}"}
+            d["post_stop"] = ps
             db.manual_update(r["id"], "closed", d)
             done += 1
         if done:
@@ -1199,6 +1331,7 @@ class ScalpEngine:
     def _post_exit_run(self):
         try:
             self._post_exit_eval()
+            self._post_stop_eval()      # v4.538
             self._shadow_eval()
             self._lab_eval()
         except Exception as e:
@@ -2516,10 +2649,14 @@ class ScalpEngine:
         long_side = sig["side"] == "long"
         if (long_side and pos > edge) or ((not long_side) and pos < 1.0 - edge):
             return None
+        depth = pos if long_side else 1.0 - pos      # v4.538 : distance au bord (part de la hauteur de la boite)
+        if depth < float(c.get("SCALP_OSC_EDGE_MIN_PCT", 15)) / 100.0:
+            return None      # pile sur le support / la resistance : une cassure est possible, on attend d etre entre le bord et le milieu de la boite
         a5p = (sig["atr5"] / price * 100.0) if sig.get("atr5") else amp / 4.0
         tp = min(max(float(c.get("SCALP_OSC_TP_SHARE_PCT", 50)) / 100.0 * amp, float(c.get("SCALP_OSC_MIN_TP_PCT", 0.25))), float(c.get("SCALP_OSC_MAX_TP_PCT", 1.2)))
         d_box = ((price - lo) if long_side else (hi - price)) / price * 100.0
-        sl = min(max(d_box + 0.5 * a5p, max(0.3, a5p)), float(c.get("SCALP_OSC_SL_MAX_PCT", 0.8)))
+        over = max(0.5 * a5p, float(c.get("SCALP_OSC_SL_OVERSHOOT_AMP_PCT", 25)) / 100.0 * amp)      # v4.538 : le stop couvre un depassement du bord (part de la hauteur de la boite)
+        sl = min(max(d_box + over, max(0.3, a5p)), float(c.get("SCALP_OSC_SL_MAX_PCT", 0.8)))
         return {"er": er, "box_lo": lo, "box_hi": hi, "amp_pct": round(amp, 3), "pos": round(pos, 3), "tp_pct": round(tp, 3), "sl_pct": round(sl, 3),
                 "trail_pct": float(c.get("SCALP_OSC_RUN_TRAIL_PCT", 0.15)), "hold_min": float(c.get("SCALP_OSC_MAX_HOLD_MIN", 30))}
 
