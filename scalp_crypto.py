@@ -847,7 +847,8 @@ class ScalpEngine:
         now = time.time()
         if self._uni and now - self._uni_ts < 1800:
             return self._uni
-        n = max(int(self.cfg.get("SCALP_TOP_N", 15)), 1)
+        n = int(self.cfg.get("SCALP_TOP_N", 0) or 0)      # v4.546 : 0 = TOUS les actifs suivis (classes par volume), sinon les N plus echanges
+        n = n if n > 0 else 10 ** 6
         # v4.424 : cfg["SYMBOLS"] contient des cles de slot ("BTC_0", "PAXG_1"...) : on en extrait le vrai ticker
         tracked, seen = [], set()
         for raw in self.cfg.get("SYMBOLS", []):

@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.545"
+BOT_VERSION = "4.546"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -284,7 +284,7 @@ CONFIG = {
     "SCALP_PEER_MIN": 0, "SCALP_PEER_CORR_ONLY": 1, "SCALP_PEER_WINDOW_MIN": 30, "SCALP_CORR_BASKET_EXIT_ON": 0, "SCALP_BASKET_EXIT_PCT": 70,
     "SCALP_RUN_ENABLED": 1, "SCALP_RUN_TRAIL_PCT": 0.2, "SCALP_FLOW_ALL_ON": 0, "SCALP_FLOW_ALL_MIN": 0.52, "SCALP_FLOW_ALL_MIN_TRADES": 30, "SCALP_RETEST_ON": 0, "SCALP_RETEST_BARS": 6, "SCALP_RETEST_TOL_ATR": 0.3, "SCALP_RETEST_BOUNCE_ATR": 0.25, "SCALP_BE_ENABLED": 1, "SCALP_BE_ARM_PCT": 0.25, "SCALP_BE_LOCK_PCT": 0.1,     # v4.434 laisser courir apres l objectif
     "SCALP_COUNTER_ENABLED": 1, "SCALP_COUNTER_MIN_SCORE": 65, "SCALP_COUNTER_FLOW_MIN": 0.58, "SCALP_COUNTER_MIN_TRADES": 30,   # v4.433 contre-tendance securisee "SCALP_TP_PCT": 0.6,            # % du PRIX ; TP fixe (pas de laisser courir)
-    "SCALP_TOP_N": 15,                                   # actifs : les N plus echanges (volume 24 h) parmi les actifs suivis
+    "SCALP_TOP_N": 0,                                    # actifs : 0 = tous les actifs suivis ; sinon les N plus echanges (volume 24 h)
     "SCALP_HOURS_UTC": "7-11,13-21",                     # tranches horaires UTC (vide = toujours)
     "SCALP_MIN_SCORE": 0, "SCALP_SHORT_MIN_SCORE": 62,
     "SCALP_TREND_MODE": 1, "SCALP_CONFIRM_BARS": 3, "SCALP_NOISE_ATR": 0.5,   # v4.429 : pas de contre-tendance ; entree seulement apres confirmation du mouvement "SCALP_MIN_ATR15_PCT": 0.0,  # v4.423 : filtres OPTIONNELS (0 = desactive) ; ces donnees comptent dans la NOTE, elles ne bloquent plus

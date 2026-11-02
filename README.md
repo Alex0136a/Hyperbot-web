@@ -1843,3 +1843,10 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Effet attendu** : ≈ 24 trades évités sur 539, ≈ +8 $ sur la période (une seule période : à surveiller).
 - **Cassures (non modifiées, constat)** : 88 trades, −11,6 $ ; cassure avec tendance 15 min déjà dans le sens (47 trades) : 28 % gagnants, −10,6 $ ; 15 min neutre (36 trades) : 44 %, −2,6 $. Les cassures qui échouent sont surtout celles prises après le mouvement. Piste : confirmer par un retest (réglage existant `SCALP_RETEST_ON`, désactivé) — non testable faute de données.
 - Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
+
+## v4.546 — Tous les actifs suivis dans l'univers du Scalp
+- **Demande** : « il faut tous les cryptos dans l'univers ». Constat : TAO était « hors de l'univers du Scalp » (le Scalp ne gardait que les 15 actifs les plus échangés parmi les actifs suivis ; liste recalculée toutes les 30 min), donc aucun signal n'était évalué dessus.
+- **Changement (décision, paper et live)** : `SCALP_TOP_N` = **0** signifie « tous les actifs suivis » (classés par volume ; PAXG et les actifs xyz restent exclus comme avant). Valeur par défaut : 0. Toute valeur > 0 garde l'ancien comportement (les N plus échangés). Plage du réglage : 0 à 100.
+- **À faire si la valeur est déjà enregistrée dans tes réglages** : mets « Nb d'actifs analysés » à 0 dans les réglages Scalp ; la liste se met à jour au plus tard 30 min après.
+- **Points d'attention** : environ le double d'actifs analysés (≈ 30 au lieu de 15) = plus d'appels de bougies ; les actifs moins liquides ont des spreads plus larges (relevé du 01/11 : EIGEN 0,106 %, SUSHI 0,082 %, JUP 0,054 %, contre 0,001 % pour BTC / ETH / SOL), ce qui pèse sur des objectifs de 0,3 à 0,6 %. À surveiller dans les résultats par actif.
+- Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
