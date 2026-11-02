@@ -72,7 +72,82 @@ def hour_allowed(hours, utc_hour):
     return False
 
 
-def evaluate(c5, c15, c1h, btc_chg, K, flow=None):
+def move_1m(c1):
+    """v4.547 : MOUVEMENT ENCLENCHE sur les bougies 1 min (le H1 est trop lent pour le Scalp). Retourne None (moins de 35 bougies) ou
+    {net, eff, acc, last2, ref, dir} : deplacement net des 5 dernieres bougies 1 min (% du prix, signe = sens du prix), efficacite
+    (net / chemin parcouru), acceleration (amplitude des 2 dernieres bougies / mediane des 30 precedentes), sens de la derniere bougie."""
+    try:
+        if not c1 or len(c1) < 35:
+            return None
+        b = c1[-35:]
+        price = float(b[-1]["c"])
+        if price <= 0:
+            return None
+        rng = [(float(x["h"]) - float(x["l"])) / price * 100 for x in b]
+        pre = sorted(rng[:-5])
+        ref = pre[len(pre) // 2]
+        w = b[-5:]
+        net = (float(w[-1]["c"]) - float(w[0]["o"])) / price * 100
+        path = sum(abs(float(w[i]["c"]) - float(w[i - 1]["c"])) for i in range(1, 5)) + abs(float(w[0]["c"]) - float(w[0]["o"]))
+        eff = abs(float(w[-1]["c"]) - float(w[0]["o"])) / path if path > 0 else 0.0
+        last2 = (rng[-1] + rng[-2]) / 2
+        acc = (last2 / ref) if ref > 0 else None
+        last_up = float(w[-1]["c"]) >= float(w[-2]["c"])
+        return {"net": round(net, 3), "eff": round(eff, 2), "acc": None if acc is None else round(acc, 2), "last2": round(last2, 3),
+                "last_up": last_up, "dir": "haussier" if net > 0 else "baissier"}
+    except Exception:
+        return None
+
+
+def move_state(mv, side, K):
+    """v4.547 : etat du mouvement 1 min POUR un sens de trade : « enclenché » (net >= SCALP_CALM_DIR_PCT dans le sens, efficacite >= SCALP_CALM_EFF,
+    derniere bougie dans le sens), « naissant » (la moitie du net avec efficacite ou acceleration, derniere bougie dans le sens), « contraire »
+    (le prix va franchement a l oppose), sinon « absent »."""
+    sg = 1 if side == "long" else -1
+    net = sg * mv["net"]
+    dmin, emin, amin = K.get("move_net", 0.10), K.get("move_eff", 0.6), K.get("move_acc", 1.8)
+    last_ok = (mv["last_up"] == (sg == 1))
+    if net >= dmin and mv["eff"] >= emin and last_ok:
+        st = "enclenché"
+    elif net >= dmin / 2 and (mv["eff"] >= emin or (mv["acc"] or 0) >= amin) and last_ok:
+        st = "naissant"
+    elif net <= -dmin / 2:
+        st = "contraire"
+    else:
+        st = "absent"
+    return st, round(net, 3)
+
+
+def move_gate(c, t1h, m15, mv, K):
+    """v4.547 : le mouvement 1 min repond a l ambiguite du H1. Retourne (decision, message) :
+    « ok » (on garde le candidat comme aligne), « refus », « counter » (contre-tendance : securites habituelles en plus), « legacy » (rien de change).
+    Rebond : il faut un mouvement 1 min enclenche ou naissant dans son sens, que le H1 soit dans le sens, neutre (ambigu) ou contraire.
+    Cassure : inchangee quand la tendance est dans le sens ou contraire ; si H1 ET 15 min sont neutres, elle est prise seulement si le mouvement est enclenche."""
+    if mv is None or c["kind"] not in ("rebond", "cassure"):
+        return "legacy", None
+    want = "haussiere" if c["side"] == "long" else "baissiere"
+    ori = ("haussiere", "baissiere")
+    if t1h in ori:
+        with_t, opp = (t1h == want), (t1h != want)
+    else:
+        with_t, opp = (m15 == want), (m15 in ori and m15 != want)
+    st, net = move_state(mv, c["side"], K)
+    c["move1m"] = {"etat": st, "net": net, "eff": mv["eff"], "acc": mv["acc"]}
+    amb = (not with_t) and (not opp)
+    msg = (f"{c['kind']} {c['side']} refusé : mouvement 1 min {st} dans ce sens ({net:+.2f} % sur 5 min, efficacité {mv['eff']:.2f})"
+           + (" — H1 et 15 min neutres, on attend que le mouvement s'enclenche" if amb else " — on attend que le mouvement s'enclenche"))
+    if c["kind"] == "rebond":
+        if st not in ("enclenché", "naissant"):
+            return "refus", msg
+        return ("counter" if opp else "ok"), None
+    if opp:
+        return "legacy", None
+    if with_t:
+        return "ok", None
+    return ("ok", None) if st == "enclenché" else ("refus", msg)
+
+
+def evaluate(c5, c15, c1h, btc_chg, K, flow=None, c1=None):
     """Retourne le meilleur signal {side, kind, zone, score, reasons, level} ou (None, motif).
     c5 / c15 / c1h : bougies CLOTUREES (dicts t,o,h,l,c,v), les plus anciennes d abord.
     K : seuils (min_atr_pct, min_room_pct, vol_mult, max_chase_pct, min_score)."""
@@ -211,7 +286,18 @@ def evaluate(c5, c15, c1h, btc_chg, K, flow=None):
             return m15 in ("haussiere", "baissiere") and m15 == want
         aligned = []
         refus = None
+        mv = move_1m(c1) if (K.get("move1m_on", 1) and c1) else None      # v4.547 : mouvement 1 min (repond a l ambiguite du H1)
         for c in cands:
+            mg, mmsg = move_gate(c, t1h, m15, mv, K)
+            if mg == "refus":
+                refus = refus or mmsg
+                continue
+            if mg == "ok":
+                c["counter"] = False
+                if c.get("move1m"):
+                    c["reasons"] = [f"mouvement 1 min {c['move1m']['etat']} ({c['move1m']['net']:+.2f} % / 5 min, efficacité {c['move1m']['eff']:.2f})"] + c["reasons"]
+                aligned.append(c)
+                continue
             if with_trend(c):
                 c["counter"] = False
                 aligned.append(c)
@@ -834,7 +920,8 @@ class ScalpEngine:
                 "cont_short_on": int(c.get("SCALP_CONT_SHORT_ON", 1)), "cont_trend_bars": int(c.get("SCALP_CONT_TREND_BARS", 36)), "cont_min_r2_5m": float(c.get("SCALP_CONT_MIN_R2_5M", 0.3)),
                 "cont_h1_block": int(c.get("SCALP_CONT_H1_BLOCK", 1)), "sus_min": int(c.get("SCALP_SUS_MIN", 30)), "sus_min_move_pct": float(c.get("SCALP_SUS_MIN_MOVE_PCT", 0.35)), "sus_min_move_atr": float(c.get("SCALP_SUS_MIN_MOVE_ATR", 2.0)),
                 "sus_min_er": float(c.get("SCALP_SUS_MIN_ER", 0.45)), "sus_max_pb_atr": float(c.get("SCALP_SUS_MAX_PB_ATR", 1.5)), "sus_max_ext_atr": float(c.get("SCALP_SUS_MAX_EXT_ATR", 4.0)),
-                "sus_rsi_max": float(c.get("SCALP_SUS_RSI_MAX", 93)), "sus_end_pb_atr": float(c.get("SCALP_SUS_END_PB_ATR", 1.2))}
+                "sus_rsi_max": float(c.get("SCALP_SUS_RSI_MAX", 93)), "sus_end_pb_atr": float(c.get("SCALP_SUS_END_PB_ATR", 1.2)),
+                "move1m_on": int(c.get("SCALP_MOVE1M_ON", 1)), "move_net": float(c.get("SCALP_CALM_DIR_PCT", 0.10)), "move_eff": float(c.get("SCALP_CALM_EFF", 0.6)), "move_acc": float(c.get("SCALP_CALM_ACC", 1.8))}
 
     def _clear_err(self, prefix):
         """v4.508 : efface la derniere erreur technique si elle vient de cette source (l appel suivant a reussi)."""
@@ -1464,10 +1551,23 @@ class ScalpEngine:
                         self._sus_update(t, c5, K)      # v4.532 : etat de la tendance soutenue (entree / sortie de zone), tous les actifs analyses
                 except Exception as e:
                     self.last_error = f"tendance soutenue {t} : {type(e).__name__}: {e}"
-                sig, motif = evaluate(c5, c15, c1h, btc, K, self._flow(t))
+                try:
+                    c1m = self.bot._mtf_candles(t, "1m", 40) if int(self.cfg.get("SCALP_MOVE1M_ON", 1)) else None
+                except Exception:
+                    c1m = None
+                sig, motif = evaluate(c5, c15, c1h, btc, K, self._flow(t), c1=c1m)
+                mv_txt = ""
+                try:
+                    mvd = move_1m(c1m)
+                    if mvd:
+                        sd_ = "long" if mvd["net"] > 0 else "short"
+                        st_, nt_ = move_state(mvd, sd_, K)
+                        mv_txt = f" · mouvement 1 min : {st_ if st_ != 'absent' else 'absent'} {mvd['dir']} ({mvd['net']:+.2f} % / 5 min, efficacité {mvd['eff']:.2f})"
+                except Exception:
+                    mv_txt = ""
                 if sig:
                     self._last_sig_ts = time.time()
-                self.verdicts[t] = (time.time(), "analyse", ("signal valide : " + f"{sig['kind']} {sig['side']} note {sig['score']:.0f}") if sig else (motif or "aucun signal"))
+                self.verdicts[t] = (time.time(), "analyse", (("signal valide : " + f"{sig['kind']} {sig['side']} note {sig['score']:.0f}") if sig else (motif or "aucun signal")) + mv_txt)
                 if not sig:
                     if "refuse" in motif:
                         self._ev("refus", t, motif)
@@ -2950,7 +3050,7 @@ class ScalpEngine:
                                    "regime": {"label": reg.get("label", "inconnu"), "corr": reg.get("corr"), "up": reg.get("up"), "down": reg.get("down"),
                                               "basket30": reg.get("basket30"), "rel30": (round(reg["ch30"].get(t, 0) - reg["basket30"], 3) if reg.get("ch30") and reg.get("basket30") is not None else None),
                                               "cluster": cluster_before, "peers": sig.get("peers")},
-                                   "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra, "calm": sig.get("calm1m"),
+                                   "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra, "calm": sig.get("calm1m"), "mv1": sig.get("move1m"),
                                    "touches": sig.get("touches"),      # v4.493 : mesures de la zone horizontale (aucun effet sur les decisions)
                                    "zone_width_pct": (round((sig["zone"][1] - sig["zone"][0]) / sig["price"] * 100, 3) if sig.get("zone") and sig.get("price") else None),
                                    "dist_level_pct": (round((sig["price"] / sig["level"] - 1) * 100, 3) if sig.get("level") and sig.get("price") else None)}
