@@ -118,6 +118,68 @@ def move_state(mv, side, K):
     return st, round(net, 3)
 
 
+def btc_block(side, btc_chg, K):
+    """v4.548 : veto BTC a la MEME ECHELLE que la decision (bougies 1 min, 5 dernieres minutes) au lieu de la variation de BTC sur 1 h.
+    Retourne (niveau, texte) : niveau « hard » (BTC enclenche CONTRE le trade : net >= SCALP_CALM_DIR_PCT dans le sens oppose, efficacite >= SCALP_CALM_EFF),
+    « soft » (BTC naissant contre : au moins la moitie du net), ou None. K["btc_mv"] absent (pas de bougies 1 min BTC, ou SCALP_BTC_SCALE1M_ON = 0) :
+    ancien calcul sur la variation 1 h (niveau « hard » au-dela de SCALP_SHORT_BTC_MAX_PCT pour un short, -0,5 % pour un long ; « soft » entre -0,2 et -0,5 / +0,1 et +0,2)."""
+    mv = K.get("btc_mv")
+    sg = 1 if side == "long" else -1
+    if mv is not None:
+        net = sg * mv["net"]          # > 0 : BTC va dans le sens du trade
+        dmin, emin = K.get("move_net", 0.10), K.get("move_eff", 0.6)
+        txt = f"BTC {'en hausse' if mv['net'] > 0 else 'en baisse'} sur 1 min ({mv['net']:+.2f} % / 5 min, efficacité {mv['eff']:.2f})"
+        if net <= -dmin and mv["eff"] >= emin:
+            return "hard", txt
+        if net <= -dmin / 2:
+            return "soft", txt
+        return None, ""
+    if btc_chg is None:
+        return None, ""
+    txt = f"BTC {'en hausse' if btc_chg > 0 else 'en baisse'} ({btc_chg:+.2f} % / 1 h)"
+    if side == "short":
+        if btc_chg > K.get("short_btc_max", 0.1):
+            return "hard", txt
+        return None, ""
+    if btc_chg <= -0.5:
+        return "hard", txt
+    if btc_chg <= -0.2:
+        return "soft", txt
+    return None, ""
+
+
+def btc_with(side, btc_chg, K):
+    """v4.549 : BTC « dans le sens » du trade, a la meme echelle que la decision (5 dernieres minutes, net >= SCALP_CALM_DIR_PCT, efficacite >= SCALP_CALM_EFF) ;
+    repli sans bougies 1 min BTC : ancien calcul 1 h (>= 0,2 %)."""
+    mv = K.get("btc_mv")
+    sg = 1 if side == "long" else -1
+    if mv is not None:
+        return sg * mv["net"] >= K.get("move_net", 0.10) and mv["eff"] >= K.get("move_eff", 0.6)
+    return btc_chg is not None and sg * btc_chg >= 0.2
+
+
+def mv_score(mv, side, kind, K):
+    """v4.549 : points de note du mouvement 1 min (remplace les points du H1) : enclenche +12, naissant +6, contraire -15 (cassure -25)."""
+    st, _n = move_state(mv, side, K)
+    if st == "enclenché":
+        return 12, "mouvement 1 min enclenché dans le sens"
+    if st == "naissant":
+        return 6, "mouvement 1 min naissant dans le sens"
+    if st == "contraire":
+        return (-25 if kind == "cassure" else -15), "mouvement 1 min contraire"
+    return 0, None
+
+
+def mv_veto(mv, side, K):
+    """v4.549 : remplace le veto « H1 contraire » de la continuation par un veto a la meme echelle : le prix va franchement contre le trade sur 5 min."""
+    if mv is None:
+        return None
+    st, net = move_state(mv, side, K)
+    if st == "contraire":
+        return f"mouvement 1 min contraire ({net:+.2f} % / 5 min dans le sens du trade) — le repli / le retournement est en cours"
+    return None
+
+
 def move_gate(c, t1h, m15, mv, K):
     """v4.547 : le mouvement 1 min repond a l ambiguite du H1. Retourne (decision, message) :
     « ok » (on garde le candidat comme aligne), « refus », « counter » (contre-tendance : securites habituelles en plus), « legacy » (rien de change).
@@ -127,15 +189,12 @@ def move_gate(c, t1h, m15, mv, K):
         return "legacy", None
     want = "haussiere" if c["side"] == "long" else "baissiere"
     ori = ("haussiere", "baissiere")
-    if t1h in ori:
-        with_t, opp = (t1h == want), (t1h != want)
-    else:
-        with_t, opp = (m15 == want), (m15 in ori and m15 != want)
+    with_t, opp = (m15 == want), (m15 in ori and m15 != want)      # v4.549 : base de temps 15 min / 5 min / 1 min (le H1 n est plus consulte ici)
     st, net = move_state(mv, c["side"], K)
     c["move1m"] = {"etat": st, "net": net, "eff": mv["eff"], "acc": mv["acc"]}
     amb = (not with_t) and (not opp)
     msg = (f"{c['kind']} {c['side']} refusé : mouvement 1 min {st} dans ce sens ({net:+.2f} % sur 5 min, efficacité {mv['eff']:.2f})"
-           + (" — H1 et 15 min neutres, on attend que le mouvement s'enclenche" if amb else " — on attend que le mouvement s'enclenche"))
+           + (" — 15 min neutre, on attend que le mouvement s'enclenche" if amb else " — on attend que le mouvement s'enclenche"))
     if c["kind"] == "rebond":
         if st not in ("enclenché", "naissant"):
             return "refus", msg
@@ -170,6 +229,7 @@ def evaluate(c5, c15, c1h, btc_chg, K, flow=None, c1=None):
     vr = (last["v"] / vavg) if vavg > 0 else 1.0
     rsi5 = _rsi([c["c"] for c in c5], 14)
     t1h = mtf.trend(c1h)[0]
+    mv0 = move_1m(c1) if (K.get("move1m_on", 1) and c1) else None      # v4.549 : mouvement 1 min (remplace le H1 dans la note)
     closes15 = [c["c"] for c in c15]
     e20, e50 = mtf.ema(closes15, 20), mtf.ema(closes15, 50) if len(closes15) >= 50 else None
     m15 = "neutre"
@@ -190,7 +250,11 @@ def evaluate(c5, c15, c1h, btc_chg, K, flow=None, c1=None):
         s, why = 45, []
         aligned_h1 = (t1h == "haussiere") == (side == "long") and t1h in ("haussiere", "baissiere")
         opposed_h1 = t1h in ("haussiere", "baissiere") and not aligned_h1
-        if aligned_h1:
+        if mv0 is not None:
+            pts, why_mv = mv_score(mv0, side, kind, K)
+            if why_mv:
+                s += pts; why.append(why_mv)
+        elif aligned_h1:
             s += 12; why.append("tendance H1 dans le sens")
         elif opposed_h1:
             s -= 25 if kind == "cassure" else 15; why.append("tendance H1 contraire")
@@ -210,7 +274,12 @@ def evaluate(c5, c15, c1h, btc_chg, K, flow=None, c1=None):
         elif t == 2:
             s += 6; why.append("zone testee 2 fois")
         if btc_chg is not None:
-            if (side == "long" and btc_chg >= 0.2) or (side == "short" and btc_chg <= -0.2):
+            if K.get("btc_mv") is not None:      # v4.549 : BTC a l echelle 1 min (comme la decision)
+                if btc_with(side, btc_chg, K):
+                    s += 8; why.append(f"BTC dans le sens sur 1 min ({K['btc_mv']['net']:+.2f} % / 5 min)")
+                elif btc_block(side, btc_chg, K)[0] == "hard":
+                    s -= 15; why.append(f"BTC contraire sur 1 min ({K['btc_mv']['net']:+.2f} % / 5 min)")
+            elif (side == "long" and btc_chg >= 0.2) or (side == "short" and btc_chg <= -0.2):
                 s += 8; why.append(f"BTC dans le sens ({btc_chg:+.2f} % / 1 h)")
             elif (side == "long" and btc_chg <= -0.5) or (side == "short" and btc_chg >= 0.5):
                 s -= 15; why.append(f"BTC contraire ({btc_chg:+.2f} % / 1 h)")
@@ -224,7 +293,7 @@ def evaluate(c5, c15, c1h, btc_chg, K, flow=None, c1=None):
         else:
             s -= 4; why.append(f"marche calme (ATR 15 min {atr15_pct:.2f} %)")
         why.append(f"place avant la zone suivante : {'>3' if rm > 3 else f'{rm:.1f}'} %")
-        if side == "short" and t1h == "haussiere":
+        if side == "short" and t1h == "haussiere" and mv0 is None:
             s -= 8; why.append("SHORT contre une tendance H1 haussiere")      # v4.428
         s += extra
         return max(0, min(100, s)), why, rm
@@ -262,19 +331,25 @@ def evaluate(c5, c15, c1h, btc_chg, K, flow=None, c1=None):
     if not cands:
         return None, "aucun signal"
     # v4.438 : SHORT interdit tant que BTC monte (variation 1 h > seuil). Appliquer avant le filtre de tendance.
-    if K.get("short_btc_block", 1) and btc_chg is not None and btc_chg > K.get("short_btc_max", 0.1):
+    if K.get("short_btc_block", 1) and (btc_chg is not None or K.get("btc_mv") is not None):
         n0 = len(cands)
-        soft = float(K.get("short_btc_soft_max", 0) or 0)      # v4.497 : shorts "prudents" tant que BTC monte moderement (rebond sur resistance testee, taille reduite, flux vendeur exige dans _take)
-        keep = []
-        for c_ in cands:
-            if c_["side"] != "short":
-                keep.append(c_)
-            elif soft > K.get("short_btc_max", 0.1) and btc_chg <= soft and c_["kind"] == "rebond" and c_["touches"] >= 2:
-                c_["prudent_btc"] = round(btc_chg, 3)
-                keep.append(c_)
-        cands = keep
-        if not cands:
-            return None, f"short refuse : BTC en hausse ({btc_chg:+.2f} % / 1 h > {K.get('short_btc_max', 0.1):+.2f} %)" if n0 else "aucun signal"
+        lvl, btxt = btc_block("short", btc_chg, K)
+        if lvl:
+            soft = float(K.get("short_btc_soft_max", 0) or 0)      # v4.497 : shorts "prudents" tant que BTC monte moderement (rebond sur resistance testee, taille reduite, flux vendeur exige dans _take)
+            new_scale = K.get("btc_mv") is not None
+            keep = []
+            for c_ in cands:
+                if c_["side"] != "short":
+                    keep.append(c_)
+                elif c_["kind"] == "rebond" and c_["touches"] >= 2 and (
+                        (new_scale and lvl == "soft") or ((not new_scale) and soft > K.get("short_btc_max", 0.1) and btc_chg <= soft)):
+                    c_["prudent_btc"] = round((K["btc_mv"]["net"] if new_scale else btc_chg), 3)
+                    keep.append(c_)
+                elif new_scale and lvl == "soft" and c_["kind"] != "rebond":
+                    keep.append(c_)      # v4.548 : BTC seulement naissant contre : seuls les rebonds faibles sont refuses
+            cands = keep
+            if not cands:
+                return None, f"short refuse : {btxt}" if n0 else "aucun signal"
     if K.get("trend_mode", 1):
         # v4.429 : sens du trade = sens de la tendance H1 (si H1 neutre : tendance 15 min)
         # v4.433 : une CONTRE-TENDANCE est autorisee (SCALP_COUNTER_ENABLED) si TOUTES les securites sont reunies :
@@ -314,7 +389,9 @@ def evaluate(c5, c15, c1h, btc_chg, K, flow=None, c1=None):
                 why_no = f"flux insuffisant ({0 if not flow else flow.get('n', 0)} transactions)"
             elif (c["side"] == "long" and flow["buy_ratio"] < K.get("counter_flow", 0.58)) or (c["side"] == "short" and flow["buy_ratio"] > 1 - K.get("counter_flow", 0.58)):
                 why_no = f"flux pas dans le sens ({flow['buy_ratio'] * 100:.0f} % d'achats agressifs)"
-            elif btc_chg is not None and ((c["side"] == "long" and btc_chg <= -0.2) or (c["side"] == "short" and btc_chg >= 0.2)):
+            elif btc_block(c["side"], btc_chg, K)[0] is not None and K.get("btc_mv") is not None:
+                why_no = "contre : " + btc_block(c["side"], btc_chg, K)[1]
+            elif K.get("btc_mv") is None and btc_chg is not None and ((c["side"] == "long" and btc_chg <= -0.2) or (c["side"] == "short" and btc_chg >= 0.2)):
                 why_no = f"BTC contre ({btc_chg:+.2f} % / 1 h)"
             elif c["score"] < K.get("counter_min_score", 65):
                 why_no = f"note {c['score']:.0f} < {K.get('counter_min_score', 65):.0f} (exigence contre-tendance)"
@@ -383,7 +460,7 @@ def _pair_corr(a, b, n=24):
         return None
 
 
-def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
+def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False, c1=None):
     """v4.504 : MODE CONTINUATION. Dans une tendance franche (15 min dans le sens, pente 1 h reguliere dans le sens, H1 pas contraire, mouvement
     net sur 2 h), le bot entre dans le sens de la tendance :
       - « repli » : le prix a fait un repli de PB_MIN a PB_MAX x ATR 5 min depuis le dernier extreme (12 bougies) puis une bougie de reprise
@@ -404,6 +481,7 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
         return None, "marche trop calme"
     short = bool(K.get("cont_short_on", 1))
     t1h = mtf.trend(c1h)[0]      # info seulement en mode court terme (n entre plus dans la decision)
+    mv1 = move_1m(c1) if (K.get("move1m_on", 1) and c1) else None      # v4.549 : mouvement 1 min (remplace le veto et les points du H1)
     early = False
     if short:
         # v4.510 : le Scalp dure 10 a 90 min -> la tendance se juge sur SON horizon : les bougies 5 min des 3 dernieres heures
@@ -454,7 +532,7 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
             return None, "15 min pas dans le sens"
         sg = 1 if side == "long" else -1
         t1h = mtf.trend(c1h)[0]
-        if (side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere"):
+        if mv1 is None and ((side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere")):
             return None, f"H1 contraire ({t1h})"
         nb_s = max(int(K["cont_slope_bars"]), 6)
         sl_ = mtf.slope_features(c1h, n=nb_s, lookback=max(48, nb_s))
@@ -467,7 +545,11 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
         if r2 < r2_need:
             return None, f"pente 1 h irrégulière (R² {r2:.2f} < {r2_need:.2f})"
         ext_ref = e20
-    if K.get("cont_h1_block", 1) and ((side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere")):
+    if mv1 is not None:      # v4.549 : meme base de temps que la decision (1 min) au lieu du H1
+        why_mv = mv_veto(mv1, side, K)
+        if why_mv:
+            return None, f"continuation {side} refusée : {why_mv}"
+    elif K.get("cont_h1_block", 1) and ((side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere")):
         # v4.534 : constat 30/10 : 14 longs de continuation pris H1 baissiere = 2 gagnants, 7 stops, -2,34 $ (0/7 la semaine d avant) ; H1 neutre = 2/2
         return None, f"continuation {side} refusée : H1 {t1h} (contraire)"
     mv = (price / float(c5[-25]["c"]) - 1) * 100 * sg
@@ -535,11 +617,11 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
             sub, level = "elan", prior
             hi_, lo_ = max(price, prior), min(price, prior)
             why_t = [f"élan : bougie forte au nouvel extrême des {nbw} dernières bougies 5 min (volume x{vr:.1f})"]
-    if btc_chg is not None:
-        if side == "long" and btc_chg <= -0.5:
-            return None, f"continuation long refuse : BTC en baisse ({btc_chg:+.2f} % / 1 h)"
-        if side == "short" and K.get("short_btc_block", 1) and btc_chg > K.get("short_btc_max", 0.1):
-            return None, f"continuation short refuse : BTC en hausse ({btc_chg:+.2f} % / 1 h)"
+    if btc_chg is not None or K.get("btc_mv") is not None:
+        if side == "long" or K.get("short_btc_block", 1):
+            lvl_, btxt_ = btc_block(side, btc_chg, K)
+            if lvl_ == "hard":
+                return None, f"continuation {side} refuse : {btxt_}"
     fmin = float(K.get("cont_flow_min", 0) or 0)
     if fmin > 0 and flow is not None and flow.get("n", 0) >= K.get("flow_all_trades", 30):
         br = flow["buy_ratio"]
@@ -555,8 +637,9 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
     if room < K["cont_min_room_pct"]:
         return None, f"continuation {side} refuse : zone H1 à {room:.2f} % seulement (il faut ≥ {K['cont_min_room_pct']:g} %)"
     aligned_h1 = (t1h in ("haussiere", "baissiere")) and not short      # v4.510 : en mode court terme, la structure H1 ne compte plus dans la note
-    sc_ = 50 + 8 + (12 if aligned_h1 else 0) + (10 if vr >= 1.2 else 0) + (5 if vr >= 2.5 else 0) + int(round(min(1.0, r2) * 8)) + (6 if sub == "repli" else 0)
-    if btc_chg is not None and ((side == "long" and btc_chg >= 0.2) or (side == "short" and btc_chg <= -0.2)):
+    pts_h1 = (mv_score(mv1, side, "continuation", K)[0] if mv1 is not None else (12 if aligned_h1 else 0))      # v4.549 : points du mouvement 1 min a la place du H1
+    sc_ = 50 + 8 + pts_h1 + (10 if vr >= 1.2 else 0) + (5 if vr >= 2.5 else 0) + int(round(min(1.0, r2) * 8)) + (6 if sub == "repli" else 0)
+    if (btc_chg is not None or K.get("btc_mv") is not None) and btc_with(side, btc_chg, K):
         sc_ += 8
     sc_ = max(0, min(100, sc_))
     reasons = [(f"continuation {side} ({sub}) : tendance des bougies 5 min sur {nL * 5 // 60} h dans le sens (régularité {r2:.2f}), dernière heure confirmée, mouvement {mv:+.2f} % sur 2 h" if short
@@ -653,7 +736,7 @@ def sus_end(c5, side, K, price=None):
     return False, ""
 
 
-def sustained_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False):
+def sustained_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False, c1=None):
     """v4.532 : signal de TENDANCE SOUTENUE : le mouvement tient depuis ~30 min sans repli (sus_measure) -> entree dans le sens, sans attendre
     de repli ni de volume. Garde-fous : marche pas trop calme, prix pas trop etire (SUS_MAX_EXT_ATR x ATR 15 min au-dela de la moyenne 3 h),
     RSI 5 min <= SUS_RSI_MAX, BTC pas contre, flux pas contre, place avant la zone H1 suivante. Le STOP est decide dans _take (ATR 5 min, borne).
@@ -673,7 +756,12 @@ def sustained_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=Fals
     sd = m["side"]
     sg = 1 if sd == "long" else -1
     t1h_ = mtf.trend(c1h)[0]
-    if K.get("cont_h1_block", 1) and ((sd == "long" and t1h_ == "baissiere") or (sd == "short" and t1h_ == "haussiere")):
+    mv1 = move_1m(c1) if (K.get("move1m_on", 1) and c1) else None      # v4.549 : mouvement 1 min a la place du veto H1
+    if mv1 is not None:
+        why_mv = mv_veto(mv1, sd, K)
+        if why_mv:
+            return None, f"continuation {sd} refusée : {why_mv}"
+    elif K.get("cont_h1_block", 1) and ((sd == "long" and t1h_ == "baissiere") or (sd == "short" and t1h_ == "haussiere")):
         return None, f"continuation {sd} refusée : H1 {t1h_} (contraire)"
     closes5 = [float(x["c"]) for x in c5]
     ref = mtf.ema(closes5, 36) or price
@@ -684,11 +772,11 @@ def sustained_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=Fals
     rmax = float(K.get("sus_rsi_max", 93))
     if rsi5 is not None and ((sd == "long" and rsi5 >= rmax) or (sd == "short" and rsi5 <= 100 - rmax)):
         return None, f"RSI 5 min trop {'haut' if sd == 'long' else 'bas'} ({rsi5:.0f})"
-    if btc_chg is not None:
-        if sd == "long" and btc_chg <= -0.5:
-            return None, f"BTC en baisse ({btc_chg:+.2f} % / 1 h)"
-        if sd == "short" and K.get("short_btc_block", 1) and btc_chg > K.get("short_btc_max", 0.1):
-            return None, f"BTC en hausse ({btc_chg:+.2f} % / 1 h)"
+    if btc_chg is not None or K.get("btc_mv") is not None:
+        if sd == "long" or K.get("short_btc_block", 1):
+            lvl_, btxt_ = btc_block(sd, btc_chg, K)
+            if lvl_ == "hard":
+                return None, btxt_
     fmin = float(K.get("cont_flow_min", 0) or 0)
     if fmin > 0 and flow is not None and flow.get("n", 0) >= K.get("flow_all_trades", 30):
         br = flow["buy_ratio"]
@@ -712,7 +800,7 @@ def sustained_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=Fals
     pa = (bL / a5) if bL is not None else 0.0
     r2 = r2 if r2 is not None else 0.0
     mv2h = (price / float(c5[-25]["c"]) - 1) * 100 * sg
-    sc_ = 50 + 8 + int(round(min(1.0, m["er"]) * 8)) + (10 if vr >= 1.2 else 0) + (5 if vr >= 2.5 else 0) + (8 if btc_chg is not None and ((sd == "long" and btc_chg >= 0.2) or (sd == "short" and btc_chg <= -0.2)) else 0)
+    sc_ = 50 + 8 + int(round(min(1.0, m["er"]) * 8)) + (10 if vr >= 1.2 else 0) + (5 if vr >= 2.5 else 0) + (8 if (btc_chg is not None or K.get("btc_mv") is not None) and btc_with(sd, btc_chg, K) else 0)
     sc_ = max(0, min(100, sc_))
     mins = m["n"] * 5
     reasons = [f"tendance soutenue {sd} : {m['mv_pct']:+.2f} % en {mins} min, efficacité {m['er']:.2f}, repli maximal {m['pb_atr']:.1f} ATR 5 min",
@@ -921,7 +1009,7 @@ class ScalpEngine:
                 "cont_h1_block": int(c.get("SCALP_CONT_H1_BLOCK", 1)), "sus_min": int(c.get("SCALP_SUS_MIN", 30)), "sus_min_move_pct": float(c.get("SCALP_SUS_MIN_MOVE_PCT", 0.35)), "sus_min_move_atr": float(c.get("SCALP_SUS_MIN_MOVE_ATR", 2.0)),
                 "sus_min_er": float(c.get("SCALP_SUS_MIN_ER", 0.45)), "sus_max_pb_atr": float(c.get("SCALP_SUS_MAX_PB_ATR", 1.5)), "sus_max_ext_atr": float(c.get("SCALP_SUS_MAX_EXT_ATR", 4.0)),
                 "sus_rsi_max": float(c.get("SCALP_SUS_RSI_MAX", 93)), "sus_end_pb_atr": float(c.get("SCALP_SUS_END_PB_ATR", 1.2)),
-                "move1m_on": int(c.get("SCALP_MOVE1M_ON", 1)), "move_net": float(c.get("SCALP_CALM_DIR_PCT", 0.10)), "move_eff": float(c.get("SCALP_CALM_EFF", 0.6)), "move_acc": float(c.get("SCALP_CALM_ACC", 1.8))}
+                "btc_scale1m": int(c.get("SCALP_BTC_SCALE1M_ON", 1)), "move1m_on": int(c.get("SCALP_MOVE1M_ON", 1)), "move_net": float(c.get("SCALP_CALM_DIR_PCT", 0.10)), "move_eff": float(c.get("SCALP_CALM_EFF", 0.6)), "move_acc": float(c.get("SCALP_CALM_ACC", 1.8))}
 
     def _clear_err(self, prefix):
         """v4.508 : efface la derniere erreur technique si elle vient de cette source (l appel suivant a reussi)."""
@@ -1523,6 +1611,10 @@ class ScalpEngine:
             if not ok:
                 return
             K = self.thresholds()
+            try:      # v4.548 : mouvement de BTC sur 1 min (meme echelle que les decisions) pour les vetos BTC
+                K["btc_mv"] = move_1m(self.bot._mtf_candles("BTC", "1m", 40)) if K.get("btc_scale1m", 1) else None
+            except Exception:
+                K["btc_mv"] = None
             self._beta_kick()       # v4.479 : betas a jour en arriere-plan
             self._regime()          # v4.442 : regime du panier (correlation / largeur), recalcule au plus toutes les 60 s
             self._check_pending(K)
@@ -1767,9 +1859,13 @@ class ScalpEngine:
     def _cont_try(self, t, c5, c15, c1h, btc, K, mode):
         """v4.504 : signal de continuation sur t ; s il est pris et que le marche le confirme, meme sens sur les actifs correles."""
         c = self.cfg
-        sig, motif = cont_eval(c5, c15, c1h, btc, K, self._flow(t))
+        try:      # v4.549 : bougies 1 min (mouvement a la meme echelle que la decision)
+            c1m = self.bot._mtf_candles(t, "1m", 40) if int(c.get("SCALP_MOVE1M_ON", 1)) else None
+        except Exception:
+            c1m = None
+        sig, motif = cont_eval(c5, c15, c1h, btc, K, self._flow(t), c1=c1m)
         if not sig and int(c.get("SCALP_SUS_ON", 1)):      # v4.532 : pas de repli / d elan : tendance soutenue (mouvement tenu ~30 min sans repli)
-            s2, m2 = sustained_eval(c5, c15, c1h, btc, K, self._flow(t))
+            s2, m2 = sustained_eval(c5, c15, c1h, btc, K, self._flow(t), c1=c1m)
             if s2:
                 sig, motif = s2, "ok"
             else:
@@ -1859,9 +1955,13 @@ class ScalpEngine:
             rho = _pair_corr(c5_0, b5)
             if rho is None or rho < pc:
                 continue
-            s2, _m = cont_eval(b5, b15, b1h, btc, K, self._flow(t2), side=side, follower=True)
+            try:
+                b1m = self.bot._mtf_candles(t2, "1m", 40) if int(c.get("SCALP_MOVE1M_ON", 1)) else None
+            except Exception:
+                b1m = None
+            s2, _m = cont_eval(b5, b15, b1h, btc, K, self._flow(t2), side=side, follower=True, c1=b1m)
             if not s2 and int(c.get("SCALP_SUS_ON", 1)):      # v4.532 : le suiveur peut aussi etre en tendance soutenue
-                s2, _m = sustained_eval(b5, b15, b1h, btc, K, self._flow(t2), side=side)
+                s2, _m = sustained_eval(b5, b15, b1h, btc, K, self._flow(t2), side=side, c1=b1m)
             if not s2:
                 continue
             s2["cont"].update({"peer_of": t0, "peer_corr": round(rho, 2), "breadth_pct": round(share * 100)})

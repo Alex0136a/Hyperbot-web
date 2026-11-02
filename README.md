@@ -1863,3 +1863,24 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Seuils PROVISOIRES** (pas d'historique 1 min pour les caler) : à recaler sur les trades à partir de la v4.547. Colonnes CSV : `mvt1m_etat`, `mvt1m_net_pct`, `mvt1m_eff` (+ `calm_*` depuis la v4.542).
 - **Attention** : ce changement réduit le nombre de rebonds pris tant que le mouvement n'est pas enclenché ; nombre de refus « mouvement 1 min … » à surveiller.
 - Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
+
+## v4.548 — Vétos BTC lus sur la même échelle que la décision (1 min)
+- **Question** : les vétos qui obligent les cryptos corrélées à respecter la tendance BTC existent-ils encore, et sur quelle échelle ? **Constat** : oui, ils existaient tous sur la variation de BTC sur 1 h (4 bougies 15 min) : short refusé si BTC > +0,10 % / 1 h, continuation / tendance soutenue refusées si BTC ≤ −0,5 % / 1 h (long) ou > +0,10 % / 1 h (short), contre-tendance refusée si BTC ≥ 0,2 % contre / 1 h. Une décision prise sur des bougies 1 min / 5 min pouvait donc être bloquée par une tendance BTC d'une heure (ex. SOL : « rebond short refusé : BTC en hausse +0,12 % / 1 h »).
+- **Changement (décision, paper et live ; `SCALP_BTC_SCALE1M_ON` = 1, 0 = ancien calcul sur 1 h)** : les vétos BTC se lisent sur les 5 dernières bougies 1 min de BTC, avec les mêmes seuils que le mouvement 1 min des actifs (`SCALP_CALM_DIR_PCT` 0,10 %, `SCALP_CALM_EFF` 0,6).
+  - **Veto dur** : BTC « enclenché » contre le trade (net ≥ 0,10 % dans le sens opposé, efficacité ≥ 0,6) → short / long refusé (rebond, continuation, tendance soutenue) ; contre-tendance refusée.
+  - **Veto doux** : BTC « naissant » contre (≥ 0,05 %) → shorts « prudents » comme avant (rebond sur zone testée 2 fois, taille réduite, flux vendeur ≥ 55 % exigé dans _take) ; les autres types de short passent ; contre-tendance refusée.
+  - BTC plat ou dans le sens sur 1 min : plus aucun veto, même si BTC est haussier sur 1 h.
+  - Pas de bougies 1 min BTC : ancien calcul 1 h.
+- **Non modifié** : la **note** (±8 / −15 points selon BTC sur 1 h), qui peut encore faire passer un trade sous le seuil de note ; le filtre « short_btc_soft_max » reste pour l'ancienne échelle.
+- **À surveiller** : nombre de refus « BTC … sur 1 min » dans le journal et trades de corrélation prise contre BTC.
+- Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
+
+## v4.549 — Même base de temps entre la décision et ses vétos / sa note : le H1 n'est plus utilisé au Scalp
+- **Principe validé** : un trade décidé sur 1 min / 5 min se valide avec des vétos et une note à la même échelle (1 min, 5 min, 15 min), pas avec le H1 (facteur 60). Au Scalp, H1 dans le sens = 45 % de gagnants, H1 neutre = 45 % (539 trades).
+- **Changements (décision, paper et live ; actifs si `SCALP_MOVE1M_ON` = 1, sinon ancien comportement H1)** :
+  1. **Continuation / tendance soutenue** : le veto « H1 contraire » est remplacé par un veto « mouvement 1 min contraire » (le prix va franchement contre le trade sur 5 min : net ≤ −0,05 % dans le sens du trade). S'applique aux suiveurs.
+  2. **Note** : les points du H1 (+12 dans le sens, −15 / −25 contre, −8 pour un short contre H1 haussier) sont remplacés par ceux du mouvement 1 min (enclenché +12, naissant +6, contraire −15, cassure −25) ; les points BTC (+8 / −15) se lisent sur BTC 1 min (même échelle que les vétos de la v4.548).
+  3. **Rebond / cassure** : la tendance qui décide « dans le sens / ambigu / contraire » est maintenant celle de 15 min (le H1 n'est plus consulté dans `move_gate`) ; 15 min contraire → sécurités de contre-tendance habituelles en plus du mouvement 1 min.
+- **Non modifié (à savoir)** : (a) la règle v4.545 « marché dispersé + H1 déjà orienté → pas de rebond » (basée sur les données, 24 trades, 12 % de gagnants) ; (b) la zone H1 (support / résistance) et la pente 1 h de certains sous-modes de continuation ; (c) le H1 reste enregistré (CSV `tend_h1`, `tend_15m`) comme information. Pas de coupe-circuit BTC 1 h (décision : il bloquerait une base rapide par une base lente).
+- **À surveiller** : nombre de refus « mouvement 1 min contraire » et de continuations prises quand le H1 est contraire (colonne `tend_h1`).
+- Fichiers : scalp_crypto.py, bot_engine.py, index.html, index_src.html, README.md.
