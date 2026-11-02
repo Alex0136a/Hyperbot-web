@@ -1884,3 +1884,10 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Non modifié (à savoir)** : (a) la règle v4.545 « marché dispersé + H1 déjà orienté → pas de rebond » (basée sur les données, 24 trades, 12 % de gagnants) ; (b) la zone H1 (support / résistance) et la pente 1 h de certains sous-modes de continuation ; (c) le H1 reste enregistré (CSV `tend_h1`, `tend_15m`) comme information. Pas de coupe-circuit BTC 1 h (décision : il bloquerait une base rapide par une base lente).
 - **À surveiller** : nombre de refus « mouvement 1 min contraire » et de continuations prises quand le H1 est contraire (colonne `tend_h1`).
 - Fichiers : scalp_crypto.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.550 — Veto H1 rétabli pour la continuation (correction de la v4.549) + mouvement 1 min enregistré pour la continuation
+- **Constat (nuit du 01/11 23:50 au 02/11 08:35, 44 trades Scalp paper, net −0,54 $)** : 7 continuations LONG prises contre un H1 baissier (veto H1 remplacé par le veto 1 min en v4.549) : 0 gagnant, −1,14 $ (2 stop loss, 5 durée max), pendant que le panier baissait de 0,8 à 1,4 % sur 2 h. Avant la v4.549, le veto H1 existait suite au constat du 30/10 : 14 longs de continuation contre un H1 baissier = 2 gagnants, −2,34 $.
+- **Erreur de la v4.549** : la continuation se décide sur 2 à 3 heures de tendance (mouvement 2 h, tendance 3 h sur bougies 5 min) ; le H1 est donc sa base de temps naturelle. Le principe « même base de temps » s'applique au rebond (décidé sur le 5 min / 1 min), pas à la continuation.
+- **Changement (décision, paper et live)** : continuation et tendance soutenue refusées quand le H1 est contraire (`SCALP_CONT_H1_BLOCK` = 1, comme avant la v4.549), EN PLUS du veto « mouvement 1 min contraire » de la v4.549. Rebonds, cassures, note (points du mouvement 1 min), vétos BTC 1 min : inchangés.
+- **Observation** : le mouvement 1 min (`mvt1m_etat`, `mvt1m_net_pct`, `mvt1m_eff`) est maintenant enregistré aussi pour les continuations et les tendances soutenues (absent cette nuit).
+- Fichiers : scalp_crypto.py, bot_engine.py, index.html, index_src.html, README.md.

@@ -532,7 +532,7 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False, c1
             return None, "15 min pas dans le sens"
         sg = 1 if side == "long" else -1
         t1h = mtf.trend(c1h)[0]
-        if mv1 is None and ((side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere")):
+        if (side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere"):      # v4.550 : le H1 est la base de temps de la continuation (tendance 2-3 h)
             return None, f"H1 contraire ({t1h})"
         nb_s = max(int(K["cont_slope_bars"]), 6)
         sl_ = mtf.slope_features(c1h, n=nb_s, lookback=max(48, nb_s))
@@ -545,13 +545,14 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False, c1
         if r2 < r2_need:
             return None, f"pente 1 h irrégulière (R² {r2:.2f} < {r2_need:.2f})"
         ext_ref = e20
-    if mv1 is not None:      # v4.549 : meme base de temps que la decision (1 min) au lieu du H1
+    if K.get("cont_h1_block", 1) and ((side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere")):
+        # v4.550 : veto H1 RETABLI (la continuation se decide sur 2-3 h de tendance : le H1 est sa base de temps) ; le veto 1 min de la v4.549 s ajoute
+        # v4.534 : constat 30/10 : 14 longs de continuation pris H1 baissiere = 2 gagnants, 7 stops, -2,34 $ (0/7 la semaine d avant) ; H1 neutre = 2/2
+        return None, f"continuation {side} refusée : H1 {t1h} (contraire)"
+    if mv1 is not None:      # v4.549 : en plus, mouvement 1 min contraire = repli / retournement en cours
         why_mv = mv_veto(mv1, side, K)
         if why_mv:
             return None, f"continuation {side} refusée : {why_mv}"
-    elif K.get("cont_h1_block", 1) and ((side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere")):
-        # v4.534 : constat 30/10 : 14 longs de continuation pris H1 baissiere = 2 gagnants, 7 stops, -2,34 $ (0/7 la semaine d avant) ; H1 neutre = 2/2
-        return None, f"continuation {side} refusée : H1 {t1h} (contraire)"
     mv = (price / float(c5[-25]["c"]) - 1) * 100 * sg
     mv_need = K["cont_min_move_pct"] * (0.5 if follower else 1.0)
     if mv < mv_need:
@@ -653,6 +654,9 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False, c1
            "ctx": {"flow_buy": (round(flow["buy_ratio"], 3) if flow else None), "flow_n": (flow.get("n") if flow else None),
                    "t1h": t1h, "m15": m15, "btc1h": (round(btc_chg, 3) if btc_chg is not None else None)},
            "cont": {"sub": sub, "early": early, "court": short, "mv_pct": round(mv, 3), "r2": round(r2, 3), "pente_atr": round(pa, 3), "ext_atr": round(ext, 2), **extra}}
+    if mv1 is not None:      # v4.550 : mouvement 1 min enregistre aussi pour la continuation (colonnes CSV mvt1m_*)
+        _st, _nt = move_state(mv1, sig["side"], K)
+        sig["move1m"] = {"etat": _st, "net": _nt, "eff": mv1["eff"], "acc": mv1["acc"]}
     return sig, "ok"
 
 
@@ -757,12 +761,12 @@ def sustained_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=Fals
     sg = 1 if sd == "long" else -1
     t1h_ = mtf.trend(c1h)[0]
     mv1 = move_1m(c1) if (K.get("move1m_on", 1) and c1) else None      # v4.549 : mouvement 1 min a la place du veto H1
+    if K.get("cont_h1_block", 1) and ((sd == "long" and t1h_ == "baissiere") or (sd == "short" and t1h_ == "haussiere")):      # v4.550 : veto H1 retabli
+        return None, f"continuation {sd} refusée : H1 {t1h_} (contraire)"
     if mv1 is not None:
         why_mv = mv_veto(mv1, sd, K)
         if why_mv:
             return None, f"continuation {sd} refusée : {why_mv}"
-    elif K.get("cont_h1_block", 1) and ((sd == "long" and t1h_ == "baissiere") or (sd == "short" and t1h_ == "haussiere")):
-        return None, f"continuation {sd} refusée : H1 {t1h_} (contraire)"
     closes5 = [float(x["c"]) for x in c5]
     ref = mtf.ema(closes5, 36) or price
     ext = (price - ref) / a15 * sg
@@ -813,6 +817,9 @@ def sustained_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=Fals
                    "t1h": t1h_, "m15": f"soutenue {mins} min", "btc1h": (round(btc_chg, 3) if btc_chg is not None else None)},
            "cont": {"sub": "soutenue", "early": False, "court": True, "mv_pct": round(mv2h, 3), "r2": round(r2, 3), "pente_atr": round(pa, 3),
                     "ext_atr": round(ext, 2), "sus_mv_pct": m["mv_pct"], "sus_er": m["er"], "sus_pb_atr": m["pb_atr"], "sus_noise_pct": m["noise_pct"], "sus_noise_atr": m["noise_atr"], "sus_min": mins}}
+    if mv1 is not None:      # v4.550 : mouvement 1 min enregistre aussi pour la continuation (colonnes CSV mvt1m_*)
+        _st, _nt = move_state(mv1, sig["side"], K)
+        sig["move1m"] = {"etat": _st, "net": _nt, "eff": mv1["eff"], "acc": mv1["acc"]}
     return sig, "ok"
 
 
