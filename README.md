@@ -1898,3 +1898,9 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Changement (décision, paper et live)** : tous les modes (rebond, cassure, continuation, tendance soutenue, oscillation), refus d'entrée si `panier_2h` dans le sens du trade ≥ `SCALP_BASKET_CHASE_PCT` (0,30 %). Interrupteur `SCALP_BASKET_CHASE_ON` (1 = actif, 0 = désactivé). Panier inconnu : pas de blocage. Journal : « le panier a déjà bougé de x % en 2 h dans le sens du trade… ».
 - **Effet attendu** : environ la moitié des trades en moins (signaux déjà en fin de mouvement du groupe) ; les durées max ne sont pas concernées (elles se concentrent hors de ce groupe : 27 % contre 11 %).
 - Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
+
+## v4.552 — Suivi après sortie des SCALP DUREE MAX (observation seule)
+- **Demande** : savoir si Scalp sort trop tôt (stop / durée) ou a raison de sortir. Le suivi existait pour les STOP LOSS (v4.538) ; il manquait la durée max (121 trades, −25,3 $, pic moyen 0,26 %).
+- **Changement (observation seule, aucune règle de décision)** : les sorties « SCALP DUREE MAX » de Scalp reçoivent le même suivi que les stops : prix 1 h et 3 h après la sortie (retour à l'entrée, retour à l'objectif, résultat avec stop ×1,5 / ×2). Note `post_stop.kind = "durée"` ; ces trades sont comptés à part (`duree_post`) pour ne pas mélanger avec la carte des stops loss.
+- **CSV** : mêmes colonnes `stop_h1_*`, `stop_h3_*` (…) ; la colonne `motif` distingue STOP LOSS et SCALP DUREE MAX. Les colonnes se remplissent 3 h après la sortie.
+- Fichiers : scalp_crypto.py, bot_engine.py, index.html, index_src.html, README.md (api.py inchangé).

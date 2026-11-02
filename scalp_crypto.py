@@ -1170,8 +1170,9 @@ class ScalpEngine:
                    "neutral": sum(1 for p in pe if p["verdict"] == "neutre"), "avg_delta_pct": (sum(p["delta_pct"] for p in pe) / len(pe)) if pe else None,
                    "sum_delta_pct": sum(p["delta_pct"] for p in pe) if pe else None,
                    "pending": sum(1 for d in be_rows if not (d.get("post_exit") or {}).get("ok")), "total_be": len(be_rows)}
-        stop_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok")]).get("Scalp")      # v4.538
-        out = {"mode": mode, "dims": dims, "be_post": be_post, "stop_post": stop_post, "shadow": self.shadow_summary(), "lab": self.lab_summary(rows), "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
+        stop_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok") and (d.get("post_stop") or {}).get("kind") != "durée"]).get("Scalp")      # v4.538
+        duree_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok") and (d.get("post_stop") or {}).get("kind") == "durée"]).get("Scalp")      # v4.552
+        out = {"mode": mode, "dims": dims, "be_post": be_post, "stop_post": stop_post, "duree_post": duree_post, "shadow": self.shadow_summary(), "lab": self.lab_summary(rows), "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
                "by_hour": {h: agg(v) for h, v in sorted(by_hour.items())}, "last_closed": rows[0].get("closed_at") if rows else None}
         self._stats_cache = (time.time(), mode, out)
         return out
@@ -1254,7 +1255,7 @@ class ScalpEngine:
             swing = d.get("strategy_source") == "swing_support"
             if not (swing or d.get("strategy_source") == STRATEGY or d.get("zone_order")):
                 continue
-            if reason.startswith("STOP LOSS"):
+            if reason.startswith("STOP LOSS") or (not swing and reason.startswith("SCALP DUREE MAX")):      # v4.552 : + durée max (Scalp)
                 windows, mults = (PS_WINDOWS_SWING if swing else PS_WINDOWS), PS_MULTS
             elif swing and reason.startswith("MANUEL"):
                 sg = 1 if d.get("direction") == "long" else -1
@@ -1274,7 +1275,7 @@ class ScalpEngine:
                 cs = [c for c in self._candles_range(d["ticker"], ca, min(ca + win + 300, now)) if ca <= c["t"] / 1000.0 < ca + win]
                 ps = post_stop_calc(d, cs, ca, windows, mults) if len(cs) >= int(0.8 * win / 300) else {"ok": False, "fail": ps.get("fail", 0) + 1, "why": f"{len(cs)} bougies"}
                 if ps.get("ok"):
-                    ps["kind"] = "manuel" if reason.startswith("MANUEL") else "stop"
+                    ps["kind"] = "manuel" if reason.startswith("MANUEL") else ("durée" if reason.startswith("SCALP DUREE MAX") else "stop")
             except Exception as e:
                 ps = {"ok": False, "fail": ps.get("fail", 0) + 1, "why": f"{type(e).__name__}"}
             d["post_stop"] = ps
