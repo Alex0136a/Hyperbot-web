@@ -2935,6 +2935,28 @@ class ScalpEngine:
             return None
         return None
 
+    def _chase_block(self, sig):
+        """v4.551 : si le panier d actifs a deja bouge d au moins SCALP_BASKET_CHASE_PCT (0,30 %) en 2 h DANS LE SENS du trade, l entree court apres le
+        mouvement du groupe. Constat : 209 trades (19/10 -> 01/11) : 104 trades dans ce cas, -6,75 $ (-0,065 $ / trade) contre +1,60 $ pour les autres ;
+        nuit du 01-02/11 (58 trades) : 21 trades, -1,11 $ (-0,053 $ / trade). Tous les modes, paper et live ; SCALP_BASKET_CHASE_ON = 0 desactive.
+        Panier inconnu : on ne bloque pas."""
+        try:
+            c = self.cfg
+            if not int(c.get("SCALP_BASKET_CHASE_ON", 1)):
+                return None
+            b2 = self._regime().get("basket_2h")
+            if b2 is None:
+                return None
+            thr = float(c.get("SCALP_BASKET_CHASE_PCT", 0.30))
+            sg = 1 if sig.get("side") == "long" else -1
+            sig["basket2h_chase"] = round(sg * float(b2), 3)
+            if sg * float(b2) >= thr:
+                return (f"le panier a déjà bougé de {float(b2):+.2f} % en 2 h dans le sens du trade (≥ {thr:g} %) : on ne court pas après le mouvement du groupe "
+                        "— on attend un repli ou un nouveau départ")
+        except Exception:
+            return None
+        return None
+
     def _calm_block(self, t, sig):
         """v4.542 : pause « pas de mouvement » lue sur les bougies 1 min (remplace le seuil d ATR 15 min de la v4.541, en retard sur le debut
         d un mouvement). Fenetre = les 5 dernieres bougies 1 min ; reference = la bougie 1 min habituelle des 30 precedentes.
@@ -2989,6 +3011,10 @@ class ScalpEngine:
         why_goal = self._goal_refusal(t, sig, mode)          # v4.460 : objectif du jour atteint -> entrees restreintes
         if why_goal:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_goal}")
+            return
+        why_chase = self._chase_block(sig)      # v4.551 : pas d entree quand le panier a deja bouge dans le sens du trade (on courrait apres le mouvement)
+        if why_chase:
+            self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_chase}")
             return
         why_calm = self._calm_block(t, sig)      # v4.541 : pause tant que le marche de l actif est trop calme (tous les modes)
         if why_calm:

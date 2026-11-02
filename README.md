@@ -1891,3 +1891,10 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Changement (décision, paper et live)** : continuation et tendance soutenue refusées quand le H1 est contraire (`SCALP_CONT_H1_BLOCK` = 1, comme avant la v4.549), EN PLUS du veto « mouvement 1 min contraire » de la v4.549. Rebonds, cassures, note (points du mouvement 1 min), vétos BTC 1 min : inchangés.
 - **Observation** : le mouvement 1 min (`mvt1m_etat`, `mvt1m_net_pct`, `mvt1m_eff`) est maintenant enregistré aussi pour les continuations et les tendances soutenues (absent cette nuit).
 - Fichiers : scalp_crypto.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.551 — Ne pas courir après le mouvement du panier (tous les modes)
+- **Demande** : validée par l'utilisateur après l'analyse de la nuit 01-02/11 (58 trades, −2,52 $).
+- **Constat** (267 trades Scalp paper dont la variation du panier sur 2 h est connue) : quand le panier d'actifs avait déjà bougé d'au moins 0,3 % dans le sens du trade, 125 trades, −7,86 $ (−0,063 $ / trade) ; les 142 autres : +0,20 $. Échantillons distincts concordants : 209 trades du 19/10 au 01/11 (104 trades, −6,75 $) et nuit du 01-02/11 (21 trades, −1,11 $). Sorties des trades « panier déjà parti » : seuil de rentabilité 33 % (13 % pour les autres), stop loss 34 % (22 %), trailing TP 22 % (36 %) ; 41 des 59 sorties au seuil de rentabilité viennent de ce groupe.
+- **Changement (décision, paper et live)** : tous les modes (rebond, cassure, continuation, tendance soutenue, oscillation), refus d'entrée si `panier_2h` dans le sens du trade ≥ `SCALP_BASKET_CHASE_PCT` (0,30 %). Interrupteur `SCALP_BASKET_CHASE_ON` (1 = actif, 0 = désactivé). Panier inconnu : pas de blocage. Journal : « le panier a déjà bougé de x % en 2 h dans le sens du trade… ».
+- **Effet attendu** : environ la moitié des trades en moins (signaux déjà en fin de mouvement du groupe) ; les durées max ne sont pas concernées (elles se concentrent hors de ce groupe : 27 % contre 11 %).
+- Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
