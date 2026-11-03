@@ -2952,6 +2952,14 @@ class ScalpEngine:
             sg = 1 if sig.get("side") == "long" else -1
             sig["basket2h_chase"] = round(sg * float(b2), 3)
             if sg * float(b2) >= thr:
+                if int(c.get("SCALP_CHASE_TREND_EXEMPT_ON", 1)):      # v4.553 : tendance claire = on ne bloque pas
+                    reg = self._regime()
+                    t1 = (sig.get("ctx") or {}).get("t1h")
+                    er4 = reg.get("basket_er_4h")
+                    aligned = (t1 == "haussiere" and sg > 0) or (t1 == "baissiere" and sg < 0)
+                    if aligned and er4 is not None and float(er4) >= float(c.get("SCALP_CHASE_TREND_ER", 0.10)):
+                        sig["chase_exempt"] = f"tendance claire : H1 {t1}, panier directionnel (ER 4 h {float(er4):.2f})"
+                        return None
                 return (f"le panier a déjà bougé de {float(b2):+.2f} % en 2 h dans le sens du trade (≥ {thr:g} %) : on ne court pas après le mouvement du groupe "
                         "— on attend un repli ou un nouveau départ")
         except Exception:

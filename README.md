@@ -1904,3 +1904,9 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Changement (observation seule, aucune règle de décision)** : les sorties « SCALP DUREE MAX » de Scalp reçoivent le même suivi que les stops : prix 1 h et 3 h après la sortie (retour à l'entrée, retour à l'objectif, résultat avec stop ×1,5 / ×2). Note `post_stop.kind = "durée"` ; ces trades sont comptés à part (`duree_post`) pour ne pas mélanger avec la carte des stops loss.
 - **CSV** : mêmes colonnes `stop_h1_*`, `stop_h3_*` (…) ; la colonne `motif` distingue STOP LOSS et SCALP DUREE MAX. Les colonnes se remplissent 3 h après la sortie.
 - Fichiers : scalp_crypto.py, bot_engine.py, index.html, index_src.html, README.md (api.py inchangé).
+
+## v4.553 — Règle « panier déjà bougé » : exemptée quand la tendance est claire
+- **Demande** : l'utilisateur veut que les restrictions donnent la priorité à la tendance (baisse de 16 h du 01-02/11).
+- **Constat** (276 trades Scalp, panier connu) : panier déjà bougé ≥ 0,3 % dans le sens du trade, H1 pas dans le sens : 42 trades, −5,35 $ ; H1 dans le sens et panier directionnel (ER 4 h ≥ 0,10, médiane de l'échantillon) : 54 trades, 46 % gagnants, +0,59 $ ; meilleur profil : H1 dans le sens et panier pas encore bougé : 84 trades, +4,82 $. Seuil 0,10 tiré de la médiane : à valider.
+- **Changement (décision, paper et live)** : la règle v4.551 ne refuse plus si H1 est dans le sens du trade ET efficacité du panier sur 4 h ≥ `SCALP_CHASE_TREND_ER` (0,10). Ces trades portent `chase_exempt` dans le signal ; identifiables dans le CSV par `panier_2h_pct` ≥ 0,3 dans le sens du trade. `SCALP_CHASE_TREND_EXEMPT_ON` = 0 revient à la v4.551.
+- Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
