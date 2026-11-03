@@ -212,6 +212,41 @@ def candle_signal(candles, direction):
     return None, None
 
 
+def rejection_1m(c1, direction, zone, tol, now, n=15, wick_frac=0.5, min_rng_mult=0.8):
+    """v4.558 — REJET CONFIRME SUR BOUGIES 1 MIN dans une zone (Swing FX). Pur.
+    c1 : bougies 1 min (anciennes d abord, t en ms) ; direction : "short" (rejet d une resistance) ou "long" (rejet d un support) ;
+    zone : {"low", "high"} ; tol : tolerance de contact ; now : heure (s). Seules les bougies CLOTUREES comptent.
+    Rejet = sur les n dernieres bougies, la bougie qui va le plus loin dans la zone a une longue meche cote zone (>= wick_frac de sa hauteur,
+    hauteur >= min_rng_mult x la hauteur habituelle) ET la derniere bougie cloturee confirme : cloture sous le bas (short) / au-dessus du haut (long) de la
+    bougie de rejet. Retourne (nom, extreme, age_s) ou (None, None, None). L extreme sert de base au stop (au-dela du rejet, pas au-dela de toute la zone)."""
+    now_ms = now * 1000.0
+    cs = [c for c in (c1 or []) if c["t"] + 60000 <= now_ms]
+    if len(cs) < n + 5:
+        return None, None, None
+    win = cs[-n:]
+    rngs = sorted(c["h"] - c["l"] for c in cs[-40:])
+    med = rngs[len(rngs) // 2]
+    last = win[-1]
+    if direction == "short":
+        rej = max(win, key=lambda c: c["h"])
+        ext = rej["h"]
+        if ext < zone["low"] - tol or ext > zone["high"] + tol:
+            return None, None, None
+        wick = rej["h"] - max(rej["o"], rej["c"])
+        confirmed = last["c"] < rej["l"]
+    else:
+        rej = min(win, key=lambda c: c["l"])
+        ext = rej["l"]
+        if ext > zone["high"] + tol or ext < zone["low"] - tol:
+            return None, None, None
+        wick = min(rej["o"], rej["c"]) - rej["l"]
+        confirmed = last["c"] > rej["h"]
+    rng = rej["h"] - rej["l"]
+    if rng <= 0 or rng < min_rng_mult * med or wick < wick_frac * rng or rej is last or not confirmed:
+        return None, None, None
+    return "rejet 1 min", ext, now - (last["t"] / 1000.0 + 60)
+
+
 def plan_trade(direction, price, zone, target_zone, pattern_extreme, major_atr, sl_buffer_atr=0.15):
     """SL au-dela de la zone ET de l extreme du motif (+ marge), objectif sur
     la zone opposee. Retourne dict (sl, tp, risk_pct, reward_pct, rr)."""

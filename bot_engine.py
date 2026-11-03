@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.557"
+BOT_VERSION = "4.558"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -1478,6 +1478,9 @@ PROFILE_SWING = {
     "FXSWING_MAX_HOLD_DAYS": 10,
     "FXSWING_COOLDOWN_SEC": 14400,
     "FXSWING_DOUBLE_PATTERN": 1,
+    "FXSWING_1M_ON": 1,                   # v4.558 : second declencheur = rejet confirme sur bougies 1 min dans la zone Daily (a cote de la figure H4)
+    "FXSWING_1M_MAX_AGE_SEC": 300,        # ... le rejet doit dater de moins de N secondes
+    "FXSWING_1M_BARS": 15,                # ... fenetre de bougies 1 min cherchee
     "FXSWING_FLOW_VETO": 1,
     # ── v4.362 — SWING SUPPORT (crypto, PAPER uniquement ; eteint par defaut) ──
     # Hypothese : tendance Daily haussiere + support (retest tenu sur les dernieres bougies 1 h, ou balayage de liquidite) -> objectif
@@ -11086,11 +11089,19 @@ class BotEngine:
         name, extreme = mtf.candle_signal(lower, side)
         if not name and cfg.get("FXSWING_DOUBLE_PATTERN", 1):
             name, extreme = mtf.double_pattern(lower, side)
+        via_1m, age_1m = False, None
+        if not name and int(cfg.get("FXSWING_1M_ON", 1)):      # v4.558 : rejet confirme sur bougies 1 min dans la zone Daily
+            try:
+                c1m = self._mtf_candles(ticker, "1m", 40)
+                name, extreme, age_1m = mtf.rejection_1m(c1m, side, zone, v["tolerance"], now, n=int(cfg.get("FXSWING_1M_BARS", 15)))
+            except Exception:
+                name, extreme, age_1m = None, None, None
+            via_1m = bool(name)
         if not name:
-            return None, f"prix dans la zone de {kind} Daily {self._zone_txt(zone)} — attente d un signal de bougie ou de figure H4", False
-        age = now - (lower[-1]["t"] / 1000 + self._TF_SEC.get(v["lower_tf"], 14400))
+            return None, f"prix dans la zone de {kind} Daily {self._zone_txt(zone)} — attente d un signal de bougie ou de figure H4 (ou d un rejet confirme sur 1 min)", False
+        age = age_1m if via_1m else now - (lower[-1]["t"] / 1000 + self._TF_SEC.get(v["lower_tf"], 14400))
         info = (zone, target, extreme, name, age)
-        if age > K["max_age"]:
+        if age > (float(cfg.get("FXSWING_1M_MAX_AGE_SEC", 300)) if via_1m else K["max_age"]):
             if (long_side and extreme <= zone["high"] + v["tolerance"]) or (not long_side and extreme >= zone["low"] - v["tolerance"]):
                 self._swing_log("forex_swing", ticker, long_side, price, zone, target, extreme, v, name, lower,
                                 "filtre : signal hors fenetre d entree (trop ancien)", age=age, force=True)
@@ -11109,7 +11120,8 @@ class BotEngine:
                 self._swing_log("forex_swing", ticker, long_side, price, zone, target, extreme, v, name, lower,
                                 "filtre : flux de transactions hostile", flow=flow, age=age, force=True)
                 return None, f"flux de transactions hostile ({flow:+.2f})", True
-        plan = mtf.plan_trade(side, price, zone, target, extreme, v["atr"])
+        # v4.558 : rejet 1 min = stop juste au-dela du rejet (extreme + marge), pas au-dela de toute la zone Daily (souvent large)
+        plan = mtf.plan_trade(side, price, ({"low": extreme, "high": extreme} if via_1m else zone), target, extreme, v["atr"])
         if not plan:
             self._swing_log("forex_swing", ticker, long_side, price, zone, target, extreme, v, name, lower,
                             "filtre : plan de trade invalide", flow=flow, age=age, force=True)
