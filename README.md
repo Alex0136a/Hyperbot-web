@@ -1945,3 +1945,9 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Changement (décision, paper et live)** : `SCALP_H4_VETO_ON` (1). Une continuation ou une cassure n'est pas ouverte contre un H4 clair de l'actif (long en H4 baissier, short en H4 haussier), sauf si le Daily est dans le sens du trade. Rebond exempté (contre-tendance par nature). H4 neutre ou inconnu : pas de blocage. Ne ferme aucun trade ouvert. Refus affiché dans le journal : « H4 … à contre-sens du trade ». `SCALP_H4_VETO_ON` = 0 revient à la v4.558.
 - Non mesuré par mode : les 25 trades contre H4 ne sont pas séparés rebond / cassure / continuation. À juger sur ~60 trades.
 - Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
+
+## v4.560 — Scalp : sortie « sans progrès »
+- **Demande** : s'occuper des pertes que le veto H4 ne voit pas. Constat (650 trades paper, veto H4 retiré) : brut +8 $, frais 39 $ ; trailing/TP +81 $ ; stop loss 200 trades −85 $ dont 93 jamais partis du bon côté (pic < 0,1 %, −38,6 $) et 56 restés > 10 min dans le mauvais sens (−25 $) ; durée max 130 trades −26 $ dont 52 à pic < 0,2 % (−15,8 $).
+- **Changement (décision, paper et live)** : `SCALP_NOPROG_ON` (1), `SCALP_NOPROG_MIN` (15), `SCALP_NOPROG_PEAK_PCT` (0,10). Un trade Scalp ouvert depuis ≥ 15 min dont le gain maximal est resté < 0,10 % (en prix) est fermé. Sortie « SCALP SANS PROGRES » (avant le stop et la durée max). Ne s'applique pas aux trades dont le suiveur est enclenché. `SCALP_NOPROG_ON` = 0 revient à la v4.559.
+- **Risque non mesurable sur l'historique** : les trades sous 0,10 % à 15 min qui seraient devenus gagnants sont coupés aussi. Mesure : chaque sortie sans progrès est suivie après coup (que fait le prix ensuite ?), bloc « SORTIE SANS PROGRÈS DU SCALP » dans les statistiques Scalp (`noprog_post`, ~1 h de latence).
+- Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.

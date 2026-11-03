@@ -1170,9 +1170,10 @@ class ScalpEngine:
                    "neutral": sum(1 for p in pe if p["verdict"] == "neutre"), "avg_delta_pct": (sum(p["delta_pct"] for p in pe) / len(pe)) if pe else None,
                    "sum_delta_pct": sum(p["delta_pct"] for p in pe) if pe else None,
                    "pending": sum(1 for d in be_rows if not (d.get("post_exit") or {}).get("ok")), "total_be": len(be_rows)}
-        stop_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok") and (d.get("post_stop") or {}).get("kind") != "durée"]).get("Scalp")      # v4.538
+        stop_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok") and (d.get("post_stop") or {}).get("kind") not in ("durée", "sans progrès")]).get("Scalp")      # v4.538
+        noprog_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok") and (d.get("post_stop") or {}).get("kind") == "sans progrès"]).get("Scalp")      # v4.560
         duree_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok") and (d.get("post_stop") or {}).get("kind") == "durée"]).get("Scalp")      # v4.552
-        out = {"mode": mode, "dims": dims, "be_post": be_post, "stop_post": stop_post, "duree_post": duree_post, "shadow": self.shadow_summary(), "lab": self.lab_summary(rows), "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
+        out = {"mode": mode, "dims": dims, "be_post": be_post, "stop_post": stop_post, "duree_post": duree_post, "noprog_post": noprog_post, "shadow": self.shadow_summary(), "lab": self.lab_summary(rows), "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
                "by_hour": {h: agg(v) for h, v in sorted(by_hour.items())}, "last_closed": rows[0].get("closed_at") if rows else None}
         self._stats_cache = (time.time(), mode, out)
         return out
@@ -1255,7 +1256,7 @@ class ScalpEngine:
             swing = d.get("strategy_source") == "swing_support"
             if not (swing or d.get("strategy_source") == STRATEGY or d.get("zone_order")):
                 continue
-            if reason.startswith("STOP LOSS") or (not swing and reason.startswith("SCALP DUREE MAX")):      # v4.552 : + durée max (Scalp)
+            if reason.startswith("STOP LOSS") or (not swing and (reason.startswith("SCALP DUREE MAX") or reason.startswith("SCALP SANS PROGRES"))):      # v4.552 : + durée max (Scalp)
                 windows, mults = (PS_WINDOWS_SWING if swing else PS_WINDOWS), PS_MULTS
             elif swing and reason.startswith("MANUEL"):
                 sg = 1 if d.get("direction") == "long" else -1
@@ -1275,7 +1276,7 @@ class ScalpEngine:
                 cs = [c for c in self._candles_range(d["ticker"], ca, min(ca + win + 300, now)) if ca <= c["t"] / 1000.0 < ca + win]
                 ps = post_stop_calc(d, cs, ca, windows, mults) if len(cs) >= int(0.8 * win / 300) else {"ok": False, "fail": ps.get("fail", 0) + 1, "why": f"{len(cs)} bougies"}
                 if ps.get("ok"):
-                    ps["kind"] = "manuel" if reason.startswith("MANUEL") else ("durée" if reason.startswith("SCALP DUREE MAX") else "stop")
+                    ps["kind"] = "manuel" if reason.startswith("MANUEL") else ("durée" if reason.startswith("SCALP DUREE MAX") else ("sans progrès" if reason.startswith("SCALP SANS PROGRES") else "stop"))
             except Exception as e:
                 ps = {"ok": False, "fail": ps.get("fail", 0) + 1, "why": f"{type(e).__name__}"}
             d["post_stop"] = ps
@@ -1542,7 +1543,7 @@ class ScalpEngine:
 
     def _manage_open(self, now):
         mx_cfg = float(self.cfg.get("SCALP_MAX_HOLD_MIN", 90)) * 60
-        if mx_cfg <= 0 and not int(self.cfg.get("SCALP_CORR_BASKET_EXIT_ON", 0)) and not int(self.cfg.get("SCALP_OSC_ON", 1)) and not int(self.cfg.get("SCALP_CONT_ON", 1)):
+        if mx_cfg <= 0 and not int(self.cfg.get("SCALP_NOPROG_ON", 1)) and not int(self.cfg.get("SCALP_CORR_BASKET_EXIT_ON", 0)) and not int(self.cfg.get("SCALP_OSC_ON", 1)) and not int(self.cfg.get("SCALP_CONT_ON", 1)):
             return
         for it in list(self.manual.items.values()):
             if it.get("strategy_source") == STRATEGY and it.get("status") == "open":
@@ -1566,6 +1567,17 @@ class ScalpEngine:
                     self.last_error = f"fin de zone : {type(e).__name__}: {e}"
                 if it.get("tp_run_armed"):      # v4.434 : objectif atteint, le trade court avec son stop suiveur : la duree max ne s applique plus
                     continue
+                try:      # v4.560 : sortie SANS PROGRES : le trade n a jamais atteint le pic minimal apres N minutes -> on ferme (avant le stop ou la duree max)
+                    npm = float(self.cfg.get("SCALP_NOPROG_MIN", 15) or 0)
+                    npp = float(self.cfg.get("SCALP_NOPROG_PEAK_PCT", 0.10) or 0)
+                    if int(self.cfg.get("SCALP_NOPROG_ON", 1)) and npm > 0 and npp > 0 and now - float(it.get("opened_at") or now) >= npm * 60 \
+                            and float(it.get("peak_pct") or 0) < npp:
+                        pk_ = float(it.get("peak_pct") or 0)
+                        self.manual.close(it["id"], "SCALP SANS PROGRES")
+                        self._ev("sortie", it["ticker"], f"#{it['id']} fermé : sans progrès — après {npm:g} min le gain maximal est de {pk_:+.2f} % (il faut ≥ {npp:g} %)")
+                        continue
+                except Exception as e:
+                    self.last_error = f"sans progrès : {type(e).__name__}: {e}"
                 if mx > 0 and now - float(it.get("opened_at") or now) > mx:
                     try:
                         if int(self.cfg.get("SCALP_HOLD_RUN_ON", 1)) and self.manual.arm_trail_at_hold(it["id"]):      # v4.531 : en gain a la fin de la duree : le suiveur prend le relais
