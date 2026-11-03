@@ -2966,6 +2966,35 @@ class ScalpEngine:
             return None
         return None
 
+    def _h4_block(self, t, sig):
+        """v4.559 : veto H4. Continuation et cassure ne sont pas ouvertes CONTRE un H4 clair de l actif (long en H4 baissier, short en H4 haussier),
+        sauf si le Daily est dans le sens du trade. Le rebond est exempte (il est contre-tendance par nature). H4 neutre / inconnu : on ne bloque pas.
+        Constat (111 trades paper, 01/11 -> 03/11) : trades contre H4 = 25, 20 % de gagnants, -3,74 $ ; dans le sens = 71, 39 %, -1,13 $.
+        SCALP_H4_VETO_ON = 0 desactive (defaut 1, paper et live)."""
+        try:
+            c = self.cfg
+            if not int(c.get("SCALP_H4_VETO_ON", 1)):
+                return None
+            if sig.get("kind") not in ("continuation", "cassure"):
+                return None
+            price = sig.get("price")
+            if not price:
+                return None
+            sg = 1 if sig.get("side") == "long" else -1
+            tr = self._trend_obs(t, price)
+            h4, d = tr.get("h4"), tr.get("d")
+            sig["h4_veto_obs"] = {"h4": h4, "d": d}
+            against = (h4 == "baissiere" and sg > 0) or (h4 == "haussiere" and sg < 0)
+            if not against:
+                return None
+            if (d == "haussiere" and sg > 0) or (d == "baissiere" and sg < 0):
+                sig["h4_veto_exempt"] = f"Daily {d} dans le sens du trade"
+                return None
+            return (f"H4 {h4} à contre-sens du trade ({sig['kind']}) et Daily {d or 'inconnu'} sans appui — "
+                    "on ne prend pas continuation / cassure contre le H4")
+        except Exception:
+            return None
+
     def _calm_block(self, t, sig):
         """v4.542 : pause « pas de mouvement » lue sur les bougies 1 min (remplace le seuil d ATR 15 min de la v4.541, en retard sur le debut
         d un mouvement). Fenetre = les 5 dernieres bougies 1 min ; reference = la bougie 1 min habituelle des 30 precedentes.
@@ -3028,6 +3057,10 @@ class ScalpEngine:
         why_calm = self._calm_block(t, sig)      # v4.541 : pause tant que le marche de l actif est trop calme (tous les modes)
         if why_calm:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_calm}")
+            return
+        why_h4 = self._h4_block(t, sig)      # v4.559 : pas de continuation / cassure contre un H4 clair (sauf Daily dans le sens du trade)
+        if why_h4:
+            self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_h4}")
             return
         prud = sig.get("prudent_btc")
         if prud is not None:      # v4.497 : short pris alors que BTC monte -> flux vendeur exige
