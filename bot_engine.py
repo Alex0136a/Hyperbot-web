@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.556"
+BOT_VERSION = "4.557"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -295,7 +295,7 @@ CONFIG = {
     "FOREX_DSL_TRAIL_FRACTION": 0.40,
     "FOREX_DSL_WIDE_FROM_PCT": 0.30,      # v4.554 : a partir de ce pic, le suiveur Forex est plus large (laisse respirer le trade)
     "FOREX_DSL_TRAIL_FRACTION_WIDE": 0.60,
-    "PEAK_LOCK_ON": 1, "PEAK_LOCK_ARM_PCT": 1.0, "PEAK_LOCK_FRACTION": 0.8,   # v4.554 : verrou du pic (tous les modes, paper et live depuis la v4.555)     # distance du suiveur >= 40 % du gain maximal (jamais plus serre que la marge ATR)
+    "PEAK_LOCK_ON": 1, "PEAK_LOCK_ARM_PCT": 1.0, "PEAK_LOCK_FRACTION": 0.8, "SCALP_PEAK_LOCK_ARM_PCT": 0, "SCALP_PEAK_LOCK_FRACTION": 0,   # v4.554 : verrou du pic (tous les modes, paper et live depuis la v4.555)     # distance du suiveur >= 40 % du gain maximal (jamais plus serre que la marge ATR)
     "FOREX_DSL_FALLBACK_TOL_PCT": 0.08,   # marge de repli si l ATR n est pas encore disponible
     "FOREX_DSL_EXCHANGE_MIN_STEP_PCT": 0.03,  # live : ne met a jour le SL natif Hyperliquid que si le SL a bouge d au moins ce %
     "FOREX_PURE_FLOOR": 0,                # v4.335 (plancher pur) : desactive tant que le SL dynamique est actif                           # v4.335 : 1 = plancher pur (pic - marge ATR), sans condition de bougie/flux, comme Funding

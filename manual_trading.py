@@ -2372,6 +2372,9 @@ class ManualTrading:
         # de ce gain maximal. Ne fait que monter (long) / descendre (short). v4.555 : memes regles en paper et en live ; trades manuels libres (free) et importes exclus.
         _c = self.cfg
         _pa, _pf = float(_c.get("PEAK_LOCK_ARM_PCT", 1.0) or 0), float(_c.get("PEAK_LOCK_FRACTION", 0.8) or 0)
+        if item.get("strategy_source") == "scalp_crypto":      # v4.557 : reglages propres au Scalp (0 = memes reglages que les autres modes)
+            _pa = float(_c.get("SCALP_PEAK_LOCK_ARM_PCT", 0) or 0) or _pa
+            _pf = float(_c.get("SCALP_PEAK_LOCK_FRACTION", 0) or 0) or _pf
         if (int(_c.get("PEAK_LOCK_ON", 1)) and _pa > 0 and _pf > 0 and item.get("strategy_source") not in ("free", "hl_import")
                 and item["peak_pct"] >= _pa):
             _pl = _pf * item["peak_pct"]

@@ -1927,3 +1927,9 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Constat** (carte du 03/11) : Swing FX « historique 1d insuffisant (0 bougies) » pour xyz:DXY et xyz:KRW ; niveaux 5 min « pas encore chargés » (EMA200 de repli) ; EUR et JPY normaux. Aucun mapping de nom particulier dans le code. La cause (marché récent ? réponse vide de l'API ?) n'est pas établie : le serveur d'analyse ne peut pas joindre Hyperliquid.
 - **Changement (diagnostic, aucune règle de décision)** : quand Hyperliquid renvoie une réponse vide pour > 40 bougies, nouvel essai sur 40 bougies seulement (marché récent : la fenêtre longue démarre avant la mise en service) ; une ligne de log `[MTF] … réponse Hyperliquid vide …` ; le diagnostic précise la cause (« réponse Hyperliquid vide » ou « première bougie le jj/mm/aaaa (marché récent ?) »). Swing FX exige toujours 60 bougies Daily : si le marché a moins de 60 jours, le diagnostic le dira.
 - Fichiers : bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.557 — Verrou du pic propre au Scalp (80 % dès 0,5 %)
+- **Demande** : sur Scalp, armer le verrou plus tôt en gardant 80 % du gain garanti (12 sorties « seuil de rentabilité » cette nuit : pic moyen 0,52 %, sortie moyenne +0,07 %).
+- **Constat** : suppression du seuil de rentabilité écartée (53 sorties suivies : −2,02 $ sans lui). Verrou 80 % dès 0,5 % : +17,3 $ au maximum sur 637 trades, plafond très optimiste (recul de 20 % sur 0,5 % = 0,1 %, du bruit pour le Scalp) ; effet réel inconnu.
+- **Changement (réglages, aucune règle modifiée par défaut)** : `SCALP_PEAK_LOCK_ARM_PCT` et `SCALP_PEAK_LOCK_FRACTION` (0 = mêmes réglages que le verrou général : 1 % / 80 %). Ils ne s'appliquent qu'aux trades Scalp ; Auto zone, Swing Support, Forex gardent le réglage général. À régler : 0,5 et 0,8.
+- Fichiers : bot_engine.py, manual_trading.py, api.py, index.html, index_src.html, README.md.
