@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.555"
+BOT_VERSION = "4.556"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -10996,6 +10996,16 @@ class BotEngine:
             end_ms = int(now * 1000)
             raw = self.info.post("/info", {"type": "candleSnapshot", "req": {
                 "coin": ticker, "interval": tf, "startTime": end_ms - (count + 1) * sec * 1000, "endTime": end_ms}})
+            if (not isinstance(raw, list) or not raw) and count > 40:      # v4.556 : reponse vide (marche recent / HIP-3) : on retente sur une fenetre courte
+                meta["last_raw"] = repr(raw)[:100]
+                if not meta.get("empty_logged"):
+                    meta["empty_logged"] = True
+                    print(f"[MTF] {ticker} {tf} : reponse Hyperliquid vide sur {count} bougies ({meta['last_raw']}) — nouvel essai sur 40 bougies")
+                raw2 = self.info.post("/info", {"type": "candleSnapshot", "req": {
+                    "coin": ticker, "interval": tf, "startTime": end_ms - 41 * sec * 1000, "endTime": end_ms}})
+                if isinstance(raw2, list) and raw2:
+                    raw = raw2
+                    meta["short_window"] = True
             if isinstance(raw, list) and raw:
                 out = [{"t": int(c["t"]), "o": float(c["o"]), "h": float(c["h"]), "l": float(c["l"]),
                         "c": float(c["c"]), "v": float(c.get("v", 0))} for c in raw if int(c.get("T", 0)) <= end_ms]
@@ -12834,7 +12844,10 @@ class BotEngine:
                     ("1h" if cfg.get("MTF_USE_H1", 0) else cfg.get("MTF_LOWER_TF", "15m")))
         major = self._mtf_candles(ticker, major_tf, 260 if major_tf == "4h" else 230, cache_only=cache_only)
         if len(major) < 60:
-            return {"ok": False, "why": f"historique {major_tf} insuffisant ({len(major)} bougies)"}
+            _mm = (getattr(self, "_mtf_meta", None) or {}).get((ticker, major_tf), {})      # v4.556 : cause visible dans le diagnostic
+            _hint = (f" — reponse Hyperliquid vide ({_mm['last_raw']})" if not major and _mm.get("last_raw")
+                     else (f" — premiere bougie le {datetime.fromtimestamp(major[0]['t'] / 1000).strftime('%d/%m/%Y')} (marche recent ?)" if major else ""))
+            return {"ok": False, "why": f"historique {major_tf} insuffisant ({len(major)} bougies){_hint}"}
         # v4.327 — SUR DEMANDE EXPLICITE : la tendance de fond suit le prix LIVE
         # (flux WebSocket) au lieu de la seule derniere cloture H4 (jusqu a 4 h
         # de retard sur un retournement). Le prix courant est ajoute comme
