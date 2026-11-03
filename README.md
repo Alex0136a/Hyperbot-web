@@ -1951,3 +1951,9 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Changement (décision, paper et live)** : `SCALP_NOPROG_ON` (1), `SCALP_NOPROG_MIN` (15), `SCALP_NOPROG_PEAK_PCT` (0,10). Un trade Scalp ouvert depuis ≥ 15 min dont le gain maximal est resté < 0,10 % (en prix) est fermé. Sortie « SCALP SANS PROGRES » (avant le stop et la durée max). Ne s'applique pas aux trades dont le suiveur est enclenché. `SCALP_NOPROG_ON` = 0 revient à la v4.559.
 - **Risque non mesurable sur l'historique** : les trades sous 0,10 % à 15 min qui seraient devenus gagnants sont coupés aussi. Mesure : chaque sortie sans progrès est suivie après coup (que fait le prix ensuite ?), bloc « SORTIE SANS PROGRÈS DU SCALP » dans les statistiques Scalp (`noprog_post`, ~1 h de latence).
 - Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
+
+## v4.561 — Virgule décimale, pic en % de la marge, Auto zone à 65 %
+- **Demande** : (1) `SCALP_PEAK_LOCK_FRACTION` n'acceptait que « 0.65 » (point), pas « 0,65 » ; (2) confusion entre le pic (en % du prix) et le pnl (en % de la marge) sur les cartes ; (3) l'Auto zone garantissait 50 % du pic seulement (HYPE 0,26 $ pour un pic de 0,53 $ ; ETH 0,15 $).
+- **Changements** : (1) la virgule est acceptée dans les champs de la carte Scalp (écran et serveur) ; (2) cartes de trades ouverts : « pic +2,64 % (prix +0,88 %) » (pic ramené à la marge, prix entre parenthèses) ; ligne Scalp de l'historique idem ; « SL dynamique … dès +0,675 % de prix » ; (3) `ZONEORD_LOCK_FRACTION` par défaut 0,65 (une valeur déjà enregistrée dans les réglages reste inchangée). Aucune règle de décision du Scalp touchée.
+- À poser côté réglages : `SCALP_PEAK_LOCK_FRACTION` 0.65 (décision de l'utilisateur, 18:44).
+- Fichiers : api.py, bot_engine.py, index.html, index_src.html, README.md.

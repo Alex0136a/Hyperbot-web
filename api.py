@@ -1046,7 +1046,7 @@ ADVANCED_SETTINGS = {
     "ZONEORD_REC_EXPIRY_H":            {"label": "Ordres sur zone (fenêtre récente) - un ordre non déclenché est annulé après N heures", "default": 4},
     "ZONEORD_LOCK_ON":                 {"label": "Ordres sur zone - verrou progressif du stop : le stop garantit une part du gain maximal (1/0)", "default": 1},
     "ZONEORD_LOCK_ARM_FRAC":           {"label": "Ordres sur zone - le verrou démarre quand le gain maximal atteint cette part de la distance à l'objectif (0,33 = un tiers)", "default": 0.33},
-    "ZONEORD_LOCK_FRACTION":           {"label": "Ordres sur zone - part du gain maximal garantie par le stop (0,5 = la moitié ; entre 0,05 et 0,95)", "default": 0.5},
+    "ZONEORD_LOCK_FRACTION":           {"label": "Ordres sur zone - part du gain maximal garantie par le stop (0,65 = 65 % ; entre 0,05 et 0,95)", "default": 0.65},
     "ZONEORD_HOLD_H":                  {"label": "Ordres sur zone - durée maximale d'une position en heures (0 = illimitée). En gain à l'échéance, le trade n'est pas coupé : le suiveur s'enclenche et il court tant qu'il progresse", "default": 6},
     "ZONEORD_LIVE":                    {"label": "Ordres sur zone - LIVE (1) ou paper (0). À passer à 1 seulement après avoir jugé les résultats paper", "default": 0},
     "ZONEORD_ZONE_MAX_WIDTH_ATR":      {"label": "Ordres sur zone - largeur maximale d'une zone en ATR Daily (évite qu'une consolidation forme une zone géante ; 0 = réglage Top-Down)", "default": 1.0},
@@ -3051,7 +3051,7 @@ def scalp_config(body: ScalpConfigBody, email: str = Depends(require_user)):
             raise HTTPException(400, f"Reglage inconnu : {k}")
         lo, hi, as_int = _SCALP_NUM[k]
         try:
-            x = float(v)
+            x = float(str(v).strip().replace(",", ".")) if isinstance(v, str) else float(v)      # v4.561 : virgule decimale acceptee
         except (TypeError, ValueError):
             raise HTTPException(400, f"{k} : nombre attendu.")
         if not lo <= x <= hi:
