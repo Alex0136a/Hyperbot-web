@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.553"
+BOT_VERSION = "4.555"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -292,7 +292,10 @@ CONFIG = {
     "SCALP_MAX_OPEN": 0, "SCALP_MAX_PER_DAY": 40, "SCALP_DAILY_LOSS_USD": 3.0,
     "SCALP_PAUSE_AFTER_LOSSES": 3, "SCALP_PAUSE_MIN": 60, "SCALP_COOLDOWN_MIN": 30, "SCALP_MAX_HOLD_MIN": 90,
     "ASSET_BT_DAYS": 90,                  # v4.410 : profondeur (jours) de l historique rejoue pour la pre-programmation
-    "FOREX_DSL_TRAIL_FRACTION": 0.40,     # distance du suiveur >= 40 % du gain maximal (jamais plus serre que la marge ATR)
+    "FOREX_DSL_TRAIL_FRACTION": 0.40,
+    "FOREX_DSL_WIDE_FROM_PCT": 0.30,      # v4.554 : a partir de ce pic, le suiveur Forex est plus large (laisse respirer le trade)
+    "FOREX_DSL_TRAIL_FRACTION_WIDE": 0.60,
+    "PEAK_LOCK_ON": 1, "PEAK_LOCK_ARM_PCT": 1.0, "PEAK_LOCK_FRACTION": 0.8,   # v4.554 : verrou du pic (tous les modes, paper et live depuis la v4.555)     # distance du suiveur >= 40 % du gain maximal (jamais plus serre que la marge ATR)
     "FOREX_DSL_FALLBACK_TOL_PCT": 0.08,   # marge de repli si l ATR n est pas encore disponible
     "FOREX_DSL_EXCHANGE_MIN_STEP_PCT": 0.03,  # live : ne met a jour le SL natif Hyperliquid que si le SL a bouge d au moins ce %
     "FOREX_PURE_FLOOR": 0,                # v4.335 (plancher pur) : desactive tant que le SL dynamique est actif                           # v4.335 : 1 = plancher pur (pic - marge ATR), sans condition de bougie/flux, comme Funding
@@ -7525,6 +7528,30 @@ class BotEngine:
         except Exception as e:
             print(f"[FUNDING] Erreur rafraichissement funding rate : {e} — cache precedent conserve.")
 
+    def _peak_lock_close(self, state, pos, price, pnl_pct, ticker, symbol, mode):
+        """v4.554 — VERROU DU PIC : des que le gain maximal atteint PEAK_LOCK_ARM_PCT (1 %), on ne laisse pas le gain retomber sous PEAK_LOCK_FRACTION (80 %)
+        du pic. Memes regles en paper et en live (v4.555). Retourne True si la position a ete fermee (ou si la fermeture est a reessayer)."""
+        cfg = self.cfg
+        if not int(cfg.get("PEAK_LOCK_ON", 1)):
+            return False
+        arm, frac = float(cfg.get("PEAK_LOCK_ARM_PCT", 1.0) or 0), float(cfg.get("PEAK_LOCK_FRACTION", 0.8) or 0)
+        peak = max(pos.get("pk_peak") or 0.0, pnl_pct)
+        pos["pk_peak"] = peak
+        if arm <= 0 or frac <= 0 or peak < arm or pnl_pct > frac * peak:
+            return False
+        _result = self._safe_close_position(state, price, "VERROU DU PIC", ticker, pos, symbol, mode)
+        if _result is None:
+            return True
+        pnl, _, trade = _result
+        self.emit("trade", trade)
+        if pnl > 0:
+            self._register_win(ticker)
+        else:
+            self._register_max_loss(ticker, pos.get("confidence"))
+        self.emit("log", {"msg": f"[{ticker}] 🔒 Verrou du pic : pic +{peak:.2f}% , sortie a +{pnl_pct:.2f}% (>= {frac * 100:.0f} % du pic) @ ${price:.4f} | PnL: ${pnl:.2f}", "level": "info"})
+        self._save_open_positions()
+        return True
+
     def _forex_dynamic_sl(self, state, pos, price, pnl_pct, ticker, symbol, mode):
         """v4.336 — STOP LOSS DYNAMIQUE (Forex). Retourne True si la position a ete
         fermee ce cycle (ou si une fermeture est en cours de nouvelle tentative).
@@ -7546,7 +7573,10 @@ class BotEngine:
                 tol = atr_abs / price * 100 * cfg.get("TTP_ATR_TOLERANCE_MULTIPLIER", 1.0)
             else:
                 tol = cfg.get("FOREX_DSL_FALLBACK_TOL_PCT", 0.08)
-            dist = max(tol, peak * cfg.get("FOREX_DSL_TRAIL_FRACTION", 0.40))
+            _fr = cfg.get("FOREX_DSL_TRAIL_FRACTION", 0.40)
+            if peak >= cfg.get("FOREX_DSL_WIDE_FROM_PCT", 0.30):      # v4.554 : suiveur plus large sur les trades qui marchent
+                _fr = max(_fr, cfg.get("FOREX_DSL_TRAIL_FRACTION_WIDE", 0.60))
+            dist = max(tol, peak * _fr)
             floor_pct = max(cfg.get("FOREX_DSL_FEE_PAD_PCT", 0.10), peak - dist)
             new_sl = entry * (1 + floor_pct / 100) if long_side else entry * (1 - floor_pct / 100)
             cur = pos.get("dsl_sl")
@@ -8510,6 +8540,8 @@ class BotEngine:
                         self._save_open_positions()
                         self._persist_capital_snapshot()
                         return
+            if self._peak_lock_close(state, pos, price, pnl_pct, ticker, symbol, mode):      # v4.554
+                return
             if _forex_dsl_on and self._forex_dynamic_sl(state, pos, price, pnl_pct, ticker, symbol, mode):
                 return
 

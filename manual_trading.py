@@ -2368,6 +2368,21 @@ class ManualTrading:
                     self._log(f"#{item['id']} {item['ticker']} : verrou du SL actif a +{item['peak_pct']:.2f}% — SL {new_sl:.6g} (garantit {lock_pct:.2f}%)", "signal")
                     self._save(item)
                 self._maybe_push_sl(item, new_sl)
+        # v4.554 — VERROU DU PIC (tous les modes, paper) : des que le gain maximal atteint PEAK_LOCK_ARM_PCT (1 %), le stop garantit PEAK_LOCK_FRACTION (80 %)
+        # de ce gain maximal. Ne fait que monter (long) / descendre (short). v4.555 : memes regles en paper et en live ; trades manuels libres (free) et importes exclus.
+        _c = self.cfg
+        _pa, _pf = float(_c.get("PEAK_LOCK_ARM_PCT", 1.0) or 0), float(_c.get("PEAK_LOCK_FRACTION", 0.8) or 0)
+        if (int(_c.get("PEAK_LOCK_ON", 1)) and _pa > 0 and _pf > 0 and item.get("strategy_source") not in ("free", "hl_import")
+                and item["peak_pct"] >= _pa):
+            _pl = _pf * item["peak_pct"]
+            _psl = item["entry_price"] * (1 + sign * _pl / 100)
+            if (sign > 0 and _psl > item["sl_price"] and _psl < price) or (sign < 0 and _psl < item["sl_price"] and _psl > price):
+                item["sl_price"], item["pklock_sl"] = _psl, _psl
+                if not item.get("pklock_active"):
+                    item["pklock_active"] = True
+                    self._log(f"#{item['id']} {item['ticker']} : pic +{item['peak_pct']:.2f}% — verrou du pic, SL {_psl:.6g} (garantit {_pl:.2f}%)", "signal")
+                    self._save(item)
+                self._maybe_push_sl(item, _psl)
         # v4.445 — STOP AU SEUIL DE RENTABILITE : un trade qui a deja gagne be_arm_pct ne peut plus finir en perte (SL = entree + frais)
         _ba = item.get("be_arm_pct")
         if _ba and not item.get("be_done") and item["peak_pct"] >= _ba:
@@ -2432,7 +2447,8 @@ class ManualTrading:
         if _soft_reason:
             reason = _soft_reason
         elif _hit_sl:
-            reason = ("TRAILING TAKE PROFIT (manuel)" if item.get("tp_run_armed")
+            reason = ("VERROU DU PIC (manuel)" if item.get("pklock_sl") and abs(item["sl_price"] - item["pklock_sl"]) <= 1e-9 * item["entry_price"]
+                      else "TRAILING TAKE PROFIT (manuel)" if item.get("tp_run_armed")
                       else "STOP PALIER (manuel)" if float(item.get("ladder_lvl") or 0) > 0 and abs(item["sl_price"] - item["entry_price"] * (1 + sign * float(item["ladder_lvl"]) / 100)) < 1e-9 * item["entry_price"] + 1e-12
                       else "STOP SEUIL RENTABILITE (manuel)" if item.get("be_done")
                       else "STOP DYNAMIQUE (manuel)" if item.get("lock_active")
