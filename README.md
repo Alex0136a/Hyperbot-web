@@ -1957,3 +1957,9 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Changements** : (1) la virgule est acceptée dans les champs de la carte Scalp (écran et serveur) ; (2) cartes de trades ouverts : « pic +2,64 % (prix +0,88 %) » (pic ramené à la marge, prix entre parenthèses) ; ligne Scalp de l'historique idem ; « SL dynamique … dès +0,675 % de prix » ; (3) `ZONEORD_LOCK_FRACTION` par défaut 0,65 (une valeur déjà enregistrée dans les réglages reste inchangée). Aucune règle de décision du Scalp touchée.
 - À poser côté réglages : `SCALP_PEAK_LOCK_FRACTION` 0.65 (décision de l'utilisateur, 18:44).
 - Fichiers : api.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.562 — Ordres programmés : pas de numéro de trade avant l'ouverture + onglet « Ordres non exécutés »
+- **Demande** : les ordres programmés annulés ou expirés ne sont pas des trades qui ont tourné : pas de numéro de trade avant l'ouverture effective ; les ranger dans un onglet à part, archivage conservé.
+- **Changements** : (1) un ordre programmé reçoit un repère provisoire négatif (affiché « P3 », « ordre P3 ») qui ne consomme pas la suite des numéros de trades ; le vrai numéro (#1082…) n'est donné qu'au déclenchement (`db.manual_promote`, `ManualTrading._promote`) ; (2) onglet « ORDRES NON EXÉCUTÉS » dans l'historique : ordres annulés, expirés ou en échec, dont les anciens (par statut), retirés des onglets LIVE / PAPER / SCALP ; (3) historique trié par date. Les compteurs annulés / expirés de l'Auto zone sont inchangés. Aucune règle de décision touchée.
+- **Limites** : les ordres déjà programmés avant la mise à jour gardent leur numéro actuel ; les numéros déjà consommés par d'anciens ordres annulés ne sont pas récupérés ; un ordre déclenché puis en échec à l'ouverture a déjà son numéro de trade.
+- Fichiers : db.py, manual_trading.py, bot_engine.py, index.html, index_src.html, README.md.

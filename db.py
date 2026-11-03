@@ -1101,10 +1101,29 @@ def set_meta(key, value):
 
 
 # ── v4.273 — Trading manuel ──────────────────────────────────────────────
-def manual_insert(status, data):
+def manual_insert(status, data, provisional=False):
+    """provisional=True (v4.562) : ordre PROGRAMME, pas encore un trade -> repere negatif (-1, -2, ...) qui ne consomme PAS la suite des numeros
+    de trades (AUTOINCREMENT). Le vrai numero n est donne qu a l ouverture (manual_promote)."""
+    with _lock, _connect() as conn:
+        if provisional:
+            mn = conn.execute("SELECT MIN(id) FROM manual_trades").fetchone()[0]
+            pid = min(-1, (mn if mn is not None else 0) - 1)
+            conn.execute("INSERT INTO manual_trades (id, status, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                         (pid, status, json.dumps(data), now_iso(), now_iso()))
+            conn.commit()
+            return pid
+        cur = conn.execute("INSERT INTO manual_trades (status, data, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                           (status, json.dumps(data), now_iso(), now_iso()))
+        conn.commit()
+        return cur.lastrowid
+
+
+def manual_promote(old_id, status, data):
+    """v4.562 : un ordre programme se declenche -> il recoit son numero de trade (nouvelle ligne) et son repere provisoire disparait."""
     with _lock, _connect() as conn:
         cur = conn.execute("INSERT INTO manual_trades (status, data, created_at, updated_at) VALUES (?, ?, ?, ?)",
                            (status, json.dumps(data), now_iso(), now_iso()))
+        conn.execute("DELETE FROM manual_trades WHERE id=?", (old_id,))
         conn.commit()
         return cur.lastrowid
 

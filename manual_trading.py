@@ -26,6 +26,7 @@ En perp live, le SL choisi est aussi pose en ORDRE NATIF sur Hyperliquid
 (protection meme si le bot est arrete). En SPOT, la protection est geree par
 le bot uniquement.
 """
+import re
 import threading
 import time
 from datetime import datetime
@@ -88,6 +89,7 @@ class ManualTrading:
         return self.bot.cfg
 
     def _log(self, msg, level="info"):
+        msg = re.sub(r"#-(\d+)", r"P\1", str(msg))      # v4.562 : un ordre programme n a pas de numero de trade
         self.bot.emit("log", {"msg": f"✋ {msg}", "level": level})
 
     def _wallet(self):
@@ -1159,7 +1161,7 @@ class ManualTrading:
                 "created_at": now, "trade_uid": be.make_trade_uid("manual"),
             }
             status = "opening" if p["execution"] == "now" else "scheduled"
-            item["id"] = db.manual_insert(status, item)
+            item["id"] = db.manual_insert(status, item, provisional=(status == "scheduled"))      # v4.562 : ordre programme = repere provisoire, numero de trade a l ouverture
             item["status"] = status
             self.items[item["id"]] = item
         if p["execution"] == "now":
@@ -2279,6 +2281,24 @@ class ManualTrading:
             return False
         return (price >= ext * (1 + cf)) if up else (price <= ext * (1 - cf))
 
+    def _promote(self, item):
+        """v4.562 : numero de trade donne a l ouverture effective seulement. Un ordre annule / expire n a jamais eu de numero de trade."""
+        old = item["id"]
+        if old >= 0:
+            return
+        data = {k: v for k, v in item.items() if k not in ("id", "status")}
+        with self.lock:
+            new = db.manual_promote(old, "opening", data)
+            self.items.pop(old, None)
+            item["id"], item["status"] = new, "opening"
+            self.items[new] = item
+        self._fire_busy.discard(old)
+        self._log(f"Ordre programme {self._lbl(old)} {item['ticker']} : declenche -> trade #{new}", "signal")      # « P3 » = repere provisoire
+
+    @staticmethod
+    def _lbl(i):
+        return f"#{i}" if i >= 0 else f"P{-i}"
+
     def _fire(self, item):
         """v4.343 — declenchement : controle de tendance H4 (si demande) puis ouverture. Execute dans un
         thread : la lecture des bougies peut prendre une seconde, ce qui ne doit pas bloquer les prix."""
@@ -2295,6 +2315,7 @@ class ManualTrading:
                 except ManualError as e:
                     self._finish_order(item, "cancelled", f"declenche mais {e}")
                     return
+            self._promote(item)      # v4.562 : l ordre devient un trade -> il recoit son numero maintenant
             self._open(item)
         finally:
             self._fire_busy.discard(item["id"])
@@ -2616,13 +2637,19 @@ class ManualTrading:
         history = []
         cnt = {"live": 0, "paper": 0}        # v4.425 : 100 derniers PAR MODE (le paper du Scalp ne doit pas noyer le live)
         _rows = db.manual_history(300, "live") + db.manual_history(300, "paper")   # v4.443 : filtre par mode en SQL
-        _rows.sort(key=lambda r: r["id"], reverse=True)
+        _rows.sort(key=lambda r: float(r["data"].get("closed_at") or r["data"].get("created_at") or 0), reverse=True)      # v4.562 : par date (les ordres non executes ont un repere negatif)
+        cnt_end = 0
         for row in _rows:
             d = row["data"]
             md = "live" if d.get("mode") == "live" else "paper"
-            if cnt[md] >= 300:
-                continue
-            cnt[md] += 1
+            if row["status"] in ("cancelled", "expired", "failed"):      # v4.562 : onglet « Ordres non executes », plafond a part
+                if cnt_end >= 300:
+                    continue
+                cnt_end += 1
+            else:
+                if cnt[md] >= 300:
+                    continue
+                cnt[md] += 1
             d.update({"id": row["id"], "status": row["status"]})
             d["origin"], d["strategy_label"] = origin_label(d)
             try:    # v4.432 : PnL net de frais (le pnl stocke est brut) ; v4.441 : frais + funding REELS Hyperliquid quand connus

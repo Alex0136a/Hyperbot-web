@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.561";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.562";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1619,7 +1619,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
     setBusy(true);
     try {
       const r = await apiCall("/api/manual/orders","POST",body,token);
-      alert(r.status==="scheduled" ? `Ordre programmé (#${r.id}).` : `Position ouverte (#${r.id}) @ ${fmtP(r.entry_price)}.`);
+      alert(r.status==="scheduled" ? `Ordre programmé (${r.id<0?"P"+(-r.id):"#"+r.id}).` : `Position ouverte (#${r.id}) @ ${fmtP(r.entry_price)}.`);
       setSel(null); setProp(null); setF(null); load();
     } catch(e) { alert("Ordre refusé : " + e.message); }
     setBusy(false);
@@ -1699,8 +1699,9 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
   const dayKey = ts => { const d=new Date(ts*1000); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
   const slFinalPct = h => { const e=Number(h.entry_price), sp=Number(h.sl_price); if(!(e>0)||!(sp>0)) return null; return h.direction==="long" ? (sp-e)/e*100 : (e-sp)/e*100; };
   const isScalpH = h => h.strategy_source==="scalp_crypto" || h.strategy_label==="Scalp" || !!h.scalp;
-  const inTab = (h,k) => (h.mode==="live"?"live":"paper")===k.split("_")[0] && (!k.endsWith("_scalp") || isScalpH(h));
-  const histIsLive = histTab.startsWith("live"), histLbl = (histIsLive?"LIVE":"PAPER")+(histTab.endsWith("_scalp")?" SCALP":"");
+  const isEnded = h => h.status==="cancelled"||h.status==="expired"||h.status==="failed";      // v4.562 : ordres non executes = onglet a part
+  const inTab = (h,k) => k==="orders" ? isEnded(h) : (!isEnded(h) && (h.mode==="live"?"live":"paper")===k.split("_")[0] && (!k.endsWith("_scalp") || isScalpH(h)));
+  const histIsLive = histTab.startsWith("live"), histLbl = histTab==="orders" ? "DES ORDRES NON EXÉCUTÉS" : (histIsLive?"LIVE":"PAPER")+(histTab.endsWith("_scalp")?" SCALP":"");
   const histTabAll = st.history.filter(h=>inTab(h,histTab)&&(!histOrigin||h.origin===histOrigin));
   const histAssets = [...new Set(histTabAll.map(h=>h.ticker).filter(Boolean))].sort();
   const histAssetOk = histAssets.includes(histAsset) ? histAsset : "";
@@ -1977,7 +1978,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
         {st.positions.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucune position manuelle.</div> : st.positions.map(p=>(
           <div key={p.id} style={{borderBottom:"1px solid #131d33",padding:"10px 0"}}>
             <div style={{display:"flex",flexWrap:"wrap",gap:14,alignItems:"center",fontSize:12,color:"#e2e8f0"}}>
-              <b>#{p.id} <span data-tk={p.ticker} title="Résumé de l'actif" style={{cursor:"pointer",textDecoration:"underline dotted"}}>{p.ticker}</span></b>{dirBadge(p.direction)}{p.origin==="zone" && originTag("zone")}
+              <b>{p.id<0?`ordre P${-p.id}`:`#${p.id}`} <span data-tk={p.ticker} title="Résumé de l'actif" style={{cursor:"pointer",textDecoration:"underline dotted"}}>{p.ticker}</span></b>{dirBadge(p.direction)}{p.origin==="zone" && originTag("zone")}
               <span>{p.market.toUpperCase()} · <span style={{color:p.mode==="live"?"#ef4444":"#22c55e"}}>{p.mode.toUpperCase()}</span> · x{p.leverage}</span>
               <span style={{color:"#e2e8f0",fontWeight:700}} title="Taille de la position (valeur notionnelle) ; marge = taille / levier">Taille {Number(p.notional_usd).toFixed(2)} USDC{p.leverage>1?` (marge ${(Number(p.notional_usd)/p.leverage).toFixed(2)})`:""}</span>
               {(p.leverage_requested || p.leverage_note) && <div title={p.leverage_note||""} style={{width:"100%",fontSize:10,color:"#fbbf24"}}>Levier disponible : x{p.leverage}</div>}
@@ -2027,7 +2028,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
           <div style={{...MT.title,marginBottom:0}}>📜 HISTORIQUE MANUEL (300 derniers par mode)</div>
           {st.stop_post && Object.keys(st.stop_post).map(k=><div key={k} style={{width:"100%"}}><StopPostBlock g={st.stop_post[k]} title={k+" : que fait le prix après la sortie ?"}/></div>)}
           <div style={{display:"flex",gap:6}}>
-            {[["live","LIVE","#ef4444"],["live_scalp","LIVE SCALP","#f97316"],["paper","PAPER","#22c55e"],["paper_scalp","PAPER SCALP","#14b8a6"]].map(([k,l,c])=>{ const n=st.history.filter(h=>inTab(h,k)).length; return <button key={k} style={{...MT.seg(histTab===k,c),flex:"none",padding:"6px 14px"}} onClick={()=>setHistTab(k)}>{l} ({n})</button>; })}
+            {[["live","LIVE","#ef4444"],["live_scalp","LIVE SCALP","#f97316"],["paper","PAPER","#22c55e"],["paper_scalp","PAPER SCALP","#14b8a6"],["orders","ORDRES NON EXÉCUTÉS","#64748b"]].map(([k,l,c])=>{ const n=st.history.filter(h=>inTab(h,k)).length; return <button key={k} style={{...MT.seg(histTab===k,c),flex:"none",padding:"6px 14px"}} onClick={()=>setHistTab(k)}>{l} ({n})</button>; })}
           </div>
         </div>
         <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
@@ -2080,7 +2081,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
             <thead><tr><th style={MT.th}></th>{["#","Actif","Sens","Marché","Mode","Source","Ouverture","Fermeture","Entrée","Sortie","PnL","Statut / motif"].map(h=><th key={h} style={MT.th}>{h}</th>)}</tr></thead>
             <tbody>{histRows.map(h=><tr key={h.id}>
               <td style={MT.td}><input type="checkbox" checked={!!histSel[h.id]} onChange={e=>setHistSel({...histSel,[h.id]:e.target.checked})}/></td>
-              <td style={MT.td}>{h.id}</td><td data-tk={h.ticker} title="Résumé de l'actif" style={{...MT.td,fontWeight:800,cursor:"pointer",textDecoration:"underline dotted"}}>{h.ticker}</td><td style={MT.td}>{dirBadge(h.direction)}</td>
+              <td style={MT.td}>{h.id<0?`P${-h.id}`:h.id}</td><td data-tk={h.ticker} title="Résumé de l'actif" style={{...MT.td,fontWeight:800,cursor:"pointer",textDecoration:"underline dotted"}}>{h.ticker}</td><td style={MT.td}>{dirBadge(h.direction)}</td>
               <td style={MT.td}>{(h.market||"").toUpperCase()}</td><td style={{...MT.td,color:h.mode==="live"?"#ef4444":"#22c55e"}}>{(h.mode||"").toUpperCase()}</td>
               <td style={MT.td}>{h.origin==="zone"?originTag("zone"):h.strategy_label}</td><td style={MT.td}>{fmtTime(h.opened_at||h.created_at)}</td><td style={MT.td}>{fmtTime(h.closed_at)}</td>
               <td style={MT.td}>{fmtP(h.entry_price)}</td><td style={MT.td}>{fmtP(h.exit_price)}</td>
