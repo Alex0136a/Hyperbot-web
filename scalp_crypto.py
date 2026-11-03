@@ -1542,6 +1542,8 @@ class ScalpEngine:
         threading.Thread(target=self._scan, daemon=True).start()
 
     def _manage_open(self, now):
+        if not hasattr(self, "_np"):
+            self._np = {}      # v4.563 : etat de la sortie « sans progres » par trade (controles d affilee)
         mx_cfg = float(self.cfg.get("SCALP_MAX_HOLD_MIN", 90)) * 60
         if mx_cfg <= 0 and not int(self.cfg.get("SCALP_NOPROG_ON", 1)) and not int(self.cfg.get("SCALP_CORR_BASKET_EXIT_ON", 0)) and not int(self.cfg.get("SCALP_OSC_ON", 1)) and not int(self.cfg.get("SCALP_CONT_ON", 1)):
             return
@@ -1573,8 +1575,16 @@ class ScalpEngine:
                     if int(self.cfg.get("SCALP_NOPROG_ON", 1)) and npm > 0 and npp > 0 and now - float(it.get("opened_at") or now) >= npm * 60 \
                             and float(it.get("peak_pct") or 0) < npp:
                         pk_ = float(it.get("peak_pct") or 0)
+                        why_np = None
+                        if int(self.cfg.get("SCALP_NOPROG_SMART_ON", 1)):
+                            why_np = self._noprog_eval(it, now, pk_, npm)      # v4.563 : lecture des signaux (None = on attend)
+                            if why_np is None:
+                                continue
+                        else:
+                            why_np = f"après {npm:g} min le gain maximal est de {pk_:+.2f} % (il faut ≥ {npp:g} %)"
                         self.manual.close(it["id"], "SCALP SANS PROGRES")
-                        self._ev("sortie", it["ticker"], f"#{it['id']} fermé : sans progrès — après {npm:g} min le gain maximal est de {pk_:+.2f} % (il faut ≥ {npp:g} %)")
+                        self._ev("sortie", it["ticker"], f"#{it['id']} fermé : sans progrès — {why_np}")
+                        self._np.pop(it["id"], None)
                         continue
                 except Exception as e:
                     self.last_error = f"sans progrès : {type(e).__name__}: {e}"
@@ -1587,6 +1597,69 @@ class ScalpEngine:
                         self._ev("sortie", it["ticker"], f"#{it['id']} ferme : duree maximale {mx / 60:.0f} min atteinte")
                     except Exception as e:
                         self.last_error = f"fermeture duree : {e}"
+
+    def _noprog_eval(self, it, now, peak, npm):
+        """v4.563 : sortie « sans progres » guidee par les signaux (lecture du cache, aucun appel reseau). Retourne le MOTIF de fermeture, ou None = on attend.
+        Trois lectures dans le sens (+1) / neutre (0) / contre (-1) : bougies 1 min (move_state), flux 10 min, tendance H1 ; le H4 fixe l exigence.
+        - age >= SCALP_NOPROG_MAX_MIN (30) : on ferme dans tous les cas ;
+        - inversion DURABLE : au moins 2 lectures contre (3 si le H4 est dans le sens du trade) pendant SCALP_NOPROG_REV_MIN (3) controles d affilee (1 / min) ;
+        - aucune reprise (ni bougies 1 min ni flux dans le sens) et trade non porte par le H4 : on ferme tout de suite ;
+        - sinon (reprise, ou trade porte par le H4) : on attend, le stop reste en place. Une seule lecture 1 min ne ferme jamais."""
+        c = self.cfg
+        t = it["ticker"]
+        side = it["direction"]
+        sg = 1 if side == "long" else -1
+        age_min = (now - float(it.get("opened_at") or now)) / 60.0
+        maxm = float(c.get("SCALP_NOPROG_MAX_MIN", 30) or 0)
+        st = self._np.setdefault(it["id"], {"streak": 0, "last": 0.0})
+        if maxm > 0 and age_min >= maxm:
+            return f"{age_min:.0f} min sans atteindre {float(c.get('SCALP_NOPROG_PEAK_PCT', 0.10)):g} % (gain maximal {peak:+.2f} %) : fin de l'attente"
+        if now - st["last"] < 55:
+            return None
+        st["last"] = now
+        K = self.thresholds()
+        px = float(it.get("last_price") or 0) or None
+        v1, s1 = 0, "?"
+        try:
+            mv = move_1m(self.bot._mtf_candles(t, "1m", 40, cache_only=True) or [])
+            if mv:
+                s1, _n = move_state(mv, side, K)
+                v1 = -1 if s1 == "contraire" else (1 if s1 in ("enclenché", "naissant") else 0)
+        except Exception:
+            pass
+        vf, sf = 0, "?"
+        try:
+            fl = self._flow(t, 10)
+            if fl and fl.get("n", 0) >= 5 and fl.get("buy_ratio") is not None:
+                fp = float(c.get("SCALP_NOPROG_FLOW_PCT", 55)) / 100.0
+                mine = fl["buy_ratio"] if sg > 0 else 1.0 - fl["buy_ratio"]
+                vf = 1 if mine >= fp else (-1 if mine <= 1.0 - fp else 0)
+                sf = f"{mine * 100:.0f} % dans le sens"
+        except Exception:
+            pass
+
+        def _tr(tf, n):
+            try:
+                cs = self.bot._mtf_candles(t, tf, n, cache_only=True) or []
+                if len(cs) >= 60 and px:
+                    tt = mtf.trend(cs + [{**cs[-1], "c": float(px)}])[0]
+                    return (1 if (tt == "haussiere") == (sg > 0) else -1) if tt in ("haussiere", "baissiere") else 0, tt
+            except Exception:
+                pass
+            return 0, "?"
+        vh, sh = _tr("1h", 260)
+        v4, s4 = _tr("4h", 260)
+        against = sum(1 for v in (v1, vf, vh) if v < 0)
+        carried = v4 > 0
+        need = 3 if carried else 2
+        st["streak"] = st["streak"] + 1 if against >= need else 0
+        reads = f"bougies 1 min {s1}, flux {sf}, H1 {sh}, H4 {s4}"
+        self.manual.items.get(it["id"], it)["noprog"] = {"m1": s1, "flux": sf, "h1": sh, "h4": s4, "against": against, "streak": st["streak"], "age_min": round(age_min, 1)}
+        if st["streak"] >= int(float(c.get("SCALP_NOPROG_REV_MIN", 3))):
+            return f"inversion durable ({st['streak']} contrôles, {against}/3 signaux contre) — {reads}"
+        if v1 <= 0 and vf <= 0 and not carried:
+            return f"aucune reprise ({reads}), gain maximal {peak:+.2f} %"
+        return None
 
     def _open_count(self):
         return sum(1 for it in self.manual.items.values()
