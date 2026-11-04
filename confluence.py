@@ -43,7 +43,7 @@ def thresholds(cfg):
             "rr": g("SCALP_CONF_RR", 1.5), "min_rr": g("SCALP_CONF_MIN_RR", 1.0), "sl_min": g("SCALP_CONF_SL_MIN_PCT", 0.4),
             "sl_max": g("SCALP_CONF_SL_MAX_PCT", 1.0), "fee": g("SCALP_CONF_FEE_PCT", 0.10), "h1_strict": int(g("SCALP_CONF_H1_STRICT", 1)),
             "pad": g("SCALP_CONF_PAD_ATR", 0.15), "tol": g("SCALP_CONF_TOL_ATR", 0.6), "hold_bars": int(g("SCALP_CONF_HOLD_BARS", 24)),
-            "zone_max_atr": g("SCALP_CONF_ZONE_MAX_ATR", 1.5), "sl_atr": g("SCALP_CONF_SL_ATR", 1.5)}
+            "zone_max_atr": g("SCALP_CONF_ZONE_MAX_ATR", 1.5), "ctx_mode": int(g("SCALP_CTX_MODE", 1)), "sl_atr": g("SCALP_CONF_SL_ATR", 1.5)}
 
 
 def sl_atr_floor(sl_pct, atr5, price, mult, cap_pct):
@@ -71,6 +71,62 @@ def agg_h4(c1h):
     return out
 
 
+def abs_state(candles, min_bars=50):
+    """Tendance d une serie de bougies : 'haussier' (EMA20 > EMA50 et cloture > EMA50), 'baissier' (inverse), 'neutre', 'inconnu' (pas assez de bougies)."""
+    if not candles or len(candles) < min_bars:
+        return "inconnu"
+    cl = [c["c"] for c in candles]
+    e20, e50 = mtf.ema(cl, 20), mtf.ema(cl, 50)
+    if e20 is None or e50 is None:
+        return "inconnu"
+    if e20 > e50 and cl[-1] > e50:
+        return "haussier"
+    if e20 < e50 and cl[-1] < e50:
+        return "baissier"
+    return "neutre"
+
+
+def market_context(c1h, c5=None, now_ms=None, max_age_h=3.0):
+    """v4.570 : SOURCE UNIQUE du contexte. H1 et H4 (H4 construit du H1) par la meme definition, M5 pour information.
+    Une serie trop courte ou perimee (derniere bougie H1 cloturee depuis plus de max_age_h) donne 'inconnu' / 'perime' : jamais une valeur devinee."""
+    c4h = agg_h4(c1h) if c1h else []
+    h1 = abs_state(c1h, 60)
+    h4 = abs_state(c4h, 50)
+    age_s = None
+    if c1h and now_ms:
+        age_s = (now_ms - (c1h[-1]["t"] + 3600000)) / 1000.0
+        if age_s > max_age_h * 3600:
+            h1 = h4 = "perime"
+    m5 = abs_state(c5, 50) if c5 else "inconnu"
+    return {"h1": h1, "h4": h4, "m5": m5, "n1h": len(c1h or []), "n4h": len(c4h), "age_1h_s": (round(age_s) if age_s is not None else None)}
+
+
+def _rel(state, side):
+    if state in ("inconnu", "perime"):
+        return state
+    if state == "neutre":
+        return "neutre"
+    return "avec" if (state == "haussier") == (side == "long") else "contre"
+
+
+def allowed(mc, side, mode=1):
+    """(ok, texte, relation H1, relation H4). mode 1 : aucun des deux contre ET au moins un dans le sens ; mode 2 : les deux dans le sens.
+    Donnee manquante ou perimee = refus."""
+    r1, r4 = _rel(mc["h1"], side), _rel(mc["h4"], side)
+    for nm, r in (("H1", r1), ("H4", r4)):
+        if r in ("inconnu", "perime"):
+            return False, f"contexte : {nm} {'périmé' if r == 'perime' else 'inconnu (pas assez de bougies)'}", r1, r4
+    if "contre" in (r1, r4):
+        return False, f"contexte : H1 {mc['h1']}, H4 {mc['h4']} — à contre-courant", r1, r4
+    if mode >= 2:
+        ok = r1 == "avec" and r4 == "avec"
+    else:
+        ok = "avec" in (r1, r4)
+    if not ok:
+        return False, f"contexte : H1 {mc['h1']}, H4 {mc['h4']} — pas dans le sens du trade", r1, r4
+    return True, "", r1, r4
+
+
 def _state(candles, side):
     """'avec' / 'contre' / 'neutre' : EMA20 > EMA50 et clôture > EMA50 (haussier) ; inverse (baissier)."""
     cl = [c["c"] for c in candles]
@@ -91,7 +147,7 @@ def h1_cache(c1h, max_w=None):
     v4.569 : max_w = largeur MAXIMALE d une zone en ATR 1 h (une « zone » de 10 a 50 % du prix n est pas un niveau)."""
     c4h = agg_h4(c1h)
     return {"zones": mtf.find_zones(c1h[-150:], lookback=120, min_touches=1, max_width_atr=(max_w if max_w and max_w > 0 else None)), "c4h": c4h,
-            "ctx": {s: (_state(c1h, s), _state(c4h, s) if len(c4h) >= 50 else "inconnu") for s in ("long", "short")}}
+            "mc": market_context(c1h)}
 
 
 def evaluate(side, c5, c15, c1h, K, cache=None, base_ok=None):
@@ -107,8 +163,7 @@ def evaluate(side, c5, c15, c1h, K, cache=None, base_ok=None):
         out["why"] = "ATR indisponible"
         return out
     tol = K["tol"] * a5
-    h1s, h4s = cache["ctx"][side]
-    ctx_ok = (h1s == "avec" if K["h1_strict"] else h1s in ("avec", "neutre")) and h4s != "contre"
+    ctx_ok, ctx_why, h1s, h4s = allowed(cache["mc"], side, K.get("ctx_mode", 1))
     out["ctx_ok"], out["h1"], out["h4"] = ctx_ok, h1s, h4s
     # (a) zone clé
     sup, res = mtf.nearest_zones(cache["zones"], price)
@@ -178,7 +233,7 @@ def evaluate(side, c5, c15, c1h, K, cache=None, base_ok=None):
     out.update({"sl_pct": round(sl_pct, 3), "tp_pct": round(tp_pct, 3), "rr_net": round(rr_net, 2), "room_ok": room_ok})
     why = []
     if not ctx_ok:
-        why.append(f"contexte : H1 {h1s}, H4 {h4s}")
+        why.append(ctx_why)
     if n_conf < K["min_conf"]:
         why.append(f"confluence {n_conf}/{K['min_conf']} (" + ", ".join(k for k, v in flags.items() if not v) + " manquant)")
     if too_noisy:
@@ -357,4 +412,4 @@ def run_backtest(info, tickers, days, K, progress=None, pause=0.3):
             progress(done, len(tickers))
     res = run_variants(c5s, sigs, K)
     return {"days": days, "tickers": len(c5s), "skipped": skipped, "signals": len(sigs), "variants": res, "ts": time.time(),
-            "params": {k: K[k] for k in ("min_conf", "min_touches", "rsi", "rr", "min_rr", "sl_min", "sl_max", "fee", "h1_strict", "hold_bars", "zone_max_atr", "sl_atr")}}
+            "params": {k: K[k] for k in ("min_conf", "min_touches", "rsi", "rr", "min_rr", "sl_min", "sl_max", "fee", "ctx_mode", "hold_bars", "zone_max_atr", "sl_atr")}}

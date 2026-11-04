@@ -582,7 +582,7 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False, c1
             return None, "15 min pas dans le sens"
         sg = 1 if side == "long" else -1
         t1h = mtf.trend(c1h)[0]
-        if (side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere"):      # v4.550 : le H1 est la base de temps de la continuation (tendance 2-3 h)
+        if (not K.get("ctx_on")) and ((side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere")):      # v4.550 : le H1 est la base de temps de la continuation (tendance 2-3 h) ; v4.570 : remplace par le contexte unique
             return None, f"H1 contraire ({t1h})"
         nb_s = max(int(K["cont_slope_bars"]), 6)
         sl_ = mtf.slope_features(c1h, n=nb_s, lookback=max(48, nb_s))
@@ -595,7 +595,7 @@ def cont_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=False, c1
         if r2 < r2_need:
             return None, f"pente 1 h irrégulière (R² {r2:.2f} < {r2_need:.2f})"
         ext_ref = e20
-    if K.get("cont_h1_block", 1) and ((side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere")):
+    if K.get("cont_h1_block", 1) and (not K.get("ctx_on")) and ((side == "long" and t1h == "baissiere") or (side == "short" and t1h == "haussiere")):
         # v4.550 : veto H1 RETABLI (la continuation se decide sur 2-3 h de tendance : le H1 est sa base de temps) ; le veto 1 min de la v4.549 s ajoute
         # v4.534 : constat 30/10 : 14 longs de continuation pris H1 baissiere = 2 gagnants, 7 stops, -2,34 $ (0/7 la semaine d avant) ; H1 neutre = 2/2
         return None, f"continuation {side} refusée : H1 {t1h} (contraire)"
@@ -837,7 +837,7 @@ def sustained_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=Fals
     sg = 1 if sd == "long" else -1
     t1h_ = mtf.trend(c1h)[0]
     mv1 = move_1m(c1) if (K.get("move1m_on", 1) and c1) else None      # v4.549 : mouvement 1 min a la place du veto H1
-    if K.get("cont_h1_block", 1) and ((sd == "long" and t1h_ == "baissiere") or (sd == "short" and t1h_ == "haussiere")):      # v4.550 : veto H1 retabli
+    if K.get("cont_h1_block", 1) and (not K.get("ctx_on")) and ((sd == "long" and t1h_ == "baissiere") or (sd == "short" and t1h_ == "haussiere")):      # v4.550 : veto H1 retabli
         return None, f"continuation {sd} refusée : H1 {t1h_} (contraire)"
     if mv1 is not None:
         why_mv = mv_veto(mv1, sd, K)
@@ -1109,7 +1109,7 @@ class ScalpEngine:
                 "cont_momentum_on": int(c.get("SCALP_CONT_MOMENTUM_ON", 1)), "cont_flow_min": float(c.get("SCALP_CONT_FLOW_MIN", 0.5)),
                 "cont_min_room_pct": float(c.get("SCALP_CONT_MIN_ROOM_PCT", 0.3)), "cont_vol_mult": float(c.get("SCALP_CONT_VOL_MULT", 1.2)), "cont_early_on": int(c.get("SCALP_CONT_EARLY_ON", 1)),
                 "cont_short_on": int(c.get("SCALP_CONT_SHORT_ON", 1)), "cont_trend_bars": int(c.get("SCALP_CONT_TREND_BARS", 36)), "cont_min_r2_5m": float(c.get("SCALP_CONT_MIN_R2_5M", 0.3)),
-                "cont_h1_block": int(c.get("SCALP_CONT_H1_BLOCK", 1)), "sus_entry_end_on": int(c.get("SCALP_SUS_ENTRY_END_ON", 1)),
+                "cont_h1_block": int(c.get("SCALP_CONT_H1_BLOCK", 1)), "ctx_on": int(c.get("SCALP_CTX_ON", 1)), "sus_entry_end_on": int(c.get("SCALP_SUS_ENTRY_END_ON", 1)),
                 "base_on": int(c.get("SCALP_BREAKOUT_ON", 1)), "base_min_touches": int(c.get("SCALP_BASE_MIN_TOUCHES", 2)), "base_bars": int(c.get("SCALP_BASE_BARS", 6)),
                 "base_range_atr": float(c.get("SCALP_BASE_RANGE_ATR", 1.0)), "base_press_atr": float(c.get("SCALP_BASE_PRESS_ATR", 0.6)),
                 "base_margin_atr": float(c.get("SCALP_BASE_MARGIN_ATR", 0.15)), "base_vol_mult": float(c.get("SCALP_BASE_VOL_MULT", 1.5)),
@@ -1137,6 +1137,52 @@ class ScalpEngine:
                 json.dump(obj, f_)
         except Exception:
             pass
+
+    # ───── v4.570 : contexte unique (H1, H4, M5) + sante des donnees ─────
+    def _ctx_read(self, t):
+        c5 = self.bot._mtf_candles(t, "5m", 60, cache_only=True)
+        c1h = self.bot._mtf_candles(t, "1h", 230, cache_only=True)
+        if not c1h:
+            return None
+        return conf_mod.market_context(c1h, c5, now_ms=time.time() * 1000)
+
+    def _ctx_gate(self, t, sig):
+        """Refus si le contexte H1 / H4 n est pas dans le sens du trade (ou manque / est perime). Tous les modes."""
+        mc = self._ctx_read(t)
+        if mc is None:
+            return "contexte : aucune bougie H1 en cache"
+        mode = int(float(self.cfg.get("SCALP_CTX_MODE", 1) or 1))
+        ok, why, _r1, _r4 = conf_mod.allowed(mc, sig["side"], mode)
+        sig["ctx_mc"] = mc
+        return None if ok else f"{why} ({sig['kind']})"
+
+    def _ctx_update(self, t, c5, c1h):
+        mc = conf_mod.market_context(c1h, c5, now_ms=time.time() * 1000) if c1h else {"h1": "inconnu", "h4": "inconnu", "m5": "inconnu"}
+        try:
+            fl = self._flow(t)
+        except Exception:
+            fl = None
+        if not hasattr(self, "ctx_state"):
+            self.ctx_state = {}
+        self.ctx_state[t] = dict(mc, ts=time.time(), flow=bool(fl))
+
+    def ctx_line(self, t):
+        st = getattr(self, "ctx_state", {}).get(t)
+        if not st:
+            return None
+        mode = int(float(self.cfg.get("SCALP_CTX_MODE", 1) or 1))
+        ok_l = conf_mod.allowed(st, "long", mode)
+        ok_s = conf_mod.allowed(st, "short", mode)
+        verdict = "achats autorisés" if ok_l[0] else ("ventes autorisées" if ok_s[0] else "aucun sens autorisé")
+        why = "" if (ok_l[0] or ok_s[0]) else f" ({ok_l[1].replace('contexte : ', '')})"
+        return f"H4 {st['h4']} · H1 {st['h1']} · M5 {st['m5']} → {verdict}{why}"
+
+    def ctx_summary(self):
+        now = time.time()
+        rows = [(t, s) for t, s in getattr(self, "ctx_state", {}).items() if now - s.get("ts", 0) < 900]
+        complete = [t for t, s in rows if s["h1"] not in ("inconnu", "perime") and s["h4"] not in ("inconnu", "perime")]
+        return {"total": len(rows), "complete": len(complete), "flow": sum(1 for t, s in rows if s.get("flow")),
+                "missing": sorted(t for t, s in rows if t not in complete), "no_flow": sorted(t for t, s in rows if not s.get("flow"))}
 
     def _conf_cache(self, t, c1h):
         mw = conf_mod.thresholds(self.cfg).get("zone_max_atr")
@@ -1968,6 +2014,10 @@ class ScalpEngine:
                         self._sus_update(t, c5, K)      # v4.532 : etat de la tendance soutenue (entree / sortie de zone), tous les actifs analyses
                 except Exception as e:
                     self.last_error = f"tendance soutenue {t} : {type(e).__name__}: {e}"
+                try:
+                    self._ctx_update(t, c5, c1h)      # v4.570 : contexte unique + sante des donnees
+                except Exception as e:
+                    self.last_error = f"contexte {t} : {type(e).__name__}: {e}"
                 try:
                     self._conf_shadow_step(t, c5, c15, c1h)      # v4.568 : test fantome des principes (aucun ordre)
                 except Exception as e:
@@ -3393,7 +3443,7 @@ class ScalpEngine:
         if why_calm:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_calm}")
             return
-        why_h4 = self._h4_block(t, sig)      # v4.559 : pas de continuation / cassure contre un H4 clair (sauf Daily dans le sens du trade)
+        why_h4 = self._ctx_gate(t, sig) if int(c.get("SCALP_CTX_ON", 1)) else self._h4_block(t, sig)      # v4.570 : contexte unique H1 / H4 pour tous les modes (remplace veto H4 et blocs H1) ; v4.559 : pas de continuation / cassure contre un H4 clair (sauf Daily dans le sens du trade)
         if why_h4:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_h4}")
             return
@@ -3645,5 +3695,5 @@ class ScalpEngine:
                 "regime": {k: v for k, v in self.regime.items()}, "peer_wait": [{"ticker": t, "side": w["side"], "age_min": round((time.time() - w["ts"]) / 60, 1)} for t, w in self.peer_wait.items()],
                 "stats_paper": self.stats("paper"), "stats_live": self.stats("live"),
                 "pending": [{"ticker": t, "side": p["sig"]["side"], "trigger": p["trigger"], "expires": p["expires"]} for t, p in self.pending.items()],
-                "cont_diag": self._cont_diag_summary(), "sus": self.sus_summary(), "nosig": self.nosig_state(), "macro": self.macro_state(),
+                "cont_diag": self._cont_diag_summary(), "sus": self.sus_summary(), "ctx": self.ctx_summary(), "nosig": self.nosig_state(), "macro": self.macro_state(),
                 "events": list(self.events)[:40], "error": self.last_error}
