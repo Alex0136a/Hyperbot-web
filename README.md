@@ -1975,3 +1975,10 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Changements** : (1) un enregistrement de réglage ne force la relecture que si `SCALP_TOP_N` a changé ; (2) en cas d'erreur, le dernier classement qui a fonctionné est conservé (réessai dans 5 min). Aucune règle de trading touchée.
 - Si le 429 revient sans enregistrement de réglage : autre source (bougies) à chercher.
 - Fichiers : scalp_crypto.py, api.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.565 — Tendance soutenue : même lecture à l'entrée et à la sortie
+- **Constat** (CSV du 03/11, 5 sorties « TRAILING TAKE PROFIT » en moins de 2 min : ETH, SOL, LINK, JUP à 23:05, TIA à 20:30) : stop final = pic − 0,15 % (`SCALP_SUS_END_TRAIL_PCT`) → la tendance soutenue a été déclarée finie par `sus_end` dans la minute suivant l'entrée ; le suiveur serré sort le trade à ≈ 0 brut (−0,06 $ de frais). À l'entrée, `sus_measure` accepte un repli jusqu'à 1,5 ATR 5 min sur 30 min mais ne regarde pas le recul ACTUEL depuis l'extrême récent, que `sus_end` mesure à la sortie.
+- **Changement (décision, paper et live)** : à l'entrée d'une continuation soutenue, contrôle avec la mesure de `sus_end` (nouvelle fonction `sus_back`, recul en ATR 5 min depuis l'extrême des 6 dernières bougies, seuil de fin max(1,2 ; bruit × 1,3)) : refus si la tendance est déjà finie, ou si le recul atteint `SCALP_SUS_ENTRY_END_FRAC` (0,5) du seuil de fin. `SCALP_SUS_ENTRY_END_ON` = 0 revient à la v4.564. Ne touche pas les autres continuations ni les rebonds.
+- Test : même série acceptée sans le contrôle (recul 0,9 ATR), refusée avec (72 % du seuil de fin). Effet sur historique non mesurable (pas de bougies 5 min passées) : à juger en paper (sorties de moins de 3 min, refus « en train de finir » dans le journal).
+- Non fait (observé) : filtre d'amplitude 5 min > 0,5 % (38 trades, −4,67 $ sur 169 mesurés) ; suiveur de fin de tendance armé seulement si pic ≥ 0,25 %.
+- Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.

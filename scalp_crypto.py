@@ -709,6 +709,32 @@ def sus_measure(c5, K, side=None):
     return {"ok": True, "why": "", "er": round(er, 3), "pb_atr": round(pb_atr, 2), "noise_pct": round(nz / price * 100, 3), "noise_atr": round(nz / a5, 2), "e9": e9, "lo": min(float(x["l"]) for x in w), "hi": max(float(x["h"]) for x in w), **base}
 
 
+def sus_back(c5, side, K, price=None):
+    """v4.565 : (recul en ATR 5 min depuis l extreme des 6 dernieres bougies, seuil de fin) : la mesure de sus_end, partagee avec le controle d entree.
+    None si indisponible."""
+    if len(c5) < 20:
+        return None
+    a5 = mtf.atr(c5, 14)
+    px = float(price) if price else float(c5[-1]["c"])
+    if not a5 or px <= 0:
+        return None
+    w = c5[-7:]
+    sg = 1 if side == "long" else -1
+    ext = max(float(x["h"]) for x in w) if sg > 0 else min(float(x["l"]) for x in w)
+    back = sg * (ext - px) / a5
+    lim = float(K.get("sus_end_pb_atr", 1.2))
+    try:
+        w0 = c5[-13:-1]
+        cl0 = [float(x["c"]) for x in w0]
+        nz = 0.0
+        for i in range(1, len(w0)):
+            nz = max(nz, (max(cl0[:i]) - float(w0[i]["l"])) if sg > 0 else (float(w0[i]["h"]) - min(cl0[:i])))
+        lim = max(lim, 1.3 * nz / a5)
+    except Exception:
+        pass
+    return back, lim
+
+
 def sus_end(c5, side, K, price=None):
     """v4.532 : FIN de la tendance soutenue (pur). Retourne (fini, motif) : recul >= SUS_END_PB_ATR x ATR 5 min depuis l extreme des 6 dernieres
     bougies, ou deux dernieres clotures du mauvais cote de la moyenne 9 (5 min). price = dernier prix connu (sinon derniere cloture)."""
@@ -776,6 +802,14 @@ def sustained_eval(c5, c15, c1h, btc_chg, K, flow=None, side=None, follower=Fals
     rmax = float(K.get("sus_rsi_max", 93))
     if rsi5 is not None and ((sd == "long" and rsi5 >= rmax) or (sd == "short" and rsi5 <= 100 - rmax)):
         return None, f"RSI 5 min trop {'haut' if sd == 'long' else 'bas'} ({rsi5:.0f})"
+    if K.get("sus_entry_end_on", 1):      # v4.565 : meme lecture qu a la sortie : si sus_end dit deja « fini » (ou presque) on n entre pas
+        ended_, why_end_ = sus_end(c5, sd, K, price=price)
+        if ended_:
+            return None, f"continuation {sd} refusée : la tendance soutenue est déjà finie à l'entrée ({why_end_})"
+        bl_ = sus_back(c5, sd, K, price=price)
+        fr_ = float(K.get("sus_entry_end_frac", 0.5))
+        if bl_ and fr_ > 0 and bl_[0] >= fr_ * bl_[1]:
+            return None, f"continuation {sd} refusée : recul de {bl_[0]:.1f} ATR 5 min déjà à {bl_[0] / bl_[1] * 100:.0f} % du seuil de fin de tendance ({bl_[1]:.1f} ATR) — la tendance est en train de finir"
     if btc_chg is not None or K.get("btc_mv") is not None:
         if sd == "long" or K.get("short_btc_block", 1):
             lvl_, btxt_ = btc_block(sd, btc_chg, K)
@@ -1013,7 +1047,7 @@ class ScalpEngine:
                 "cont_momentum_on": int(c.get("SCALP_CONT_MOMENTUM_ON", 1)), "cont_flow_min": float(c.get("SCALP_CONT_FLOW_MIN", 0.5)),
                 "cont_min_room_pct": float(c.get("SCALP_CONT_MIN_ROOM_PCT", 0.3)), "cont_vol_mult": float(c.get("SCALP_CONT_VOL_MULT", 1.2)), "cont_early_on": int(c.get("SCALP_CONT_EARLY_ON", 1)),
                 "cont_short_on": int(c.get("SCALP_CONT_SHORT_ON", 1)), "cont_trend_bars": int(c.get("SCALP_CONT_TREND_BARS", 36)), "cont_min_r2_5m": float(c.get("SCALP_CONT_MIN_R2_5M", 0.3)),
-                "cont_h1_block": int(c.get("SCALP_CONT_H1_BLOCK", 1)), "sus_min": int(c.get("SCALP_SUS_MIN", 30)), "sus_min_move_pct": float(c.get("SCALP_SUS_MIN_MOVE_PCT", 0.35)), "sus_min_move_atr": float(c.get("SCALP_SUS_MIN_MOVE_ATR", 2.0)),
+                "cont_h1_block": int(c.get("SCALP_CONT_H1_BLOCK", 1)), "sus_entry_end_on": int(c.get("SCALP_SUS_ENTRY_END_ON", 1)), "sus_entry_end_frac": float(c.get("SCALP_SUS_ENTRY_END_FRAC", 0.5)), "sus_min": int(c.get("SCALP_SUS_MIN", 30)), "sus_min_move_pct": float(c.get("SCALP_SUS_MIN_MOVE_PCT", 0.35)), "sus_min_move_atr": float(c.get("SCALP_SUS_MIN_MOVE_ATR", 2.0)),
                 "sus_min_er": float(c.get("SCALP_SUS_MIN_ER", 0.45)), "sus_max_pb_atr": float(c.get("SCALP_SUS_MAX_PB_ATR", 1.5)), "sus_max_ext_atr": float(c.get("SCALP_SUS_MAX_EXT_ATR", 4.0)),
                 "sus_rsi_max": float(c.get("SCALP_SUS_RSI_MAX", 93)), "sus_end_pb_atr": float(c.get("SCALP_SUS_END_PB_ATR", 1.2)),
                 "btc_scale1m": int(c.get("SCALP_BTC_SCALE1M_ON", 1)), "move1m_on": int(c.get("SCALP_MOVE1M_ON", 1)), "move_net": float(c.get("SCALP_CALM_DIR_PCT", 0.10)), "move_eff": float(c.get("SCALP_CALM_EFF", 0.6)), "move_acc": float(c.get("SCALP_CALM_ACC", 1.8))}
