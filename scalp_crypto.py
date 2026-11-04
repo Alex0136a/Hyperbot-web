@@ -1164,7 +1164,8 @@ class ScalpEngine:
             fl = None
         if not hasattr(self, "ctx_state"):
             self.ctx_state = {}
-        self.ctx_state[t] = dict(mc, ts=time.time(), flow=bool(fl))
+        rx = (getattr(self.bot, "_ws_trades_last_rx", None) or {}).get(t)
+        self.ctx_state[t] = dict(mc, ts=time.time(), flow=bool(fl), flow_age=(round(time.time() - rx) if rx else None))
 
     def ctx_line(self, t):
         st = getattr(self, "ctx_state", {}).get(t)
@@ -1182,7 +1183,9 @@ class ScalpEngine:
         rows = [(t, s) for t, s in getattr(self, "ctx_state", {}).items() if now - s.get("ts", 0) < 900]
         complete = [t for t, s in rows if s["h1"] not in ("inconnu", "perime") and s["h4"] not in ("inconnu", "perime")]
         return {"total": len(rows), "complete": len(complete), "flow": sum(1 for t, s in rows if s.get("flow")),
-                "missing": sorted(t for t, s in rows if t not in complete), "no_flow": sorted(t for t, s in rows if not s.get("flow"))}
+                "missing": sorted(t for t, s in rows if t not in complete), "no_flow": sorted(t for t, s in rows if not s.get("flow")),
+                "no_flow_txt": [f"{t} ({'aucune transaction reçue' if s.get('flow_age') is None else 'dernière il y a ' + str(int(s['flow_age'] // 60)) + ' min'})" for t, s in sorted(rows) if not s.get("flow")],
+                "resub": getattr(self, "flow_resub", 0)}
 
     def _conf_cache(self, t, c1h):
         mw = conf_mod.thresholds(self.cfg).get("zone_max_atr")
@@ -2464,19 +2467,31 @@ class ScalpEngine:
         Retourne {buy_ratio, n} ou None si aucun flux."""
         bot = self.bot
         try:
+            gen = (getattr(bot, "_ws_trades_subscribed_at", None), id(getattr(bot, "info", None)))      # v4.571 : change a chaque (re)connexion du WebSocket
             sub = getattr(self, "_flow_sub", None)
-            if sub is None or sub[0] != getattr(bot, "_ws_trades_subscribed_at", None):
-                sub = self._flow_sub = (getattr(bot, "_ws_trades_subscribed_at", None), set())
+            if sub is None or sub[0] != gen:
+                sub = self._flow_sub = (gen, set())
             buffers = getattr(bot, "_ws_trades_buffer", None)
             if buffers is None:
                 return None
-            if t not in sub[1] and t not in buffers and getattr(bot, "info", None) is not None:
+            if not hasattr(self, "_flow_main"):
+                self._flow_main = (0, set())
+            if time.time() - self._flow_main[0] > 300:      # actifs deja abonnes par le bot principal (liste SYMBOLS) : pas de double abonnement
+                try:
+                    self._flow_main = (time.time(), {be.ticker_from_slot_key(str(s)) for s in self.cfg.get("SYMBOLS", [])})
+                except Exception:
+                    self._flow_main = (time.time(), set())
+            # v4.571 : avant, « pas de tampon » servait de preuve d abonnement ; apres une reconnexion le vieux tampon existait encore et
+            # l actif n etait JAMAIS reabonne (flux mort sur les actifs abonnes a la volee). On se base maintenant sur la generation du WebSocket.
+            if t not in sub[1] and t not in self._flow_main[1] and getattr(bot, "info", None) is not None:
                 sub[1].add(t)
+                self.flow_resub = getattr(self, "flow_resub", 0) + 1
                 try:
                     bot.info.subscribe({"type": "trades", "coin": t}, bot._on_ws_trades)
                 except Exception as e:
                     self.last_error = f"flux {t} : {type(e).__name__}: {e}"
-                return None
+                if not buffers.get(t):
+                    return None
             buf = list(buffers.get(t) or [])
             lim = (time.time() - minutes * 60) * 1000
             b = a = 0.0

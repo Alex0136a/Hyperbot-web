@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.570";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.571";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1371,7 +1371,7 @@ function ScalpPanel({ token }) {
             {r.phase==="soutenue"?"▲▼".charAt(r.side==="long"?0:1):"⏹"} {r.ticker} {r.side==="long"?"hausse":"baisse"} {r.phase==="soutenue"?("("+r.mv+" %, "+r.since_min+" min)"):("terminée après "+(r.dur_min||0)+" min")}</span>)}
           {(d.sus.why||[]).length>0 && <span style={{color:"#64748b"}} title={(d.sus.why||[]).map(r=>r.ticker+" : "+r.why).join("\n")}> · autres actifs : raison au survol</span>}
         </div>}
-        {d.ctx && d.ctx.total>0 && <div style={{flexBasis:"100%",fontSize:11,color:d.ctx.complete<d.ctx.total?"#fbbf24":"#94a3b8"}} title={"Lectures H1/H4 manquantes : "+((d.ctx.missing||[]).join(", ")||"aucune")+"\nSans flux : "+((d.ctx.no_flow||[]).join(", ")||"aucun")}>🎯 Contexte H4/H1 : {d.ctx.complete}/{d.ctx.total} actifs lisibles · flux disponible : {d.ctx.flow}/{d.ctx.total} (survol = détail)</div>}
+        {d.ctx && d.ctx.total>0 && <div style={{flexBasis:"100%",fontSize:11,color:d.ctx.complete<d.ctx.total?"#fbbf24":"#94a3b8"}} title={"Lectures H1/H4 manquantes : "+((d.ctx.missing||[]).join(", ")||"aucune")+"\nSans flux : "+((d.ctx.no_flow_txt||d.ctx.no_flow||[]).join(", ")||"aucun")+"\nAbonnements flux (re)lancés par le Scalp : "+(d.ctx.resub||0)}>🎯 Contexte H4/H1 : {d.ctx.complete}/{d.ctx.total} actifs lisibles · flux disponible : {d.ctx.flow}/{d.ctx.total} (survol = détail)</div>}
         <ConfluencePanel token={token}/>
         {d.cont_diag && d.cont_diag.reasons && d.cont_diag.reasons.length>0 && <div style={{flexBasis:"100%",fontSize:10,color:"#94a3b8"}} title={d.cont_diag.rows.map(r=>r.ticker+" : "+r.motif).join("\n")}>Continuation, pourquoi pas de trade (actifs analysés depuis 15 min) : {d.cont_diag.reasons.map(([k,n])=>k+" ×"+n).join(" · ")} — détail par actif en survolant, ou dans le diagnostic</div>}
         <div><span style={MT.label}>AVEC TENDANCE</span>{S.by_trend?pr(S.by_trend.avec):"—"}</div>
