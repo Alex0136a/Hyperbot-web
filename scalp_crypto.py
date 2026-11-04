@@ -1053,6 +1053,9 @@ class ScalpEngine:
                 return self._uni
         except Exception as e:
             self.last_error = f"univers : {type(e).__name__}: {e}"
+        if self._uni:      # v4.564 : erreur (ex. 429) : on GARDE le dernier classement qui a fonctionne, reessai dans 5 min
+            self._uni_ts = now - 1500
+            return self._uni
         self._uni, self._uni_ts = tracked[:n], now - 1500      # repli : reessai dans 5 min
         return self._uni
 

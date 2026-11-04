@@ -3046,6 +3046,7 @@ def scalp_config(body: ScalpConfigBody, email: str = Depends(require_user)):
         if txt and not _sc.parse_hours(txt):
             raise HTTPException(400, "Tranches horaires invalides (exemple : 7-11,13-21, heures UTC).")
         _apply_and_persist("SCALP_HOURS_UTC", txt)
+    top_changed = False
     for k, v in (body.values or {}).items():
         if k not in _SCALP_NUM:
             raise HTTPException(400, f"Reglage inconnu : {k}")
@@ -3056,12 +3057,15 @@ def scalp_config(body: ScalpConfigBody, email: str = Depends(require_user)):
             raise HTTPException(400, f"{k} : nombre attendu.")
         if not lo <= x <= hi:
             raise HTTPException(400, f"{k} : entre {lo} et {hi}.")
+        if k == "SCALP_TOP_N" and int(round(x)) != int(float(bot.manual.scalp.cfg.get("SCALP_TOP_N", 0) or 0)):
+            top_changed = True
         _apply_and_persist(k, int(round(x)) if as_int else x)
     if body.reset_capital:
         _apply_and_persist("SCALP_COMPOUND_SINCE", time.time())
     bot.manual.scalp._rows_cache = (0, None, None)
     bot.manual.scalp._rec_cache = (0, None, None)
-    bot.manual.scalp._uni_ts = 0
+    if top_changed:      # v4.564 : le classement des actifs n est relu que si le nombre d actifs (SCALP_TOP_N) a change (limite de requetes 429)
+        bot.manual.scalp._uni_ts = 0
     return scalp_status(email)
 
 
