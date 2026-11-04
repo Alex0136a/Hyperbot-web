@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 import db
 import bot_engine as be
 import mtf_analysis as mtf
+import confluence as conf_mod      # v4.568 : principes (contexte, confluence, risque / rendement net), backtest, test fantome
 try:
     import macro_events      # v4.507 : pause autour des annonces macro (si le fichier n est pas depose, la pause est simplement inactive)
 except Exception:      # pragma: no cover
@@ -1045,6 +1046,18 @@ class ScalpEngine:
         self.bot, self.manual = bot, manual
         self.events = deque(maxlen=80)       # journal en memoire (signaux pris / refuses)
         self._uni, self._uni_ts = [], 0
+        self.conf_shadow = {"open": {}, "done": [], "last": {}, "cool": {}}      # v4.568 : test fantome des principes (aucun ordre)
+        self.conf_bt = {"running": False}
+        self._conf_h1c = {}
+        try:
+            import os
+            with open(self._conf_file("conf_shadow.json"), encoding="utf-8") as f_:
+                self.conf_shadow["done"] = json.load(f_).get("done", [])[-3000:]
+            with open(self._conf_file("conf_backtest.json"), encoding="utf-8") as f_:
+                self.conf_bt = json.load(f_)
+                self.conf_bt["running"] = False
+        except Exception:
+            pass
         self._seen = {}                      # ticker -> derniere tranche 5 min evaluee
         self._cool = {}                      # ticker -> fin de pause
         self.verdicts = {}                   # v4.470 : ticker -> (ts, type, texte) dernier verdict du Scalp (diagnostic)
@@ -1113,6 +1126,106 @@ class ScalpEngine:
             self.last_error = None
 
     # ── univers : top N par volume 24 h parmi les actifs suivis ──
+    # ───── v4.568 : principes de trading (contexte, confluence, risque / rendement net), backtest et test fantome ─────
+    def _conf_file(self, name):
+        import os
+        return os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), name)
+
+    def _conf_save(self, name, obj):
+        try:
+            with open(self._conf_file(name), "w", encoding="utf-8") as f_:
+                json.dump(obj, f_)
+        except Exception:
+            pass
+
+    def _conf_cache(self, t, c1h):
+        k = c1h[-1]["t"] if c1h else 0
+        hit = self._conf_h1c.get(t)
+        if hit and hit[0] == k:
+            return hit[1]
+        cache = conf_mod.h1_cache(c1h)
+        self._conf_h1c[t] = (k, cache)
+        return cache
+
+    def _conf_gate(self, t, sig):
+        """Retourne (ok, texte, resultat). Lit les bougies en cache (aucun appel reseau)."""
+        c5 = self.bot._mtf_candles(t, "5m", 60, cache_only=True)
+        c15 = self.bot._mtf_candles(t, "15m", 60, cache_only=True)
+        c1h = self.bot._mtf_candles(t, "1h", 230, cache_only=True)
+        if not (c5 and c15 and c1h):
+            return False, "principes : historique insuffisant", None
+        K = conf_mod.thresholds(self.cfg)
+        r = conf_mod.evaluate(sig["side"], c5, c15, c1h, K, cache=self._conf_cache(t, c1h), base_ok=bool(sig.get("kind") == "cassure" and sig.get("base")))
+        if r["ok"]:
+            return True, "", r
+        return False, "principes non respectés : " + (r.get("why") or "?"), r
+
+    def _conf_shadow_step(self, t, c5, c15, c1h):
+        """Test fantome : une fois par bougie 5 min cloturee, evalue les principes ; un signal valide ouvre un trade VIRTUEL (aucun ordre), suivi jusqu au stop / objectif / duree."""
+        c = self.cfg
+        if not int(float(c.get("SCALP_CONF_SHADOW_ON", 1) or 0)) or not c5 or not c15 or not c1h:
+            return
+        sh = self.conf_shadow
+        lt = c5[-1]["t"]
+        if sh["last"].get(t) == lt:
+            return
+        sh["last"][t] = lt
+        K = conf_mod.thresholds(c)
+        op = sh["open"].get(t)
+        if op:
+            for bar in c5:
+                if bar["t"] <= op["done_t"]:
+                    continue
+                op["done_t"] = bar["t"]
+                res = conf_mod.step_trade(op, bar, K["hold_bars"])
+                if res:
+                    sh["done"].append({"tk": t, "side": op["side"], "t": op["bar_t"], "net": round(conf_mod.net_pct(op["side"], op["entry"], res[0], K["fee"]), 4), "why": res[1],
+                                       "n_conf": op.get("n_conf"), "entry": op["entry"]})
+                    del sh["open"][t]
+                    sh["cool"][t] = bar["t"] + 6 * 300000
+                    del sh["done"][:-3000]
+                    self._conf_save("conf_shadow.json", {"done": sh["done"]})
+                    break
+            return
+        if sh["cool"].get(t, 0) > lt:
+            return
+        cache = self._conf_cache(t, c1h)
+        for side in ("long", "short"):
+            r = conf_mod.evaluate(side, c5, c15, c1h, K, cache=cache)
+            if r["ok"]:
+                sh["open"][t] = {"side": side, "entry": r["price"], "sl_pct": r["sl_pct"], "tp_pct": r["tp_pct"], "n": 0, "bar_t": lt, "done_t": lt, "n_conf": r["n_conf"],
+                                 "why": f"{r.get('zone')} + {r.get('indic')} + {r.get('pa')}"}
+                break
+
+    def conf_backtest_start(self, days=14, n=30):
+        if self.conf_bt.get("running"):
+            return {"ok": False, "error": "un backtest est deja en cours"}
+        tickers = list(self.universe() or [])[:max(1, int(n))]
+        if not tickers:
+            return {"ok": False, "error": "aucun actif dans l univers pour le moment"}
+        K = conf_mod.thresholds(self.cfg)
+        self.conf_bt = {"running": True, "done": 0, "total": len(tickers), "started": time.time()}
+
+        def _prog(d, tot):
+            self.conf_bt["done"], self.conf_bt["total"] = d, tot
+
+        def _run():
+            try:
+                res = conf_mod.run_backtest(self.bot.info, tickers, days, K, progress=_prog)
+                res["running"] = False
+                self.conf_bt = res
+                self._conf_save("conf_backtest.json", res)
+            except Exception as e:
+                self.conf_bt = {"running": False, "error": f"{type(e).__name__}: {e}"}
+        threading.Thread(target=_run, daemon=True, name="conf-backtest").start()
+        return {"ok": True, "tickers": len(tickers)}
+
+    def conf_report(self):
+        sh = self.conf_shadow
+        return {"on": bool(int(float(self.cfg.get("SCALP_CONF_ON", 0) or 0))), "shadow_on": bool(int(float(self.cfg.get("SCALP_CONF_SHADOW_ON", 1) or 0))),
+                "shadow": conf_mod.stats(sh["done"]), "shadow_open": [{"ticker": k, "side": v["side"], "entry": v["entry"], "sl_pct": v["sl_pct"], "tp_pct": v["tp_pct"], "why": v.get("why")} for k, v in sh["open"].items()],
+                "backtest": self.conf_bt}
+
     def universe(self):
         now = time.time()
         if self._uni and now - self._uni_ts < 1800:
@@ -1854,6 +1967,10 @@ class ScalpEngine:
                         self._sus_update(t, c5, K)      # v4.532 : etat de la tendance soutenue (entree / sortie de zone), tous les actifs analyses
                 except Exception as e:
                     self.last_error = f"tendance soutenue {t} : {type(e).__name__}: {e}"
+                try:
+                    self._conf_shadow_step(t, c5, c15, c1h)      # v4.568 : test fantome des principes (aucun ordre)
+                except Exception as e:
+                    self.last_error = f"test fantome {t} : {type(e).__name__}: {e}"
                 try:
                     c1m = self.bot._mtf_candles(t, "1m", 40) if int(self.cfg.get("SCALP_MOVE1M_ON", 1)) else None
                 except Exception:
@@ -3279,6 +3396,12 @@ class ScalpEngine:
         if why_h4:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_h4}")
             return
+        conf_res = None
+        if int(float(c.get("SCALP_CONF_ON", 0) or 0)):      # v4.568 : principes (contexte H1/H4, confluence de 3 criteres, risque / rendement net >= 1)
+            ok_c, why_c, conf_res = self._conf_gate(t, sig)
+            if not ok_c:
+                self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_c}")
+                return
         prud = sig.get("prudent_btc")
         if prud is not None:      # v4.497 : short pris alors que BTC monte -> flux vendeur exige
             fb_ = (sig.get("ctx") or {}).get("flow_buy")
@@ -3425,6 +3548,8 @@ class ScalpEngine:
             sl_hard = min(sl_soft * float(c.get("SCALP_ASC_HARD_MULT", 2.0)), 50.0)
             if asc is not None:
                 asc["rules"].append(f"stop sur clôture 5 min (secours {sl_hard:.2f} %)")
+        if conf_res is not None:      # v4.568 : stop et objectif des principes (stop au-dela de la zone, objectif = RR x stop), net de frais
+            sl_soft, tp_cont, sl_hard, osc = float(conf_res["sl_pct"]), float(conf_res["tp_pct"]), None, None
         if fixed:
             notional = base_notional      # v4.567 : taille unique, aucune reduction
         cluster_before = self._cluster_count(sig["side"], mode)
@@ -3465,7 +3590,8 @@ class ScalpEngine:
                                               "basket30": reg.get("basket30"), "rel30": (round(reg["ch30"].get(t, 0) - reg["basket30"], 3) if reg.get("ch30") and reg.get("basket30") is not None else None),
                                               "cluster": cluster_before, "peers": sig.get("peers")},
                                    "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra, "calm": sig.get("calm1m"), "mv1": sig.get("move1m"),
-                                   "base": sig.get("base"), "touches": sig.get("touches"),      # v4.493 : mesures de la zone horizontale (aucun effet sur les decisions)
+                                   "base": sig.get("base"), "touches": sig.get("touches"),
+                                   "conf": ({"n": conf_res.get("n_conf"), "h1": conf_res.get("h1"), "h4": conf_res.get("h4"), "rr_net": conf_res.get("rr_net"), "zone": conf_res.get("zone"), "indic": conf_res.get("indic"), "pa": conf_res.get("pa")} if conf_res else None),      # v4.493 : mesures de la zone horizontale (aucun effet sur les decisions)
                                    "zone_width_pct": (round((sig["zone"][1] - sig["zone"][0]) / sig["price"] * 100, 3) if sig.get("zone") and sig.get("price") else None),
                                    "dist_level_pct": (round((sig["price"] / sig["level"] - 1) * 100, 3) if sig.get("level") and sig.get("price") else None)}
                     if asc is not None:

@@ -2932,7 +2932,7 @@ def manual_state(email: str = Depends(require_user)):
 _SCALP_NUM = {   # cle : (min, max, entier ?)
     "SCALP_LEVERAGE": (1, 10, True), "SCALP_NOTIONAL_USD": (10, 5000, False), "SCALP_SL_PCT": (0.2, 10, False),
     "SCALP_TP_PCT": (0.1, 10, False), "SCALP_TOP_N": (0, 100, True), "SCALP_MIN_SCORE": (0, 100, False), "SCALP_SHORT_MIN_SCORE": (0, 100, False), "SCALP_TREND_MODE": (0, 1, True), "SCALP_CONFIRM_BARS": (0, 12, True), "SCALP_NOISE_ATR": (0, 5, False),
-    "SCALP_MIN_ATR15_PCT": (0, 2, False), "SCALP_MOVE1M_ON": (0, 1, True), "SCALP_BASKET_CHASE_ON": (0, 1, True), "SCALP_BASKET_CHASE_PCT": (0, 3, False), "SCALP_CHASE_TREND_EXEMPT_ON": (0, 1, True), "SCALP_CHASE_TREND_ER": (0, 1, False), "SCALP_H4_VETO_ON": (0, 1, True), "SCALP_NOPROG_ON": (0, 1, True), "SCALP_BASE_MIN_TOUCHES": (1, 6, True), "SCALP_BASE_BARS": (3, 15, True), "SCALP_BASE_RANGE_ATR": (0.2, 3, False), "SCALP_BASE_PRESS_ATR": (0.1, 2, False), "SCALP_BASE_MARGIN_ATR": (0, 1, False), "SCALP_BASE_VOL_MULT": (0, 5, False), "SCALP_BASE_MAX_EXT_ATR": (0.1, 3, False), "SCALP_BASE_SL_PAD_ATR": (0, 1, False), "SCALP_BASE_SL_MIN_PCT": (0.1, 2, False), "SCALP_BASE_SL_MAX_PCT": (0.3, 3, False), "SCALP_BASE_KILL_N": (0, 100, True), "SCALP_BASE_KILL_USD": (0, 100, False), "SCALP_BASE_KILL_HOURS": (0, 72, False), "SCALP_FIXED_ON": (0, 1, True), "SCALP_FIXED_MARGIN_USD": (1, 1000, False), "SCALP_COMPOUND_FROM_USD": (0, 100000, False), "SCALP_FIXED_COMPOUND_PCT": (0, 50, False), "SCALP_SUS_ENTRY_END_ON": (0, 1, True), "SCALP_SUS_ENTRY_END_FRAC": (0, 1.5, False), "SCALP_NOPROG_SMART_ON": (0, 1, True), "SCALP_NOPROG_REV_MIN": (1, 30, True), "SCALP_NOPROG_MAX_MIN": (0, 240, False), "SCALP_NOPROG_FLOW_PCT": (50, 90, False), "SCALP_NOPROG_MIN": (0, 240, False), "SCALP_NOPROG_PEAK_PCT": (0, 2, False), "SCALP_PEAK_LOCK_ARM_PCT": (0, 10, False), "SCALP_PEAK_LOCK_FRACTION": (0, 1, False), "SCALP_BTC_SCALE1M_ON": (0, 1, True), "SCALP_DISP_BLOCK_ON": (0, 1, True), "SCALP_DISP_REB_H1_ON": (0, 1, True), "SCALP_BE_ARM_CONT_PCT": (0, 3, False), "SCALP_BE_ARM_REB_PCT": (0, 3, False), "SCALP_BE_ARM_CASS_PCT": (0, 3, False), "SCALP_CALM_ON": (0, 1, True), "SCALP_CALM_AMP5_PCT": (0, 2, False), "SCALP_CALM_ACC": (1, 10, False), "SCALP_CALM_DIR_PCT": (0, 2, False), "SCALP_CALM_EFF": (0, 1, False), "SCALP_MIN_ROOM_PCT": (0, 10, False), "SCALP_BREAK_VOL_MULT": (1, 10, False),
+    "SCALP_MIN_ATR15_PCT": (0, 2, False), "SCALP_MOVE1M_ON": (0, 1, True), "SCALP_BASKET_CHASE_ON": (0, 1, True), "SCALP_BASKET_CHASE_PCT": (0, 3, False), "SCALP_CHASE_TREND_EXEMPT_ON": (0, 1, True), "SCALP_CHASE_TREND_ER": (0, 1, False), "SCALP_H4_VETO_ON": (0, 1, True), "SCALP_NOPROG_ON": (0, 1, True), "SCALP_BASE_MIN_TOUCHES": (1, 6, True), "SCALP_BASE_BARS": (3, 15, True), "SCALP_BASE_RANGE_ATR": (0.2, 3, False), "SCALP_BASE_PRESS_ATR": (0.1, 2, False), "SCALP_BASE_MARGIN_ATR": (0, 1, False), "SCALP_BASE_VOL_MULT": (0, 5, False), "SCALP_BASE_MAX_EXT_ATR": (0.1, 3, False), "SCALP_BASE_SL_PAD_ATR": (0, 1, False), "SCALP_BASE_SL_MIN_PCT": (0.1, 2, False), "SCALP_BASE_SL_MAX_PCT": (0.3, 3, False), "SCALP_BASE_KILL_N": (0, 100, True), "SCALP_BASE_KILL_USD": (0, 100, False), "SCALP_BASE_KILL_HOURS": (0, 72, False), "SCALP_CONF_ON": (0, 1, True), "SCALP_CONF_SHADOW_ON": (0, 1, True), "SCALP_CONF_MIN": (1, 3, True), "SCALP_CONF_MIN_TOUCHES": (1, 6, True), "SCALP_CONF_RSI": (10, 50, False), "SCALP_CONF_RR": (0.5, 5, False), "SCALP_CONF_MIN_RR": (0.1, 5, False), "SCALP_CONF_SL_MIN_PCT": (0.1, 3, False), "SCALP_CONF_SL_MAX_PCT": (0.2, 5, False), "SCALP_CONF_FEE_PCT": (0, 1, False), "SCALP_CONF_H1_STRICT": (0, 1, True), "SCALP_CONF_PAD_ATR": (0, 2, False), "SCALP_CONF_TOL_ATR": (0.1, 3, False), "SCALP_CONF_HOLD_BARS": (2, 288, True), "SCALP_FIXED_ON": (0, 1, True), "SCALP_FIXED_MARGIN_USD": (1, 1000, False), "SCALP_COMPOUND_FROM_USD": (0, 100000, False), "SCALP_FIXED_COMPOUND_PCT": (0, 50, False), "SCALP_SUS_ENTRY_END_ON": (0, 1, True), "SCALP_SUS_ENTRY_END_FRAC": (0, 1.5, False), "SCALP_NOPROG_SMART_ON": (0, 1, True), "SCALP_NOPROG_REV_MIN": (1, 30, True), "SCALP_NOPROG_MAX_MIN": (0, 240, False), "SCALP_NOPROG_FLOW_PCT": (50, 90, False), "SCALP_NOPROG_MIN": (0, 240, False), "SCALP_NOPROG_PEAK_PCT": (0, 2, False), "SCALP_PEAK_LOCK_ARM_PCT": (0, 10, False), "SCALP_PEAK_LOCK_FRACTION": (0, 1, False), "SCALP_BTC_SCALE1M_ON": (0, 1, True), "SCALP_DISP_BLOCK_ON": (0, 1, True), "SCALP_DISP_REB_H1_ON": (0, 1, True), "SCALP_BE_ARM_CONT_PCT": (0, 3, False), "SCALP_BE_ARM_REB_PCT": (0, 3, False), "SCALP_BE_ARM_CASS_PCT": (0, 3, False), "SCALP_CALM_ON": (0, 1, True), "SCALP_CALM_AMP5_PCT": (0, 2, False), "SCALP_CALM_ACC": (1, 10, False), "SCALP_CALM_DIR_PCT": (0, 2, False), "SCALP_CALM_EFF": (0, 1, False), "SCALP_MIN_ROOM_PCT": (0, 10, False), "SCALP_BREAK_VOL_MULT": (1, 10, False),
     "SCALP_MAX_CHASE_PCT": (0.05, 3, False), "SCALP_MAX_OPEN": (0, 100, True), "SCALP_MAX_PER_DAY": (0, 500, True),
     "SCALP_DAILY_LOSS_USD": (0, 10000, False), "SCALP_PAUSE_AFTER_LOSSES": (0, 20, True), "SCALP_PAUSE_MIN": (1, 1440, True),
     "SCALP_COOLDOWN_MIN": (0, 1440, True), "SCALP_ZONE_COOLDOWN_MIN": (0, 1440, True), "SCALP_SHORT_BTC_BLOCK": (0, 1, True), "SCALP_SHORT_BTC_MAX_PCT": (-2, 3, False), "SCALP_RUN_ENABLED": (0, 1, True), "SCALP_CORR_WINDOW_MIN": (30, 275, True), "SCALP_CORR_HIGH": (0.1, 0.95, False), "SCALP_BREADTH_MIN": (50, 95, True),
@@ -2961,6 +2961,23 @@ def scalp_status(email: str = Depends(require_user)):
     out["config"] = {k: cfg.get(k) for k in list(_SCALP_NUM) + ["SCALP_HOURS_UTC", "SCALP_ENABLED", "SCALP_MODE"]}
     out["live_available"] = bot.exchange is not None
     return out
+
+
+@app.get("/api/scalp/confluence")
+def scalp_confluence_report(email: str = Depends(require_user)):
+    """v4.568 : test fantome + dernier backtest des principes."""
+    return bot.manual.scalp.conf_report()
+
+
+class ConfBtBody(BaseModel):
+    days: float = 14
+    n: int = 30
+
+
+@app.post("/api/scalp/confluence/backtest")
+def scalp_confluence_backtest(body: ConfBtBody, email: str = Depends(require_user)):
+    """v4.568 : lance le backtest des principes en tache de fond (jours 1-16, nombre d actifs)."""
+    return bot.manual.scalp.conf_backtest_start(max(1.0, min(float(body.days), 16.0)), max(1, min(int(body.n), 80)))
 
 
 @app.get("/api/scalp/nosig")
