@@ -2041,3 +2041,12 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **Capital paper** : `SCALP_CAPITAL_USD` 300 + le bouton « Repartir du capital de départ à partir de maintenant » (sinon le capital courant = 300 $ + tout le net déjà clôturé, soit 259,45 $ aujourd'hui).
 - Tests : `test571` (actif suivi jamais abonné par le Scalp, actif à la volée abonné une fois, réabonné après reconnexion avec ancien tampon, réabonné si l'objet `info` change, résumé de santé).
 - Fichiers : scalp_crypto.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.572 — TTP complémentaire à +0,6 % du prix (Scalp)
+- **Constat** (AAVE #1177) : pic à +0,65 % du prix, retombé à +0,22 % ; entre le stop de rentabilité (+0,10 %) et l'objectif (+1,09 %), rien ne suivait le prix. Le verrou du pic (armement 1,0 %) et le suiveur après objectif n'étaient pas atteints.
+- **Changement** : chaque nouveau trade Scalp (paper et live, mêmes règles) reçoit un trailing take profit complémentaire : armé quand le pic atteint `SCALP_TTP_ARM_PCT` (0,6 % du prix), sortie « TRAILING TAKE PROFIT » si le prix recule de `SCALP_TTP_TRAIL_PCT` (0,2 %) depuis le pic. Soit une sortie garantie vers +0,40 % au plus bas dès que le pic atteint +0,6 %. `SCALP_TTP_ON` = 0 désactive ; armement 0 = désactivé.
+- Il s'ajoute à l'existant (stop de rentabilité, verrou du pic, objectif + laisser courir, durée max). Il utilise le TTP déjà présent dans le gestionnaire d'ordres (aucun nouveau mécanisme de sortie).
+- Ne s'applique qu'aux trades ouverts après le déploiement (les positions déjà ouvertes gardent leurs paramètres).
+- Réserve : en coupant à −0,2 % du pic, le TTP peut sortir avant un mouvement plus long ; le suiveur de 0,2 % après objectif reste inchangé. À juger sur ~60 trades : gain moyen des trades à pic ≥ 0,6 %, et part de ceux qui auraient continué.
+- Tests : test572 (réglages, paramètres transmis, bornes) + régression.
+- Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.

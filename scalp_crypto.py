@@ -3633,6 +3633,8 @@ class ScalpEngine:
                   "confirm_live": mode == "live"}
         if int(c.get("SCALP_RUN_ENABLED", 1)):     # v4.434 : laisser courir apres l objectif ; sortie si le prix recule de X % depuis son plus haut
             params.update({"tp_run": True, "tp_run_lock_pct": 0.0, "tp_run_trail_pct": (osc["trail_pct"] if osc else (trail_cont or float(c.get("SCALP_RUN_TRAIL_PCT", 0.2))))})
+        if int(c.get("SCALP_TTP_ON", 1)) and float(c.get("SCALP_TTP_ARM_PCT", 0.6)) > 0:      # v4.572 : TTP complementaire : arme a +X % du prix, sortie si le prix recule de Y % depuis son pic
+            params.update({"ttp_arm_pct": float(c.get("SCALP_TTP_ARM_PCT", 0.6)), "ttp_trail_pct": float(c.get("SCALP_TTP_TRAIL_PCT", 0.2))})
         if int(c.get("SCALP_BE_ENABLED", 0)):      # v4.445 : stop au seuil de rentabilite apres un gain de X %
             params.update({"be_arm_pct": (be_arm_cont or self._be_arm_mode(sig, osc)), "be_lock_pct": float(c.get("SCALP_BE_LOCK_PCT", 0.1))})
         if int(c.get("SCALP_LADDER_ON", 0)):      # v4.524 : echelle de verrous TP1 / TP2 / TP3, puis suiveur
