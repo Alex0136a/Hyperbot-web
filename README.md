@@ -1991,3 +1991,11 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - CSV : colonnes base_touches, base_barres, base_amplitude_atr, base_marge_atr, base_volume, base_ext_atr, base_stop_pct.
 - Tests : base valide long/short acceptée ; refus mèche seule, pas de base, volume faible, trop loin, zone testée 1 fois, base trop large ; arrêt automatique. **Non testable sur historique** (pas de bougies 1 min passées) : à juger en paper sur 60–80 trades.
 - Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
+
+## v4.567 — Scalp : taille unique de 30 $ de marge, compound à partir de 500 $
+- **Demande** : même taille pour tous les trades, minimum 30 $ hors levier, en paper comme en live ; compound seulement si le capital est ≥ 500 $.
+- **Audit avant changement** : les tailles variaient de 38 à 67 $ de notionnel (continuation = 20 % du capital, rebond composé, réductions corrélé / short prudent BTC / bêta / vigilance / ascenseur) ; le compound n'existait que sur la continuation (à chaque trade) et sur les emplacements (une fois par jour).
+- **Changement (décision, paper et live)** : `SCALP_FIXED_ON` (1) : chaque trade Scalp ouvre avec `SCALP_FIXED_MARGIN_USD` (30 $) de marge, soit 90 $ de notionnel à levier 3. Compound seulement si le capital courant ≥ `SCALP_COMPOUND_FROM_USD` (500 $) : marge = max(30 $, capital × `SCALP_FIXED_COMPOUND_PCT` 6 %) (6 % de 500 $ = 30 $, pas de saut). Toutes les réductions de taille sont désactivées ; l'élargissement du stop (ascenseur, oscillation) reste mais la taille ne baisse plus, la perte maximale en $ augmente donc avec le stop. Refus si la marge déjà engagée + 30 $ dépasse le capital courant (capital 64 $ : 2 trades à la fois). `SCALP_FIXED_ON` = 0 revient aux anciennes tailles. L'Auto zone garde sa taille propre.
+- **Attention** : perte par stop environ 2,5 × plus forte qu'avec la marge de continuation d'avant (≈ 12,7 $). Le live utilise la même règle ; marge libre Hyperliquid vérifiée comme avant.
+- Test : marges 30 $ jusqu'à 499,9 $, 36 $ à 600 $, 60 $ à 1 000 $, retour aux anciennes tailles à 0.
+- Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.

@@ -2867,6 +2867,20 @@ class ScalpEngine:
         lo = 10.5 if mode == "live" else 1.0
         return max(cs["now"] * float(c.get("SCALP_COMPOUND_PCT", 100)) / 100.0, lo)
 
+    def fixed_margin(self, mode):
+        """v4.567 : marge (hors levier) d un trade Scalp, identique pour tous : SCALP_FIXED_MARGIN_USD (30 $), paper et live.
+        Le compound ne joue qu a partir de SCALP_COMPOUND_FROM_USD (500 $) de capital : marge = max(30 $, capital x SCALP_FIXED_COMPOUND_PCT %).
+        None si SCALP_FIXED_ON = 0 (anciennes tailles)."""
+        c = self.cfg
+        if not int(float(c.get("SCALP_FIXED_ON", 1) or 0)):
+            return None
+        m = max(float(c.get("SCALP_FIXED_MARGIN_USD", 30.0) or 30.0), 1.0)
+        now_cap = self.capital_state(mode)["now"]
+        frm = float(c.get("SCALP_COMPOUND_FROM_USD", 500.0) or 0)
+        if frm > 0 and now_cap >= frm:
+            m = max(m, now_cap * float(c.get("SCALP_FIXED_COMPOUND_PCT", 6.0) or 0) / 100.0)
+        return m
+
     def committed_margin(self, mode):
         """Marge engagee par les trades Scalp ouverts du mode."""
         return sum(float(it.get("notional_usd") or 0) / max(int(it.get("leverage") or 1), 1)
@@ -3305,8 +3319,17 @@ class ScalpEngine:
                 self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {n_open}/{slots} emplacements occupés")
                 return
         cont = sig.get("kind") == "continuation"      # v4.504 : continuation = 1/5 du capital engage en marge, jamais reduit par la correlation
-        base_notional = self.compound_notional(mode)
-        if cont:
+        fm_ = self.fixed_margin(mode)      # v4.567 : taille unique (marge fixe, compound seulement au-dela de 500 $)
+        fixed = fm_ is not None
+        base_notional = None if fixed else self.compound_notional(mode)
+        if fixed:
+            cs_ = self.capital_state(mode)
+            base_notional = fm_ * max(int(c.get("SCALP_LEVERAGE", 3)), 1)
+            used_ = self.committed_margin(mode)
+            if used_ + fm_ > cs_["now"] + 0.5:
+                self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : capital insuffisant pour une marge de {fm_:.2f} $ ({used_:.2f} $ déjà engagés, capital {cs_['now']:.2f} $)")
+                return
+        elif cont:
             cs_ = self.capital_state(mode)
             lev_ = max(int(c.get("SCALP_LEVERAGE", 3)), 1)
             base_notional = max(cs_["now"] * float(c.get("SCALP_CONT_MARGIN_PCT", 20)) / 100.0 * lev_, 10.5 if mode == "live" else 1.0)
@@ -3334,15 +3357,17 @@ class ScalpEngine:
         reg = dict(self.regime) if self.regime.get("n") else {}
         notional = base_notional
         sp = float(c.get("SCALP_CORR_SIZE_PCT", 100))
-        if reg.get("label") == "correle" and 0 < sp < 100 and not cont:      # v4.442 : marche correle = un seul pari ; on reduit la taille de chaque ligne
+        if (not fixed) and reg.get("label") == "correle" and 0 < sp < 100 and not cont:      # v4.442 : marche correle = un seul pari ; on reduit la taille de chaque ligne
             notional = max(notional * sp / 100.0, 10.5 if mode == "live" else 1.0)
-        if sig.get("prudent_btc") is not None:      # v4.497 : taille reduite pour un short a contre-courant de BTC
+        if (not fixed) and sig.get("prudent_btc") is not None:      # v4.497 : taille reduite pour un short a contre-courant de BTC
             notional = max(notional * max(0.1, min(1.0, float(c.get("SCALP_SHORT_BTC_SOFT_SIZE_PCT", 50) or 50) / 100.0)), 10.5 if mode == "live" else 1.0)
-        notional, why_beta = self.beta_adjust(t, sig["side"], notional, mode)      # v4.479 : options beta (taille, plafond d exposition)
+        why_beta = None
+        if not fixed:
+            notional, why_beta = self.beta_adjust(t, sig["side"], notional, mode)      # v4.479 : options beta (taille, plafond d exposition)
         if why_beta:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_beta}")
             return
-        if self.defense_state(mode) and not (float(c.get("SCALP_GOAL_PCT", 0) or 0) > 0 and self.capital_state(mode)["goal_reached"]) \
+        if (not fixed) and self.defense_state(mode) and not (float(c.get("SCALP_GOAL_PCT", 0) or 0) > 0 and self.capital_state(mode)["goal_reached"]) \
                 and int(float(c.get("SCALP_DEFENSE_SOFT", 1) or 0)):      # v4.483 : vigilance -> taille reduite
             f_ = self._defense_soft(t, sig, mode, "")[1]
             notional = max(notional * f_, 10.5 if mode == "live" else 1.0)
@@ -3386,18 +3411,22 @@ class ScalpEngine:
         if osc:
             base_sl = sl_soft
             sl_soft = osc["sl_pct"]
-            notional = max(notional * min(1.0, base_sl / sl_soft), 10.5 if mode == "live" else 1.0)      # meme perte maximale en $ (jamais plus gros que la taille normale)
+            if not fixed:
+                notional = max(notional * min(1.0, base_sl / sl_soft), 10.5 if mode == "live" else 1.0)      # meme perte maximale en $ (jamais plus gros que la taille normale)
         if (not osc) and (not cont) and asc and asc.get("asc") and int(c.get("SCALP_ASC_SL_ON", 1)) and sig.get("atr5") and sig.get("price"):
             a5p = sig["atr5"] / sig["price"] * 100.0      # stop elargi au-dessus du bruit, taille reduite pour garder la meme perte en $
             new_sl = min(max(sl_soft, float(c.get("SCALP_ASC_SL_ATR", 1.5)) * a5p), float(c.get("SCALP_ASC_SL_MAX_PCT", 1.5)))
             if new_sl > sl_soft + 1e-9:
-                notional = max(notional * sl_soft / new_sl, 10.5 if mode == "live" else 1.0)
-                asc["rules"].append(f"stop élargi {sl_soft:g} % → {new_sl:.2f} % (bruit ATR 5 min {a5p:.2f} %), taille réduite")
+                if not fixed:
+                    notional = max(notional * sl_soft / new_sl, 10.5 if mode == "live" else 1.0)
+                asc["rules"].append(f"stop élargi {sl_soft:g} % → {new_sl:.2f} % (bruit ATR 5 min {a5p:.2f} %)" + ("" if fixed else ", taille réduite"))
                 sl_soft = new_sl
         if (not osc) and (not cont) and int(c.get("SCALP_ASC_CLOSE_STOP_ON", 1)) and (bool(asc and asc.get("asc")) or not int(c.get("SCALP_ASC_CLOSE_STOP_ASC_ONLY", 1))):      # v4.496 : stop sur cloture seulement en ascenseur
             sl_hard = min(sl_soft * float(c.get("SCALP_ASC_HARD_MULT", 2.0)), 50.0)
             if asc is not None:
                 asc["rules"].append(f"stop sur clôture 5 min (secours {sl_hard:.2f} %)")
+        if fixed:
+            notional = base_notional      # v4.567 : taille unique, aucune reduction
         cluster_before = self._cluster_count(sig["side"], mode)
         params = {"strategy": STRATEGY, "ticker": t, "direction": sig["side"], "market": "perp", "mode": mode,
                   "execution": "now", "leverage": int(c.get("SCALP_LEVERAGE", 3)),
