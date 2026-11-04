@@ -2057,3 +2057,13 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Durée attendue : environ 1 à 3 minutes pour 29 actifs. Les règles testées sont celles de la v4.570 (aucun seuil modifié).
 - Tests : test573 (2 échecs puis succès, échec total avec code, seconde passe, actif toujours en erreur) + régression.
 - Fichiers : confluence.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.574 — Dernière modification avant le gel de mesure (observation seule)
+- **Aucune règle d'entrée, de sortie, de taille ou de filtre n'est modifiée.**
+- **CSV** : deux colonnes en fin de ligne, `flux_dispo` (oui / non : le flux de transactions de l'actif était-il disponible à l'ouverture) et `flux_age_s` (âge en secondes de la dernière transaction reçue). Permet de séparer, dans l'analyse, les trades pris avec et sans flux. Trades antérieurs : colonnes vides.
+- **Suivi après sortie** : il existait déjà pour les STOP LOSS, « durée max » et « sans progrès » du Scalp. Ajout des **DUREE MAXIMALE des ordres sur zone** (même suivi à 1 h et 3 h, colonnes `stop_h1_*` / `stop_h3_*` du CSV, type « durée »). Sert à savoir si prolonger la durée aurait aidé.
+- **Protocole de gel (15 jours)** : à partir du déploiement de cette version, aucune modification des règles du Scalp ni des ordres sur zone (réglages `SCALP_*` / `ZONEORD_*` compris). Exceptions : correction de bug ou risque de sécurité, notée ici avec sa date, et la période de mesure est alors coupée à cette date. L'affichage seul n'est pas une modification.
+- **Critères fixés avant mesure** : au moins 100 trades par mode (sinon on prolonge, on ne conclut pas) ; espérance nette positive dans les deux moitiés ; borne basse de l'intervalle de réussite au-dessus du seuil de rentabilité ; ventilation par motif de sortie et par type de signal. Le backtest n'est pas un critère (sorties simplifiées, règles différentes).
+- **À régler avant le début du gel** : flux ≈ 30/30 après la v4.571 ; `SCALP_CAPITAL_USD` = 300 puis « Repartir du capital de départ » ; fixer `SCALP_SUS_ON` et la pause macro 30/30 ; `SCALP_CONF_ON` = 0.
+- Tests : test574 (durée maximale des ordres sur zone suivie, stop dynamique non suivi, colonnes du CSV) + régression.
+- Fichiers : scalp_crypto.py, bot_engine.py, index.html, index_src.html, README.md.

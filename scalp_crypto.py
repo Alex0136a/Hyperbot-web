@@ -1510,7 +1510,7 @@ class ScalpEngine:
             swing = d.get("strategy_source") == "swing_support"
             if not (swing or d.get("strategy_source") == STRATEGY or d.get("zone_order")):
                 continue
-            if reason.startswith("STOP LOSS") or (not swing and (reason.startswith("SCALP DUREE MAX") or reason.startswith("SCALP SANS PROGRES"))):      # v4.552 : + durée max (Scalp)
+            if reason.startswith("STOP LOSS") or (not swing and (reason.startswith("SCALP DUREE MAX") or reason.startswith("SCALP SANS PROGRES") or (d.get("zone_order") and reason.startswith("DUREE MAXIMALE")))):      # v4.552 : + durée max (Scalp) ; v4.574 : + durée maximale des ordres sur zone
                 windows, mults = (PS_WINDOWS_SWING if swing else PS_WINDOWS), PS_MULTS
             elif swing and reason.startswith("MANUEL"):
                 sg = 1 if d.get("direction") == "long" else -1
@@ -1530,7 +1530,7 @@ class ScalpEngine:
                 cs = [c for c in self._candles_range(d["ticker"], ca, min(ca + win + 300, now)) if ca <= c["t"] / 1000.0 < ca + win]
                 ps = post_stop_calc(d, cs, ca, windows, mults) if len(cs) >= int(0.8 * win / 300) else {"ok": False, "fail": ps.get("fail", 0) + 1, "why": f"{len(cs)} bougies"}
                 if ps.get("ok"):
-                    ps["kind"] = "manuel" if reason.startswith("MANUEL") else ("durée" if reason.startswith("SCALP DUREE MAX") else ("sans progrès" if reason.startswith("SCALP SANS PROGRES") else "stop"))
+                    ps["kind"] = "manuel" if reason.startswith("MANUEL") else ("durée" if (reason.startswith("SCALP DUREE MAX") or reason.startswith("DUREE MAXIMALE")) else ("sans progrès" if reason.startswith("SCALP SANS PROGRES") else "stop"))
             except Exception as e:
                 ps = {"ok": False, "fail": ps.get("fail", 0) + 1, "why": f"{type(e).__name__}"}
             d["post_stop"] = ps
@@ -3666,6 +3666,7 @@ class ScalpEngine:
                                               "cluster": cluster_before, "peers": sig.get("peers")},
                                    "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra, "calm": sig.get("calm1m"), "mv1": sig.get("move1m"),
                                    "base": sig.get("base"), "touches": sig.get("touches"),
+                                   "flux": {"ok": bool((getattr(self, "ctx_state", {}).get(t) or {}).get("flow")), "age_s": (getattr(self, "ctx_state", {}).get(t) or {}).get("flow_age")},      # v4.574 : le flux etait-il disponible a l entree (observation seule)
                                    "conf": ({"n": conf_res.get("n_conf"), "h1": conf_res.get("h1"), "h4": conf_res.get("h4"), "rr_net": conf_res.get("rr_net"), "zone": conf_res.get("zone"), "indic": conf_res.get("indic"), "pa": conf_res.get("pa")} if conf_res else None),      # v4.493 : mesures de la zone horizontale (aucun effet sur les decisions)
                                    "zone_width_pct": (round((sig["zone"][1] - sig["zone"][0]) / sig["price"] * 100, 3) if sig.get("zone") and sig.get("price") else None),
                                    "dist_level_pct": (round((sig["price"] / sig["level"] - 1) * 100, 3) if sig.get("level") and sig.get("price") else None)}
