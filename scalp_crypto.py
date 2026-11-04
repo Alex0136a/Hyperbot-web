@@ -206,6 +206,58 @@ def move_gate(c, t1h, m15, mv, K):
     return ("ok", None) if st == "enclenché" else ("refus", msg)
 
 
+def base_break(c1, side, zl, zh, touches, a5, K):
+    """v4.566 : CASSURE DE BASE 1 min sur une zone H1 (pur). Remplace l ancienne cassure (une bougie 5 min a corps fort).
+    Long : cassure de la zone haute zh ; short : cassure de la zone basse zl. Bougies 1 min CLOTUREES, anciennes d abord.
+    Criteres (tous requis) :
+      1 niveau qui compte : zone H1 testee >= base_min_touches fois ;
+      2 pression : les base_bars bougies 1 min avant la cassure restent collees au niveau (cloture entre niveau - base_press_atr x ATR5 et niveau + 0,1 x ATR5)
+        avec une amplitude totale <= base_range_atr x ATR5 (base serree) ;
+      3 acceptation : les 2 dernieres clotures 1 min sont au-dela du niveau d au moins base_margin_atr x ATR5 (une meche seule ne compte pas) ;
+      4 energie : volume moyen des 2 bougies de cassure >= base_vol_mult x volume median de la base ;
+      5 pas de poursuite : derniere cloture a au plus base_max_ext_atr x ATR5 du niveau.
+    Stop = bord oppose de la base - base_sl_pad_atr x ATR5, borne [base_sl_min_pct, base_sl_max_pct] % du prix.
+    Retourne {ok, why, level, sl_pct, touches, bars, range_atr, margin_atr, vol, ext_atr}."""
+    B = int(K.get("base_bars", 6))
+    if not c1 or len(c1) < B + 2 or not a5 or a5 <= 0:
+        return {"ok": False, "why": "bougies 1 min insuffisantes"}
+    if touches < int(K.get("base_min_touches", 2)):
+        return {"ok": False, "why": f"zone testee {touches} fois seulement"}
+    base, brk = c1[-(B + 2):-2], c1[-2:]
+    price = float(brk[-1]["c"])
+    if price <= 0:
+        return {"ok": False, "why": "prix indisponible"}
+    sg = 1 if side == "long" else -1
+    lvl = zh if sg > 0 else zl
+    press, rng_max = float(K.get("base_press_atr", 0.6)), float(K.get("base_range_atr", 1.0))
+    for x in base:      # pression : toutes les clotures de la base collees au niveau, pas encore au-dela
+        d = sg * (float(x["c"]) - lvl) / a5
+        if d > 0.1 or d < -press:
+            return {"ok": False, "why": "pas de base collée au niveau"}
+    hi, lo = max(float(x["h"]) for x in base), min(float(x["l"]) for x in base)
+    rng = (hi - lo) / a5
+    if rng > rng_max:
+        return {"ok": False, "why": f"base trop large ({rng:.1f} ATR 5 min)"}
+    mar = float(K.get("base_margin_atr", 0.15))
+    margins = [sg * (float(x["c"]) - lvl) / a5 for x in brk]
+    if min(margins) < mar:
+        return {"ok": False, "why": "pas de clôture 1 min acceptée au-delà du niveau"}
+    vb = sorted(float(x["v"]) for x in base)
+    vmed = vb[len(vb) // 2]
+    vol = (sum(float(x["v"]) for x in brk) / 2.0 / vmed) if vmed > 0 else 0.0
+    if vol < float(K.get("base_vol_mult", 1.5)):
+        return {"ok": False, "why": f"volume de cassure faible (×{vol:.1f} de la base)"}
+    ext = sg * (price - lvl) / a5
+    if ext > float(K.get("base_max_ext_atr", 0.6)):
+        return {"ok": False, "why": f"déjà trop loin du niveau ({ext:.1f} ATR 5 min) : on ne court pas après"}
+    inside = lo if sg > 0 else hi      # bord oppose de la base : si le prix y retourne, la cassure est fausse
+    stop_px = inside - sg * float(K.get("base_sl_pad_atr", 0.1)) * a5
+    sl = abs(price - stop_px) / price * 100.0
+    sl = min(max(sl, float(K.get("base_sl_min_pct", 0.25))), float(K.get("base_sl_max_pct", 1.0)))
+    return {"ok": True, "why": "", "level": lvl, "sl_pct": round(sl, 3), "touches": touches, "bars": B, "range_atr": round(rng, 2),
+            "margin_atr": round(min(margins), 2), "vol": round(vol, 2), "ext_atr": round(ext, 2)}
+
+
 def evaluate(c5, c15, c1h, btc_chg, K, flow=None, c1=None):
     """Retourne le meilleur signal {side, kind, zone, score, reasons, level} ou (None, motif).
     c5 / c15 / c1h : bougies CLOTUREES (dicts t,o,h,l,c,v), les plus anciennes d abord.
@@ -314,20 +366,17 @@ def evaluate(c5, c15, c1h, btc_chg, K, flow=None, c1=None):
                 sc, why, rm = score_of("short", "rebond", z, 6)
                 cands.append({"side": "short", "kind": "rebond", "zone": (zl, zh), "score": sc, "room": rm,
                               "touches": int(z.get("touches") or 1), "reasons": [f"rejet de la resistance {zl:.6g}-{zh:.6g} ({nm} 5 min)"] + why, "level": zl})
-        # ── CASSURE haussiere confirmee ──
-        strong_up = rng > 0 and body >= 0.5 * a5 and last["c"] > last["o"] and (last["c"] - last["l"]) / rng >= 0.7
-        if (strong_up and last["c"] > zh + 0.1 * a15 and min(prev["c"], prev2["c"]) <= zh and vr >= K["vol_mult"]
-                and (last["c"] - zh) / zh * 100 <= K["max_chase_pct"] and (rsi5 is None or rsi5 < 80)):
-            sc, why, rm = score_of("long", "cassure", z, 8)
-            cands.append({"side": "long", "kind": "cassure", "zone": (zl, zh), "score": sc, "room": rm,
-                          "touches": int(z.get("touches") or 1), "reasons": [f"cassure confirmee de {zh:.6g} (5 min, corps fort)"] + why, "level": zh})
-        # ── CASSURE baissiere confirmee ──
-        strong_dn = rng > 0 and body >= 0.5 * a5 and last["c"] < last["o"] and (last["h"] - last["c"]) / rng >= 0.7
-        if (strong_dn and last["c"] < zl - 0.1 * a15 and max(prev["c"], prev2["c"]) >= zl and vr >= K["vol_mult"]
-                and (zl - last["c"]) / zl * 100 <= K["max_chase_pct"] and (rsi5 is None or rsi5 > 20)):
-            sc, why, rm = score_of("short", "cassure", z, 8)
-            cands.append({"side": "short", "kind": "cassure", "zone": (zl, zh), "score": sc, "room": rm,
-                          "touches": int(z.get("touches") or 1), "reasons": [f"cassure confirmee de {zl:.6g} (5 min, corps fort)"] + why, "level": zl})
+        # ── CASSURE DE BASE 1 min (v4.566) : remplace l ancienne cassure sur une bougie 5 min ──
+        if c1 and int(K.get("base_on", 1)):
+            for side_ in ("long", "short"):
+                bb = base_break(c1, side_, zl, zh, int(z.get("touches") or 1), a5, K)
+                if not bb["ok"]:
+                    continue
+                lvl_ = bb["level"]
+                sc, why, rm = score_of(side_, "cassure", z, 8)
+                cands.append({"side": side_, "kind": "cassure", "zone": (zl, zh), "score": sc, "room": rm, "touches": int(z.get("touches") or 1), "level": lvl_,
+                              "base": bb, "reasons": [f"cassure de base 1 min de {lvl_:.6g} (zone testée {bb['touches']} fois, base {bb['bars']} min d'amplitude {bb['range_atr']:.1f} ATR, "
+                                                      f"volume ×{bb['vol']:.1f}, {bb['ext_atr']:.1f} ATR au-delà)"] + why})
     if not cands:
         return None, "aucun signal"
     # v4.438 : SHORT interdit tant que BTC monte (variation 1 h > seuil). Appliquer avant le filtre de tendance.
@@ -1047,7 +1096,12 @@ class ScalpEngine:
                 "cont_momentum_on": int(c.get("SCALP_CONT_MOMENTUM_ON", 1)), "cont_flow_min": float(c.get("SCALP_CONT_FLOW_MIN", 0.5)),
                 "cont_min_room_pct": float(c.get("SCALP_CONT_MIN_ROOM_PCT", 0.3)), "cont_vol_mult": float(c.get("SCALP_CONT_VOL_MULT", 1.2)), "cont_early_on": int(c.get("SCALP_CONT_EARLY_ON", 1)),
                 "cont_short_on": int(c.get("SCALP_CONT_SHORT_ON", 1)), "cont_trend_bars": int(c.get("SCALP_CONT_TREND_BARS", 36)), "cont_min_r2_5m": float(c.get("SCALP_CONT_MIN_R2_5M", 0.3)),
-                "cont_h1_block": int(c.get("SCALP_CONT_H1_BLOCK", 1)), "sus_entry_end_on": int(c.get("SCALP_SUS_ENTRY_END_ON", 1)), "sus_entry_end_frac": float(c.get("SCALP_SUS_ENTRY_END_FRAC", 0.5)), "sus_min": int(c.get("SCALP_SUS_MIN", 30)), "sus_min_move_pct": float(c.get("SCALP_SUS_MIN_MOVE_PCT", 0.35)), "sus_min_move_atr": float(c.get("SCALP_SUS_MIN_MOVE_ATR", 2.0)),
+                "cont_h1_block": int(c.get("SCALP_CONT_H1_BLOCK", 1)), "sus_entry_end_on": int(c.get("SCALP_SUS_ENTRY_END_ON", 1)),
+                "base_on": int(c.get("SCALP_BREAKOUT_ON", 1)), "base_min_touches": int(c.get("SCALP_BASE_MIN_TOUCHES", 2)), "base_bars": int(c.get("SCALP_BASE_BARS", 6)),
+                "base_range_atr": float(c.get("SCALP_BASE_RANGE_ATR", 1.0)), "base_press_atr": float(c.get("SCALP_BASE_PRESS_ATR", 0.6)),
+                "base_margin_atr": float(c.get("SCALP_BASE_MARGIN_ATR", 0.15)), "base_vol_mult": float(c.get("SCALP_BASE_VOL_MULT", 1.5)),
+                "base_max_ext_atr": float(c.get("SCALP_BASE_MAX_EXT_ATR", 0.6)), "base_sl_pad_atr": float(c.get("SCALP_BASE_SL_PAD_ATR", 0.1)),
+                "base_sl_min_pct": float(c.get("SCALP_BASE_SL_MIN_PCT", 0.25)), "base_sl_max_pct": float(c.get("SCALP_BASE_SL_MAX_PCT", 1.0)), "sus_entry_end_frac": float(c.get("SCALP_SUS_ENTRY_END_FRAC", 0.5)), "sus_min": int(c.get("SCALP_SUS_MIN", 30)), "sus_min_move_pct": float(c.get("SCALP_SUS_MIN_MOVE_PCT", 0.35)), "sus_min_move_atr": float(c.get("SCALP_SUS_MIN_MOVE_ATR", 2.0)),
                 "sus_min_er": float(c.get("SCALP_SUS_MIN_ER", 0.45)), "sus_max_pb_atr": float(c.get("SCALP_SUS_MAX_PB_ATR", 1.5)), "sus_max_ext_atr": float(c.get("SCALP_SUS_MAX_EXT_ATR", 4.0)),
                 "sus_rsi_max": float(c.get("SCALP_SUS_RSI_MAX", 93)), "sus_end_pb_atr": float(c.get("SCALP_SUS_END_PB_ATR", 1.2)),
                 "btc_scale1m": int(c.get("SCALP_BTC_SCALE1M_ON", 1)), "move1m_on": int(c.get("SCALP_MOVE1M_ON", 1)), "move_net": float(c.get("SCALP_CALM_DIR_PCT", 0.10)), "move_eff": float(c.get("SCALP_CALM_EFF", 0.6)), "move_acc": float(c.get("SCALP_CALM_ACC", 1.8))}
@@ -1696,6 +1750,33 @@ class ScalpEngine:
             return f"inversion durable ({st['streak']} contrôles, {against}/3 signaux contre) — {reads}"
         if v1 <= 0 and vf <= 0 and not carried:
             return f"aucune reprise ({reads}), gain maximal {peak:+.2f} %"
+        return None
+
+    def _base_kill(self, mode):
+        """v4.566 : arret automatique de la cassure de base : sur les SCALP_BASE_KILL_N (20) derniers trades « cassure de base » fermes, si le net
+        cumule est <= -SCALP_BASE_KILL_USD (3 $), plus de nouvelle cassure pendant SCALP_BASE_KILL_HOURS (12 h) apres la derniere sortie.
+        Ne compte que les cassures de base (trade avec scalp.base) ; 0 = pas d arret."""
+        c = self.cfg
+        n, usd, hrs = int(float(c.get("SCALP_BASE_KILL_N", 20) or 0)), float(c.get("SCALP_BASE_KILL_USD", 3.0) or 0), float(c.get("SCALP_BASE_KILL_HOURS", 12) or 0)
+        if n <= 0 or usd <= 0:
+            return None
+        try:
+            rows = [d for d in self._closed_rows(mode) if (d.get("scalp") or {}).get("kind") == "cassure" and (d.get("scalp") or {}).get("base")]
+            rows.sort(key=lambda d: float(d.get("closed_at") or 0), reverse=True)
+            last = rows[:n]
+            if len(last) < n:
+                return None
+            def _net(d):
+                rc = d.get("real_costs")
+                if rc and d.get("pnl") is not None:
+                    return float(rc["net"])
+                fe = float(d.get("fees_est") or 0) or float(d.get("notional_usd") or 0) * 0.0009
+                return float(d.get("pnl") or 0) - fe
+            tot = sum(_net(d) for d in last)
+            if tot <= -usd and (hrs <= 0 or time.time() - float(last[0].get("closed_at") or 0) < hrs * 3600):
+                return f"arrêt automatique de la cassure de base : {tot:+.2f} $ sur ses {n} derniers trades (seuil −{usd:g} $), reprise {hrs:g} h après la dernière sortie"
+        except Exception:
+            return None
         return None
 
     def _open_count(self):
@@ -2963,7 +3044,7 @@ class ScalpEngine:
             info["rules"].append(f"pente {nb} h ok ({sv['pente_atr']:+.2f})")
         # 2) ascenseur : pas de cassure ; un rebond doit etre pres de la ligne inclinee de support (long) / resistance (short)
         if info["asc"] and int(c.get("SCALP_ASC_ENTRY_ON", 1)):
-            if sig["kind"] == "cassure":
+            if sig["kind"] == "cassure" and not sig.get("base"):      # v4.566 : la cassure de base (base serree puis clôtures acceptées) n est pas un ascenseur
                 return (f"ascenseur (efficacité 1 min {info['er_1m']:.2f} < {er_max:g}) : cassure refusée, on attend un repli", info)
             near = float(c.get("SCALP_ASC_NEAR_LINE_PCT", 0) or 0)      # v4.492 : 0 = mesure seule (la ligne 1 h prolongee peut etre tres loin)
             d = sl_.get("lig_sup_dist_pct") if sig["side"] == "long" else sl_.get("lig_res_dist_pct")
@@ -3194,6 +3275,11 @@ class ScalpEngine:
         if not int(c.get("SCALP_BREAKOUT_ON", 1)) and sig.get("kind") == "cassure":      # v4.493 : cassures coupees (paper et live)
             self._ev("refus", t, "cassure " + sig["side"] + " refusée : cassures désactivées (SCALP_BREAKOUT_ON = 0)")
             return
+        if sig.get("kind") == "cassure":      # v4.566 : arret automatique de la cassure de base si ses derniers trades perdent trop
+            why_kill = self._base_kill(mode)
+            if why_kill:
+                self._ev("refus", t, f"cassure {sig['side']} refusée : {why_kill}")
+                return
         if int(c.get("SCALP_ASSET_BLOCK_ON", 0)):          # v4.493 : actif en mauvaise passe (sur ses derniers trades) mis de cote
             rec = self._asset_record(mode).get(t)
             mn, wr = int(float(c.get("SCALP_ASSET_BLOCK_MIN_TRADES", 15))), float(c.get("SCALP_ASSET_BLOCK_WINRATE", 42))
@@ -3261,6 +3347,8 @@ class ScalpEngine:
             f_ = self._defense_soft(t, sig, mode, "")[1]
             notional = max(notional * f_, 10.5 if mode == "live" else 1.0)
         sl_soft = float(c.get("SCALP_CONT_SL_PCT", 0.2)) if cont else float(c.get("SCALP_SL_PCT", 0.65))
+        if sig.get("kind") == "cassure" and (sig.get("base") or {}).get("sl_pct"):      # v4.566 : stop de la cassure = bord oppose de la base (si le prix y retourne, la cassure est fausse)
+            sl_soft = float(sig["base"]["sl_pct"])
         sl_hard = None
         tp_cont = be_arm_cont = trail_cont = None
         sus = cont and (sig.get("cont") or {}).get("sub") == "soutenue"
@@ -3348,7 +3436,7 @@ class ScalpEngine:
                                               "basket30": reg.get("basket30"), "rel30": (round(reg["ch30"].get(t, 0) - reg["basket30"], 3) if reg.get("ch30") and reg.get("basket30") is not None else None),
                                               "cluster": cluster_before, "peers": sig.get("peers")},
                                    "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra, "calm": sig.get("calm1m"), "mv1": sig.get("move1m"),
-                                   "touches": sig.get("touches"),      # v4.493 : mesures de la zone horizontale (aucun effet sur les decisions)
+                                   "base": sig.get("base"), "touches": sig.get("touches"),      # v4.493 : mesures de la zone horizontale (aucun effet sur les decisions)
                                    "zone_width_pct": (round((sig["zone"][1] - sig["zone"][0]) / sig["price"] * 100, 3) if sig.get("zone") and sig.get("price") else None),
                                    "dist_level_pct": (round((sig["price"] / sig["level"] - 1) * 100, 3) if sig.get("level") and sig.get("price") else None)}
                     if asc is not None:
