@@ -42,7 +42,15 @@ def thresholds(cfg):
     return {"min_conf": int(g("SCALP_CONF_MIN", 3)), "min_touches": int(g("SCALP_CONF_MIN_TOUCHES", 2)), "rsi": g("SCALP_CONF_RSI", 35),
             "rr": g("SCALP_CONF_RR", 1.5), "min_rr": g("SCALP_CONF_MIN_RR", 1.0), "sl_min": g("SCALP_CONF_SL_MIN_PCT", 0.4),
             "sl_max": g("SCALP_CONF_SL_MAX_PCT", 1.0), "fee": g("SCALP_CONF_FEE_PCT", 0.10), "h1_strict": int(g("SCALP_CONF_H1_STRICT", 1)),
-            "pad": g("SCALP_CONF_PAD_ATR", 0.15), "tol": g("SCALP_CONF_TOL_ATR", 0.6), "hold_bars": int(g("SCALP_CONF_HOLD_BARS", 24))}
+            "pad": g("SCALP_CONF_PAD_ATR", 0.15), "tol": g("SCALP_CONF_TOL_ATR", 0.6), "hold_bars": int(g("SCALP_CONF_HOLD_BARS", 24)),
+            "zone_max_atr": g("SCALP_CONF_ZONE_MAX_ATR", 1.5), "sl_atr": g("SCALP_CONF_SL_ATR", 1.5)}
+
+
+def sl_atr_floor(sl_pct, atr5, price, mult, cap_pct):
+    """v4.569 : plancher du stop = mult x ATR 5 min (stop au-dela du bruit). Retourne le nouveau stop en % (jamais plus petit que sl_pct, plafonne a cap_pct)."""
+    if not (atr5 and price and mult > 0):
+        return sl_pct
+    return max(sl_pct, min(mult * atr5 / price * 100.0, max(cap_pct, sl_pct)))
 
 
 def agg_h4(c1h):
@@ -78,10 +86,11 @@ def _state(candles, side):
     return "neutre"
 
 
-def h1_cache(c1h):
-    """Calculs qui ne changent qu a chaque nouvelle bougie H1 (zones, H4) : à réutiliser."""
+def h1_cache(c1h, max_w=None):
+    """Calculs qui ne changent qu a chaque nouvelle bougie H1 (zones, H4) : à réutiliser.
+    v4.569 : max_w = largeur MAXIMALE d une zone en ATR 1 h (une « zone » de 10 a 50 % du prix n est pas un niveau)."""
     c4h = agg_h4(c1h)
-    return {"zones": mtf.find_zones(c1h[-150:], lookback=120, min_touches=1), "c4h": c4h,
+    return {"zones": mtf.find_zones(c1h[-150:], lookback=120, min_touches=1, max_width_atr=(max_w if max_w and max_w > 0 else None)), "c4h": c4h,
             "ctx": {s: (_state(c1h, s), _state(c4h, s) if len(c4h) >= 50 else "inconnu") for s in ("long", "short")}}
 
 
@@ -91,7 +100,7 @@ def evaluate(side, c5, c15, c1h, K, cache=None, base_ok=None):
     if len(c5) < 30 or len(c15) < 50 or len(c1h) < 60:
         out["why"] = "historique insuffisant"
         return out
-    cache = cache or h1_cache(c1h)
+    cache = cache or h1_cache(c1h, K.get("zone_max_atr"))
     price = c5[-1]["c"]
     a5 = mtf.atr(c5[-60:]) or 0
     if price <= 0 or a5 <= 0:
@@ -157,7 +166,9 @@ def evaluate(side, c5, c15, c1h, K, cache=None, base_ok=None):
         sl_dist = (price - (far - pad)) if side == "long" else ((far + pad) - price)
     else:
         sl_dist = 1.5 * a5
-    sl_pct = min(max(sl_dist / price * 100.0, K["sl_min"]), K["sl_max"])
+    sl_need = max(sl_dist / price * 100.0, K["sl_min"], K["sl_atr"] * a5 / price * 100.0)      # v4.569 : stop au moins K["sl_atr"] x ATR 5 min (au-dela du bruit)
+    too_noisy = sl_need > K["sl_max"] + 1e-9
+    sl_pct = min(sl_need, K["sl_max"])
     tp_pct = K["rr"] * sl_pct
     rr_net = (tp_pct - K["fee"]) / (sl_pct + K["fee"])
     room_ok = True
@@ -170,6 +181,8 @@ def evaluate(side, c5, c15, c1h, K, cache=None, base_ok=None):
         why.append(f"contexte : H1 {h1s}, H4 {h4s}")
     if n_conf < K["min_conf"]:
         why.append(f"confluence {n_conf}/{K['min_conf']} (" + ", ".join(k for k, v in flags.items() if not v) + " manquant)")
+    if too_noisy:
+        why.append(f"bruit trop grand : le stop doit être de {sl_need:.2f} % (> {K['sl_max']:g} %)")
     if rr_net < K["min_rr"]:
         why.append(f"risque/rendement net {rr_net:.2f} < {K['min_rr']:g}")
     if not room_ok:
@@ -254,7 +267,7 @@ def collect_signals(tk, c5, c15, c1h, K, sample_every=12):
         if j15 < 50 or j1h < 60:
             continue
         if j1h != cache_j:
-            cache, cache_j = h1_cache(c1h[max(0, j1h - 230):j1h]), j1h
+            cache, cache_j = h1_cache(c1h[max(0, j1h - 230):j1h], K.get("zone_max_atr")), j1h
         w5, w15, w1h = c5[max(0, i - 59):i + 1], c15[max(0, j15 - 80):j15], c1h[max(0, j1h - 230):j1h]
         for side in ("long", "short"):
             r = evaluate(side, w5, w15, w1h, K, cache=cache)
@@ -344,4 +357,4 @@ def run_backtest(info, tickers, days, K, progress=None, pause=0.3):
             progress(done, len(tickers))
     res = run_variants(c5s, sigs, K)
     return {"days": days, "tickers": len(c5s), "skipped": skipped, "signals": len(sigs), "variants": res, "ts": time.time(),
-            "params": {k: K[k] for k in ("min_conf", "min_touches", "rsi", "rr", "min_rr", "sl_min", "sl_max", "fee", "h1_strict", "hold_bars")}}
+            "params": {k: K[k] for k in ("min_conf", "min_touches", "rsi", "rr", "min_rr", "sl_min", "sl_max", "fee", "h1_strict", "hold_bars", "zone_max_atr", "sl_atr")}}

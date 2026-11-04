@@ -1139,11 +1139,12 @@ class ScalpEngine:
             pass
 
     def _conf_cache(self, t, c1h):
-        k = c1h[-1]["t"] if c1h else 0
+        mw = conf_mod.thresholds(self.cfg).get("zone_max_atr")
+        k = (c1h[-1]["t"] if c1h else 0, mw)
         hit = self._conf_h1c.get(t)
         if hit and hit[0] == k:
             return hit[1]
-        cache = conf_mod.h1_cache(c1h)
+        cache = conf_mod.h1_cache(c1h, mw)
         self._conf_h1c[t] = (k, cache)
         return cache
 
@@ -3544,6 +3545,13 @@ class ScalpEngine:
                     notional = max(notional * sl_soft / new_sl, 10.5 if mode == "live" else 1.0)
                 asc["rules"].append(f"stop élargi {sl_soft:g} % → {new_sl:.2f} % (bruit ATR 5 min {a5p:.2f} %)" + ("" if fixed else ", taille réduite"))
                 sl_soft = new_sl
+        if (not osc) and (not cont) and conf_res is None and sig.get("kind") == "rebond" and int(float(c.get("SCALP_SL_ATR_FLOOR_ON", 1) or 0)) and sig.get("atr5") and sig.get("price"):
+            fl_ = conf_mod.sl_atr_floor(sl_soft, sig["atr5"], sig["price"], float(c.get("SCALP_SL_ATR_FLOOR", 1.5)), float(c.get("SCALP_SL_FLOOR_MAX_PCT", 1.5)))      # v4.569 : stop au-dela du bruit (rebond)
+            if fl_ > sl_soft + 1e-9:
+                tp_cont = max(float(c.get("SCALP_TP_PCT", 0.6)), float(c.get("SCALP_SL_FLOOR_RR", 1.5)) * fl_)      # l objectif suit le stop (risque / rendement)
+                if asc is not None:
+                    asc["rules"].append(f"stop relevé {sl_soft:g} % → {fl_:.2f} % (1,5 ATR 5 min), objectif {tp_cont:.2f} %")
+                sl_soft = fl_
         if (not osc) and (not cont) and int(c.get("SCALP_ASC_CLOSE_STOP_ON", 1)) and (bool(asc and asc.get("asc")) or not int(c.get("SCALP_ASC_CLOSE_STOP_ASC_ONLY", 1))):      # v4.496 : stop sur cloture seulement en ascenseur
             sl_hard = min(sl_soft * float(c.get("SCALP_ASC_HARD_MULT", 2.0)), 50.0)
             if asc is not None:
