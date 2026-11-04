@@ -2050,3 +2050,10 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Réserve : en coupant à −0,2 % du pic, le TTP peut sortir avant un mouvement plus long ; le suiveur de 0,2 % après objectif reste inchangé. À juger sur ~60 trades : gain moyen des trades à pic ≥ 0,6 %, et part de ceux qui auraient continué.
 - Tests : test572 (réglages, paramètres transmis, bornes) + régression.
 - Fichiers : scalp_crypto.py, bot_engine.py, api.py, index.html, index_src.html, README.md.
+
+## v4.573 — Backtest : nouvel essai, seconde passe, erreurs lisibles
+- **Constat** : au backtest du 04/11, 11 actifs sur 29 ont été ignorés avec « ClientError » sans autre information (probablement limite de requêtes d'Hyperliquid, non confirmé : le message n'était pas conservé). Résultat calculé sur 18 actifs seulement.
+- **Changement (aucune règle de trading)** : chaque requête de bougies est retentée jusqu'à 4 fois (attente 2, 4, 8 s) ; pause entre requêtes portée de 0,3 à 0,6 s ; les actifs en échec sont repris dans une seconde passe après 30 s de repos ; les actifs encore en erreur affichent le code et le message réels (ex. « ClientError 429 : … ») ou « données insuffisantes ». Le résumé indique combien d'actifs ont été repris. Durée par défaut du backtest : 16 jours (maximum).
+- Durée attendue : environ 1 à 3 minutes pour 29 actifs. Les règles testées sont celles de la v4.570 (aucun seuil modifié).
+- Tests : test573 (2 échecs puis succès, échec total avec code, seconde passe, actif toujours en erreur) + régression.
+- Fichiers : confluence.py, bot_engine.py, index.html, index_src.html, README.md.

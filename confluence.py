@@ -374,8 +374,27 @@ def run_variants(c5s, sigs, K):
     return out
 
 
-def fetch_candles(info, coin, interval, start_s, end_s):
-    raw = info.post("/info", {"type": "candleSnapshot", "req": {"coin": coin, "interval": interval, "startTime": int(start_s * 1000), "endTime": int(end_s * 1000)}})
+def _err_txt(e):
+    """v4.573 : texte lisible d une erreur reseau / API (code HTTP + message), pour comprendre pourquoi un actif est ignore."""
+    code = getattr(e, "status_code", None)
+    msg = str(getattr(e, "error_message", "") or getattr(e, "args", [""])[-1] or "")[:60]
+    return f"{type(e).__name__}" + (f" {code}" if code else "") + (f" : {msg}" if msg else "")
+
+
+def fetch_candles(info, coin, interval, start_s, end_s, retries=4, sleep=time.sleep):
+    """v4.573 : nouvel essai avec attente croissante (2, 4, 8 s) : une limite de requetes (429) ne doit pas faire perdre l actif."""
+    raw, last = None, None
+    for k in range(max(1, retries)):
+        try:
+            raw = info.post("/info", {"type": "candleSnapshot", "req": {"coin": coin, "interval": interval, "startTime": int(start_s * 1000), "endTime": int(end_s * 1000)}})
+            last = None
+            break
+        except Exception as e:
+            last = e
+            if k < retries - 1:
+                sleep(2 * (2 ** k))
+    if last is not None:
+        raise last
     out = []
     if isinstance(raw, list):
         for c in raw:
@@ -386,30 +405,48 @@ def fetch_candles(info, coin, interval, start_s, end_s):
     return out
 
 
-def run_backtest(info, tickers, days, K, progress=None, pause=0.3):
-    """Télécharge 5 min / 15 min / 1 h pour chaque actif (les bougies encore ouvertes sont écartées), puis rejoue les principes."""
+def run_backtest(info, tickers, days, K, progress=None, pause=0.6, sleep=time.sleep):
+    """Télécharge 5 min / 15 min / 1 h pour chaque actif (les bougies encore ouvertes sont écartées), puis rejoue les principes.
+    v4.573 : pause plus longue, nouvel essai par requete, seconde passe (apres 30 s de repos) pour les actifs en erreur, texte d erreur reel."""
     now = time.time()
     days = max(1, min(float(days), 16.0))
-    c5s, sigs, done, skipped = {}, [], 0, []
+    c5s, sigs, skipped, errs = {}, [], [], {}
+    total, done = len(tickers), 0
+
+    def _one(tk):
+        c5 = fetch_candles(info, tk, "5m", now - days * 86400, now, sleep=sleep)
+        sleep(pause)
+        c15 = fetch_candles(info, tk, "15m", now - (days + 4) * 86400, now, sleep=sleep)
+        sleep(pause)
+        c1h = fetch_candles(info, tk, "1h", now - (days + 12) * 86400, now, sleep=sleep)
+        sleep(pause)
+        c5 = [c for c in c5 if c["t"] + BAR_MS["5m"] <= now * 1000]
+        if len(c5) < 200 or len(c15) < 60 or len(c1h) < 100:
+            return "donnees insuffisantes"
+        c5s[tk] = c5
+        sigs.extend(collect_signals(tk, c5, c15, c1h, K))
+        return None
+
+    retry = []
     for tk in tickers:
         try:
-            c5 = fetch_candles(info, tk, "5m", now - days * 86400, now)
-            time.sleep(pause)
-            c15 = fetch_candles(info, tk, "15m", now - (days + 4) * 86400, now)
-            time.sleep(pause)
-            c1h = fetch_candles(info, tk, "1h", now - (days + 12) * 86400, now)
-            time.sleep(pause)
-            c5 = [c for c in c5 if c["t"] + BAR_MS["5m"] <= now * 1000]
-            if len(c5) < 200 or len(c15) < 60 or len(c1h) < 100:
-                skipped.append(tk)
-            else:
-                c5s[tk] = c5
-                sigs.extend(collect_signals(tk, c5, c15, c1h, K))
-        except Exception as e:      # un actif en erreur (429...) ne bloque pas les autres
-            skipped.append(f"{tk} ({type(e).__name__})")
+            r = _one(tk)
+            if r:
+                skipped.append(f"{tk} ({r})")
+        except Exception as e:      # un actif en erreur ne bloque pas les autres : on le retente apres un repos
+            retry.append(tk); errs[tk] = _err_txt(e)
         done += 1
         if progress:
-            progress(done, len(tickers))
+            progress(done, total)
+    if retry:
+        sleep(30)
+        for tk in retry:
+            try:
+                r = _one(tk)
+                if r:
+                    skipped.append(f"{tk} ({r})")
+            except Exception as e:
+                skipped.append(f"{tk} ({_err_txt(e)})")
     res = run_variants(c5s, sigs, K)
-    return {"days": days, "tickers": len(c5s), "skipped": skipped, "signals": len(sigs), "variants": res, "ts": time.time(),
+    return {"days": days, "tickers": len(c5s), "retried": len(retry), "skipped": skipped, "signals": len(sigs), "variants": res, "ts": time.time(),
             "params": {k: K[k] for k in ("min_conf", "min_touches", "rsi", "rr", "min_rr", "sl_min", "sl_max", "fee", "ctx_mode", "hold_bars", "zone_max_atr", "sl_atr")}}

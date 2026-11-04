@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.572";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.573";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1200,7 +1200,7 @@ function AssetSummaryModal({ ticker, token, onClose, onPrepare }) {
 function ConfluencePanel({ token }) {
   // v4.568 : principes (contexte H1/H4, confluence de 3 criteres, risque/rendement net de frais) : backtest + test fantome
   const [r, setR] = useState(null);
-  const [days, setDays] = useState("14"), [n, setN] = useState("30");
+  const [days, setDays] = useState("16"), [n, setN] = useState("30");
   const [msg, setMsg] = useState("");
   const load = useCallback(async () => { try { setR(await apiCall("/api/scalp/confluence","GET",null,token)); } catch(e) {} }, [token]);
   useEffect(() => { load(); const t = setInterval(load, 5000); return () => clearInterval(t); }, [load]);
@@ -1226,7 +1226,7 @@ function ConfluencePanel({ token }) {
       {bt.error && <span style={{color:"#f87171"}}> · {bt.error}</span>}
     </div>
     {bt.variants && <div style={{overflowX:"auto"}}>
-      <div style={{color:"#94a3b8",fontSize:10}}>{bt.tickers} actifs, {bt.days} jours, {bt.signals} évaluations{bt.skipped&&bt.skipped.length?(" · ignorés : "+bt.skipped.join(", ")):""} · frais {bt.params&&bt.params.fee} % · sortie stop / objectif / {bt.params&&bt.params.hold_bars} bougies, stop d'abord si les deux sont touchés</div>
+      <div style={{color:"#94a3b8",fontSize:10}}>{bt.tickers} actifs{bt.retried?(" ("+bt.retried+" repris après erreur)"):""}, {bt.days} jours, {bt.signals} évaluations{bt.skipped&&bt.skipped.length?(" · ignorés : "+bt.skipped.join(", ")):""} · frais {bt.params&&bt.params.fee} % · sortie stop / objectif / {bt.params&&bt.params.hold_bars} bougies, stop d'abord si les deux sont touchés</div>
       <table style={{borderCollapse:"collapse",fontSize:11}}><thead>{head}</thead><tbody>
         {row("Principes complets", bt.variants.principes)}{row("2 critères sur 3", bt.variants.deux_criteres)}{row("Contexte seul", bt.variants.contexte_seul)}{row("Témoin sans filtre", bt.variants.temoin)}
       </tbody></table>
