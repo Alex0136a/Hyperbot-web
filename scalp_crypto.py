@@ -1167,6 +1167,31 @@ class ScalpEngine:
         rx = (getattr(self.bot, "_ws_trades_last_rx", None) or {}).get(t)
         self.ctx_state[t] = dict(mc, ts=time.time(), flow=bool(fl), flow_age=(round(time.time() - rx) if rx else None))
 
+    def flow_line(self, t, minutes=10):
+        """v4.575 : texte du flux de transactions tel que le LIT le Scalp (diagnostic par actif, affichage seul : ne s abonne a rien, ne change aucune decision)."""
+        try:
+            buffers = getattr(self.bot, "_ws_trades_buffer", None) or {}
+            lim = (time.time() - minutes * 60) * 1000
+            b = a = 0.0
+            n = 0
+            for x in list(buffers.get(t) or []):
+                if x.get("t", 0) < lim:
+                    continue
+                sz = float(x.get("sz") or 0)
+                if x.get("side") == "B":
+                    b += sz
+                elif x.get("side") == "A":
+                    a += sz
+                else:
+                    continue
+                n += 1
+            if n and b + a > 0:
+                return f"achats {b / (b + a) * 100:.0f} % sur {minutes} min ({n} transactions)"
+            rx = (getattr(self.bot, "_ws_trades_last_rx", None) or {}).get(t)
+            return "aucune transaction reçue" if not rx else f"aucune transaction sur {minutes} min (dernière il y a {int((time.time() - rx) // 60)} min)"
+        except Exception as e:
+            return f"indisponible ({type(e).__name__})"
+
     def ctx_line(self, t):
         st = getattr(self, "ctx_state", {}).get(t)
         if not st:

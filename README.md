@@ -2067,3 +2067,18 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - **À régler avant le début du gel** : flux ≈ 30/30 après la v4.571 ; `SCALP_CAPITAL_USD` = 300 puis « Repartir du capital de départ » ; fixer `SCALP_SUS_ON` et la pause macro 30/30 ; `SCALP_CONF_ON` = 0.
 - Tests : test574 (durée maximale des ordres sur zone suivie, stop dynamique non suivi, colonnes du CSV) + régression.
 - Fichiers : scalp_crypto.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## GEL DE MESURE — départ le 04/11/2026 à 20:41 (UTC−4), fin le 19/11/2026 à 20:41
+- Version figée : **v4.574** (aucune modification des règles du Scalp ni des ordres sur zone pendant la période).
+- Réglages confirmés par l'utilisateur au départ : `SCALP_CAPITAL_USD` 300 avec remise à zéro du capital ; `SCALP_SUS_ON` = 0 (pas de continuation « soutenue ») ; `SCALP_CONF_ON` = 0 ; pause macro 30/30 (valeurs confirmées à jour) ; flux Scalp 29/29 et contexte 29/29 lisibles à 20:34.
+- Photo de départ (avant gel, mélange de versions, à ne pas compter) : 46 trades clôturés le 04/11, 13 gagnants au net, −8,84 $ net (Scalp −4,93 $, ordres sur zone −3,91 $) ; total paper 532 trades, −11,87 $ brut, −42,57 $ net.
+- Critères (rappel) : au moins 100 trades par mode (sinon prolonger) ; espérance nette positive dans les deux moitiés ; borne basse de l'intervalle de réussite au-dessus du seuil de rentabilité ; ventilation par motif de sortie et par type.
+- À reprendre APRÈS la mesure, jamais pendant : Scalp à 120 min, stop resserré sur vrai changement de tendance, invalidation de zone, stop de rentabilité sur ordres sur zone, enregistrement des signaux inverses, colonne « espérance avant frais » du backtest.
+- Exceptions : correction de bug ou de sécurité uniquement, notée ici avec sa date ; la mesure est alors coupée à cette date.
+
+## v4.575 — Correction d'AFFICHAGE du diagnostic de flux (aucune règle modifiée, compatible avec le gel)
+- **Problème** : la ligne « Flux transactions : pas encore de données » du diagnostic par actif lisait le suivi du bot principal (`trade_flow_history`, échelle −1 à +1), pas le flux utilisé par le Scalp. 16 actifs sur 29 affichaient « pas encore de données » alors que le flux du Scalp était disponible sur 29/29 (carte Scalp, 20:34). L'affichage induisait en erreur.
+- **Correction** : la ligne est renommée « Flux transactions (bot principal, −1 à +1) : … pas de suivi pour cet actif » et une seconde ligne « 🌊 Flux lu par le Scalp » donne ce que le Scalp lit réellement : part d'achats sur 10 min et nombre de transactions, ou « aucune transaction reçue » / « dernière il y a N min ». Lecture seule : aucun abonnement, aucune décision modifiée.
+- Gel : seul l'affichage change. Le redéploiement redémarre le bot (comme tout déploiement), sans effet sur les règles, les réglages ni le capital. Pas de coupure de la période de mesure.
+- Tests : test575 (part d'achats, tampon périmé, actif sans transaction, aucun abonnement) + régression.
+- Fichiers : scalp_crypto.py, api.py, bot_engine.py, index.html, index_src.html, README.md.

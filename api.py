@@ -2743,7 +2743,8 @@ def get_entry_diagnostics_all(email: str = Depends(require_user)):
             "blocker_short": blocker_short,
             "scalp": _scalp_diag_line(ticker, state),   # v4.353
             "scalpc": (lambda: bot.manual.scalp.diag_line(ticker))() if ticker and not str(ticker).startswith("xyz:") else None,
-            "scalp_ctx": (lambda: bot.manual.scalp.ctx_line(ticker))() if ticker and not str(ticker).startswith("xyz:") else None,      # v4.570   # v4.470 : Scalp crypto
+            "scalp_ctx": (lambda: bot.manual.scalp.ctx_line(ticker))() if ticker and not str(ticker).startswith("xyz:") else None,
+            "scalp_flow": (lambda: bot.manual.scalp.flow_line(ticker))() if ticker and not str(ticker).startswith("xyz:") else None,      # v4.575 : flux tel que le lit le Scalp (affichage seul)      # v4.570   # v4.470 : Scalp crypto
             "fxswing": _fxswing_diag_line(ticker, state),   # v4.361
             "supsw": _supsw_diag_line(ticker, state),       # v4.362
             "trendf": _trendf_diag_line(ticker, state),     # v4.365
