@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.575";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.576";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1954,7 +1954,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
         <div style={{fontSize:11,color:"#cbd5e1",lineHeight:1.6}}>
           {["paper","live"].filter(k=>k==="paper"||zo.summary.live.closed+zo.summary.live.scheduled+zo.summary.live.open>0).map(k=>{ const s=zo.summary[k]; return <div key={k}><b>{k==="live"?"Live":"Paper"}</b> : {s.scheduled} en attente · {s.open} ouvert{s.open>1?"s":""} · {s.closed} clos ({s.wins} gagnant{s.wins>1?"s":""}, net <b style={{color:s.net_usd>=0?"#34d399":"#f87171"}}>{s.net_usd>=0?"+":""}{s.net_usd.toFixed(2)} $</b>) · {s.cancelled} annulé{s.cancelled>1?"s":""} · {s.expired} expiré{s.expired>1?"s":""}</div>; })}
           {zo.summary.h4 && zo.summary.h4.length>0 && <div style={{marginTop:4}}><b>Tendance H4 au déclenchement (observation, aucun filtre)</b>{zo.summary.h4.map(g=><div key={g.label} style={{paddingLeft:8}}>{g.label} : {g.n} trade{g.n>1?"s":""}, {g.wins} gagnant{g.wins>1?"s":""}, net <b style={{color:g.net_usd>=0?"#34d399":"#f87171"}}>{g.net_usd>=0?"+":""}{g.net_usd.toFixed(2)} $</b>{g.n<10?" · échantillon faible":""}</div>)}</div>}
-          {zo.summary.stops && <StopPostBlock g={zo.summary.stops} title="Stops loss des ordres sur zone : que fait le prix après la sortie ?"/>}
+          {zo.summary.stops && <details style={{marginTop:4}}><summary style={{cursor:"pointer",color:"#94a3b8"}}>📊 Mesure après sortie des stops (observation, aucun filtre)</summary><StopPostBlock g={zo.summary.stops} title="Stops loss des ordres sur zone : que fait le prix après la sortie ?"/></details>}
           {Object.entries(zo.diag).filter(([t])=>t[0]!=="_").map(([t,v])=><div key={t} style={{color:"#94a3b8"}}><b style={{color:"#e2e8f0"}}>{t}</b> — {v.txt}</div>)}
         </div>
       </div>}
@@ -2070,13 +2070,12 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
       <div style={MT.card}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:10}}>
           <div style={{...MT.title,marginBottom:0}}>📜 HISTORIQUE MANUEL (300 derniers par mode)</div>
-          {st.stop_post && Object.keys(st.stop_post).map(k=><div key={k} style={{width:"100%"}}><StopPostBlock g={st.stop_post[k]} title={k+" : que fait le prix après la sortie ?"}/></div>)}
           <div style={{display:"flex",gap:6}}>
             {[["live","LIVE","#ef4444"],["live_scalp","LIVE SCALP","#f97316"],["paper","PAPER","#22c55e"],["paper_scalp","PAPER SCALP","#14b8a6"],["orders","ORDRES NON EXÉCUTÉS","#64748b"]].map(([k,l,c])=>{ const n=st.history.filter(h=>inTab(h,k)).length; return <button key={k} style={{...MT.seg(histTab===k,c),flex:"none",padding:"6px 14px"}} onClick={()=>setHistTab(k)}>{l} ({n})</button>; })}
           </div>
         </div>
         <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
-          {[["trades","📜 Trades"],["jours","📅 Par jour"]].map(([k,l])=><button key={k} style={{...MT.seg(histView===k,"#0ea5e9"),flex:"none",padding:"6px 14px"}} onClick={()=>setHistView(k)}>{l}</button>)}
+          {[["trades","📜 Trades"],["jours","📅 Par jour"],["mesures","📊 Mesures après sortie"]].map(([k,l])=><button key={k} style={{...MT.seg(histView===k,"#0ea5e9"),flex:"none",padding:"6px 14px"}} onClick={()=>setHistView(k)}>{l}</button>)}
           <select style={{...MT.input,width:"auto",marginLeft:8}} value={histOrigin} onChange={e=>setHistOrigin(e.target.value)} title="Filtrer par origine : ordres programmés par le bot, ordres manuels, Scalp"><option value="">Toutes origines</option><option value="zone">🎯 Auto zone</option><option value="manuel">✋ Manuel</option><option value="scalp">Scalp</option><option value="autre">Autres stratégies</option></select>
           <select style={{...MT.input,width:"auto",marginLeft:8}} value={histAssets.includes(histAsset)?histAsset:""} onChange={e=>setHistAsset(e.target.value)} title="Filtrer par actif">
             <option value="">Tous les actifs</option>{histAssets.map(a=><option key={a} value={a}>{a}</option>)}
@@ -2100,6 +2099,9 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
             a.download=`historique_${histTab}_${tag}.csv`; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },500);
           }}>⬇ CSV</button>
           {(histFrom||histTo) && <span style={{color:"#94a3b8"}}>{histRows.length} ligne(s) affichée(s)</span>}
+        </div>}
+        {histView==="mesures" && <div style={{marginBottom:10}}>
+          {st.stop_post && Object.keys(st.stop_post).length>0 ? Object.keys(st.stop_post).map(k=><div key={k} style={{width:"100%"}}><StopPostBlock g={st.stop_post[k]} title={k+" : que fait le prix après la sortie ?"}/></div>) : <div style={{fontSize:12,color:"#64748b"}}>Aucune mesure après sortie pour le moment (observation seule, aucun filtre).</div>}
         </div>}
         {histView==="jours" && (dayStats.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucun trade clôturé.</div> : <div style={{overflowX:"auto",marginBottom:10}}><table style={{borderCollapse:"collapse"}}>
           <thead><tr>{["Jour","Trades","Gagnants","PnL brut","Net de frais"].map(h=><th key={h} style={MT.th}>{h}</th>)}</tr></thead>

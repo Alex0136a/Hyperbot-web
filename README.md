@@ -2082,3 +2082,9 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Gel : seul l'affichage change. Le redéploiement redémarre le bot (comme tout déploiement), sans effet sur les règles, les réglages ni le capital. Pas de coupure de la période de mesure.
 - Tests : test575 (part d'achats, tampon périmé, actif sans transaction, aucun abonnement) + régression.
 - Fichiers : scalp_crypto.py, api.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.576 — Affichage : mesures après sortie dans un onglet (aucune règle modifiée, compatible avec le gel)
+- Historique manuel : les tableaux « que fait le prix après la sortie ? » (Swing Support, etc.) ne s'empilent plus en haut de l'historique. Nouvel onglet **📊 Mesures après sortie**, à côté de « 📜 Trades » et « 📅 Par jour ».
+- Carte « Ordres sur zone » : la mesure des stops est repliée par défaut (clic pour déplier).
+- Aucune donnée ni décision modifiée ; le suivi après sortie continue de se remplir à l'identique.
+- Fichiers : bot_engine.py, index.html, index_src.html, README.md.
