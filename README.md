@@ -2088,3 +2088,9 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Carte « Ordres sur zone » : la mesure des stops est repliée par défaut (clic pour déplier).
 - Aucune donnée ni décision modifiée ; le suivi après sortie continue de se remplir à l'identique.
 - Fichiers : bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.577 — Affichage : onglets d'historique séparés (aucune règle modifiée, compatible avec le gel)
+- Historique manuel : l'onglet **PAPER** ne montre plus les trades Scalp ; il s'ouvre filtré sur l'origine « 🎯 Auto zone » (le sélecteur d'origine reste modifiable : « Toutes origines » affiche aussi les trades paper manuels/autres hors Scalp). L'onglet **PAPER SCALP** ne contient que les trades Scalp. Les compteurs des onglets suivent la même règle.
+- Onglet LIVE inchangé. Aucune donnée, règle, réglage ni capital modifié ; pas de coupure de la période de mesure.
+- Outil de build index.html recréé (esbuild), même résultat que précédemment.
+- Fichiers : bot_engine.py, index.html, index_src.html, README.md.
