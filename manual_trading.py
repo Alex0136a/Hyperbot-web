@@ -2631,12 +2631,11 @@ class ManualTrading:
                                         else self.get_opportunity(item["strategy_source"], item["ticker"], item["direction"]) is not None)
         return out
 
-    def snapshot(self):
-        with self.lock:
-            items = [self.public(i) for i in self.items.values()]
+    def _history_rows(self, full=False):
+        """v4.578 : lignes de l historique. full=False : 300 par mode (page legere, sondee toutes les 4 s). full=True : tout le gel (Scalp 1500, Auto zone 800, autres paper 300, live 300), lu a la demande."""
         history = []
-        cnt = {"live": 0, "paper": 0}        # v4.425 : 100 derniers PAR MODE (le paper du Scalp ne doit pas noyer le live)
-        _rows = db.manual_history(300, "live") + db.manual_history(300, "paper")   # v4.443 : filtre par mode en SQL
+        cnt = {}        # v4.425 : 100 derniers PAR MODE (le paper du Scalp ne doit pas noyer le live)
+        _rows = (db.manual_history(600, "live") + db.manual_history(6000, "paper")) if full else (db.manual_history(300, "live") + db.manual_history(300, "paper"))   # v4.443 : filtre par mode en SQL
         _rows.sort(key=lambda r: float(r["data"].get("closed_at") or r["data"].get("created_at") or 0), reverse=True)      # v4.562 : par date (les ordres non executes ont un repere negatif)
         cnt_end = 0
         for row in _rows:
@@ -2647,9 +2646,11 @@ class ManualTrading:
                     continue
                 cnt_end += 1
             else:
-                if cnt[md] >= 300:
+                # v4.578 : version complete = plafond PAR CATEGORIE (Scalp / Auto zone / autres paper / live) au lieu de 300 paper tous modes confondus
+                bk = md if not full else (md if md == "live" else {"zone": "zone", "scalp": "scalp"}.get(origin_label(d)[0], "autre"))
+                if cnt.get(bk, 0) >= ((300) if not full else {"live": 300, "zone": 800, "scalp": 1500}.get(bk, 300)):
                     continue
-                cnt[md] += 1
+                cnt[bk] = cnt.get(bk, 0) + 1
             d.update({"id": row["id"], "status": row["status"]})
             d["origin"], d["strategy_label"] = origin_label(d)
             try:    # v4.432 : PnL net de frais (le pnl stocke est brut) ; v4.441 : frais + funding REELS Hyperliquid quand connus
@@ -2662,6 +2663,12 @@ class ManualTrading:
             except Exception:
                 d["pnl_net"] = None
             history.append(d)
+        return history
+
+    def snapshot(self):
+        with self.lock:
+            items = [self.public(i) for i in self.items.values()]
+        history = self._history_rows()
         try:      # v4.539 : que fait le prix apres un stop loss / une fermeture a la main en perte des trades Swing Support (observation)
             its = []
             for d in history:

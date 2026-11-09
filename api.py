@@ -2930,6 +2930,14 @@ def manual_state(email: str = Depends(require_user)):
     return bot.manual.snapshot()
 
 
+@app.get("/api/manual/history_full")
+def manual_history_full(email: str = Depends(require_user)):
+    """v4.578 : historique complet (affichage / export CSV seulement : aucune decision de trading). Compresse a la main (gzip) : plusieurs milliers de lignes."""
+    import gzip as _gz
+    raw = json.dumps({"history": bot.manual._history_rows(full=True)}, default=str).encode("utf-8")
+    return Response(content=_gz.compress(raw, 5), media_type="application/json", headers={"Content-Encoding": "gzip", "Cache-Control": "no-store"})
+
+
 # ── v4.421 — Mode Scalp crypto ──────────────────────────────────────────────
 _SCALP_NUM = {   # cle : (min, max, entier ?)
     "SCALP_LEVERAGE": (1, 10, True), "SCALP_NOTIONAL_USD": (10, 5000, False), "SCALP_SL_PCT": (0.2, 10, False),

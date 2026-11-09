@@ -2094,3 +2094,10 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Onglet LIVE inchangé. Aucune donnée, règle, réglage ni capital modifié ; pas de coupure de la période de mesure.
 - Outil de build index.html recréé (esbuild), même résultat que précédemment.
 - Fichiers : bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.578 — Affichage : historique complet pendant le gel (aucune règle modifiée, compatible avec le gel)
+- Constat : l'historique affiché et les exports CSV ne gardaient que les 300 trades paper les plus récents, Scalp et Auto Zone confondus (environ 8 jours à ce rythme). Rien n'était effacé de la base, mais les plus anciens trades du gel seraient sortis de l'écran et des exports.
+- Correction : nouvelle lecture à la demande `/api/manual/history_full` (compressée) qui renvoie jusqu'à 1 500 trades Scalp, 800 Auto Zone, 300 autres paper et 300 live. La page l'utilise pour les onglets, les compteurs et l'export CSV ; le flux de 4 s reste léger (300 par mode) et ses lignes récentes priment. Le plafond est par catégorie, donc le Scalp ne chasse plus les trades Auto Zone.
+- Aucune donnée, règle, réglage ni capital modifié ; pas de coupure de la période de mesure. Le redéploiement redémarre le bot comme tout déploiement.
+- Limite connue : les cartes qui relisent 400 à 800 trades (statistiques Scalp, zone) gardent leur fenêtre actuelle ; seuls l'écran d'historique et l'export sont élargis.
+- Fichiers : manual_trading.py, api.py, bot_engine.py, index.html, index_src.html, README.md.

@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.577";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.578";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1555,6 +1555,10 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
     catch(e) { setErr(e.message); }
   }, [token]);
   useEffect(() => { load(); const t = setInterval(load, 4000); return () => clearInterval(t); }, [load]);
+  // v4.578 : historique COMPLET (le flux de 4 s ne garde que 300 trades paper) : lu a la demande, puis toutes les 60 s ; les lignes fraiches du flux de 4 s priment
+  const [histFull, setHistFull] = useState(null);
+  const loadHistFull = useCallback(async () => { try { const r = await apiCall("/api/manual/history_full","GET",null,token); if(r && r.history) setHistFull(r.history); } catch(e) {} }, [token]);
+  useEffect(() => { loadHistFull(); const t = setInterval(loadHistFull, 60000); return () => clearInterval(t); }, [loadHistFull]);
 
   const loadProposal = async (opp, market, preset) => {
     try {
@@ -1746,7 +1750,8 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
   const isEnded = h => h.status==="cancelled"||h.status==="expired"||h.status==="failed";      // v4.562 : ordres non executes = onglet a part
   const inTab = (h,k) => k==="orders" ? isEnded(h) : (!isEnded(h) && (h.mode==="live"?"live":"paper")===k.split("_")[0] && (k.endsWith("_scalp") ? isScalpH(h) : (k!=="paper" || !isScalpH(h))));      // v4.577 : onglet PAPER = hors Scalp (Auto zone d abord) ; PAPER SCALP = Scalp seulement
   const histIsLive = histTab.startsWith("live"), histLbl = histTab==="orders" ? "DES ORDRES NON EXÉCUTÉS" : (histIsLive?"LIVE":"PAPER")+(histTab.endsWith("_scalp")?" SCALP":"");
-  const histTabAll = st.history.filter(h=>inTab(h,histTab)&&(!histOrigin||h.origin===histOrigin));
+  const histAll = (()=>{ if(!histFull) return st.history; const live=new Set(st.history.map(h=>h.id)); const m=histFull.filter(h=>!live.has(h.id)).concat(st.history); return m.sort((a,b)=>Number(b.closed_at||b.created_at||0)-Number(a.closed_at||a.created_at||0)); })();
+  const histTabAll = histAll.filter(h=>inTab(h,histTab)&&(!histOrigin||h.origin===histOrigin));
   const histAssets = [...new Set(histTabAll.map(h=>h.ticker).filter(Boolean))].sort();
   const histAssetOk = histAssets.includes(histAsset) ? histAsset : "";
   const histTabRows = histAssetOk ? histTabAll.filter(h=>h.ticker===histAssetOk) : histTabAll;
@@ -2071,7 +2076,7 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:10}}>
           <div style={{...MT.title,marginBottom:0}}>📜 HISTORIQUE MANUEL (300 derniers par mode)</div>
           <div style={{display:"flex",gap:6}}>
-            {[["live","LIVE","#ef4444"],["live_scalp","LIVE SCALP","#f97316"],["paper","PAPER","#22c55e"],["paper_scalp","PAPER SCALP","#14b8a6"],["orders","ORDRES NON EXÉCUTÉS","#64748b"]].map(([k,l,c])=>{ const n=st.history.filter(h=>inTab(h,k)).length; return <button key={k} style={{...MT.seg(histTab===k,c),flex:"none",padding:"6px 14px"}} onClick={()=>{ setHistTab(k); setHistOrigin(k==="paper"?"zone":""); }}>{l} ({n})</button>; })}
+            {[["live","LIVE","#ef4444"],["live_scalp","LIVE SCALP","#f97316"],["paper","PAPER","#22c55e"],["paper_scalp","PAPER SCALP","#14b8a6"],["orders","ORDRES NON EXÉCUTÉS","#64748b"]].map(([k,l,c])=>{ const n=histAll.filter(h=>inTab(h,k)).length; return <button key={k} style={{...MT.seg(histTab===k,c),flex:"none",padding:"6px 14px"}} onClick={()=>{ setHistTab(k); setHistOrigin(k==="paper"?"zone":""); }}>{l} ({n})</button>; })}
           </div>
         </div>
         <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
@@ -2117,10 +2122,10 @@ function ManualTradingTab({ token, prep, onPrepDone }) {
         {histRows.length>0 && (()=>{ const ids=histRows.filter(h=>histSel[h.id]).map(h=>h.id); const all=ids.length===histRows.length;
           return <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:8}}>
             <button style={MT.btn("#334155","#e2e8f0")} onClick={()=>setHistSel(all?{}:Object.fromEntries(histRows.map(h=>[h.id,true])))}>{all?"Tout désélectionner":"Tout sélectionner"}</button>
-            {histTab==="live" && <button style={MT.btn("#0ea5e9","#fff")} onClick={async()=>{ try { const r = await apiCall("/api/manual/history/import-hl?days=14","POST",{},token); load(); alert(r.imported?`${r.imported} trade(s) manquant(s) importé(s) depuis Hyperliquid.`:`Rien à importer : l'historique du bot correspond à Hyperliquid (${r.cycles} trades comparés sur 14 jours).`); } catch(e) { alert(e.message); } }}>🔄 Comparer à Hyperliquid</button>}
+            {histTab==="live" && <button style={MT.btn("#0ea5e9","#fff")} onClick={async()=>{ try { const r = await apiCall("/api/manual/history/import-hl?days=14","POST",{},token); load(); loadHistFull(); alert(r.imported?`${r.imported} trade(s) manquant(s) importé(s) depuis Hyperliquid.`:`Rien à importer : l'historique du bot correspond à Hyperliquid (${r.cycles} trades comparés sur 14 jours).`); } catch(e) { alert(e.message); } }}>🔄 Comparer à Hyperliquid</button>}
             <button style={{...MT.btn("#ef4444","#fff"),opacity:ids.length?1:0.4}} disabled={!ids.length} onClick={async()=>{
               if(!window.confirm(`Supprimer définitivement ${ids.length} élément(s) de l'historique ${histLbl} ?\n\nCette action est irréversible. Elle retire ces lignes de l'historique manuel (et des statistiques du Scalp). Les positions ouvertes ne sont pas touchées.`)) return;
-              try { const r = await apiCall("/api/manual/history/delete","POST",{ids},token); setHistSel({}); load(); alert(`${r.deleted} élément(s) supprimé(s).`); } catch(e) { alert(e.message); } }}>🗑 Supprimer la sélection ({ids.length})</button>
+              try { const r = await apiCall("/api/manual/history/delete","POST",{ids},token); setHistSel({}); load(); loadHistFull(); alert(`${r.deleted} élément(s) supprimé(s).`); } catch(e) { alert(e.message); } }}>🗑 Supprimer la sélection ({ids.length})</button>
           </div>; })()}
         {histRows.length===0 ? <div style={{fontSize:12,color:"#64748b"}}>Aucun historique {histLbl}.</div> : (
           <div style={{overflowX:"auto"}}><table style={{borderCollapse:"collapse",width:"100%"}}>
