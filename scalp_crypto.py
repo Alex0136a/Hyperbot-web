@@ -1630,6 +1630,7 @@ class ScalpEngine:
         now = time.time()
         done = 0
         changed = False
+        ok_pass = err_pass = False
         for s in self.cont_shadow:
             if done >= limit:
                 break
@@ -1644,10 +1645,14 @@ class ScalpEngine:
                     s["fail"] = s.get("fail", 0) + 1
                 else:
                     s["res"] = self.shadow_calc(s["side"], s["price"], s["sl_pct"], s["tp_pct"], cs)
+                    ok_pass = True
             except Exception as e:
                 s["fail"] = s.get("fail", 0) + 1
                 self.last_error = f"suivi des refus : {type(e).__name__}: {e}"
+                err_pass = True
             changed = True
+        if ok_pass and not err_pass:
+            self._clear_err("suivi des refus")           # v4.579 : l erreur affichee disparait des qu un suivi reussit (affichage seulement)
         if changed:
             self._shadow_save()
 

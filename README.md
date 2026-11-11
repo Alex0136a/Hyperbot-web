@@ -2101,3 +2101,9 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Aucune donnée, règle, réglage ni capital modifié ; pas de coupure de la période de mesure. Le redéploiement redémarre le bot comme tout déploiement.
 - Limite connue : les cartes qui relisent 400 à 800 trades (statistiques Scalp, zone) gardent leur fenêtre actuelle ; seuls l'écran d'historique et l'export sont élargis.
 - Fichiers : manual_trading.py, api.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.579 — Affichage : l'erreur « suivi des refus » disparaît quand le suivi refonctionne (aucune règle modifiée, compatible avec le gel)
+- Constat (10/11) : un 429 ponctuel d'Hyperliquid restait affiché pendant plus de 29 h dans « Dernière erreur » (même date et même identifiant CloudFront que la veille), car cette source n'était pas effacée contrairement à « univers » et « bougies ».
+- Correction : `_shadow_eval` efface l'erreur « suivi des refus » dès qu'une évaluation réussit sans nouvelle erreur dans le même passage. Une erreur d'une autre source n'est pas touchée. Testé (succès, échec, autre source).
+- Le suivi des refus reste une mesure en lecture seule : aucune décision d'entrée ou de sortie, aucun réglage, aucun capital modifié. Pas de coupure de la période de mesure.
+- Fichiers : scalp_crypto.py, bot_engine.py, index.html, index_src.html, README.md.
