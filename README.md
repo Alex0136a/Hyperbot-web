@@ -2107,3 +2107,10 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Correction : `_shadow_eval` efface l'erreur « suivi des refus » dès qu'une évaluation réussit sans nouvelle erreur dans le même passage. Une erreur d'une autre source n'est pas touchée. Testé (succès, échec, autre source).
 - Le suivi des refus reste une mesure en lecture seule : aucune décision d'entrée ou de sortie, aucun réglage, aucun capital modifié. Pas de coupure de la période de mesure.
 - Fichiers : scalp_crypto.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.580 — Diagnostic : durée des étapes du cycle principal (aucune règle modifiée, compatible avec le gel)
+- Constat (11/11) : la carte serveur affiche régulièrement « dernier cycle il y a 45 à 62 s » pour un cycle prévu toutes les 10 s. L'heure du cycle est notée juste avant la pause de 10 s, donc ces valeurs correspondent à des cycles de 35 à 50 s. Rien ne mesurait la durée de chaque étape.
+- Ajout : chronométrage de chaque grande étape du cycle (alerte WebSocket, funding, taux de gain, suivi des blocages, données multi-échelles, enregistreur de flux, scalp forex, swing FX, swing support, trend FX, seuils de confiance, prix, analyse des actifs, suivis de trades, synchro live, module manuel et ordres sur zone, enregistrements, envoi de l'état).
+- Affichage : nouvelle ligne « Durée des cycles (30 min) » dans la carte serveur (moyenne, maximum, étape la plus lente, nombre de cycles > 30 s). Journal : une ligne `[CYCLE LENT]` avec les trois étapes les plus longues quand un cycle dépasse 30 s (au plus une toutes les 2 min).
+- Aucune décision de trading, aucun réglage ni capital ne dépend de cette mesure ; pas de coupure de la période de mesure. Surcoût : quelques lectures d'horloge par cycle.
+- Fichiers : bot_engine.py, api.py, index.html, index_src.html, README.md.

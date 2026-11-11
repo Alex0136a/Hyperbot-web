@@ -3019,6 +3019,10 @@ def server_status(email: str = Depends(require_user)):
         lc = getattr(bot, "_last_cycle_ts", None)
         out["last_cycle_age_s"] = round(now - lc, 1) if lc else None
         out["cycle_interval_s"] = bot.cfg.get("CYCLE_INTERVAL", 10)
+        try:
+            out["cycle_stats"] = bot.cycle_stats()      # v4.580
+        except Exception:
+            out["cycle_stats"] = None
     except Exception as e:
         out["ws_error"] = f"{type(e).__name__}: {e}"
     try:

@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.579";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.580";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -2952,6 +2952,7 @@ Confirmer ?`
                 {row("Moteur", srv.bot_running ? "actif" : "ARRÊTÉ", srv.bot_running?"#34d399":"#f87171")}
                 {row("Trading", srv.trading_enabled ? "activé" : "désactivé")}
                 {row("Dernier cycle", cyc==null?"?":`il y a ${ageTxt(cyc)} (cycle ${srv.cycle_interval_s} s)`, cyc!=null&&cyc>90?"#f87171":cyc!=null&&cyc>30?"#fbbf24":"#34d399")}
+                {srv.cycle_stats && row("Durée des cycles (30 min)", `moy. ${srv.cycle_stats.avg_30min_s} s · max ${srv.cycle_stats.max_30min_s} s (étape la plus lente : ${srv.cycle_stats.slowest_step} ${srv.cycle_stats.slowest_step_s} s) · ${srv.cycle_stats.n_over_30s}/${srv.cycle_stats.n_30min} cycles > 30 s`, srv.cycle_stats.n_over_30s>0?"#fbbf24":"#34d399")}
                 {srv.ws && row("WebSocket", `${srv.ws.healthy?"OK":srv.ws.connected?"instable":"déconnecté"} · dernier prix il y a ${ageTxt(wt)} (alarme après ${srv.ws.stale_after_s} s)`, srv.ws.healthy?"#34d399":"#f87171")}
                 {row("Base de données", srv.db_mb==null?"?":`${srv.db_mb} Mo`)}
                 {row("Disque libre", srv.disk_free_mb==null?"?":`${srv.disk_free_mb} Mo`, srv.disk_free_mb!=null&&srv.disk_free_mb<200?"#f87171":null)}

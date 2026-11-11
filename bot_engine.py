@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.579"
+BOT_VERSION = "4.580"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -7911,6 +7911,54 @@ class BotEngine:
             if sym in self.states:
                 self._set_gate_blocked(self.states[sym], price, f"erreur de traitement : {type(error_holder['error']).__name__}: {error_holder['error']}")
 
+    # ---- v4.580 : duree des etapes du cycle principal (diagnostic seulement : aucune decision n en depend) ----
+    def _cy_begin(self):
+        self._cy_steps = {}
+        self._cy_last = self._cy_t0 = time.perf_counter()
+
+    def _cy_mark(self, name):
+        try:
+            now = time.perf_counter()
+            last = getattr(self, "_cy_last", None)
+            if last is not None:
+                d = getattr(self, "_cy_steps", None)
+                if d is not None:
+                    d[name] = d.get(name, 0.0) + (now - last)
+            self._cy_last = now
+        except Exception:
+            pass
+
+    def _cy_end(self):
+        try:
+            now = time.perf_counter()
+            total = now - getattr(self, "_cy_t0", now)
+            steps = dict(getattr(self, "_cy_steps", {}) or {})
+            slow = max(steps.items(), key=lambda kv: kv[1]) if steps else ("?", 0.0)
+            hist = getattr(self, "_cy_hist", None)
+            if hist is None:
+                from collections import deque as _dq
+                hist = self._cy_hist = _dq(maxlen=400)
+            hist.append((time.time(), total, slow[0], slow[1]))
+            if total > 30 and time.time() - getattr(self, "_cy_log_ts", 0) > 120:
+                self._cy_log_ts = time.time()
+                top = sorted(steps.items(), key=lambda kv: -kv[1])[:3]
+                print(f"[CYCLE LENT] {total:.1f} s : " + " | ".join(f"{k} {v:.1f} s" for k, v in top))
+        except Exception:
+            pass
+
+    def cycle_stats(self):
+        hist = list(getattr(self, "_cy_hist", []) or [])
+        if not hist:
+            return None
+        now = time.time()
+        rec = [h for h in hist if now - h[0] <= 1800]
+        if not rec:
+            rec = hist[-1:]
+        worst = max(rec, key=lambda h: h[1])
+        return {"last_s": round(hist[-1][1], 1), "avg_30min_s": round(sum(h[1] for h in rec) / len(rec), 1),
+                "max_30min_s": round(worst[1], 1), "slowest_step": worst[2], "slowest_step_s": round(worst[3], 1),
+                "n_30min": len(rec), "n_over_30s": sum(1 for h in rec if h[1] > 30)}
+
     def _run(self):
         cfg = self.cfg
         self.emit("log", {"msg": "Connexion a Hyperliquid...", "level": "info"})
@@ -8096,25 +8144,38 @@ class BotEngine:
         while self.running:
             try:
                 self.cycle += 1
+                self._cy_begin()      # v4.580 : mesure de la duree de chaque etape du cycle (diagnostic seulement)
                 self._check_ws_health_alert()
+                self._cy_mark("alerte WebSocket")
                 self._refresh_funding_rates_if_due()  # v4.33
+                self._cy_mark("funding")
                 self._refresh_asset_win_rates_if_due()  # v4.314
+                self._cy_mark("taux de gain par actif")
                 self._blocked_followups_if_due()  # v4.338
+                self._cy_mark("suivi des blocages")
                 self._refresh_held_mtf_data()  # v4.341
+                self._cy_mark("donnees multi-echelles")
                 self._flow_recorder_flush_if_due()  # v4.349
+                self._cy_mark("enregistreur de flux")
                 try:                                  # v4.353 — scalp Forex : jamais bloquant pour le reste du cycle
                     self._scalp_cycle()
+                    self._cy_mark("scalp forex")
                     self._scalp_journal_eval_if_due()
                     self._fxswing_cycle()               # v4.361
+                    self._cy_mark("swing FX")
                     self._swing_journal_eval_if_due()   # v4.359
                     self._supsw_cycle()                 # v4.362
+                    self._cy_mark("swing support")
                     self._supsw_eval_if_due()           # v4.362
                     self._trendf_cycle()                # v4.365
+                    self._cy_mark("trend FX")
                     self._trendf_eval_if_due()          # v4.365
                 except Exception as _e_sc:
                     print(f"[SCALP] cycle ignore : {type(_e_sc).__name__}: {_e_sc}")
                 self._decay_confidence_thresholds()
+                self._cy_mark("seuils de confiance")
                 prices = self._get_prices_with_timeout(cfg.get("PRICE_FETCH_TIMEOUT_SEC", 10))
+                self._cy_mark("prix (reseau)")
                 in_hours = is_trading_hours(cfg)
 
                 # v3.2 — DIAGNOSTIC : verifie explicitement combien de prix (sur
@@ -8195,23 +8256,31 @@ class BotEngine:
                         # jamais traite faute de prix (cas typique : DEX xyz).
                         dex_note = f" (DEX {_dex_of(ticker_from_slot_key(sym))})" if _dex_of(ticker_from_slot_key(sym)) else ""
                         self._set_gate_blocked(self.states[sym], None, f"prix indisponible{dex_note} — actif non analyse ce cycle")
+                self._cy_mark("analyse des actifs")
                 self._finalize_pending_candidates()
                 self._finalize_pending_accumulation_candidates()
                 self._finalize_pending_funding_candidates()
                 self._finalize_pending_spot_accum_candidates()
                 self._maybe_start_trade_followups()  # v4.265 — hors du fil de trading
+                self._cy_mark("suivis de trades")
                 self._maybe_start_live_sync()  # v4.292 — controle bot <-> Hyperliquid (fil separe)
+                self._cy_mark("synchro live")
                 if getattr(self, "manual", None) is not None:
                     try:
                         self.manual.on_cycle()  # v4.273 — expirations + secours si WebSocket muet
+                        self._cy_mark("module manuel et ordres sur zone")
                     except Exception as e_man:
                         print(f"[MANUEL] Erreur cycle : {e_man}")
 
                 self._save_open_positions()
+                self._cy_mark("enregistrement positions")
                 self._save_confidence_thresholds()
                 self._save_indicator_state()
+                self._cy_mark("enregistrement seuils et indicateurs")
                 self._send_snapshot()
+                self._cy_mark("envoi de l etat")
                 self._last_cycle_ts = time.time()      # v4.515 : visible dans le statut serveur
+                self._cy_end()
                 time.sleep(cfg["CYCLE_INTERVAL"])
             except Exception as e:
                 # v3.2 — FILET DE SECURITE CRITIQUE : sans ce try/except, une
