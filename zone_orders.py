@@ -360,6 +360,10 @@ class ZoneOrders:
             if r is None and v is not None:
                 (item.get("zone_order") or {})["h4_fire"] = self.h4_info(item["ticker"], v["price"], cache_only=True)      # v4.520 : observation
                 (item.get("zone_order") or {})["flow_fire"] = self.flow_info(item["ticker"])        # v4.537 : observation (flux 10 min), jamais bloquant
+                try:      # v4.581 : Ichimoku M5 / M15 / H1 au declenchement (MESURE SEULE, cache de bougies uniquement)
+                    (item.get("zone_order") or {})["ich_fire"] = mtf.ichimoku_obs(lambda t_, tf_, n_: self.bot._mtf_candles(t_, tf_, n_, cache_only=True), item["ticker"], v.get("price"))
+                except Exception:
+                    pass
                 try:      # v4.540 : positions de sens contraire ouvertes sur d autres actifs (observation, jamais bloquant)
                     (item.get("zone_order") or {})["contra_fire"] = self.manual.scalp.contra_open(item["ticker"], item["direction"], item.get("mode"), cache_only=True)
                 except Exception:

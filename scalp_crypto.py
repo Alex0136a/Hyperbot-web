@@ -3684,6 +3684,10 @@ class ScalpEngine:
         self._cool[(t, mode)] = time.time() + float(c.get("SCALP_COOLDOWN_MIN", 30)) * 60
         self._opens.append((time.time(), sig["side"], mode, t))
         tobs, contra = self._trend_obs(t, sig.get("price")), self.contra_open(t, sig["side"], mode)      # v4.540 : observation (hors verrou : peut lire le reseau)
+        try:      # v4.581 : Ichimoku M5 / M15 / H1 a l entree (MESURE SEULE, cache de bougies uniquement, aucune decision n en depend)
+            ichi = mtf.ichimoku_obs(lambda t_, tf_, n_: self.bot._mtf_candles(t_, tf_, n_, cache_only=True), t, sig.get("price"))
+        except Exception:
+            ichi = None
         try:
             with self.manual.lock:
                 it = self.manual.items.get(res["id"])
@@ -3694,7 +3698,7 @@ class ScalpEngine:
                                    "regime": {"label": reg.get("label", "inconnu"), "corr": reg.get("corr"), "up": reg.get("up"), "down": reg.get("down"),
                                               "basket30": reg.get("basket30"), "rel30": (round(reg["ch30"].get(t, 0) - reg["basket30"], 3) if reg.get("ch30") and reg.get("basket30") is not None else None),
                                               "cluster": cluster_before, "peers": sig.get("peers")},
-                                   "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra, "calm": sig.get("calm1m"), "mv1": sig.get("move1m"),
+                                   "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra, "ich": ichi, "calm": sig.get("calm1m"), "mv1": sig.get("move1m"),
                                    "base": sig.get("base"), "touches": sig.get("touches"),
                                    "flux": {"ok": bool((getattr(self, "ctx_state", {}).get(t) or {}).get("flow")), "age_s": (getattr(self, "ctx_state", {}).get(t) or {}).get("flow_age")},      # v4.574 : le flux etait-il disponible a l entree (observation seule)
                                    "conf": ({"n": conf_res.get("n_conf"), "h1": conf_res.get("h1"), "h4": conf_res.get("h4"), "rr_net": conf_res.get("rr_net"), "zone": conf_res.get("zone"), "indic": conf_res.get("indic"), "pa": conf_res.get("pa")} if conf_res else None),      # v4.493 : mesures de la zone horizontale (aucun effet sur les decisions)

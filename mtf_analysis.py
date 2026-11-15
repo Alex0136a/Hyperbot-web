@@ -422,3 +422,103 @@ def range_scenario(d1, h4, price, bars=20, max_atr=7.0, sup=None, res=None):
     return {"lo": lo, "hi": hi, "mid": mid, "width_pct": h / mid * 100, "width_atr": width_atr, "is_range": is_range,
             "trips": trips, "touch_hi": touch_hi, "touch_lo": touch_lo, "pos": pos, "out_up": out_up, "out_dn": out_dn,
             "from_zones": zone_ok, "args": args, "score": score, "bias": bias, "texte": texte}
+
+
+# ───────────────────────── v4.581 — ICHIMOKU (MESURE SEULE) ─────────────────────────
+def ichimoku_features(candles, price=None, t_n=9, k_n=26, s_n=52, shift=26):
+    """v4.581 — MESURE SEULE (aucune decision n en depend) : lignes Ichimoku (parametres MT5 par defaut 9 / 26 / 52, decalage 26).
+    candles : bougies CLOTUREES, de la plus ancienne a la plus recente (cles h, l, c). price : prix de reference (defaut : derniere cloture).
+    Aucune donnee future : chaque valeur n utilise que des bougies deja cloturees. Les ecarts sont en % du prix de reference.
+    - p_tenkan_pct / p_kijun_pct : ecart du prix a la Tenkan (9) et a la Kijun (26) ;
+    - tk_pct : Tenkan - Kijun en % (positif : Tenkan au-dessus) ; tk_barres : bougies depuis le dernier croisement Tenkan / Kijun (None si > 20) ;
+    - kijun_pente_pct : variation de la Kijun sur 5 bougies ;
+    - chikou_pct : cloture actuelle comparee a celle d il y a 26 bougies (position de la Chikou) ;
+    - nuage_proj_* : nuage PROJETE (Senkou A / B calcules sur les 52 dernieres bougies, tracees 26 bougies plus loin) ;
+    - nuage_* : nuage ACTUEL (celui trace au-dessus de la bougie courante, calcule il y a 26 bougies) ; il faut au moins 78 bougies, sinon None.
+    Pour un nuage : pos = +1 prix au-dessus, -1 en dessous, 0 dedans ; dist_pct = ecart signe au bord le plus proche (0 dedans) ;
+    epais_pct = epaisseur ; couleur = +1 (Senkou A au-dessus de B) ou -1."""
+    try:
+        cs = [x for x in (candles or []) if x.get("h") is not None and x.get("l") is not None and x.get("c") is not None]
+        n = len(cs)
+        if n < k_n:
+            return None
+        H = [float(x["h"]) for x in cs]
+        L = [float(x["l"]) for x in cs]
+        C = [float(x["c"]) for x in cs]
+        px = float(price) if price else C[-1]
+        if not px > 0:
+            return None
+
+        def mid(i, w):          # milieu (plus haut + plus bas) / 2 des w bougies finissant a l indice i inclus
+            if i + 1 < w:
+                return None
+            return (max(H[i + 1 - w:i + 1]) + min(L[i + 1 - w:i + 1])) / 2.0
+
+        def lines(i):
+            return mid(i, t_n), mid(i, k_n)
+
+        def cloud(i):           # Senkou A / B calcules a l indice i
+            tk, kj = lines(i)
+            sb = mid(i, s_n)
+            if tk is None or kj is None or sb is None:
+                return None
+            return (tk + kj) / 2.0, sb
+
+        def pos(a, b):
+            top, bot = max(a, b), min(a, b)
+            if px > top:
+                return 1, (px - top) / px * 100
+            if px < bot:
+                return -1, (px - bot) / px * 100
+            return 0, 0.0
+
+        r = lambda v, d=3: (round(v, d) if v is not None else None)
+        out = {"n": n}
+        tk, kj = lines(n - 1)
+        out["p_tenkan_pct"] = r((px - tk) / px * 100)
+        out["p_kijun_pct"] = r((px - kj) / px * 100)
+        out["tk_pct"] = r((tk - kj) / px * 100)
+        if n >= k_n + 5:
+            kj5 = lines(n - 6)[1]
+            out["kijun_pente_pct"] = r((kj - kj5) / px * 100)
+        sign_now = (tk > kj) - (tk < kj)
+        out["tk_barres"] = None
+        for back in range(1, 21):
+            i = n - 1 - back
+            if i < k_n - 1:
+                break
+            a, b = lines(i)
+            sg = (a > b) - (a < b)
+            if sg != sign_now and sg != 0:
+                out["tk_barres"] = back
+                break
+        if n > shift:
+            out["chikou_pct"] = r((C[-1] / C[-1 - shift] - 1) * 100)
+        cp = cloud(n - 1)
+        if cp:
+            p_, d_ = pos(*cp)
+            out.update({"nuage_proj_pos": p_, "nuage_proj_dist_pct": r(d_), "nuage_proj_epais_pct": r(abs(cp[0] - cp[1]) / px * 100),
+                        "nuage_proj_couleur": 1 if cp[0] >= cp[1] else -1})
+        if n - 1 - shift >= s_n - 1:
+            cc = cloud(n - 1 - shift)
+            if cc:
+                p_, d_ = pos(*cc)
+                out.update({"nuage_pos": p_, "nuage_dist_pct": r(d_), "nuage_epais_pct": r(abs(cc[0] - cc[1]) / px * 100),
+                            "nuage_couleur": 1 if cc[0] >= cc[1] else -1})
+        return out
+    except Exception:
+        return None
+
+
+def ichimoku_obs(fetch, ticker, price=None):
+    """v4.581 — MESURE SEULE : Ichimoku en M5, M15 et H1 depuis le cache de bougies (aucune requete reseau).
+    fetch(ticker, tf, count) renvoie les bougies cloturees ; la fonction ne declenche jamais de rechargement."""
+    out = {}
+    for tf, key, cnt in (("5m", "m5", 60), ("15m", "m15", 60), ("1h", "h1", 230)):
+        try:
+            f = ichimoku_features(fetch(ticker, tf, cnt) or [], price)
+            if f:
+                out[key] = f
+        except Exception:
+            pass
+    return out or None

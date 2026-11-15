@@ -2114,3 +2114,11 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Affichage : nouvelle ligne « Durée des cycles (30 min) » dans la carte serveur (moyenne, maximum, étape la plus lente, nombre de cycles > 30 s). Journal : une ligne `[CYCLE LENT]` avec les trois étapes les plus longues quand un cycle dépasse 30 s (au plus une toutes les 2 min).
 - Aucune décision de trading, aucun réglage ni capital ne dépend de cette mesure ; pas de coupure de la période de mesure. Surcoût : quelques lectures d'horloge par cycle.
 - Fichiers : bot_engine.py, api.py, index.html, index_src.html, README.md.
+
+## v4.581 — Diagnostic : Ichimoku enregistré sur chaque trade (aucune règle modifiée, compatible avec le gel) — 15/11/2026
+- Demande : pouvoir tester, après le gel, si l'Ichimoku (paramètres MT5 par défaut 9 / 26 / 52, décalage 26) sépare les bons trades des mauvais, avant d'en faire un filtre d'entrée ou la base d'une stratégie sur l'or.
+- Ajout : calcul de l'Ichimoku en M5, M15 et H1 à l'ouverture de chaque trade Scalp et au déclenchement de chaque ordre Auto Zone. Mesures par unité de temps : écart du prix à la Tenkan et à la Kijun, Tenkan − Kijun, bougies depuis le dernier croisement, pente de la Kijun, position de la Chikou, nuage projeté (Senkou A / B sur les 52 dernières bougies) et nuage actuel (position, distance au bord, épaisseur, couleur).
+- Source : cache de bougies déjà chargé, lu sans aucune requête réseau supplémentaire. Aucune donnée future (bougies clôturées seulement). Nuage actuel disponible en H1 ; en M5 et M15 le cache (60 bougies) ne permet que le nuage projeté (il faut 78 bougies pour le nuage actuel, et le cache n'a pas été agrandi pour ne pas modifier les autres indicateurs).
+- Export CSV : 42 colonnes en fin de fichier (`ich_m5_…`, `ich_m15_…`, `ich_h1_…`). Les trades ouverts avant la v4.581 n'ont pas ces colonnes remplies.
+- Aucune décision de trading, aucun réglage ni capital ne dépend de cette mesure ; pas de coupure de la période de mesure du gel (04/11 20:41 → 19/11 20:41).
+- Fichiers : mtf_analysis.py, scalp_crypto.py, zone_orders.py, bot_engine.py, index.html, index_src.html, README.md.
