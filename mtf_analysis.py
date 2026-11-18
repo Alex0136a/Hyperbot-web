@@ -522,3 +522,123 @@ def ichimoku_obs(fetch, ticker, price=None):
         except Exception:
             pass
     return out or None
+
+
+# ───────────────────── v4.582 — ZONES DE LIQUIDITE (MESURE SEULE) ─────────────────────
+def liquidity_features(candles, price=None, pivot=2, tol_atr=0.3, sweep_bars=6, break_bars=3):
+    """v4.582 — MESURE SEULE (aucune decision n en depend). Zones de liquidite lues sur des bougies CLOTUREES (de la plus ancienne a la plus recente).
+    - Egaux hauts (eqh) / egaux bas (eql) : au moins 2 pivots (sommets / creux sur `pivot` bougies de chaque cote) regroupes a moins de
+      tol_atr x ATR l un de l autre. Niveau = le plus haut des egaux hauts (le plus bas des egaux bas) : la ou s accumulent les stops.
+      Les pivots ne sont confirmes qu apres `pivot` bougies : la derniere bougie n entre jamais dans un niveau (aucune donnee future).
+    - eqh_dist_pct / eql_dist_pct : distance du prix au plus proche niveau AU-DESSUS (eqh) / EN DESSOUS (eql), en % du prix ; *_n = nombre de pivots ;
+      *_age = bougies depuis le dernier pivot du niveau.
+    - sweep_haut / sweep_bas : bougies depuis le dernier BALAYAGE (None si aucun sur les `sweep_bars` dernieres bougies) : une bougie dont la meche depasse
+      un niveau d egaux hauts (bas) mais dont la cloture revient du bon cote.
+    - rupt_haut / rupt_bas : RUPTURE d un niveau, clotures a l appui, sur les `break_bars` dernieres bougies : 0 aucune, 1 la bougie a CLOTURE au-dela du niveau,
+      2 la bougie ENTIERE (meche comprise) est au-dela ; la derniere cloture doit etre encore au-dela du niveau. rupt_*_k = bougies depuis la rupture (0 = derniere bougie)."""
+    try:
+        cs = [x for x in (candles or []) if all(x.get(k) is not None for k in ("o", "h", "l", "c"))]
+        n = len(cs)
+        if n < 25:
+            return None
+        H = [float(x["h"]) for x in cs]
+        L = [float(x["l"]) for x in cs]
+        C = [float(x["c"]) for x in cs]
+        px = float(price) if price else C[-1]
+        a = atr(cs[-31:])
+        if not (px > 0 and a and a > 0):
+            return None
+        tol = tol_atr * a
+        r = lambda v, d=3: (round(v, d) if v is not None else None)
+        hi_idx = [i for i in range(pivot, n - 1 - pivot) if H[i] == max(H[i - pivot:i + pivot + 1])]
+        lo_idx = [i for i in range(pivot, n - 1 - pivot) if L[i] == min(L[i - pivot:i + pivot + 1])]
+
+        def spaced(idx, vals, high):      # deux pivots a moins de 4 bougies l un de l autre = un seul contact (on garde le plus extreme)
+            kept = []
+            for i in idx:
+                if kept and i - kept[-1] < 4:
+                    if (vals[i] > vals[kept[-1]]) == high:
+                        kept[-1] = i
+                else:
+                    kept.append(i)
+            return kept
+        hi_idx, lo_idx = spaced(hi_idx, H, True), spaced(lo_idx, L, False)
+
+        def clusters(idx, vals, high):
+            out, cur = [], []
+            for i in sorted(idx, key=lambda k: vals[k]):
+                if cur and abs(vals[i] - vals[cur[0]]) > tol:
+                    out.append(cur)
+                    cur = []
+                cur.append(i)
+            if cur:
+                out.append(cur)
+            res = []
+            for g in out:
+                if len(g) >= 2:
+                    lvl = max(vals[i] for i in g) if high else min(vals[i] for i in g)
+                    res.append({"lvl": lvl, "n": len(g), "last": max(g)})
+            return res
+
+        eqh = clusters(hi_idx, H, True)
+        eql = clusters(lo_idx, L, False)
+        out = {"n": n, "atr_pct": r(a / px * 100)}
+        up = [e for e in eqh if e["lvl"] > px]
+        dn = [e for e in eql if e["lvl"] < px]
+        if up:
+            e = min(up, key=lambda k: k["lvl"])
+            out.update({"eqh_dist_pct": r((e["lvl"] - px) / px * 100), "eqh_n": e["n"], "eqh_age": n - 1 - e["last"]})
+        if dn:
+            e = max(dn, key=lambda k: k["lvl"])
+            out.update({"eql_dist_pct": r((px - e["lvl"]) / px * 100), "eql_n": e["n"], "eql_age": n - 1 - e["last"]})
+        # balayages : meche au-dela d un niveau d egaux, cloture revenue de l autre cote
+        sh = sb = None
+        for e in eqh:
+            for j in range(n - 1, max(n - 1 - sweep_bars, e["last"]), -1):
+                if H[j] > e["lvl"] and C[j] <= e["lvl"]:
+                    k = n - 1 - j
+                    sh = k if sh is None else min(sh, k)
+                    break
+        for e in eql:
+            for j in range(n - 1, max(n - 1 - sweep_bars, e["last"]), -1):
+                if L[j] < e["lvl"] and C[j] >= e["lvl"]:
+                    k = n - 1 - j
+                    sb = k if sb is None else min(sb, k)
+                    break
+        out["sweep_haut"], out["sweep_bas"] = sh, sb
+        # ruptures confirmees par une cloture (bougie complete)
+        rh = rb = 0
+        kh = kb = None
+        for e in eqh:
+            for j in range(n - 1, max(n - 1 - break_bars, e["last"]), -1):
+                if C[j - 1] <= e["lvl"] < C[j] and C[-1] > e["lvl"]:
+                    code = 2 if L[j] > e["lvl"] else 1
+                    k = n - 1 - j
+                    if kh is None or k < kh or (k == kh and code > rh):
+                        rh, kh = code, k
+                    break
+        for e in eql:
+            for j in range(n - 1, max(n - 1 - break_bars, e["last"]), -1):
+                if C[j - 1] >= e["lvl"] > C[j] and C[-1] < e["lvl"]:
+                    code = 2 if H[j] < e["lvl"] else 1
+                    k = n - 1 - j
+                    if kb is None or k < kb or (k == kb and code > rb):
+                        rb, kb = code, k
+                    break
+        out.update({"rupt_haut": rh, "rupt_haut_k": kh, "rupt_bas": rb, "rupt_bas_k": kb})
+        return out
+    except Exception:
+        return None
+
+
+def liquidity_obs(fetch, ticker, price=None):
+    """v4.582 — MESURE SEULE : zones de liquidite en M5 et M15 depuis le cache de bougies (aucune requete reseau)."""
+    out = {}
+    for tf, key, cnt in (("5m", "m5", 60), ("15m", "m15", 60)):
+        try:
+            f = liquidity_features(fetch(ticker, tf, cnt) or [], price)
+            if f:
+                out[key] = f
+        except Exception:
+            pass
+    return out or None
