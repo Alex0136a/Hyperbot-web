@@ -609,13 +609,14 @@ def liquidity_features(candles, price=None, pivot=2, tol_atr=0.3, sweep_bars=6, 
         # ruptures confirmees par une cloture (bougie complete)
         rh = rb = 0
         kh = kb = None
+        eh = eb = None
         for e in eqh:
             for j in range(n - 1, max(n - 1 - break_bars, e["last"]), -1):
                 if C[j - 1] <= e["lvl"] < C[j] and C[-1] > e["lvl"]:
                     code = 2 if L[j] > e["lvl"] else 1
                     k = n - 1 - j
                     if kh is None or k < kh or (k == kh and code > rh):
-                        rh, kh = code, k
+                        rh, kh, eh = code, k, e
                     break
         for e in eql:
             for j in range(n - 1, max(n - 1 - break_bars, e["last"]), -1):
@@ -623,9 +624,14 @@ def liquidity_features(candles, price=None, pivot=2, tol_atr=0.3, sweep_bars=6, 
                     code = 2 if H[j] < e["lvl"] else 1
                     k = n - 1 - j
                     if kb is None or k < kb or (k == kb and code > rb):
-                        rb, kb = code, k
+                        rb, kb, eb = code, k, e
                     break
         out.update({"rupt_haut": rh, "rupt_haut_k": kh, "rupt_bas": rb, "rupt_bas_k": kb})
+        # v4.583 : detail du niveau rompu (pour le journal des ruptures)
+        if eh is not None:
+            out.update({"rupt_haut_lvl": eh["lvl"], "rupt_haut_n": eh["n"], "rupt_haut_dist": r((C[-1] - eh["lvl"]) / eh["lvl"] * 100)})
+        if eb is not None:
+            out.update({"rupt_bas_lvl": eb["lvl"], "rupt_bas_n": eb["n"], "rupt_bas_dist": r((eb["lvl"] - C[-1]) / eb["lvl"] * 100)})
         return out
     except Exception:
         return None

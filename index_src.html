@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.582";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.583";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1256,6 +1256,17 @@ function ScalpPanel({ token }) {
     } catch(e) { setErr(e.message); } }, [token]);
   useEffect(() => { load(); const t = setInterval(load, 6000); return () => clearInterval(t); }, [load]);
   const send = async (body, okMsg) => { try { await apiCall("/api/scalp/config","POST",body,token); if (okMsg) alert(okMsg); load(); } catch(e) { alert(e.message); } };
+  const dlLiq = async () => {      // v4.583 : export CSV du journal des ruptures de liquidite M5
+    try {
+      const r = await apiCall("/api/scalp/liq_events","GET",null,token);
+      const f = v => (v===null||v===undefined) ? "" : String(v).replace(".",",");
+      const head = ["date (UTC-4)","actif","sens","code (2 = bougie entiere)","prix entree","niveau rompu","pivots du niveau","distance cloture-niveau %","ATR M5 %","tendance H1","stop plan %","objectif plan %","retour 15 min %","retour 30 min %","retour 60 min %","premier touche","net % (frais 0,09)","max favorable %","max adverse %","fin 60 min %"];
+      const rows = (r.events||[]).map(e => { const x = e.res||{}; return [new Date(e.bar+300000).toLocaleString("fr-FR",{timeZone:"America/Marigot"}), e.t, e.d==="up"?"hausse":"baisse", e.code, e.px, e.lvl, e.n, e.dist, e.atr, e.h1, e.sl, e.tp, x.r15, x.r30, x.r60, x.first, x.net_pct, x.max_fav_pct, x.max_adv_pct, x.end_pct].map(f).join(";"); });
+      const blob = new Blob(["\uFEFF" + [head.join(";"), ...rows].join("\r\n")], {type:"text/csv;charset=utf-8;"});
+      const u = URL.createObjectURL(blob), a = document.createElement("a");
+      a.href = u; a.download = "ruptures_liquidite_M5.csv"; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u);
+    } catch(e) { alert(e.message); }
+  };
   if (!d) return <div style={MT.card}><div style={MT.title}>⚡ SCALP CRYPTO</div><div style={{color:"#94a3b8",fontSize:12}}>{err || "Chargement…"}</div></div>;
   const live = d.mode === "live";
   const S = live ? d.stats_live : d.stats_paper;
@@ -1450,6 +1461,13 @@ function ScalpPanel({ token }) {
             <div style={{...MT.title}}>CONTINUATION : MENEURS REFUSÉS FAUTE D'ÉTENDUE DU PANIER, QUE SERAIT-IL ARRIVÉ ?</div>
             {S.shadow.n>0 ? <div>{S.shadow.total} refus suivis · {S.shadow.n} évalués sur 60 min : objectif atteint {S.shadow.obj} fois, stop {S.shadow.stop} fois · résultat hypothétique net de frais <b>{S.shadow.sum_net_pct>=0?"+":""}{S.shadow.sum_net_pct.toFixed(2)} %</b> du prix au total (moyenne {S.shadow.avg_net_pct>=0?"+":""}{S.shadow.avg_net_pct.toFixed(2)} % par signal) · {S.shadow.pending} en attente</div> : <div>{S.shadow.total} refus suivis, évaluation 65 min après chaque signal.</div>}
             <div style={{color:"#64748b"}}>Si ce total devient nettement positif sur 30 signaux ou plus, le refus coûte de l'argent : il faudra le revoir (par exemple selon l'étendue ou le motif). Sinon, la règle protège. Stop et objectif comme pour un vrai trade ; même bougie : stop d'abord.</div>
+          </div>}
+          {S.liq && <div style={{fontSize:11,color:"#cbd5e1",marginBottom:12,lineHeight:1.5}}>
+            <div style={{...MT.title}}>RUPTURES DE LIQUIDITÉ M5 (OBSERVATION, AUCUN ORDRE)</div>
+            <div>{S.liq.total} ruptures enregistrées · {S.liq.pending} en attente d'évaluation (60 min après la bougie de rupture)</div>
+            {[["all","Toutes"],["up","Hausse (test d'achat)"],["down","Baisse (test de vente)"],["full","Bougie entière au-delà"],["h1_with","Dans le sens de H1"],["h1_against","Contre H1"]].map(([k,l])=>{ const g=(S.liq.groups||{})[k]; return <div key={k} style={{color:g&&g.n?"#cbd5e1":"#64748b"}}>{l} : {g&&g.n ? <span>{g.n} évaluées · retour moyen 15/30/60 min <b>{g.r15}/{g.r30}/{g.r60} %</b> · {g.pos60} % positives à 60 min · objectif {g.obj} / stop {g.stop} · net moyen <b>{g.avg_net_pct>=0?"+":""}{g.avg_net_pct} %</b></span> : "aucune évaluée"}</div>; })}
+            <div style={{color:"#64748b"}}>Rupture = bougie M5 clôturée au-delà d'un niveau d'égaux hauts/bas après avoir clôturé en deçà. Entrée hypothétique à la clôture, plan stop/objectif de la continuation Scalp, frais 0,09 %. Lecture utile à partir de 100 ruptures évaluées ; rien n'est décidé avant.</div>
+            <button style={{...MT.btn("#60a5fa"),marginTop:6}} onClick={dlLiq}>⬇ CSV ruptures</button>
           </div>}
           {S.be_post && S.be_post.total_be>0 && <div style={{fontSize:11,color:"#cbd5e1",marginBottom:12,lineHeight:1.5}}>
             <div style={{...MT.title}}>STOP DE RENTABILITÉ : QUE SE PASSE-T-IL APRÈS LA SORTIE ?</div>

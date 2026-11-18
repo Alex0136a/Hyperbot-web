@@ -1067,6 +1067,10 @@ class ScalpEngine:
         self._cont_fan = {}                  # v4.504 : (sens, mode) -> derniere ouverture en grappe de continuation
         self.macro = macro_events.MacroCalendar() if macro_events else None      # v4.507
         self._last_sig_ts = time.time()      # v4.506 : dernier signal valide vu (alerte « aucun signal »)
+        self.liq_ev = self._liq_load()      # v4.583 : journal des ruptures de liquidite M5 (observation seule)
+        self._liq_last = {}
+        self._liq_saved = 0.0
+        self._liq_dirty = False
         self.cont_shadow = self._shadow_load()      # v4.514 : meneurs de continuation refuses (suivi hypothetique)
         self.sus_state = {}                  # v4.532 : ticker -> {phase soutenue|fin, side, since, ...} (tendance soutenue / sortie de zone)
         self.sus_why = {}                    # v4.532 : ticker -> (ts, raison pour laquelle la tendance soutenue n est pas retenue)
@@ -1452,7 +1456,7 @@ class ScalpEngine:
         stop_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok") and (d.get("post_stop") or {}).get("kind") not in ("durée", "sans progrès")]).get("Scalp")      # v4.538
         noprog_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok") and (d.get("post_stop") or {}).get("kind") == "sans progrès"]).get("Scalp")      # v4.560
         duree_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok") and (d.get("post_stop") or {}).get("kind") == "durée"]).get("Scalp")      # v4.552
-        out = {"mode": mode, "dims": dims, "be_post": be_post, "stop_post": stop_post, "duree_post": duree_post, "noprog_post": noprog_post, "shadow": self.shadow_summary(), "lab": self.lab_summary(rows), "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
+        out = {"mode": mode, "dims": dims, "be_post": be_post, "stop_post": stop_post, "duree_post": duree_post, "noprog_post": noprog_post, "shadow": self.shadow_summary(), "liq": self.liq_summary(), "lab": self.lab_summary(rows), "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
                "by_hour": {h: agg(v) for h, v in sorted(by_hour.items())}, "last_closed": rows[0].get("closed_at") if rows else None}
         self._stats_cache = (time.time(), mode, out)
         return out
@@ -1656,6 +1660,116 @@ class ScalpEngine:
         if changed:
             self._shadow_save()
 
+    # ── v4.583 : JOURNAL DES RUPTURES DE LIQUIDITE M5 (observation seule : aucun ordre, aucune regle modifiee) ──
+    # Evenement = une bougie M5 cloturee au-dela d un niveau de liquidite (egaux hauts / bas) apres avoir cloture en-deca.
+    # Test hypothetique : entree a la cloture de cette bougie, dans le sens de la rupture, plan stop / objectif = celui de la continuation Scalp (shadow_plan).
+    def _liq_load(self):
+        try:
+            raw = db.get_meta("scalp_liq_events", None)
+            v = json.loads(raw) if isinstance(raw, str) else (raw or [])
+            return v if isinstance(v, list) else []
+        except Exception:
+            return []
+
+    def _liq_save(self, force=False):
+        if not (self._liq_dirty or force):
+            return
+        if not force and time.time() - self._liq_saved < 45:
+            return
+        try:
+            db.set_meta("scalp_liq_events", json.dumps(self.liq_ev[-1500:]))
+            self._liq_saved = time.time()
+            self._liq_dirty = False
+        except Exception as e:
+            self.last_error = f"journal ruptures : {type(e).__name__}: {e}"
+
+    def _liq_step(self, t, c1h):
+        """Une fois par bougie M5 cloturee et par actif : detecte une rupture de liquidite et l inscrit au journal."""
+        if not int(float(self.cfg.get("SCALP_LIQ_JOURNAL_ON", 1) or 0)):
+            return
+        c5 = self.bot._mtf_candles(t, "5m", 60, cache_only=True)
+        if not c5 or len(c5) < 30:
+            return
+        bar = int(c5[-1]["t"])
+        if self._liq_last.get(t) == bar:
+            return
+        self._liq_last[t] = bar
+        f = mtf.liquidity_features(c5, c5[-1]["c"])
+        if not f:
+            return
+        px = float(c5[-1]["c"])
+        a_abs = (f.get("atr_pct") or 0) * px / 100.0
+        for d, key in (("up", "rupt_haut"), ("down", "rupt_bas")):
+            code = f.get(key)
+            if not code or f.get(key + "_k") != 0:
+                continue
+            if any(e.get("t") == t and e.get("bar") == bar and e.get("d") == d for e in self.liq_ev[-60:]):
+                continue
+            sl, tp = self.shadow_plan(self.cfg, px, a_abs)
+            try:
+                h1 = mtf.trend(c1h)[0] if c1h else None
+            except Exception:
+                h1 = None
+            self.liq_ev.append({"ts": time.time(), "bar": bar, "t": t, "d": d, "code": int(code), "px": px, "lvl": f.get(key + "_lvl"), "n": f.get(key + "_n"),
+                                "dist": f.get(key + "_dist"), "atr": f.get("atr_pct"), "h1": h1, "sl": round(sl, 3), "tp": round(tp, 3)})
+            self._liq_dirty = True
+        self._liq_save()
+
+    def _liq_eval(self, limit=3):
+        now = time.time()
+        done = 0
+        ok_pass = err_pass = False
+        for e in self.liq_ev:
+            if done >= limit:
+                break
+            t0 = int(e["bar"]) / 1000.0 + 300           # ouverture de la bougie qui suit celle de la rupture
+            if e.get("res") or e.get("fail", 0) >= 3 or now < t0 + (self.PE_WIN_MIN + 5) * 60:
+                continue
+            done += 1
+            try:
+                cs = self._candles_range(e["t"], t0, t0 + self.PE_WIN_MIN * 60)
+                cs = [c for c in cs if c["t"] >= t0 * 1000][:12]
+                if len(cs) < 12:
+                    e["fail"] = e.get("fail", 0) + 1
+                else:
+                    sd = "long" if e["d"] == "up" else "short"
+                    sg = 1 if sd == "long" else -1
+                    r = self.shadow_calc(sd, e["px"], e["sl"], e["tp"], cs)
+                    for k, i in (("r15", 2), ("r30", 5), ("r60", 11)):
+                        r[k] = round(sg * (cs[i]["c"] - e["px"]) / e["px"] * 100, 3)
+                    e["res"] = r
+                    ok_pass = True
+            except Exception as ex:
+                e["fail"] = e.get("fail", 0) + 1
+                self.last_error = f"journal ruptures : {type(ex).__name__}: {ex}"
+                err_pass = True
+            self._liq_dirty = True
+        if ok_pass and not err_pass:
+            self._clear_err("journal ruptures")
+        self._liq_save(force=bool(done))
+
+    def liq_summary(self):
+        if not self.liq_ev:
+            return None
+        def agg(L):
+            ev = [e for e in L if e.get("res")]
+            if not ev:
+                return {"n": 0}
+            avg = lambda k: round(sum(e["res"][k] for e in ev) / len(ev), 3)
+            nets = [e["res"]["net_pct"] for e in ev]
+            return {"n": len(ev), "r15": avg("r15"), "r30": avg("r30"), "r60": avg("r60"), "pos60": round(100 * sum(1 for e in ev if e["res"]["r60"] > 0) / len(ev)),
+                    "obj": sum(1 for e in ev if e["res"]["first"] == "objectif"), "stop": sum(1 for e in ev if e["res"]["first"] == "stop"),
+                    "sum_net_pct": round(sum(nets), 2), "avg_net_pct": round(sum(nets) / len(nets), 3)}
+        al = lambda e: (e["d"] == "up" and e.get("h1") == "haussiere") or (e["d"] == "down" and e.get("h1") == "baissiere")
+        ag = lambda e: (e["d"] == "up" and e.get("h1") == "baissiere") or (e["d"] == "down" and e.get("h1") == "haussiere")
+        L = self.liq_ev
+        return {"total": len(L), "pending": sum(1 for e in L if not e.get("res") and e.get("fail", 0) < 3), "since": L[0].get("ts"),
+                "groups": {"all": agg(L), "up": agg([e for e in L if e["d"] == "up"]), "down": agg([e for e in L if e["d"] == "down"]),
+                           "full": agg([e for e in L if e.get("code") == 2]), "h1_with": agg([e for e in L if al(e)]), "h1_against": agg([e for e in L if ag(e)])}}
+
+    def liq_events(self):
+        return list(self.liq_ev)
+
     def shadow_summary(self):
         ev = [s for s in self.cont_shadow if s.get("res")]
         if not self.cont_shadow:
@@ -1802,6 +1916,7 @@ class ScalpEngine:
             self._post_exit_eval()
             self._post_stop_eval()      # v4.538
             self._shadow_eval()
+            self._liq_eval()      # v4.583
             self._lab_eval()
         except Exception as e:
             self.last_error = f"suivi après sortie : {type(e).__name__}: {e}"
@@ -2055,6 +2170,10 @@ class ScalpEngine:
                     self._conf_shadow_step(t, c5, c15, c1h)      # v4.568 : test fantome des principes (aucun ordre)
                 except Exception as e:
                     self.last_error = f"test fantome {t} : {type(e).__name__}: {e}"
+                try:
+                    self._liq_step(t, c1h)      # v4.583 : journal des ruptures de liquidite M5 (aucun ordre)
+                except Exception as e:
+                    self.last_error = f"journal ruptures {t} : {type(e).__name__}: {e}"
                 try:
                     c1m = self.bot._mtf_candles(t, "1m", 40) if int(self.cfg.get("SCALP_MOVE1M_ON", 1)) else None
                 except Exception:

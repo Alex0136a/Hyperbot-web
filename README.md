@@ -2136,3 +2136,13 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Aucune décision de trading, aucun réglage ni capital ne dépend de cette mesure ; la période de mesure du gel (04/11 20:41 → 19/11 20:41) n'est pas interrompue.
 - Test de trading sur rupture : non implémenté dans cette version (voir la question posée à l'utilisateur ; il faudra des règles fixées avant la mesure, un seul changement à la fois, paper d'abord).
 - Fichiers : mtf_analysis.py, scalp_crypto.py, zone_orders.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.583 — Diagnostic : journal des ruptures de liquidité M5 (observation seule, aucun ordre, compatible avec le gel) — 17/11/2026
+- Demande : tester si une bougie M5 complète qui rompt une zone de liquidité (égaux hauts / bas) prolonge le mouvement. Choix : journal d'événements dès maintenant, pas de trades (paper après le gel, si les données le justifient).
+- Événement : à chaque bougie M5 clôturée, par actif, si la bougie vient de clôturer au-delà d'un niveau d'égaux hauts (hausse) ou d'égaux bas (baisse) après avoir clôturé en deçà, et que la dernière clôture est encore au-delà. Code 1 = clôture au-delà ; code 2 = bougie entière (mèche comprise) au-delà. Définitions de la v4.582 inchangées.
+- Test hypothétique : entrée à la clôture de la bougie de rupture, dans le sens de la rupture ; stop et objectif = plan de continuation du Scalp (`shadow_plan`), frais 0,09 %. Évaluation 65 min plus tard sur les 12 bougies M5 suivantes (premier touché, net, max favorable / adverse, retours à 15, 30 et 60 min), sans regard dans le futur (première bougie entièrement après la rupture).
+- Contexte enregistré : niveau rompu, nombre de pivots, distance de la clôture au niveau, ATR M5 %, tendance H1.
+- Charge : lecture du cache de bougies existant ; une seule requête REST par événement évalué. Réglage `SCALP_LIQ_JOURNAL_ON` (1 par défaut) pour l'arrêter. Mémoire : 1 500 derniers événements.
+- Affichage : carte « RUPTURES DE LIQUIDITÉ M5 » dans le Scalp (groupes : toutes, hausse, baisse, bougie entière, dans le sens de H1, contre H1) + bouton « ⬇ CSV ruptures » (route `/api/scalp/liq_events`).
+- Lecture : pas de conclusion avant 100 ruptures évaluées ; la comparaison avec une entrée au hasard au même moment reste à faire avant toute règle. Aucune décision, aucun réglage, aucun capital ne dépend de ce journal ; la période de mesure (04/11 → 19/11 20:41) n'est pas interrompue.
+- Fichiers : mtf_analysis.py (niveau, pivots et distance de la rupture), scalp_crypto.py, api.py, bot_engine.py, index.html, index_src.html, README.md.
