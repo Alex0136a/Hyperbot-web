@@ -6,8 +6,8 @@ import threading
 
 import mtf_analysis as mtf
 
-DEFAULTS = {"ZONEORD_ON": 1, "ZONEORD_LIVE": 0, "ZONEORD_LOCK_ON": 1, "ZONEORD_LOCK_ARM_FRAC": 0.33, "ZONEORD_LOCK_FRACTION": 0.5, "ZONEORD_HOLD_H": 6, "ZONEORD_RECENT_ON": 1, "ZONEORD_REC_GRACE_H": 2.0, "ZONEORD_REC_TREND_H1": 1, "ZONEORD_REC_HOURS": 10, "ZONEORD_REC_MIN_VISITS": 2, "ZONEORD_REC_MERGE_ATR": 0.6, "ZONEORD_REC_ZONE_WIDTH_ATR": 2.0, "ZONEORD_REC_MAX_DIST_FRAC": 0.6, "ZONEORD_REC_MIN_RANGE_ATR": 3.0, "ZONEORD_REC_SL_ATR": 1.0, "ZONEORD_REC_BREAK_ATR": 1.0, "ZONEORD_REC_EXPIRY_H": 4, "ZONEORD_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"], "ZONEORD_ZONE_MAX_WIDTH_ATR": 1.0, "ZONEORD_ZONE_H4": 1, "ZONEORD_MIN_TOUCHES": 2, "ZONEORD_MIN_DIST_ATR": 0.1, "ZONEORD_SL_MAX_ATR": 1.0, "ZONEORD_MAX_DIST_ATR": 1.5,
-            "ZONEORD_CONFIRM_PCT": 0.3, "ZONEORD_SL_BUFFER_ATR": 0.3, "ZONEORD_SL_MAX_PCT": 6.0, "ZONEORD_MIN_RR": 1.5, "ZONEORD_MAX_RR": 4.0, "ZONEORD_TP_BUFFER_PCT": 0.3,
+DEFAULTS = {"ZONEORD_ON": 1, "ZONEORD_LIVE": 0, "ZONEORD_LOCK_ON": 1, "ZONEORD_LOCK_ARM_FRAC": 0.33, "ZONEORD_LOCK_FRACTION": 0.5, "ZONEORD_HOLD_H": 6, "ZONEORD_RECENT_ON": 1, "ZONEORD_REC_GRACE_H": 2.0, "ZONEORD_REC_TREND_H1": 1, "ZONEORD_REC_HOURS": 10, "ZONEORD_REC_MIN_VISITS": 2, "ZONEORD_REC_MERGE_ATR": 0.6, "ZONEORD_REC_ZONE_WIDTH_ATR": 2.0, "ZONEORD_REC_MAX_DIST_FRAC": 0.6, "ZONEORD_REC_MIN_RANGE_ATR": 3.0, "ZONEORD_REC_SL_ATR": 1.0, "ZONEORD_REC_BREAK_ATR": 1.0, "ZONEORD_M15_COUNTER_BLOCK": 1, "ZONEORD_REC_EXPIRY_H": 4, "ZONEORD_SYMBOLS": ["BTC", "ETH", "HYPE", "TAO", "SUI"], "ZONEORD_ZONE_MAX_WIDTH_ATR": 1.0, "ZONEORD_ZONE_H4": 1, "ZONEORD_MIN_TOUCHES": 2, "ZONEORD_MIN_DIST_ATR": 0.1, "ZONEORD_SL_MAX_ATR": 1.0, "ZONEORD_MAX_DIST_ATR": 1.5,
+            "ZONEORD_CONFIRM_PCT": 0.1, "ZONEORD_SL_BUFFER_ATR": 0.3, "ZONEORD_SL_MAX_PCT": 6.0, "ZONEORD_MIN_RR": 1.5, "ZONEORD_MAX_RR": 4.0, "ZONEORD_TP_BUFFER_PCT": 0.3,
             "ZONEORD_NOTIONAL_USD": 60.0, "ZONEORD_LEVERAGE": 3, "ZONEORD_MAX_ORDERS": 5, "ZONEORD_EXPIRY_H": 48, "ZONEORD_BREAK_ATR": 0.5, "ZONEORD_TRAIL_PCT": 1.0}
 
 
@@ -350,6 +350,26 @@ class ZoneOrders:
         except Exception:
             return False
 
+    def _m15_counter(self, item):
+        """v4.587 : raison de refus si la tendance M15 (cloture > EMA20 > EMA50 haussiere, inverse baissiere ; cache de bougies seul) est CONTRE le sens de l ordre : vente en M15 haussier, achat en M15 baissier. Sinon None (neutre, ou lecture impossible : pas de blocage)."""
+        try:
+            c15 = self.bot._mtf_candles(item["ticker"], "15m", 60, cache_only=True)
+            if not c15 or len(c15) < 50:
+                return None
+            cl = [x["c"] for x in c15]
+            e20, e50 = mtf.ema(cl, 20), mtf.ema(cl, 50)
+            if not e20 or not e50:
+                return None
+            m15 = "haussiere" if (cl[-1] > e20 > e50) else ("baissiere" if (cl[-1] < e20 < e50) else "neutre")
+            long_ = item.get("direction") == "long"
+            if m15 == "haussiere" and not long_:
+                return "contre la tendance M15 (vente alors que le M15 est haussier)"
+            if m15 == "baissiere" and long_:
+                return "contre la tendance M15 (achat alors que le M15 est baissier)"
+        except Exception:
+            return None
+        return None
+
     def still_valid(self, item):
         """Appele par le moteur manuel au declenchement : (True, '') ou (False, raison)."""
         try:
@@ -357,6 +377,8 @@ class ZoneOrders:
                 return False, "une position est déjà ouverte sur cet actif (un seul sens à la fois)"
             v = self.view(item["ticker"], cache_only=True, recent=bool((item.get("zone_order") or {}).get("recent")))       # cache seul : appele depuis le fil des prix, aucune requete reseau ici
             r = self.contradiction(item, v)
+            if r is None and v is not None and int(float(self.c("ZONEORD_M15_COUNTER_BLOCK") or 0)):
+                r = self._m15_counter(item)      # v4.587 : pas d entree contre la tendance M15 (comme le Scalp)
             if r is None and v is not None:
                 (item.get("zone_order") or {})["h4_fire"] = self.h4_info(item["ticker"], v["price"], cache_only=True)      # v4.520 : observation
                 (item.get("zone_order") or {})["flow_fire"] = self.flow_info(item["ticker"])        # v4.537 : observation (flux 10 min), jamais bloquant

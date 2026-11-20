@@ -3597,6 +3597,22 @@ class ScalpEngine:
         except Exception:
             return None
 
+    def _m15_block(self, sig):
+        """v4.586 : pas de vente quand la tendance M15 est haussiere, pas d achat quand elle est baissiere (reglage SCALP_M15_COUNTER_BLOCK, 0 = desactive).
+        Tendance M15 = celle lue par le signal (cloture > EMA20 > EMA50 haussiere ; inverse baissiere). Signal sans lecture directionnelle (neutre, soutenue, absente) : pas de blocage."""
+        try:
+            if not int(float(self.cfg.get("SCALP_M15_COUNTER_BLOCK", 0) or 0)):
+                return None
+            m15 = (sig.get("ctx") or {}).get("m15")
+            sd = sig.get("side")
+            if m15 == "haussiere" and sd == "short":
+                return "contre la tendance M15 (vente alors que le M15 est haussier)"
+            if m15 == "baissiere" and sd == "long":
+                return "contre la tendance M15 (achat alors que le M15 est baissier)"
+        except Exception:
+            return None
+        return None
+
     def _atr5_block(self, sig):
         """v4.585 : pas d entree quand l ATR 5 min (en % du prix) est sous le plancher SCALP_MIN_ATR5_PCT (0 = desactive). Signal sans ATR : pas de blocage."""
         try:
@@ -3631,6 +3647,10 @@ class ScalpEngine:
         why_atr5 = self._atr5_block(sig)      # v4.585 : plancher d ATR 5 min (tous les types de signal)
         if why_atr5:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_atr5}")
+            return
+        why_m15 = self._m15_block(sig)      # v4.586 : pas d entree contre la tendance M15
+        if why_m15:
+            self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_m15}")
             return
         why_calm = self._calm_block(t, sig)      # v4.541 : pause tant que le marche de l actif est trop calme (tous les modes)
         if why_calm:
