@@ -2152,3 +2152,11 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Ajout : réglage visible (1 = actif, 0 = arrêt) ; la carte « RUPTURES DE LIQUIDITÉ M5 » s'affiche toujours avec le statut (journal actif / arrêté, heure de la dernière analyse, nombre d'actifs analysés sur la dernière bougie M5). Les lignes par groupe n'apparaissent qu'avec au moins une rupture.
 - Aucune règle de trading, aucun réglage de décision, aucun capital modifié.
 - Fichiers : scalp_crypto.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.585 — Scalp : plancher d'ATR 5 min (changement de règle d'entrée, demandé le 20/11/2026, après le gel)
+- Règle : pas d'entrée Scalp (rebond, cassure, continuation, tous types) quand l'ATR 5 min est sous `SCALP_MIN_ATR5_PCT` % du prix. Valeur par défaut **0,30** ; 0 = désactivé. Le refus est inscrit au journal (« marché trop calme (ATR 5 min x % < 0,3 %) »). Les signaux sans ATR ne sont pas bloqués. Paper et live suivent la même règle.
+- Pourquoi 0,30 : sur les 729 trades du gel (04/11 20:41 → 19/11 20:41), le quart le plus calme (ATR 5 min < 0,26 %) avait 29,0 % de réussite et −0,120 $ par trade ; avec un plancher à 0,30 il resterait 465 trades, net −35,51 $ au lieu de −66,91 $, soit −0,076 $ par trade au lieu de −0,092 $.
+- Limites : exploration sur les mêmes données qui ont inspiré la règle (plusieurs seuils comparés) ; l'écart n'est pas significatif ; les deux moitiés restent négatives (−13,44 $ et −22,07 $) ; le net recule surtout parce qu'il y a moins de trades (moins de frais), le brut par trade ne devient pas positif. Le plancher d'ATR 15 min existant (`SCALP_MIN_ATR15_PCT`, 0) n'apportait aucun gain par trade sur ces données (−0,094 à −0,134 $ par trade) : il n'est pas utilisé.
+- Mesure de cette règle : comparer à la référence du gel (−0,092 $ par trade, 35,5 % de réussite, 729 trades). Lecture à partir de 100 trades après le changement, avec les mêmes critères (net positif dans les deux moitiés, borne basse de Wilson au-dessus de l'équilibre, clusters de 5 min). Ne pas changer d'autre règle Scalp pendant cette mesure.
+- Retour arrière : mettre `SCALP_MIN_ATR5_PCT` à 0 dans les réglages.
+- Fichiers : scalp_crypto.py, api.py, bot_engine.py, index.html, index_src.html, README.md.

@@ -3597,6 +3597,22 @@ class ScalpEngine:
         except Exception:
             return None
 
+    def _atr5_block(self, sig):
+        """v4.585 : pas d entree quand l ATR 5 min (en % du prix) est sous le plancher SCALP_MIN_ATR5_PCT (0 = desactive). Signal sans ATR : pas de blocage."""
+        try:
+            mn = float(self.cfg.get("SCALP_MIN_ATR5_PCT", 0) or 0)
+            if mn <= 0:
+                return None
+            a5, px = sig.get("atr5"), sig.get("price")
+            if not a5 or not px:
+                return None
+            v = float(a5) / float(px) * 100.0
+            if v < mn:
+                return f"marché trop calme (ATR 5 min {v:.2f} % < {mn:g} %)"
+        except Exception:
+            return None
+        return None
+
     def _take(self, t, sig):
         c = self.cfg
         mode = "live" if c.get("SCALP_MODE") == "live" else "paper"
@@ -3611,6 +3627,10 @@ class ScalpEngine:
         why_chase = self._chase_block(sig)      # v4.551 : pas d entree quand le panier a deja bouge dans le sens du trade (on courrait apres le mouvement)
         if why_chase:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_chase}")
+            return
+        why_atr5 = self._atr5_block(sig)      # v4.585 : plancher d ATR 5 min (tous les types de signal)
+        if why_atr5:
+            self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_atr5}")
             return
         why_calm = self._calm_block(t, sig)      # v4.541 : pause tant que le marche de l actif est trop calme (tous les modes)
         if why_calm:
