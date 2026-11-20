@@ -2190,3 +2190,10 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Correctif : les deux clés sont maintenant de vraies entrées de `CONFIG`, et les valeurs de repli du code sont les valeurs voulues (0,30 et 1). Vérifié avec le `CONFIG` réel et avec une configuration vide : ATR 5 min 0,28 % refusé, 0,35 % accepté, vente avec M15 haussier refusée.
 - Conséquence pour la mesure : la référence « v4.585 + v4.586 » commence avec cette version (v4.589), pas avant. Les trades Scalp du 20/11 00:40 → dépôt de la v4.589 sont des trades **sans** ces filtres (16 trades ce jour-là : +2,09 $, 9 gagnants ; dont 7 sous 0,30 % d'ATR : −0,30 $).
 - Fichiers : bot_engine.py, scalp_crypto.py, index.html, index_src.html, README.md.
+
+## v4.590 — Journal des signaux refusés, test fantôme et descripteurs de régime (observation seule)
+- Objectif : savoir **dans quelles situations** les signaux refusés auraient gagné ou perdu, pour ne retenir un régime qu'après validation sur données nouvelles. Aucune règle de décision modifiée, aucun ordre.
+- Chaque signal refusé par un filtre Scalp (`atr5` : ATR 5 min < plancher ; `m15` : contre la tendance M15 ; `calm` : marché calme ; `ctx` : contexte H1 / H4) est inscrit (un suivi par actif, sens et filtre toutes les 15 min), puis rejoué 60 min plus tard sur les bougies 5 min **postérieures** au signal : entrée au prix du signal, stop / objectif de `shadow_plan` (plan de la continuation Scalp), frais 0,09 %, même bougie : stop d'abord. Retours à 15 / 30 / 60 min.
+- Descripteurs de régime fixés d'avance : M15, tendance H1, BTC 1 h, flux acheteur, efficacité M5 sur 24 bougies (ER), amplitude des 12 dernières bougies M5, Ichimoku H1 (écart à la Kijun, pente, Tenkan − Kijun, position et distance au nuage).
+- Réglage `SCALP_REFUS_JOURNAL_ON` (1 par défaut, 0 = arrêté). Stockage : meta `scalp_refus_shadow` (1500 derniers). API `GET /api/scalp/refus_events`. Carte « SIGNAUX REFUSÉS : TEST FANTÔME » + bouton « ⬇ CSV refusés ».
+- Message de refus ATR : 3 décimales. Lecture : au moins 100 refus évalués par filtre, puis validation jour par jour (les deux moitiés positives) avant toute activation.

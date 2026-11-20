@@ -1073,6 +1073,9 @@ class ScalpEngine:
         self._liq_t_ok = 0.0
         self._liq_saved = 0.0
         self._liq_dirty = False
+        self.refus_ev = self._refus_load()      # v4.590 : journal des signaux refuses + test fantome (observation seule)
+        self._refus_saved = 0.0
+        self._refus_dirty = False
         self.cont_shadow = self._shadow_load()      # v4.514 : meneurs de continuation refuses (suivi hypothetique)
         self.sus_state = {}                  # v4.532 : ticker -> {phase soutenue|fin, side, since, ...} (tendance soutenue / sortie de zone)
         self.sus_why = {}                    # v4.532 : ticker -> (ts, raison pour laquelle la tendance soutenue n est pas retenue)
@@ -1458,7 +1461,7 @@ class ScalpEngine:
         stop_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok") and (d.get("post_stop") or {}).get("kind") not in ("durée", "sans progrès")]).get("Scalp")      # v4.538
         noprog_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok") and (d.get("post_stop") or {}).get("kind") == "sans progrès"]).get("Scalp")      # v4.560
         duree_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok") and (d.get("post_stop") or {}).get("kind") == "durée"]).get("Scalp")      # v4.552
-        out = {"mode": mode, "dims": dims, "be_post": be_post, "stop_post": stop_post, "duree_post": duree_post, "noprog_post": noprog_post, "shadow": self.shadow_summary(), "liq": self.liq_summary(), "lab": self.lab_summary(rows), "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
+        out = {"mode": mode, "dims": dims, "be_post": be_post, "stop_post": stop_post, "duree_post": duree_post, "noprog_post": noprog_post, "shadow": self.shadow_summary(), "liq": self.liq_summary(), "refus": self.refus_summary(), "lab": self.lab_summary(rows), "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
                "by_hour": {h: agg(v) for h, v in sorted(by_hour.items())}, "last_closed": rows[0].get("closed_at") if rows else None}
         self._stats_cache = (time.time(), mode, out)
         return out
@@ -1779,6 +1782,135 @@ class ScalpEngine:
     def liq_events(self):
         return list(self.liq_ev)
 
+    # ── v4.590 : SIGNAUX REFUSES + TEST FANTOME + DESCRIPTEURS DE REGIME (observation seule : aucun ordre, aucune regle modifiee) ──
+    # Chaque signal refuse par un filtre (ATR 5 min, M15, marche calme, contexte H1/H4) est inscrit avec des descripteurs de regime
+    # fixes d avance, puis rejoue sur les bougies suivantes (entree au prix du signal, plan stop / objectif de shadow_plan, frais inclus).
+    REFUS_CODES = (("atr5", "ATR 5 min trop bas"), ("m15", "contre la tendance M15"), ("calm", "marché calme"), ("ctx", "contexte H1 / H4"))
+
+    def _refus_load(self):
+        try:
+            raw = db.get_meta("scalp_refus_shadow", None)
+            v = json.loads(raw) if isinstance(raw, str) else (raw or [])
+            return v if isinstance(v, list) else []
+        except Exception:
+            return []
+
+    def _refus_save(self, force=False):
+        if not (self._refus_dirty or force):
+            return
+        if not force and time.time() - self._refus_saved < 45:
+            return
+        try:
+            db.set_meta("scalp_refus_shadow", json.dumps(self.refus_ev[-1500:]))
+            self._refus_saved = time.time()
+            self._refus_dirty = False
+        except Exception as e:
+            self.last_error = f"refus fantôme : {type(e).__name__}: {e}"
+
+    def _refus_regime(self, t, sig, c5):
+        """Descripteurs de regime (lus au moment du signal, bougies cloturees du cache uniquement)."""
+        px = float(sig["price"])
+        d = {}
+        ctx = sig.get("ctx") or {}
+        d["m15"], d["t1h"], d["btc1h"], d["flow"] = ctx.get("m15"), ctx.get("t1h"), ctx.get("btc1h"), ctx.get("flow_buy")
+        try:      # efficacite et amplitude M5 (regime « range » ou « tendance »)
+            cl = [float(x["c"]) for x in c5[-25:]]
+            if len(cl) >= 25:
+                path = sum(abs(cl[i] - cl[i - 1]) for i in range(1, len(cl)))
+                d["er5"] = round(abs(cl[-1] - cl[0]) / path, 3) if path > 0 else None
+                hh = max(float(x["h"]) for x in c5[-12:])
+                ll = min(float(x["l"]) for x in c5[-12:])
+                d["box12"] = round((hh - ll) / px * 100, 3)
+        except Exception:
+            pass
+        try:
+            ic = mtf.ichimoku_obs(lambda t_, tf_, n_: self.bot._mtf_candles(t_, tf_, n_, cache_only=True), t, px) or {}
+            h1 = ic.get("h1") or {}
+            d["h1_kij"], d["h1_pente"], d["h1_tk"] = h1.get("p_kijun_pct"), h1.get("kijun_pente_pct"), h1.get("tk_pct")
+            d["h1_nuage"], d["h1_nuage_d"] = h1.get("nuage_pos"), h1.get("nuage_dist_pct")
+        except Exception:
+            pass
+        return d
+
+    def _refus_note(self, t, sig, code):
+        """Inscrit un signal refuse (observation seule : ne bloque ni ne modifie jamais rien, toute erreur est avalee)."""
+        try:
+            if not int(float(self.cfg.get("SCALP_REFUS_JOURNAL_ON", 1) or 0)):
+                return
+            px, a5 = sig.get("price"), sig.get("atr5")
+            if not px or not a5:
+                return
+            c5 = self.bot._mtf_candles(t, "5m", 60, cache_only=True)
+            if not c5 or len(c5) < 30:
+                return
+            now = time.time()
+            for e in reversed(self.refus_ev[-80:]):
+                if e.get("t") == t and e.get("side") == sig["side"] and e.get("code") == code and now - float(e.get("ts", 0)) < 900:
+                    return                      # le meme signal revient toutes les 5 min : un suivi par 15 min suffit
+            sl, tp = self.shadow_plan(self.cfg, float(px), float(a5))
+            self.refus_ev.append({"ts": now, "t0": int(now // 300 * 300 + 300), "t": t, "kind": sig.get("kind"), "side": sig["side"], "code": code,
+                                  "px": float(px), "atr5": round(float(a5) / float(px) * 100, 3), "sl": round(sl, 3), "tp": round(tp, 3),
+                                  "reg": self._refus_regime(t, sig, c5)})
+            self._refus_dirty = True
+            self._refus_save()
+        except Exception as e:
+            self.last_error = f"refus fantôme : {type(e).__name__}: {e}"
+
+    def _refus_eval(self, limit=3):
+        now = time.time()
+        done = 0
+        ok_pass = err_pass = False
+        for e in self.refus_ev:
+            if done >= limit:
+                break
+            t0 = float(e["t0"])
+            if e.get("res") or e.get("fail", 0) >= 3 or now < t0 + (self.PE_WIN_MIN + 5) * 60:
+                continue
+            done += 1
+            try:
+                cs = self._candles_range(e["t"], t0, t0 + self.PE_WIN_MIN * 60)
+                cs = [c for c in cs if c["t"] >= t0 * 1000][:12]
+                if len(cs) < 12:
+                    e["fail"] = e.get("fail", 0) + 1
+                else:
+                    sg = 1 if e["side"] == "long" else -1
+                    r = self.shadow_calc(e["side"], e["px"], e["sl"], e["tp"], cs)
+                    for k, i in (("r15", 2), ("r30", 5), ("r60", 11)):
+                        r[k] = round(sg * (cs[i]["c"] - e["px"]) / e["px"] * 100, 3)
+                    e["res"] = r
+                    ok_pass = True
+            except Exception as ex:
+                e["fail"] = e.get("fail", 0) + 1
+                self.last_error = f"refus fantôme : {type(ex).__name__}: {ex}"
+                err_pass = True
+            self._refus_dirty = True
+        if ok_pass and not err_pass:
+            self._clear_err("refus fantôme")
+        self._refus_save(force=bool(done))
+
+    def refus_summary(self):
+        on = bool(int(float(self.cfg.get("SCALP_REFUS_JOURNAL_ON", 1) or 0)))
+        L = self.refus_ev
+        if not L:
+            return {"on": on, "total": 0, "pending": 0, "since": None, "groups": {}}
+        def agg(E):
+            ev = [e for e in E if e.get("res")]
+            if not ev:
+                return {"n": 0}
+            avg = lambda k: round(sum(e["res"][k] for e in ev) / len(ev), 3)
+            nets = [e["res"]["net_pct"] for e in ev]
+            return {"n": len(ev), "r15": avg("r15"), "r30": avg("r30"), "r60": avg("r60"), "pos60": round(100 * sum(1 for e in ev if e["res"]["r60"] > 0) / len(ev)),
+                    "obj": sum(1 for e in ev if e["res"]["first"] == "objectif"), "stop": sum(1 for e in ev if e["res"]["first"] == "stop"),
+                    "sum_net_pct": round(sum(nets), 2), "avg_net_pct": round(sum(nets) / len(nets), 3)}
+        g = {"all": agg(L)}
+        for k, _lbl in self.REFUS_CODES:
+            g[k] = agg([e for e in L if e.get("code") == k])
+        return {"on": on, "total": len(L), "pending": sum(1 for e in L if not e.get("res") and e.get("fail", 0) < 3), "since": L[0].get("ts"), "groups": g,
+                "labels": {k: v for k, v in self.REFUS_CODES}}
+
+    def refus_events(self):
+        return list(self.refus_ev)
+
     def shadow_summary(self):
         ev = [s for s in self.cont_shadow if s.get("res")]
         if not self.cont_shadow:
@@ -1926,6 +2058,7 @@ class ScalpEngine:
             self._post_stop_eval()      # v4.538
             self._shadow_eval()
             self._liq_eval()      # v4.583
+            self._refus_eval()      # v4.590
             self._lab_eval()
         except Exception as e:
             self.last_error = f"suivi après sortie : {type(e).__name__}: {e}"
@@ -3624,7 +3757,7 @@ class ScalpEngine:
                 return None
             v = float(a5) / float(px) * 100.0
             if v < mn:
-                return f"marché trop calme (ATR 5 min {v:.2f} % < {mn:g} %)"
+                return f"marché trop calme (ATR 5 min {v:.3f} % < {mn:g} %)"
         except Exception:
             return None
         return None
@@ -3647,18 +3780,22 @@ class ScalpEngine:
         why_atr5 = self._atr5_block(sig)      # v4.585 : plancher d ATR 5 min (tous les types de signal)
         if why_atr5:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_atr5}")
+            self._refus_note(t, sig, "atr5")
             return
         why_m15 = self._m15_block(sig)      # v4.586 : pas d entree contre la tendance M15
         if why_m15:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_m15}")
+            self._refus_note(t, sig, "m15")
             return
         why_calm = self._calm_block(t, sig)      # v4.541 : pause tant que le marche de l actif est trop calme (tous les modes)
         if why_calm:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_calm}")
+            self._refus_note(t, sig, "calm")
             return
         why_h4 = self._ctx_gate(t, sig) if int(c.get("SCALP_CTX_ON", 1)) else self._h4_block(t, sig)      # v4.570 : contexte unique H1 / H4 pour tous les modes (remplace veto H4 et blocs H1) ; v4.559 : pas de continuation / cassure contre un H4 clair (sauf Daily dans le sens du trade)
         if why_h4:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_h4}")
+            self._refus_note(t, sig, "ctx")
             return
         conf_res = None
         if int(float(c.get("SCALP_CONF_ON", 0) or 0)):      # v4.568 : principes (contexte H1/H4, confluence de 3 criteres, risque / rendement net >= 1)
