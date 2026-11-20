@@ -3601,7 +3601,7 @@ class ScalpEngine:
         """v4.586 : pas de vente quand la tendance M15 est haussiere, pas d achat quand elle est baissiere (reglage SCALP_M15_COUNTER_BLOCK, 0 = desactive).
         Tendance M15 = celle lue par le signal (cloture > EMA20 > EMA50 haussiere ; inverse baissiere). Signal sans lecture directionnelle (neutre, soutenue, absente) : pas de blocage."""
         try:
-            if not int(float(self.cfg.get("SCALP_M15_COUNTER_BLOCK", 0) or 0)):
+            if not int(float(self.cfg.get("SCALP_M15_COUNTER_BLOCK", 1) or 0)):
                 return None
             m15 = (sig.get("ctx") or {}).get("m15")
             sd = sig.get("side")
@@ -3616,7 +3616,7 @@ class ScalpEngine:
     def _atr5_block(self, sig):
         """v4.585 : pas d entree quand l ATR 5 min (en % du prix) est sous le plancher SCALP_MIN_ATR5_PCT (0 = desactive). Signal sans ATR : pas de blocage."""
         try:
-            mn = float(self.cfg.get("SCALP_MIN_ATR5_PCT", 0) or 0)
+            mn = float(self.cfg.get("SCALP_MIN_ATR5_PCT", 0.30) or 0)
             if mn <= 0:
                 return None
             a5, px = sig.get("atr5"), sig.get("price")

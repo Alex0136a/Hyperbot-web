@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.588"
+BOT_VERSION = "4.589"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -287,7 +287,8 @@ CONFIG = {
     "SCALP_TOP_N": 0,                                    # actifs : 0 = tous les actifs suivis ; sinon les N plus echanges (volume 24 h)
     "SCALP_HOURS_UTC": "7-11,13-21",                     # tranches horaires UTC (vide = toujours)
     "SCALP_MIN_SCORE": 0, "SCALP_SHORT_MIN_SCORE": 62,
-    "SCALP_TREND_MODE": 1, "SCALP_CONFIRM_BARS": 3, "SCALP_NOISE_ATR": 0.5,   # v4.429 : pas de contre-tendance ; entree seulement apres confirmation du mouvement "SCALP_MIN_ATR15_PCT": 0.0, "SCALP_MIN_ATR5_PCT": 0.30, "SCALP_M15_COUNTER_BLOCK": 1,  # v4.423 : filtres OPTIONNELS (0 = desactive) ; ces donnees comptent dans la NOTE, elles ne bloquent plus
+    "SCALP_TREND_MODE": 1, "SCALP_CONFIRM_BARS": 3, "SCALP_NOISE_ATR": 0.5,   # v4.429 : pas de contre-tendance ; entree seulement apres confirmation du mouvement  # v4.423 (SCALP_MIN_ATR15_PCT : 0.0 par defaut dans le code) : filtres OPTIONNELS (0 = desactive) ; ces donnees comptent dans la NOTE, elles ne bloquent plus
+    "SCALP_MIN_ATR5_PCT": 0.30, "SCALP_M15_COUNTER_BLOCK": 1,       # v4.589 : plancher d ATR 5 min (v4.585) et pas d entree contre le M15 (v4.586), reglages Scalp reellement actifs
     "SCALP_MIN_ROOM_PCT": 0.0, "SCALP_BREAK_VOL_MULT": 1.5, "SCALP_MAX_CHASE_PCT": 0.4,
     "SCALP_MAX_OPEN": 0, "SCALP_MAX_PER_DAY": 40, "SCALP_DAILY_LOSS_USD": 3.0,
     "SCALP_PAUSE_AFTER_LOSSES": 3, "SCALP_PAUSE_MIN": 60, "SCALP_COOLDOWN_MIN": 30, "SCALP_MAX_HOLD_MIN": 90,

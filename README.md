@@ -2183,3 +2183,10 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Mesure : référence du gel (281 trades, 58,4 % de réussite, −0,011 $ par trade, brut +0,043 $) ; lecture à partir de 100 trades après le changement avec les mêmes critères. Les effets de la règle M15 (v4.587) et de cette confirmation ne sont pas séparables ; suivre le nombre d'ordres annulés, expirés, déclenchés et le taux de stop.
 - Retour arrière : `ZONEORD_CONFIRM_PCT` = 0,3.
 - Fichiers : zone_orders.py, api.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.589 — CORRECTIF : les réglages Scalp des v4.585 et v4.586 n'étaient pas actifs — 20/11/2026
+- Constat (check du 20/11 sur les exports) : sept trades Scalp ouverts après le dépôt de la v4.585 avaient un ATR 5 min sous 0,30 % (0,25 à 0,29 %), ce qui aurait dû être refusé.
+- Cause : dans `bot_engine.py`, `SCALP_MIN_ATR5_PCT` (0,30) et `SCALP_M15_COUNTER_BLOCK` (1) avaient été insérés dans la fin de ligne d'un commentaire, donc absents de `CONFIG`. Le code lisait alors la valeur de repli 0 (= désactivé). Plancher d'ATR 5 min et blocage M15 du Scalp n'ont donc **jamais filtré** de trade entre les v4.585 et v4.588. Auto Zone (`ZONEORD_M15_COUNTER_BLOCK`, confirmation 0,1 %) n'est pas concerné : ses valeurs viennent de `zone_orders.DEFAULTS` et de `CONFIG`, vérifiées.
+- Correctif : les deux clés sont maintenant de vraies entrées de `CONFIG`, et les valeurs de repli du code sont les valeurs voulues (0,30 et 1). Vérifié avec le `CONFIG` réel et avec une configuration vide : ATR 5 min 0,28 % refusé, 0,35 % accepté, vente avec M15 haussier refusée.
+- Conséquence pour la mesure : la référence « v4.585 + v4.586 » commence avec cette version (v4.589), pas avant. Les trades Scalp du 20/11 00:40 → dépôt de la v4.589 sont des trades **sans** ces filtres (16 trades ce jour-là : +2,09 $, 9 gagnants ; dont 7 sous 0,30 % d'ATR : −0,30 $).
+- Fichiers : bot_engine.py, scalp_crypto.py, index.html, index_src.html, README.md.
