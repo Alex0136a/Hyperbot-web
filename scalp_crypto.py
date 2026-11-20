@@ -1069,6 +1069,8 @@ class ScalpEngine:
         self._last_sig_ts = time.time()      # v4.506 : dernier signal valide vu (alerte « aucun signal »)
         self.liq_ev = self._liq_load()      # v4.583 : journal des ruptures de liquidite M5 (observation seule)
         self._liq_last = {}
+        self._liq_n_bar = {}      # v4.584 : nombre d actifs analyses par bougie M5 (statut du journal)
+        self._liq_t_ok = 0.0
         self._liq_saved = 0.0
         self._liq_dirty = False
         self.cont_shadow = self._shadow_load()      # v4.514 : meneurs de continuation refuses (suivi hypothetique)
@@ -1694,6 +1696,11 @@ class ScalpEngine:
         if self._liq_last.get(t) == bar:
             return
         self._liq_last[t] = bar
+        self._liq_n_bar[bar] = self._liq_n_bar.get(bar, 0) + 1
+        if len(self._liq_n_bar) > 4:
+            for k_ in sorted(self._liq_n_bar)[:-4]:
+                self._liq_n_bar.pop(k_, None)
+        self._liq_t_ok = time.time()
         f = mtf.liquidity_features(c5, c5[-1]["c"])
         if not f:
             return
@@ -1749,8 +1756,10 @@ class ScalpEngine:
         self._liq_save(force=bool(done))
 
     def liq_summary(self):
+        on = bool(int(float(self.cfg.get("SCALP_LIQ_JOURNAL_ON", 1) or 0)))
+        st = {"on": on, "last_scan": self._liq_t_ok or None, "n_last_bar": (self._liq_n_bar[max(self._liq_n_bar)] if self._liq_n_bar else 0)}
         if not self.liq_ev:
-            return None
+            return {"total": 0, "pending": 0, "since": None, "groups": {}, **st}
         def agg(L):
             ev = [e for e in L if e.get("res")]
             if not ev:
@@ -1763,7 +1772,7 @@ class ScalpEngine:
         al = lambda e: (e["d"] == "up" and e.get("h1") == "haussiere") or (e["d"] == "down" and e.get("h1") == "baissiere")
         ag = lambda e: (e["d"] == "up" and e.get("h1") == "baissiere") or (e["d"] == "down" and e.get("h1") == "haussiere")
         L = self.liq_ev
-        return {"total": len(L), "pending": sum(1 for e in L if not e.get("res") and e.get("fail", 0) < 3), "since": L[0].get("ts"),
+        return {**st, "total": len(L), "pending": sum(1 for e in L if not e.get("res") and e.get("fail", 0) < 3), "since": L[0].get("ts"),
                 "groups": {"all": agg(L), "up": agg([e for e in L if e["d"] == "up"]), "down": agg([e for e in L if e["d"] == "down"]),
                            "full": agg([e for e in L if e.get("code") == 2]), "h1_with": agg([e for e in L if al(e)]), "h1_against": agg([e for e in L if ag(e)])}}
 

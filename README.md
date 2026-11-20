@@ -2146,3 +2146,9 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Affichage : carte « RUPTURES DE LIQUIDITÉ M5 » dans le Scalp (groupes : toutes, hausse, baisse, bougie entière, dans le sens de H1, contre H1) + bouton « ⬇ CSV ruptures » (route `/api/scalp/liq_events`).
 - Lecture : pas de conclusion avant 100 ruptures évaluées ; la comparaison avec une entrée au hasard au même moment reste à faire avant toute règle. Aucune décision, aucun réglage, aucun capital ne dépend de ce journal ; la période de mesure (04/11 → 19/11 20:41) n'est pas interrompue.
 - Fichiers : mtf_analysis.py (niveau, pivots et distance de la rupture), scalp_crypto.py, api.py, bot_engine.py, index.html, index_src.html, README.md.
+
+## v4.584 — Affichage seul : statut du journal des ruptures et réglage visible — 20/11/2026
+- Constat : le réglage `SCALP_LIQ_JOURNAL_ON` (v4.583) n'était pas dans la liste des réglages affichés, et la carte n'apparaissait qu'après la première rupture, sans moyen de voir si le journal tournait.
+- Ajout : réglage visible (1 = actif, 0 = arrêt) ; la carte « RUPTURES DE LIQUIDITÉ M5 » s'affiche toujours avec le statut (journal actif / arrêté, heure de la dernière analyse, nombre d'actifs analysés sur la dernière bougie M5). Les lignes par groupe n'apparaissent qu'avec au moins une rupture.
+- Aucune règle de trading, aucun réglage de décision, aucun capital modifié.
+- Fichiers : scalp_crypto.py, bot_engine.py, index.html, index_src.html, README.md.
