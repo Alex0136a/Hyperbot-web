@@ -2066,6 +2066,33 @@ class ScalpEngine:
             stop = max(stop, -sl)
         return round(acc + w_left * cs[-1]["cl"] - fee, 3)
 
+    # ── v4.594 : entree par ordre LIMITE (frais maker) rejouee sur les bougies 5 min (observation seule) ──
+    LAB3_VARIANTS = (("lim0", "Entrée limite au prix du signal (annulée après 15 min, frais 0,06 % aller-retour)"),
+                     ("lim05", "Entrée limite 0,05 % mieux que le signal (annulée après 15 min, frais 0,06 % aller-retour)"))
+    LAB3_BETTER = {"lim0": 0.0, "lim05": 0.05}
+
+    @staticmethod
+    def lab_limit(side, ent, raw, sl, tp, be_arm, be_lock, trail, atr5, better_pct, wait_bars=3, fee=0.06, thru=0.02):
+        """Pur (v4.594) : un ordre limite pose au moment du signal. Vente : limite = prix du signal x (1 + mieux) ; achat : x (1 - mieux).
+        Rempli quand une bougie 5 min POSTERIEURE au signal traverse la limite de `thru` % (traverser et non seulement toucher : file d attente), dans les
+        `wait_bars` premieres bougies ; sinon annule (trade manque). Apres le remplissage, meme gestion que la regle actuelle, depuis la bougie SUIVANTE,
+        entree au prix de la limite, frais aller-retour `fee` (entree maker 0,015 % + sortie au marche 0,045 %).
+        Retourne (rempli, net en %) ; net = 0 si manque."""
+        if not raw or not ent:
+            return False, 0.0
+        sg = 1 if side == "long" else -1
+        lim = ent * (1 - sg * better_pct / 100.0)
+        for i, c in enumerate(raw[:wait_bars]):
+            hit = (c["l"] <= lim * (1 - thru / 100.0)) if sg > 0 else (c["h"] >= lim * (1 + thru / 100.0))
+            if hit:
+                rest = raw[i + 1:]
+                if len(rest) < 1:
+                    return True, round(-fee, 3)
+                cs = ScalpEngine.lab_bars(side, lim, rest)
+                x = ScalpEngine.lab_sim("actuel", side, sl, tp, be_arm, be_lock, trail, atr5, cs, fee)
+                return True, (x if x is not None else round(-fee, 3))
+        return False, 0.0
+
     @staticmethod
     def sl_cap_apply(sl_soft, sl_hard, cap, hard_mult=2.0):
         """Pur (v4.592) : plafonne le stop (cap en % du prix, 0 = desactive). Stop sur cloture : le stop d urgence est plafonne a cap x hard_mult.
@@ -2104,7 +2131,7 @@ class ScalpEngine:
             if r.get("status") != "closed" or d.get("strategy_source") != STRATEGY or d.get("mode") != self.cfg.get("SCALP_MODE", "paper"):
                 continue
             lab = d.get("lab") or {}
-            if (lab.get("ok") and "ech_b" in (lab.get("v") or {})) or lab.get("fail", 0) >= 3 or not d.get("entry_price") or not d.get("exit_price") or not d.get("opened_at"):
+            if (lab.get("ok") and "lim05" in (lab.get("v") or {})) or lab.get("fail", 0) >= 3 or not d.get("entry_price") or not d.get("exit_price") or not d.get("opened_at"):
                 continue
             hold = float(d.get("hold_min") or d.get("osc_hold_min") or self.cfg.get("SCALP_MAX_HOLD_MIN", 90) or 90) * 60
             op = float(d["opened_at"])
@@ -2138,8 +2165,13 @@ class ScalpEngine:
                         x = self.lab_sim2(k, side, sl, tp, ba, float(bl) if bl is not None else None, trail, cs)
                         if x is not None:
                             v[k] = x
+                    fills = {}
+                    for k, _ in self.LAB3_VARIANTS:      # v4.594 : entree limite (maker)
+                        ok_f, x = self.lab_limit(side, ent, raw, sl, tp, ba, float(bl) if bl is not None else None, trail, a5, self.LAB3_BETTER[k])
+                        v[k] = x
+                        fills[k] = 1 if ok_f else 0
                     pk = max([b["fav"] for b in cs] + [0.0])
-                    lab = {"ok": True, "v": v, "real": round(real, 3), "peak": round(max(pk, float(d.get("peak_pct") or 0)), 3), "bars": len(cs)}
+                    lab = {"ok": True, "v": v, "fills": fills, "real": round(real, 3), "peak": round(max(pk, float(d.get("peak_pct") or 0)), 3), "bars": len(cs)}
             except Exception as e:
                 lab = {"ok": False, "fail": lab.get("fail", 0) + 1, "why": type(e).__name__}
             d["lab"] = lab
@@ -2154,14 +2186,23 @@ class ScalpEngine:
             return {"n": 0, "pending": sum(1 for d in rows if not (d.get("lab") or {}).get("ok") and (d.get("lab") or {}).get("fail", 0) < 3)}
         def agg(sub):
             out = []
-            for k, lbl in self.LAB_VARIANTS + self.LAB2_VARIANTS:
+            for k, lbl in self.LAB_VARIANTS + self.LAB2_VARIANTS + self.LAB3_VARIANTS:
                 xs = [l["v"][k] for l in sub if k in l["v"]]
                 if xs:
                     out.append({"k": k, "label": lbl, "n": len(xs), "sum": round(sum(xs), 2), "avg": round(sum(xs) / len(xs), 3), "wins": sum(1 for x in xs if x > 0.02)})
             return out
         cls = {"low": [l for l in ev if l["peak"] < 0.4], "mid": [l for l in ev if 0.4 <= l["peak"] < 0.8], "high": [l for l in ev if l["peak"] >= 0.8]}
+        lim = {}
+        for k, lbl in self.LAB3_VARIANTS:
+            sub = [l for l in ev if k in (l.get("fills") or {})]
+            if sub:
+                fl = [l for l in sub if l["fills"][k]]
+                ms = [l for l in sub if not l["fills"][k]]
+                lim[k] = {"label": lbl, "n": len(sub), "fills": len(fl), "sum_filled": round(sum(l["v"][k] for l in fl), 2),
+                          "real_filled": round(sum(l["real"] for l in fl), 2), "missed": len(ms), "missed_real": round(sum(l["real"] for l in ms), 2),
+                          "missed_wins": sum(1 for l in ms if l["real"] > 0.02)}
         return {"n": len(ev), "pending": sum(1 for d in rows if not (d.get("lab") or {}).get("ok") and (d.get("lab") or {}).get("fail", 0) < 3),
-                "real_sum": round(sum(l["real"] for l in ev), 2), "variants": agg(ev),
+                "limit": lim, "real_sum": round(sum(l["real"] for l in ev), 2), "variants": agg(ev),
                 "classes": {c: {"n": len(v), "real_sum": round(sum(l["real"] for l in v), 2), "variants": agg(v)} for c, v in cls.items() if v}}
 
     def _post_exit_run(self):

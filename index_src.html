@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.593";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.594";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1465,6 +1465,10 @@ function ScalpPanel({ token }) {
                 <div style={{color:"#94a3b8"}}>{ttl} · {n} trades{n<15?" · échantillon faible":""} · réel {rs>=0?"+":""}{rs.toFixed(2)} %</div>
                 {vs.map(v=><div key={v.k} style={{paddingLeft:8,color:v.k==="actuel"?"#93c5fd":"#e2e8f0"}}>{v.label} : <b style={{color:v.sum>=0?"#34d399":"#f87171"}}>{v.sum>=0?"+":""}{v.sum.toFixed(2)} %</b> · moyenne {v.avg>=0?"+":""}{v.avg.toFixed(3)} % · {v.wins}/{v.n} gagnants</div>)}
               </div>)}
+              {S.lab.limit && Object.keys(S.lab.limit).length>0 && <div style={{marginTop:8}}>
+                <div style={{color:"#94a3b8"}}>Entrée par ordre limite (frais maker) : combien de signaux auraient été remplis, et ce qu'on aurait raté</div>
+                {Object.entries(S.lab.limit).map(([k,L])=><div key={k} style={{paddingLeft:8,color:"#e2e8f0"}}>{L.label} : remplis <b>{L.fills}/{L.n}</b> ({Math.round(100*L.fills/L.n)} %) · net des remplis <b style={{color:L.sum_filled>=0?"#34d399":"#f87171"}}>{L.sum_filled>=0?"+":""}{L.sum_filled.toFixed(2)} %</b> contre <b>{L.real_filled>=0?"+":""}{L.real_filled.toFixed(2)} %</b> au marché sur les mêmes trades · manqués {L.missed} (dont {L.missed_wins} gagnants au marché), qui valaient <b>{L.missed_real>=0?"+":""}{L.missed_real.toFixed(2)} %</b></div>)}
+              </div>}
               <div style={{marginTop:4,color:"#64748b"}}>Lecture : « Règle actuelle » doit rester proche du réel (calibrage). Un écart durable en faveur d'une autre règle sur 30 trades ou plus mérite un test en réel ; en dessous, c'est du bruit.</div>
             </div> : <div>Aucun trade encore rejoué ({S.lab.pending||0} en attente) : chaque trade est rejoué une fois sa durée maximale écoulée.</div>}
           </div>}
