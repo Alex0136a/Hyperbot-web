@@ -2010,6 +2010,79 @@ class ScalpEngine:
             stop = max(stop, -sl)
         return round(cs[-1]["cl"] - fee, 3)
 
+    # ── v4.592 : nouvelles variantes du laboratoire (observation seule) : stops plafonnes, resserrement sur degradation, echelles de TP ──
+    LAB2_VARIANTS = (("sl030", "Stop plafonné à 0,30 %"), ("sl025", "Stop plafonné à 0,25 %"), ("sl040", "Stop plafonné à 0,40 %"),
+                     ("nogain20", "Stop à −0,20 % tant que le gain n'a pas atteint +0,10 %"),
+                     ("noprog15", "Stop à −0,15 % si aucun gain de +0,10 % après 15 min"),
+                     ("close2", "Sortie si 2 clôtures 5 min à −0,10 % ou pire, sans gain de +0,15 %"),
+                     ("ech_a", "Échelle : 25 % à ½ objectif, 25 % à l'objectif, 25 % à 1,5 × l'objectif, 25 % en suiveur"),
+                     ("ech_b", "Même échelle + stop de rentabilité (+0,1 %) dès le premier palier"))
+
+    @staticmethod
+    def lab_sim2(variant, side, sl, tp, be_arm, be_lock, trail, cs, fee=0.09):
+        """Pur : comme lab_sim (bougies 5 min APRES l entree, stop teste d abord dans la bougie, tout en % du prix) pour les variantes v4.592.
+        Echelles : parts egales de 25 % aux paliers ; le dernier quart suit le prix (plus haut - trail) apres le dernier palier. Frais = frais aller-retour sur la position entiere."""
+        sl = abs(float(sl or 0))
+        if not sl or not cs:
+            return None
+        arm, lock = be_arm, (be_lock if be_lock is not None else 0.1)
+        cap = {"sl030": 0.30, "sl025": 0.25, "sl040": 0.40}.get(variant)
+        if cap:
+            sl = min(sl, cap)
+        ladder = None
+        if variant in ("ech_a", "ech_b") and tp:
+            ladder = [0.5 * tp, tp, 1.5 * tp]
+        stop, peak, run, acc, w_left, bad = -sl, 0.0, False, 0.0, 1.0, 0
+        tr = trail or 0.2
+        for i, c in enumerate(cs):
+            fav, adv, cl = c["fav"], c["adv"], c["cl"]
+            if adv <= stop:
+                return round(acc + w_left * stop - fee, 3)
+            peak = max(peak, fav)
+            if ladder is not None:
+                while ladder and peak >= ladder[0]:
+                    acc += 0.25 * ladder.pop(0)
+                    w_left -= 0.25
+                    if variant == "ech_b":
+                        stop = max(stop, lock)
+                if not ladder:
+                    run = True
+            elif tp and not run and peak >= tp:
+                if not trail:
+                    return round(acc + w_left * tp - fee, 3)
+                run = True
+            if run:
+                stop = max(stop, peak - tr)
+            elif arm is not None and peak >= arm:
+                stop = max(stop, lock)
+            if variant == "nogain20" and peak < 0.10:
+                stop = max(stop, -0.20)
+            elif variant == "noprog15" and i + 1 >= 3 and peak < 0.10:
+                stop = max(stop, -0.15)
+            elif variant == "close2":
+                bad = bad + 1 if (cl <= -0.10 and peak < 0.15) else 0
+                if bad >= 2:
+                    return round(acc + w_left * cl - fee, 3)
+            stop = max(stop, -sl)
+        return round(acc + w_left * cs[-1]["cl"] - fee, 3)
+
+    @staticmethod
+    def sl_cap_apply(sl_soft, sl_hard, cap, hard_mult=2.0):
+        """Pur (v4.592) : plafonne le stop (cap en % du prix, 0 = desactive). Stop sur cloture : le stop d urgence est plafonne a cap x hard_mult.
+        Retourne (sl_soft, sl_hard, applique)."""
+        try:
+            cap = float(cap or 0)
+        except Exception:
+            return sl_soft, sl_hard, False
+        if cap <= 0:
+            return sl_soft, sl_hard, False
+        ap = False
+        if sl_soft and sl_soft > cap + 1e-9:
+            sl_soft, ap = cap, True
+        if sl_hard and sl_hard > cap * float(hard_mult or 2.0) + 1e-9:
+            sl_hard, ap = cap * float(hard_mult or 2.0), True
+        return sl_soft, sl_hard, ap
+
     @staticmethod
     def lab_bars(side, entry, cs):
         sg = 1 if side == "long" else -1
@@ -2019,7 +2092,7 @@ class ScalpEngine:
                         "cl": sg * (c["c"] - entry) / entry * 100})
         return out
 
-    def _lab_eval(self, limit=2):
+    def _lab_eval(self, limit=4):
         if not int(self.cfg.get("SCALP_LAB_ON", 1)):
             return
         now = time.time()
@@ -2031,7 +2104,7 @@ class ScalpEngine:
             if r.get("status") != "closed" or d.get("strategy_source") != STRATEGY or d.get("mode") != self.cfg.get("SCALP_MODE", "paper"):
                 continue
             lab = d.get("lab") or {}
-            if (lab.get("ok") and "lock2" in (lab.get("v") or {})) or lab.get("fail", 0) >= 3 or not d.get("entry_price") or not d.get("exit_price") or not d.get("opened_at"):
+            if (lab.get("ok") and "ech_b" in (lab.get("v") or {})) or lab.get("fail", 0) >= 3 or not d.get("entry_price") or not d.get("exit_price") or not d.get("opened_at"):
                 continue
             hold = float(d.get("hold_min") or d.get("osc_hold_min") or self.cfg.get("SCALP_MAX_HOLD_MIN", 90) or 90) * 60
             op = float(d["opened_at"])
@@ -2061,6 +2134,10 @@ class ScalpEngine:
                         x = self.lab_sim(k, side, sl, tp, ba, float(bl) if bl is not None else None, trail, a5, cs)
                         if x is not None:
                             v[k] = x
+                    for k, _ in self.LAB2_VARIANTS:      # v4.592
+                        x = self.lab_sim2(k, side, sl, tp, ba, float(bl) if bl is not None else None, trail, cs)
+                        if x is not None:
+                            v[k] = x
                     pk = max([b["fav"] for b in cs] + [0.0])
                     lab = {"ok": True, "v": v, "real": round(real, 3), "peak": round(max(pk, float(d.get("peak_pct") or 0)), 3), "bars": len(cs)}
             except Exception as e:
@@ -2077,7 +2154,7 @@ class ScalpEngine:
             return {"n": 0, "pending": sum(1 for d in rows if not (d.get("lab") or {}).get("ok") and (d.get("lab") or {}).get("fail", 0) < 3)}
         def agg(sub):
             out = []
-            for k, lbl in self.LAB_VARIANTS:
+            for k, lbl in self.LAB_VARIANTS + self.LAB2_VARIANTS:
                 xs = [l["v"][k] for l in sub if k in l["v"]]
                 if xs:
                     out.append({"k": k, "label": lbl, "n": len(xs), "sum": round(sum(xs), 2), "avg": round(sum(xs) / len(xs), 3), "wins": sum(1 for x in xs if x > 0.02)})
@@ -3997,6 +4074,9 @@ class ScalpEngine:
                 asc["rules"].append(f"stop sur clôture 5 min (secours {sl_hard:.2f} %)")
         if conf_res is not None:      # v4.568 : stop et objectif des principes (stop au-dela de la zone, objectif = RR x stop), net de frais
             sl_soft, tp_cont, sl_hard, osc = float(conf_res["sl_pct"]), float(conf_res["tp_pct"]), None, None
+        sl_soft, sl_hard, cap_ap = self.sl_cap_apply(sl_soft, sl_hard, c.get("SCALP_SL_CAP_PCT", 0), c.get("SCALP_ASC_HARD_MULT", 2.0))      # v4.592 : plafond du stop (tous les types de signal)
+        if cap_ap and asc is not None:
+            asc["rules"].append(f"stop plafonné à {float(c.get('SCALP_SL_CAP_PCT', 0)):g} %")
         if fixed:
             notional = base_notional      # v4.567 : taille unique, aucune reduction
         cluster_before = self._cluster_count(sig["side"], mode)
