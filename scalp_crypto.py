@@ -1785,7 +1785,7 @@ class ScalpEngine:
     # ── v4.590 : SIGNAUX REFUSES + TEST FANTOME + DESCRIPTEURS DE REGIME (observation seule : aucun ordre, aucune regle modifiee) ──
     # Chaque signal refuse par un filtre (ATR 5 min, M15, marche calme, contexte H1/H4) est inscrit avec des descripteurs de regime
     # fixes d avance, puis rejoue sur les bougies suivantes (entree au prix du signal, plan stop / objectif de shadow_plan, frais inclus).
-    REFUS_CODES = (("atr5", "ATR 5 min trop bas"), ("m15", "contre la tendance M15"), ("calm", "marché calme"), ("ctx", "contexte H1 / H4"),
+    REFUS_CODES = (("atr5", "ATR 5 min trop bas"), ("m15", "contre la tendance M15"), ("m5", "contre la tendance M5"), ("calm", "marché calme"), ("ctx", "contexte H1 / H4"),
                    ("goal", "objectif atteint / mode prudent"), ("chase", "poursuite du mouvement"), ("macro", "pause macro"),
                    ("c_r2", "continuation : tendance 3 h irrégulière"), ("c_h1contre", "continuation : dernière heure en sens contraire"),
                    ("c_repli_vieux", "continuation : repli trop ancien"), ("c_repli_cours", "continuation : repli en cours"),
@@ -3843,6 +3843,23 @@ class ScalpEngine:
         except Exception:
             return None
 
+    def _m5_block(self, t, sig):
+        """v4.593 : pas de vente quand la tendance M5 est haussiere, pas d achat quand elle est baissiere (reglage SCALP_M5_COUNTER_BLOCK, 0 = desactive).
+        Tendance M5 = etat du contexte (EMA20 / EMA50 des bougies 5 min en cache). Neutre ou inconnue : pas de blocage."""
+        try:
+            if not int(float(self.cfg.get("SCALP_M5_COUNTER_BLOCK", 1) or 0)):
+                return None
+            mc = sig.get("ctx_mc") or self._ctx_read(t)
+            m5 = (mc or {}).get("m5")
+            sd = sig.get("side")
+            if m5 == "haussier" and sd == "short":
+                return "contre la tendance M5 (vente alors que le M5 est haussier)"
+            if m5 == "baissier" and sd == "long":
+                return "contre la tendance M5 (achat alors que le M5 est baissier)"
+        except Exception:
+            return None
+        return None
+
     def _m15_block(self, sig):
         """v4.586 : pas de vente quand la tendance M15 est haussiere, pas d achat quand elle est baissiere (reglage SCALP_M15_COUNTER_BLOCK, 0 = desactive).
         Tendance M15 = celle lue par le signal (cloture > EMA20 > EMA50 haussiere ; inverse baissiere). Signal sans lecture directionnelle (neutre, soutenue, absente) : pas de blocage."""
@@ -3902,6 +3919,11 @@ class ScalpEngine:
         if why_m15:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_m15}")
             self._refus_note(t, sig, "m15")
+            return
+        why_m5 = self._m5_block(t, sig)      # v4.593 : pas d entree contre la tendance M5
+        if why_m5:
+            self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_m5}")
+            self._refus_note(t, sig, "m5")
             return
         why_calm = self._calm_block(t, sig)      # v4.541 : pause tant que le marche de l actif est trop calme (tous les modes)
         if why_calm:
@@ -4126,7 +4148,7 @@ class ScalpEngine:
                                    "regime": {"label": reg.get("label", "inconnu"), "corr": reg.get("corr"), "up": reg.get("up"), "down": reg.get("down"),
                                               "basket30": reg.get("basket30"), "rel30": (round(reg["ch30"].get(t, 0) - reg["basket30"], 3) if reg.get("ch30") and reg.get("basket30") is not None else None),
                                               "cluster": cluster_before, "peers": sig.get("peers")},
-                                   "ctx": sig.get("ctx"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra, "ich": ichi, "liq": liq, "calm": sig.get("calm1m"), "mv1": sig.get("move1m"),
+                                   "ctx": sig.get("ctx"), "m5": (sig.get("ctx_mc") or {}).get("m5"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra, "ich": ichi, "liq": liq, "calm": sig.get("calm1m"), "mv1": sig.get("move1m"),
                                    "base": sig.get("base"), "touches": sig.get("touches"),
                                    "flux": {"ok": bool((getattr(self, "ctx_state", {}).get(t) or {}).get("flow")), "age_s": (getattr(self, "ctx_state", {}).get(t) or {}).get("flow_age")},      # v4.574 : le flux etait-il disponible a l entree (observation seule)
                                    "conf": ({"n": conf_res.get("n_conf"), "h1": conf_res.get("h1"), "h4": conf_res.get("h4"), "rr_net": conf_res.get("rr_net"), "zone": conf_res.get("zone"), "indic": conf_res.get("indic"), "pa": conf_res.get("pa")} if conf_res else None),      # v4.493 : mesures de la zone horizontale (aucun effet sur les decisions)
