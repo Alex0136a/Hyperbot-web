@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.590";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.591";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -1484,7 +1484,7 @@ function ScalpPanel({ token }) {
           {S.refus && <div style={{fontSize:11,color:"#cbd5e1",marginBottom:12,lineHeight:1.5}}>
             <div style={{...MT.title}}>SIGNAUX REFUSÉS : TEST FANTÔME (OBSERVATION, AUCUN ORDRE)</div>
             <div>{S.refus.on===false ? "Journal arrêté (réglage SCALP_REFUS_JOURNAL_ON = 0)" : "Journal actif"} · {S.refus.total} signaux refusés enregistrés · {S.refus.pending} en attente d'évaluation (60 min après le signal)</div>
-            {S.refus.total>0 && [["all","Tous"],["atr5","ATR 5 min trop bas"],["m15","Contre la tendance M15"],["calm","Marché calme"],["ctx","Contexte H1 / H4"]].map(([k,l])=>{ const g=(S.refus.groups||{})[k]; return <div key={k} style={{color:g&&g.n?"#cbd5e1":"#64748b"}}>{l} : {g&&g.n ? <span>{g.n} évalués · retour moyen 15/30/60 min <b>{g.r15}/{g.r30}/{g.r60} %</b> · objectif {g.obj} / stop {g.stop} · net moyen <b>{g.avg_net_pct>=0?"+":""}{g.avg_net_pct} %</b></span> : "aucun évalué"}</div>; })}
+            {S.refus.total>0 && [["all","Tous"],...Object.entries(S.refus.labels||{})].map(([k,l])=>{ const g=(S.refus.groups||{})[k]; return <div key={k} style={{color:g&&g.n?"#cbd5e1":"#64748b"}}>{l} : {g&&g.n ? <span>{g.n} évalués · retour moyen 15/30/60 min <b>{g.r15}/{g.r30}/{g.r60} %</b> · objectif {g.obj} / stop {g.stop} · net moyen <b>{g.avg_net_pct>=0?"+":""}{g.avg_net_pct} %</b></span> : "aucun évalué"}</div>; })}
             <div style={{color:"#64748b"}}>Chaque signal refusé est rejoué (entrée au prix du signal, plan stop/objectif de la continuation Scalp, frais 0,09 %) et inscrit avec des descripteurs de régime fixés d'avance (M15, H1, Ichimoku H1, efficacité et amplitude M5, BTC, flux). Un filtre n'est jugé qu'à partir de 100 refus évalués ; un régime n'est activé qu'après validation jour par jour sur des données nouvelles. Rien n'est décidé avant.</div>
             <button style={{...MT.btn("#60a5fa"),marginTop:6}} onClick={dlRefus}>⬇ CSV refusés</button>
           </div>}

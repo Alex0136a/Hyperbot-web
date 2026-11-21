@@ -1785,7 +1785,12 @@ class ScalpEngine:
     # ── v4.590 : SIGNAUX REFUSES + TEST FANTOME + DESCRIPTEURS DE REGIME (observation seule : aucun ordre, aucune regle modifiee) ──
     # Chaque signal refuse par un filtre (ATR 5 min, M15, marche calme, contexte H1/H4) est inscrit avec des descripteurs de regime
     # fixes d avance, puis rejoue sur les bougies suivantes (entree au prix du signal, plan stop / objectif de shadow_plan, frais inclus).
-    REFUS_CODES = (("atr5", "ATR 5 min trop bas"), ("m15", "contre la tendance M15"), ("calm", "marché calme"), ("ctx", "contexte H1 / H4"))
+    REFUS_CODES = (("atr5", "ATR 5 min trop bas"), ("m15", "contre la tendance M15"), ("calm", "marché calme"), ("ctx", "contexte H1 / H4"),
+                   ("goal", "objectif atteint / mode prudent"), ("chase", "poursuite du mouvement"), ("macro", "pause macro"),
+                   ("c_r2", "continuation : tendance 3 h irrégulière"), ("c_h1contre", "continuation : dernière heure en sens contraire"),
+                   ("c_repli_vieux", "continuation : repli trop ancien"), ("c_repli_cours", "continuation : repli en cours"),
+                   ("c_repli_hors", "continuation : repli hors fourchette"), ("c_pas_repli", "continuation : pas de repli, sans élan"),
+                   ("c_elan_vol", "continuation : élan sans volume"), ("c_mv1", "continuation : mouvement 1 min contraire"))
 
     def _refus_load(self):
         try:
@@ -1798,10 +1803,10 @@ class ScalpEngine:
     def _refus_save(self, force=False):
         if not (self._refus_dirty or force):
             return
-        if not force and time.time() - self._refus_saved < 45:
+        if not force and time.time() - self._refus_saved < 90:
             return
         try:
-            db.set_meta("scalp_refus_shadow", json.dumps(self.refus_ev[-1500:]))
+            db.set_meta("scalp_refus_shadow", json.dumps(self.refus_ev[-2000:]))
             self._refus_saved = time.time()
             self._refus_dirty = False
         except Exception as e:
@@ -1845,8 +1850,8 @@ class ScalpEngine:
                 return
             now = time.time()
             for e in reversed(self.refus_ev[-80:]):
-                if e.get("t") == t and e.get("side") == sig["side"] and e.get("code") == code and now - float(e.get("ts", 0)) < 900:
-                    return                      # le meme signal revient toutes les 5 min : un suivi par 15 min suffit
+                if e.get("t") == t and e.get("side") == sig["side"] and e.get("code") == code and now - float(e.get("ts", 0)) < (3600 if str(code).startswith("c_") else 900):
+                    return                      # le meme signal revient toutes les minutes : un suivi par 15 min (60 min pour les refus de continuation)
             sl, tp = self.shadow_plan(self.cfg, float(px), float(a5))
             self.refus_ev.append({"ts": now, "t0": int(now // 300 * 300 + 300), "t": t, "kind": sig.get("kind"), "side": sig["side"], "code": code,
                                   "px": float(px), "atr5": round(float(a5) / float(px) * 100, 3), "sl": round(sl, 3), "tp": round(tp, 3),
@@ -1856,7 +1861,37 @@ class ScalpEngine:
         except Exception as e:
             self.last_error = f"refus fantôme : {type(e).__name__}: {e}"
 
-    def _refus_eval(self, limit=3):
+    CONT_REFUS_MAP = (("irrégulière", "c_r2"), ("dernière heure en sens contraire", "c_h1contre"), ("repli trop ancien", "c_repli_vieux"),
+                      ("repli en cours", "c_repli_cours"), ("repli hors fourchette", "c_repli_hors"), ("pas de repli", "c_pas_repli"),
+                      ("élan sans volume", "c_elan_vol"), ("mouvement 1 min contraire", "c_mv1"))
+
+    def _cont_refus_note(self, t, c5, c15, c1h, btc, K, motif):
+        """v4.591 : refus de la detection de continuation (observation seule). Sens = celui de la pente 3 h (ou celui cite dans le motif)."""
+        try:
+            if not motif or not int(float(self.cfg.get("SCALP_REFUS_JOURNAL_ON", 1) or 0)):
+                return
+            code = next((cd for key, cd in self.CONT_REFUS_MAP if key in motif), None)
+            if not code:
+                return
+            side = " short " in motif and "short" or (" long " in motif and "long") or None
+            if side is None:
+                nL = max(int(K.get("cont_trend_bars", 36)), 18)
+                bL, _r2 = mtf._linreg([c["c"] for c in c5[-nL:]])
+                if bL is None:
+                    return
+                side = "long" if bL > 0 else "short"
+            price, a5 = float(c5[-1]["c"]), mtf.atr(c5, 14)
+            if not (price > 0 and a5):
+                return
+            fl = self._flow(t)
+            pseudo = {"kind": "continuation", "side": side, "price": price, "atr5": a5,
+                      "ctx": {"m15": mtf.trend(c15)[0] if c15 else None, "t1h": mtf.trend(c1h)[0] if c1h else None,
+                              "btc1h": (round(btc, 3) if btc is not None else None), "flow_buy": (round(fl["buy_ratio"], 3) if fl else None)}}
+            self._refus_note(t, pseudo, code)
+        except Exception as e:
+            self.last_error = f"refus fantôme : {type(e).__name__}: {e}"
+
+    def _refus_eval(self, limit=12):
         now = time.time()
         done = 0
         ok_pass = err_pass = False
@@ -2547,6 +2582,7 @@ class ScalpEngine:
                     self.sus_why[t] = (time.time(), m2 or "")
         if not sig:
             self.cont_diag[t] = (time.time(), motif or "aucun signal")      # v4.505 : raison de non-entree visible (diagnostic)
+            self._cont_refus_note(t, c5, c15, c1h, btc, K, motif)      # v4.591 : test fantome des refus de continuation (observation seule)
             if motif and "refuse" in motif:
                 self._ev("refus", t, motif)
             return False
@@ -3768,14 +3804,17 @@ class ScalpEngine:
         why_macro = self.macro_block()      # v4.507 : pas de nouvelle entree autour d une annonce macro (paper et live, tous types, y compris la grappe)
         if why_macro:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_macro}")
+            self._refus_note(t, sig, "macro")
             return
         why_goal = self._goal_refusal(t, sig, mode)          # v4.460 : objectif du jour atteint -> entrees restreintes
         if why_goal:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_goal}")
+            self._refus_note(t, sig, "goal")
             return
         why_chase = self._chase_block(sig)      # v4.551 : pas d entree quand le panier a deja bouge dans le sens du trade (on courrait apres le mouvement)
         if why_chase:
             self._ev("refus", t, f"{sig['kind']} {sig['side']} refusé : {why_chase}")
+            self._refus_note(t, sig, "chase")
             return
         why_atr5 = self._atr5_block(sig)      # v4.585 : plancher d ATR 5 min (tous les types de signal)
         if why_atr5:

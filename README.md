@@ -2197,3 +2197,9 @@ Constat (continuation depuis #587, 29-30/10) : 7 groupes confirmés (meneur + su
 - Descripteurs de régime fixés d'avance : M15, tendance H1, BTC 1 h, flux acheteur, efficacité M5 sur 24 bougies (ER), amplitude des 12 dernières bougies M5, Ichimoku H1 (écart à la Kijun, pente, Tenkan − Kijun, position et distance au nuage).
 - Réglage `SCALP_REFUS_JOURNAL_ON` (1 par défaut, 0 = arrêté). Stockage : meta `scalp_refus_shadow` (1500 derniers). API `GET /api/scalp/refus_events`. Carte « SIGNAUX REFUSÉS : TEST FANTÔME » + bouton « ⬇ CSV refusés ».
 - Message de refus ATR : 3 décimales. Lecture : au moins 100 refus évalués par filtre, puis validation jour par jour (les deux moitiés positives) avant toute activation.
+
+## v4.591 — Journal des refusés étendu : continuation, objectif atteint / mode prudent, poursuite, pause macro (observation seule)
+- Le test fantôme de la v4.590 couvre maintenant aussi : les refus de la détection de continuation (`c_r2` tendance 3 h irrégulière, `c_h1contre` dernière heure en sens contraire, `c_repli_vieux`, `c_repli_cours`, `c_repli_hors`, `c_pas_repli`, `c_elan_vol`, `c_mv1` mouvement 1 min contraire), `goal` (objectif du jour atteint / mode prudent / défensif), `chase` (poursuite du mouvement) et `macro` (pause macro). Les refus « marché non confirmé » restent suivis par l'ancien test (v4.514).
+- Sens d'un refus de continuation : pente 3 h (ou sens cité dans le motif du mouvement 1 min). Plan stop / objectif : `shadow_plan`, comme avant. Aucune règle de décision modifiée, aucun ordre.
+- Volume : un suivi par actif, sens et motif toutes les 60 min pour la continuation (15 min pour les autres) ; 2000 événements conservés ; évaluation jusqu'à 12 événements par passage (toutes les 2 min) ; enregistrement toutes les 90 s.
+- La carte affiche un groupe par motif (libellés fournis par le moteur) ; le CSV « refusés » contient le motif dans la colonne « filtre ».
