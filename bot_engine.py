@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.594"
+BOT_VERSION = "4.595"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -563,7 +563,7 @@ CONFIG = {
     # de 0.5%" a ete comprise comme un armement a 3% puis un trailing avec
     # 0.5% de marge de repli depuis le pic — a corriger si l intention etait
     # differente (ex: fenetre d armement 2.5%-3.5% plutot qu un trailing).
-    "SPOT_ACCUM_ENABLED": True,
+    "SPOT_ACCUM_ENABLED": False,   # v4.595 : mode mis en pause (resultat negatif, voir README)
     "SPOT_ACCUM_MAX_TRADES": 8,
     # v4.108 — FIX BUG CRITIQUE : desormais en % de l AMPLITUDE (comme le
     # seuil structurel du trailing, 70% de l amplitude), pas du prix du

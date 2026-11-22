@@ -113,6 +113,14 @@ be.apply_profile(cfg, _saved_overrides.get("PROFILE", cfg.get("PROFILE", "swing"
 for k, v in _saved_overrides.items():
     cfg[k] = v
 
+# v4.595 — SUR DEMANDE EXPLICITE (21/11) : Spot-Accum et Accumulation mis en pause (AutoZone reprend leurs fonctions).
+# Migration UNIQUE : l'etat enregistre est force a False une seule fois ; ensuite l'utilisateur peut les reactiver dans l'interface.
+if db.get_meta("mig_4595_accum_off") is None:
+    for _k in ("SPOT_ACCUM_ENABLED", "ACCUMULATION_ENABLED"):
+        cfg[_k] = False
+        db.set_config_override(_k, False)
+    db.set_meta("mig_4595_accum_off", db.now_iso())
+
 if db.get_meta("initial_balance") is None:
     db.set_meta("initial_balance", str(cfg["CAPITAL_USD"]))
 if db.get_meta("reset_at") is None:
