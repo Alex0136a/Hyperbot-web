@@ -1073,6 +1073,13 @@ class ScalpEngine:
         self._liq_t_ok = 0.0
         self._liq_saved = 0.0
         self._liq_dirty = False
+        self.zz_ev = self._zz_load()      # v4.597 : journal des pivots ZigZag confirmes M15 / H1 (observation seule)
+        self.zz_state = {}                # v4.597 : ticker -> {m5, m15, h1} : dernier etat ZigZag (carte de l interface)
+        self._zz_last = {}                # v4.597 : (ticker, tf) -> cle du dernier pivot vu (un evenement par nouveau pivot)
+        self._zz_bar = {}
+        self._zz_t_ok = 0.0
+        self._zz_saved = 0.0
+        self._zz_dirty = False
         self.refus_ev = self._refus_load()      # v4.590 : journal des signaux refuses + test fantome (observation seule)
         self._refus_saved = 0.0
         self._refus_dirty = False
@@ -1461,7 +1468,7 @@ class ScalpEngine:
         stop_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok") and (d.get("post_stop") or {}).get("kind") not in ("durée", "sans progrès")]).get("Scalp")      # v4.538
         noprog_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok") and (d.get("post_stop") or {}).get("kind") == "sans progrès"]).get("Scalp")      # v4.560
         duree_post = post_stop_summary([("Scalp", d) for d in rows if (d.get("post_stop") or {}).get("ok") and (d.get("post_stop") or {}).get("kind") == "durée"]).get("Scalp")      # v4.552
-        out = {"mode": mode, "dims": dims, "be_post": be_post, "stop_post": stop_post, "duree_post": duree_post, "noprog_post": noprog_post, "shadow": self.shadow_summary(), "liq": self.liq_summary(), "refus": self.refus_summary(), "lab": self.lab_summary(rows), "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
+        out = {"mode": mode, "dims": dims, "be_post": be_post, "stop_post": stop_post, "duree_post": duree_post, "noprog_post": noprog_post, "shadow": self.shadow_summary(), "liq": self.liq_summary(), "zz": self.zz_summary(), "refus": self.refus_summary(), "lab": self.lab_summary(rows), "total": agg(rows), "today": agg(today), "streak_losses": streak, "by_kind": by_kind, "by_trend": by_trend, "by_regime": by_regime, "by_cluster": {str(k): v for k, v in by_cluster.items()},
                "by_hour": {h: agg(v) for h, v in sorted(by_hour.items())}, "last_closed": rows[0].get("closed_at") if rows else None}
         self._stats_cache = (time.time(), mode, out)
         return out
@@ -1757,6 +1764,139 @@ class ScalpEngine:
         if ok_pass and not err_pass:
             self._clear_err("journal ruptures")
         self._liq_save(force=bool(done))
+
+    # ───────────── v4.597 : ZIGZAG INDEPENDANT DES TRADES (observation seule, aucun ordre) ─────────────
+    ZZ_TFS = (("m5", "5m"), ("m15", "15m"), ("h1", "1h"))
+    ZZ_JOURNAL = ("m15", "h1")      # horizons dont les nouveaux pivots sont inscrits au journal (M5 : etat seul, trop de bruit)
+
+    def _zz_load(self):
+        try:
+            raw = db.get_meta("scalp_zz_events", None)
+            v = json.loads(raw) if isinstance(raw, str) else (raw or [])
+            return v if isinstance(v, list) else []
+        except Exception:
+            return []
+
+    def _zz_save(self, force=False):
+        if not (self._zz_dirty or force):
+            return
+        if not force and time.time() - self._zz_saved < 90:
+            return
+        try:
+            db.set_meta("scalp_zz_events", json.dumps(self.zz_ev[-2000:]))
+            self._zz_saved = time.time()
+            self._zz_dirty = False
+        except Exception as e:
+            self.last_error = f"journal zigzag : {type(e).__name__}: {e}"
+
+    def _zz_step(self, t):
+        """Une fois par bougie M5 cloturee et par actif : etat du ZigZag M5 / M15 / H1 (pivots confirmes) ; un NOUVEAU pivot M15 / H1 est inscrit au journal."""
+        if not int(float(self.cfg.get("SCALP_ZZ_JOURNAL_ON", 1) or 0)):
+            return
+        c5 = self.bot._mtf_candles(t, "5m", 120, cache_only=True)
+        if not c5 or len(c5) < 30:
+            return
+        bar = int(c5[-1]["t"])
+        if self._zz_bar.get(t) == bar:
+            return
+        self._zz_bar[t] = bar
+        px = float(c5[-1]["c"])
+        st = {}
+        for key, tf in self.ZZ_TFS:
+            cs = c5 if key == "m5" else self.bot._mtf_candles(t, tf, 120, cache_only=True)
+            f = mtf.zigzag_features(cs or [], px)
+            if not f:
+                continue
+            st[key] = f
+            if key not in self.ZZ_JOURNAL:
+                continue
+            pk = (f.get("last"), f.get("pt"))
+            prev = self._zz_last.get((t, key))
+            self._zz_last[(t, key)] = pk
+            if prev is None or prev == pk or f.get("pt") is None:
+                continue      # premier passage apres demarrage : le pivot deja confirme n est pas un evenement
+            try:
+                h1 = mtf.trend((self.bot._mtf_candles(t, "1h", 230, cache_only=True) or []))[0]
+            except Exception:
+                h1 = None
+            self.zz_ev.append({"ts": time.time(), "bar": bar, "t": t, "tf": key, "k": f["last"], "px": px, "pp": f.get("pp"), "pt": f.get("pt"), "n": f.get("n"),
+                               "hs": f.get("hs"), "ls": f.get("ls"), "prev": f.get("prev_pct"), "leg": f.get("leg_pct"), "retr": f.get("retr_pct"), "h1": h1})
+            self._zz_dirty = True
+        if st:
+            self.zz_state[t] = {"ts": time.time(), **st}
+            self._zz_t_ok = time.time()
+        self._zz_save()
+
+    def _zz_eval(self, limit=3):
+        """Rendement 15 / 30 / 60 min apres la CONFIRMATION d un pivot, dans le sens du retournement (apres un sommet : vente ; apres un creux : achat)."""
+        now = time.time()
+        done = 0
+        ok_pass = err_pass = False
+        for e in self.zz_ev:
+            if done >= limit:
+                break
+            t0 = int(e["bar"]) / 1000.0 + 300
+            if e.get("res") or e.get("fail", 0) >= 3 or now < t0 + (self.PE_WIN_MIN + 5) * 60:
+                continue
+            done += 1
+            try:
+                cs = self._candles_range(e["t"], t0, t0 + self.PE_WIN_MIN * 60)
+                cs = [c for c in cs if c["t"] >= t0 * 1000][:12]
+                if len(cs) < 12:
+                    e["fail"] = e.get("fail", 0) + 1
+                else:
+                    sg = -1 if e["k"] == "H" else 1
+                    px = e["px"]
+                    fav = max(sg * ((c["h"] if sg > 0 else c["l"]) - px) / px * 100 for c in cs)
+                    adv = max(-sg * ((c["l"] if sg > 0 else c["h"]) - px) / px * 100 for c in cs)
+                    r = {k: round(sg * (cs[i]["c"] - px) / px * 100, 3) for k, i in (("r15", 2), ("r30", 5), ("r60", 11))}
+                    r.update({"max_fav_pct": round(fav, 3), "max_adv_pct": round(adv, 3)})
+                    e["res"] = r
+                    ok_pass = True
+            except Exception as ex:
+                e["fail"] = e.get("fail", 0) + 1
+                self.last_error = f"journal zigzag : {type(ex).__name__}: {ex}"
+                err_pass = True
+            self._zz_dirty = True
+        if ok_pass and not err_pass:
+            self._clear_err("journal zigzag")
+        self._zz_save(force=bool(done))
+
+    def zz_summary(self):
+        on = bool(int(float(self.cfg.get("SCALP_ZZ_JOURNAL_ON", 1) or 0)))
+        fee = float(self.cfg.get("FEE_ROUND_TRIP_PCT", 0.09) or 0.09)
+        st = {"on": on, "last_scan": self._zz_t_ok or None, "n_assets": len(self.zz_state), "fee": fee,
+              "state": {t: {k: ({kk: v.get(kk) for kk in ("last", "leg", "retr_pct", "hs", "ls", "dist_pct", "leg_pct", "n")} if isinstance(v, dict) else v) for k, v in s.items()}
+                        for t, s in sorted(self.zz_state.items())},
+              "align": {t: {sd: {kd: (mtf.zigzag_align(s, sd, kd) or {}).get("v") for kd in ("rebond", "suivi")} for sd in ("long", "short")}
+                        for t, s in sorted(self.zz_state.items())}}
+        L = self.zz_ev
+        if not L:
+            return {"total": 0, "pending": 0, "since": None, "groups": {}, **st}
+
+        def agg(E):
+            ev = [e for e in E if e.get("res")]
+            if not ev:
+                return {"n": 0}
+            avg = lambda k: round(sum(e["res"][k] for e in ev) / len(ev), 3)
+            return {"n": len(ev), "r15": avg("r15"), "r30": avg("r30"), "r60": avg("r60"), "pos60": round(100 * sum(1 for e in ev if e["res"]["r60"] > 0) / len(ev)),
+                    "net60": round(sum(e["res"]["r60"] for e in ev) / len(ev) - fee, 3),
+                    "fav": round(sum(e["res"]["max_fav_pct"] for e in ev) / len(ev), 3), "adv": round(sum(e["res"]["max_adv_pct"] for e in ev) / len(ev), 3)}
+        conf = lambda e: (e["k"] == "H" and e.get("hs") == "lh") or (e["k"] == "L" and e.get("ls") == "hl")      # la structure confirme le retournement
+        contre = lambda e: (e["k"] == "H" and e.get("hs") == "hh") or (e["k"] == "L" and e.get("ls") == "ll")     # structure en tendance (le pivot est un sommet plus haut / un creux plus bas)
+        groups, labels = {}, {}
+        for tf, nm in (("m15", "M15"), ("h1", "H1")):
+            E = [e for e in L if e.get("tf") == tf]
+            for k_, lab, F in ((f"{tf}_all", f"{nm} : tous les pivots confirmés", E), (f"{tf}_H", f"{nm} : sommets (test de vente)", [e for e in E if e["k"] == "H"]),
+                               (f"{tf}_L", f"{nm} : creux (test d'achat)", [e for e in E if e["k"] == "L"]),
+                               (f"{tf}_conf", f"{nm} : structure qui confirme le retournement (sommet plus bas / creux plus haut)", [e for e in E if conf(e)]),
+                               (f"{tf}_contre", f"{nm} : structure à contre-sens (sommet plus haut / creux plus bas)", [e for e in E if contre(e)])):
+                groups[k_] = agg(F)
+                labels[k_] = lab
+        return {**st, "total": len(L), "pending": sum(1 for e in L if not e.get("res") and e.get("fail", 0) < 3), "since": L[0].get("ts"), "groups": groups, "labels": labels}
+
+    def zz_events(self):
+        return list(self.zz_ev)
 
     def liq_summary(self):
         on = bool(int(float(self.cfg.get("SCALP_LIQ_JOURNAL_ON", 1) or 0)))
@@ -2211,6 +2351,7 @@ class ScalpEngine:
             self._post_stop_eval()      # v4.538
             self._shadow_eval()
             self._liq_eval()      # v4.583
+            self._zz_eval()      # v4.597
             self._refus_eval()      # v4.590
             self._lab_eval()
         except Exception as e:
@@ -2469,6 +2610,10 @@ class ScalpEngine:
                     self._liq_step(t, c1h)      # v4.583 : journal des ruptures de liquidite M5 (aucun ordre)
                 except Exception as e:
                     self.last_error = f"journal ruptures {t} : {type(e).__name__}: {e}"
+                try:
+                    self._zz_step(t)      # v4.597 : ZigZag M5 / M15 / H1 independant des trades (aucun ordre)
+                except Exception as e:
+                    self.last_error = f"journal zigzag {t} : {type(e).__name__}: {e}"
                 try:
                     c1m = self.bot._mtf_candles(t, "1m", 40) if int(self.cfg.get("SCALP_MOVE1M_ON", 1)) else None
                 except Exception:
@@ -4179,6 +4324,11 @@ class ScalpEngine:
             liq = mtf.liquidity_obs(lambda t_, tf_, n_: self.bot._mtf_candles(t_, tf_, n_, cache_only=True), t, sig.get("price"))
         except Exception:
             liq = None
+        try:      # v4.597 : ZigZag M5 / M15 / H1 a l entree (MESURE SEULE, pivots confirmes, cache de bougies uniquement, aucune decision n en depend)
+            zz = mtf.zigzag_obs(lambda t_, tf_, n_: self.bot._mtf_candles(t_, tf_, n_, cache_only=True), t, sig.get("price"))
+        except Exception:
+            zz = None
+        zza = mtf.zigzag_align(zz, sig["side"], sig.get("kind"))      # v4.597 : aide a la decision (aucun blocage)
         try:
             with self.manual.lock:
                 it = self.manual.items.get(res["id"])
@@ -4189,7 +4339,7 @@ class ScalpEngine:
                                    "regime": {"label": reg.get("label", "inconnu"), "corr": reg.get("corr"), "up": reg.get("up"), "down": reg.get("down"),
                                               "basket30": reg.get("basket30"), "rel30": (round(reg["ch30"].get(t, 0) - reg["basket30"], 3) if reg.get("ch30") and reg.get("basket30") is not None else None),
                                               "cluster": cluster_before, "peers": sig.get("peers")},
-                                   "ctx": sig.get("ctx"), "m5": (sig.get("ctx_mc") or {}).get("m5"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra, "ich": ichi, "liq": liq, "calm": sig.get("calm1m"), "mv1": sig.get("move1m"),
+                                   "ctx": sig.get("ctx"), "m5": (sig.get("ctx_mc") or {}).get("m5"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra, "ich": ichi, "liq": liq, "zz": zz, "zza": zza, "calm": sig.get("calm1m"), "mv1": sig.get("move1m"),
                                    "base": sig.get("base"), "touches": sig.get("touches"),
                                    "flux": {"ok": bool((getattr(self, "ctx_state", {}).get(t) or {}).get("flow")), "age_s": (getattr(self, "ctx_state", {}).get(t) or {}).get("flow_age")},      # v4.574 : le flux etait-il disponible a l entree (observation seule)
                                    "conf": ({"n": conf_res.get("n_conf"), "h1": conf_res.get("h1"), "h4": conf_res.get("h4"), "rr_net": conf_res.get("rr_net"), "zone": conf_res.get("zone"), "indic": conf_res.get("indic"), "pa": conf_res.get("pa")} if conf_res else None),      # v4.493 : mesures de la zone horizontale (aucun effet sur les decisions)

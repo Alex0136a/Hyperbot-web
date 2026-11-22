@@ -637,6 +637,133 @@ def liquidity_features(candles, price=None, pivot=2, tol_atr=0.3, sweep_bars=6, 
         return None
 
 
+def zigzag_features(candles, price=None, dev_atr=2.0):
+    """v4.597 — MESURE SEULE (aucune decision n en depend). ZigZag sur bougies CLOTUREES (de la plus ancienne a la plus recente).
+    Un pivot n est CONFIRME que lorsque le prix s est eloigne de l extreme candidat d au moins dev_atr x ATR : le dernier segment (en cours) n est jamais
+    un pivot, donc aucune donnee future et aucun redessin dans les valeurs retournees.
+    n = pivots confirmes ; last = type du dernier pivot confirme (H sommet / L creux) ; dist_pct = distance du prix a ce pivot (en % du prix, signee : + si le prix est au-dessus) ;
+    age = bougies depuis ce pivot ; leg = sens du segment en cours (1 haussier, -1 baissier) ; leg_pct = amplitude du segment en cours depuis le dernier pivot (en % du pivot) ;
+    retr_pct = part de ce segment deja reprise par le prix (0 = au plus loin, 100 = revenu au pivot) ; prev_pct = amplitude du dernier segment confirme (en %) ;
+    hs = structure des deux derniers sommets confirmes (hh plus haut / lh plus bas) ; ls = idem pour les deux derniers creux (hl plus haut / ll plus bas)."""
+    try:
+        cs = [x for x in (candles or []) if all(x.get(k) is not None for k in ("h", "l", "c"))]
+        n = len(cs)
+        if n < 30:
+            return None
+        H = [float(x["h"]) for x in cs]
+        L = [float(x["l"]) for x in cs]
+        px = float(price) if price else float(cs[-1]["c"])
+        a = atr(cs[-31:])
+        if not (px > 0 and a and a > 0):
+            return None
+        dev = dev_atr * a
+        piv = []                                   # (indice, prix, "H" / "L")
+        d = 0                                      # 0 pas encore de sens, 1 segment haussier, -1 baissier
+        hi_i, lo_i = 0, 0                          # extremes candidats
+        for i in range(1, n):
+            if d == 0:
+                if H[i] > H[hi_i]:
+                    hi_i = i
+                if L[i] < L[lo_i]:
+                    lo_i = i
+                if H[hi_i] - L[lo_i] >= dev:
+                    if lo_i < hi_i:
+                        piv.append((lo_i, L[lo_i], "L")); d = 1; lo_i = hi_i
+                    else:
+                        piv.append((hi_i, H[hi_i], "H")); d = -1; hi_i = lo_i
+                    # lo_i / hi_i designent maintenant l extreme candidat du segment en cours
+            elif d == 1:
+                if H[i] >= H[hi_i]:
+                    hi_i = i
+                elif H[hi_i] - L[i] >= dev:
+                    piv.append((hi_i, H[hi_i], "H")); d = -1; lo_i = i
+            else:
+                if L[i] <= L[lo_i]:
+                    lo_i = i
+                elif H[i] - L[lo_i] >= dev:
+                    piv.append((lo_i, L[lo_i], "L")); d = 1; hi_i = i
+        if not piv:
+            return None
+        last_i, last_p, last_t = piv[-1]
+        ext = H[hi_i] if d == 1 else L[lo_i]
+        span = abs(ext - last_p)
+        retr = (abs(ext - px) / span * 100) if span > 0 else None
+        prev = abs(piv[-1][1] - piv[-2][1]) / piv[-2][1] * 100 if len(piv) >= 2 else None
+        hs_l = [p for _, p, t in piv if t == "H"][-2:]
+        ls_l = [p for _, p, t in piv if t == "L"][-2:]
+        r = lambda v, k=3: (round(v, k) if v is not None else None)
+        pt = cs[last_i].get("t")
+        return {"pp": last_p, "pt": (int(pt) if pt is not None else None), "n": len(piv), "last": last_t, "dist_pct": r((px - last_p) / px * 100), "age": n - 1 - last_i, "leg": d,
+                "leg_pct": r((ext - last_p) / last_p * 100), "retr_pct": r(retr, 0), "prev_pct": r(prev),
+                "hs": (("hh" if hs_l[1] > hs_l[0] else "lh") if len(hs_l) == 2 else None),
+                "ls": (("hl" if ls_l[1] > ls_l[0] else "ll") if len(ls_l) == 2 else None)}
+    except Exception:
+        return None
+
+
+def zigzag_align(zz, side, kind=None):
+    """v4.597 — AIDE A LA DECISION (aucun blocage) : le sens de l entree est-il aligne avec la structure ZigZag ? zz = resultat de zigzag_obs.
+    Verdict : ok / attention / aberration + raisons. Seuils fixes d avance (hypotheses a confirmer sur les trades, jamais ajustes apres coup).
+    - Suivi de tendance (continuation, cassure, tendance) : ABERRATION si la structure M15 entiere (sommets ET creux) est contre le sens du trade
+      ET que le segment en cours va contre le sens ; ATTENTION si la structure M15 est entierement contre le sens, ou partiellement contre avec un segment
+      contraire, ou si la structure H1 est entierement contre le sens, ou si l entree poursuit un segment deja etendu (retracement < 25 %, amplitude >= 1,5 x le
+      segment precedent).
+    - Rebond (achat sur base, vente sur sommet) : le segment contraire est voulu ; ABERRATION seulement si les structures M15 ET H1 sont entierement
+      contre le rebond ; ATTENTION si l une des deux l est."""
+    try:
+        m = (zz or {}).get("m15")
+        if not m:
+            return None
+        h = (zz or {}).get("h1") or {}
+        s = 1 if side == "long" else -1
+
+        def against(f):
+            if not f:
+                return 0
+            up = (f.get("hs") == "hh") + (f.get("ls") == "hl")
+            dn = (f.get("hs") == "lh") + (f.get("ls") == "ll")
+            return dn if s > 0 else up      # 0, 1 ou 2 : nombre de composantes (sommets, creux) CONTRE le sens du trade
+        am, ah = against(m), against(h)
+        why, lvl = [], 0
+        if kind == "rebond":
+            if am == 2 and ah == 2:
+                lvl = 2
+                why.append("structures M15 et H1 entièrement contre le rebond")
+            elif am == 2 or ah == 2:
+                lvl = 1
+                why.append("structure " + ("M15" if am == 2 else "H1") + " entièrement contre le rebond")
+        else:
+            if am == 2 and m.get("leg") == -s:
+                lvl = 2
+                why.append("structure M15 entièrement contre le sens et segment M15 contraire")
+            elif am == 2 or (am >= 1 and m.get("leg") == -s):
+                lvl = 1
+                why.append("structure M15 contre le sens" + (" avec segment contraire" if m.get("leg") == -s else ""))
+            if ah == 2:
+                lvl = max(lvl, 1)
+                why.append("structure H1 entièrement contre le sens")
+            lp, pv, rt = m.get("leg_pct"), m.get("prev_pct"), m.get("retr_pct")
+            if m.get("leg") == s and rt is not None and rt < 25 and pv and lp is not None and abs(lp) >= 1.5 * pv:
+                lvl = max(lvl, 1)
+                why.append("poursuite d'un segment M15 déjà étendu (peu de retracement)")
+        return {"v": ("ok", "attention", "aberration")[lvl], "why": why}
+    except Exception:
+        return None
+
+
+def zigzag_obs(fetch, ticker, price=None):
+    """v4.597 — MESURE SEULE : ZigZag M5 / M15 / H1 depuis le cache de bougies (aucune requete reseau)."""
+    out = {}
+    for tf, key, cnt in (("5m", "m5", 120), ("15m", "m15", 120), ("1h", "h1", 120)):
+        try:
+            f = zigzag_features(fetch(ticker, tf, cnt) or [], price)
+            if f:
+                out[key] = f
+        except Exception:
+            pass
+    return out or None
+
+
 def liquidity_obs(fetch, ticker, price=None):
     """v4.582 — MESURE SEULE : zones de liquidite en M5 et M15 depuis le cache de bougies (aucune requete reseau)."""
     out = {}

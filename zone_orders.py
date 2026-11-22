@@ -390,6 +390,11 @@ class ZoneOrders:
                     (item.get("zone_order") or {})["liq_fire"] = mtf.liquidity_obs(lambda t_, tf_, n_: self.bot._mtf_candles(t_, tf_, n_, cache_only=True), item["ticker"], v.get("price"))
                 except Exception:
                     pass
+                try:      # v4.597 : ZigZag M5 / M15 / H1 au declenchement (MESURE SEULE, pivots confirmes, cache de bougies uniquement)
+                    (item.get("zone_order") or {})["zz_fire"] = mtf.zigzag_obs(lambda t_, tf_, n_: self.bot._mtf_candles(t_, tf_, n_, cache_only=True), item["ticker"], v.get("price"))
+                    (item.get("zone_order") or {})["zza_fire"] = mtf.zigzag_align((item.get("zone_order") or {}).get("zz_fire"), item.get("direction"), "rebond")      # aide a la decision (aucun blocage)
+                except Exception:
+                    pass
                 try:      # v4.540 : positions de sens contraire ouvertes sur d autres actifs (observation, jamais bloquant)
                     (item.get("zone_order") or {})["contra_fire"] = self.manual.scalp.contra_open(item["ticker"], item["direction"], item.get("mode"), cache_only=True)
                 except Exception:
