@@ -2980,6 +2980,55 @@ def scalp_liq_events(email: str = Depends(require_user)):
     return {"events": bot.manual.scalp.liq_events(), "summary": bot.manual.scalp.liq_summary()}
 
 
+_CANDLE_MS = {"5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
+
+
+@app.get("/api/candles/export")
+def candles_export(tickers: str, tf: str = "1h", days: int = 30, email: str = Depends(require_user)):
+    """v4.597 : EXPORT DE BOUGIES EN LECTURE SEULE (aucun ordre, aucune regle) pour rejouer les signaux avec l ordre exact des mouvements.
+    tickers : liste separee par des virgules (12 au plus) ; tf : 5m / 15m / 1h / 4h / 1d ; days : 1 a 400. Bougies cloturees uniquement. 120 000 lignes au plus."""
+    import time as _t
+    if bot.info is None:
+        raise HTTPException(status_code=503, detail="Connexion Hyperliquid indisponible")
+    if tf not in _CANDLE_MS:
+        raise HTTPException(status_code=400, detail="tf : 5m, 15m, 1h, 4h ou 1d")
+    tk = [x.strip().upper() for x in (tickers or "").split(",") if x.strip()][:12]
+    if not tk:
+        raise HTTPException(status_code=400, detail="Aucun actif")
+    days = max(1, min(int(days), 400))
+    step = _CANDLE_MS[tf]
+    now_ms = int(_t.time() * 1000)
+    end_all = (now_ms // step) * step                 # derniere bougie CLOTUREE : on exclut la bougie en cours
+    start_all = end_all - days * 86_400_000
+    rows, errors = [], {}
+    for t in tk:
+        cur = start_all
+        n0 = len(rows)
+        try:
+            while cur < end_all and len(rows) < 120_000:
+                chunk_end = min(end_all, cur + 4500 * step)
+                raw = bot.info.post("/info", {"type": "candleSnapshot", "req": {"coin": t, "interval": tf, "startTime": int(cur), "endTime": int(chunk_end)}})
+                if not isinstance(raw, list) or not raw:
+                    cur = chunk_end
+                    continue
+                for c in raw:
+                    if int(c["t"]) < end_all:
+                        rows.append([t, tf, int(c["t"]), c["o"], c["h"], c["l"], c["c"], c.get("v")])
+                cur = max(int(raw[-1]["t"]) + step, chunk_end if len(raw) < 4500 else int(raw[-1]["t"]) + step)
+                _t.sleep(0.15)
+        except Exception as e:
+            errors[t] = f"{type(e).__name__}: {e}"
+        if len(rows) == n0 and t not in errors:
+            errors[t] = "aucune bougie"
+    seen, out = set(), []
+    for r in rows:
+        k = (r[0], r[2])
+        if k not in seen:
+            seen.add(k)
+            out.append(r)
+    return {"tf": tf, "days": days, "n": len(out), "rows": out, "errors": errors}
+
+
 @app.get("/api/scalp/zz_events")
 def scalp_zz_events(email: str = Depends(require_user)):
     """v4.597 : pivots ZigZag confirmes M15 / H1 + rendement apres confirmation (observation seule)."""

@@ -1267,6 +1267,23 @@ function ScalpPanel({ token }) {
       a.href = u; a.download = "signaux_refuses_test_fantome.csv"; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u);
     } catch(e) { alert(e.message); }
   };
+  const [cdlTk, setCdlTk] = useState("BTC,ETH,SOL,HYPE,TAO,SUI,AAVE,LINK,NEAR,INJ,UNI,JUP");
+  const [cdlTf, setCdlTf] = useState("1h");
+  const [cdlDays, setCdlDays] = useState(60);
+  const [cdlBusy, setCdlBusy] = useState(false);
+  const dlCandles = async () => {      // v4.597 : export de bougies (lecture seule) pour rejouer les signaux avec l'ordre exact des mouvements
+    setCdlBusy(true);
+    try {
+      const r = await apiCall(`/api/candles/export?tickers=${encodeURIComponent(cdlTk)}&tf=${cdlTf}&days=${cdlDays}`,"GET",null,token);
+      const head = ["actif","unite","t_ms","date (UTC)","ouverture","haut","bas","cloture","volume"];
+      const rows = (r.rows||[]).map(x => [x[0],x[1],x[2],new Date(x[2]).toISOString().replace("T"," ").slice(0,16),x[3],x[4],x[5],x[6],x[7]].map(v=>v===null||v===undefined?"":String(v).replace(".",",")).join(";"));
+      const blob = new Blob(["\uFEFF" + [head.join(";"), ...rows].join("\r\n")], {type:"text/csv;charset=utf-8;"});
+      const u = URL.createObjectURL(blob), a = document.createElement("a");
+      a.href = u; a.download = `bougies_${cdlTf}_${cdlDays}j.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u);
+      const er = Object.keys(r.errors||{}); if (er.length) alert("Actifs sans données : " + er.map(k=>k+" ("+r.errors[k]+")").join(", "));
+    } catch(e) { alert(e.message); }
+    setCdlBusy(false);
+  };
   const dlZz = async () => {      // v4.597 : export CSV des pivots ZigZag confirmes (M15 / H1) avec leur rendement apres confirmation
     try {
       const r = await apiCall("/api/scalp/zz_events","GET",null,token);
@@ -1511,6 +1528,16 @@ function ScalpPanel({ token }) {
             <div style={{color:"#64748b"}}>Un pivot n'est confirmé que lorsque le prix s'en est éloigné de 2 ATR (aucune donnée future, aucun redessin). L'événement est daté à la confirmation ; le rendement est mesuré dans le sens du retournement (après un sommet : vente, après un creux : achat), sans stop ni objectif, à 15 / 30 / 60 min, frais déduits au net. Lecture utile à partir de 100 pivots évalués par ligne ; rien n'est décidé avant. M5 : état seul (trop de bruit pour le journal). Colonnes Achat / Vente : alignement du sens avec la structure ZigZag (ok, attention, aberration), pour un rebond et pour un suivi de tendance ; aide à la décision, aucun blocage ; chaque trade enregistre son verdict (colonnes zz_alignement et zz_raisons du CSV).</div>
             <button style={{...MT.btn("#60a5fa"),marginTop:6}} onClick={dlZz}>⬇ CSV pivots ZigZag</button>
           </div>}
+          <div style={{fontSize:11,color:"#cbd5e1",marginBottom:12,lineHeight:1.5}}>
+            <div style={{...MT.title}}>EXPORT DE BOUGIES (LECTURE SEULE, AUCUN ORDRE)</div>
+            <div style={{color:"#64748b"}}>Bougies clôturées Hyperliquid, pour rejouer les signaux avec l'ordre exact des mouvements. 12 actifs au plus, 120 000 lignes au plus ; 1 h : jusqu'à environ 200 jours.</div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginTop:4}}>
+              <input value={cdlTk} onChange={e=>setCdlTk(e.target.value)} style={{flex:"1 1 260px",background:"#0f172a",color:"#e2e8f0",border:"1px solid #334155",borderRadius:4,padding:"4px 6px",fontSize:11}} />
+              <select value={cdlTf} onChange={e=>setCdlTf(e.target.value)} style={{background:"#0f172a",color:"#e2e8f0",border:"1px solid #334155",borderRadius:4,padding:"4px 6px",fontSize:11}}>{["5m","15m","1h","4h","1d"].map(x=><option key={x} value={x}>{x}</option>)}</select>
+              <input type="number" min="1" max="400" value={cdlDays} onChange={e=>setCdlDays(e.target.value)} style={{width:64,background:"#0f172a",color:"#e2e8f0",border:"1px solid #334155",borderRadius:4,padding:"4px 6px",fontSize:11}} /> <span>jours</span>
+              <button style={MT.btn("#60a5fa")} disabled={cdlBusy} onClick={dlCandles}>{cdlBusy ? "Téléchargement…" : "⬇ CSV bougies"}</button>
+            </div>
+          </div>
           {S.be_post && S.be_post.total_be>0 && <div style={{fontSize:11,color:"#cbd5e1",marginBottom:12,lineHeight:1.5}}>
             <div style={{...MT.title}}>STOP DE RENTABILITÉ : QUE SE PASSE-T-IL APRÈS LA SORTIE ?</div>
             {S.be_post.n>0 ? <div>{S.be_post.total_be} sorties par ce stop · {S.be_post.n} évaluées sur 60 min après la sortie : tenir aurait donné <b>mieux</b> {S.be_post.cost} fois, <b>moins bien</b> {S.be_post.protect} fois (le stop a protégé), équivalent {S.be_post.neutral} fois · écart moyen <b>{S.be_post.avg_delta_pct>=0?"+":""}{S.be_post.avg_delta_pct.toFixed(2)} %</b> du prix par trade (cumul {S.be_post.sum_delta_pct>=0?"+":""}{S.be_post.sum_delta_pct.toFixed(2)} %) · {S.be_post.pending} en attente</div> : <div>{S.be_post.total_be} sorties par ce stop, évaluation en attente (60 min après chaque sortie).</div>}
