@@ -1048,7 +1048,7 @@ ADVANCED_SETTINGS = {
     "ZONEORD_REC_MERGE_ATR":           {"label": "Ordres sur zone (fenêtre récente) - deux sommets (ou bases) à moins de N x ATR 15 min forment un même niveau", "default": 0.6},
     "ZONEORD_REC_ZONE_WIDTH_ATR":      {"label": "Ordres sur zone (fenêtre récente) - largeur maximale d'un niveau en ATR 15 min", "default": 2.0},
     "ZONEORD_REC_MAX_DIST_FRAC":       {"label": "Ordres sur zone (fenêtre récente) - distance maximale du prix au niveau, en part de la hauteur de la fenêtre (0,6 = 60 %)", "default": 0.6},
-    "ZONEORD_REC_MIN_RANGE_ATR":       {"label": "Ordres sur zone (fenêtre récente) - hauteur minimale de la fenêtre en ATR 15 min (sinon : bruit, pas d'ordre)", "default": 3.0},
+    "ZONEORD_REC_MIN_RANGE_ATR":       {"label": "Ordres sur zone (fenêtre récente) - hauteur minimale de la fenêtre en ATR 15 min (sinon : bruit, pas d'ordre)", "default": 6.0},
     "ZONEORD_REC_SL_ATR":              {"label": "Ordres sur zone (fenêtre récente) - stop au-delà du niveau de N x ATR 15 min", "default": 1.0},
     "ZONEORD_M15_COUNTER_BLOCK":       {"label": "Ordres sur zone - pas d'entrée contre la tendance M15 : vente si M15 haussier, achat si M15 baissier (1/0 ; v4.587)", "default": 1},
     "ZONEORD_REC_BREAK_ATR":           {"label": "Ordres sur zone (fenêtre récente) - niveau considéré cassé au-delà de N x ATR 15 min (ordre annulé)", "default": 1.0},
