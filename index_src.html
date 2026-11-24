@@ -50,7 +50,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── API CLIENT ───────────────────────────────────────────────
 const API = window.location.origin;
-const UI_VERSION = "4.597";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
+const UI_VERSION = "4.598";      // v4.464 : version de la PAGE (affichee dans la carte Scalp) pour verifier que index.html est bien a jour
 
 async function apiCall(path, method="GET", body=null, token=null) {
   const headers = { "Content-Type": "application/json" };
@@ -3237,8 +3237,8 @@ Confirmer ?`
           {/* v4.265 — export CSV du suivi Spot-Accum / Accumulation */}
           <div style={{background:"#0f1629",border:"1px solid #1e2d4a",borderRadius:10,padding:14,marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
             <div style={{fontSize:11,color:"#94a3b8",maxWidth:560}}>
-              <b style={{color:"#e2e8f0"}}>📥 Suivi Spot-Accum / Accumulation / Funding / Forex</b><br/>
-              Tous les trades de ces quatre modes : durée, prix réels, frais, PnL net, évolution du prix 30/60 min après chaque sortie et simulation d'un SL plus large (remplis automatiquement ~1 h après la fermeture). Heures dans votre fuseau. Format Excel (séparateur ;).
+              <b style={{color:"#e2e8f0"}}>📥 Suivi des trades (tous les modes sauf Scalp et AutoZone)</b><br/>
+              Tous les trades clôturés des autres modes (Swing Support, Swing Forex, Tendance, Scalp Forex, Forex, Spot-Accum, Accumulation, Funding, Manuel) : durée, prix réels, frais, PnL net, évolution du prix 30/60 min après chaque sortie et simulation d'un SL plus large (remplis automatiquement ~1 h après la fermeture). Heures dans votre fuseau. Format Excel (séparateur ;).
             </div>
             <button onClick={async()=>{
               try{

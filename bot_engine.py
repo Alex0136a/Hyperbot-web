@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.597"
+BOT_VERSION = "4.598"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -1432,6 +1432,7 @@ PROFILE_SWING = {
     "MTF_MIN_FLOW_PRESSURE": 0.0,       # seuil minimal (0 = juste "pas hostile" ; 0.15-0.3 = plus strict)
     "MTF_REQUIRE_REAL_TARGET_ZONE": 1,  # v4.308 — 1 = bloque l entree quand il n y a pas de zone opposee distincte (pas d objectif synthetique)
     "MTF_CLOSE_ON_ZONE_BREAK": 1,       # v4.309 — 1 = ferme des que le prix casse la zone d entree (avant meme le SL classique)
+    "MTF_ZONE_BREAK_ON_M5_CLOSE": 1,    # v4.598 — 1 = la cassure de zone n est validee qu a la CLOTURE d une bougie M5 au-dela de la borne (plus de sortie sur simple meche) ; le stop dur reste actif en continu. 0 = ancien comportement (intra-bougie)
     "MTF_CLOSE_ON_TREND_REVERSAL": 1,   # v4.311 — 1 = ferme des que la tendance H4 d origine se retourne completement
     # v4.321 — SUR DEMANDE EXPLICITE : chemin d entree "tendance" (support
     # ascendant / resistance descendante + objectif par mesure de
@@ -12890,6 +12891,8 @@ class BotEngine:
                         continue
                     done.add(ticker)
                     self._mtf_candles(ticker, major_tf, 260 if major_tf == "4h" else 230)
+                    if cfg.get("MTF_ZONE_BREAK_ON_M5_CLOSE", 1):      # v4.598 : bougies M5 pour la cassure de zone validee a la cloture
+                        self._mtf_candles(ticker, "5m", 12)
             # v4.343 — positions MANUELLES avec une regle de sortie sur la tendance H4 : memes bougies a jour
             manual = getattr(self, "manual", None)
             if manual is not None:
@@ -13356,6 +13359,34 @@ class BotEngine:
                          "mtf_zone_bound": zone["high"]})  # v4.309 — borne de la zone, pour la cassure structurelle
             self._pending_accumulation_candidates.append(cand)
 
+    def _zone_break_m5_ok(self, ticker, long_side, zone_bound, pos):
+        """v4.598 — SUR DEMANDE EXPLICITE : la cassure de zone n est confirmee qu a la CLOTURE d une bougie M5 au-dela de la borne
+        (pas sur une simple meche). Seules les bougies M5 cloturees APRES l ouverture comptent. Le stop dur (SL) reste actif en continu.
+        Reglage MTF_ZONE_BREAK_ON_M5_CLOSE = 0 : ancien comportement (intra-bougie). Sans bougie M5 disponible : on n attend pas
+        (retour True) pour ne jamais laisser une position sans cette sortie."""
+        try:
+            if not self.cfg.get("MTF_ZONE_BREAK_ON_M5_CLOSE", 1):
+                return True
+            cs = self._mtf_candles(ticker, "5m", 12, cache_only=True)
+            if not cs:
+                return True
+            opened_ms = 0
+            oa = pos.get("opened_at")
+            if isinstance(oa, str):
+                try:      # opened_at est ecrit par datetime.now() (heure locale du serveur) : relecture symetrique
+                    opened_ms = int(datetime.strptime(oa, "%d/%m/%Y %H:%M:%S").timestamp() * 1000)
+                except Exception:
+                    opened_ms = 0
+            elif oa:
+                opened_ms = int(oa * 1000) if oa < 1e11 else int(oa)
+            closed = [c for c in cs if c["t"] + 300000 > opened_ms]
+            if not closed:
+                return False
+            last = closed[-1]
+            return (last["c"] < zone_bound) if long_side else (last["c"] > zone_bound)
+        except Exception:
+            return True
+
     def _manage_mtf(self, symbol, price, state, pos, ticker, mode):
         """Gestion d une position "top-down" : SL sur la structure, objectif
         sur la zone opposee, SL remonte au prix d entree a +1R, puis suiveur a
@@ -13416,7 +13447,7 @@ class BotEngine:
             pass
         elif cfg.get("MTF_CLOSE_ON_ZONE_BREAK", 1) and zone_bound is not None and (
             (long_side and price < zone_bound) or (not long_side and price > zone_bound)
-        ):
+        ) and self._zone_break_m5_ok(ticker, long_side, zone_bound, pos):
             reason = "STRUCTURE CASSEE (zone top-down)"
         elif (long_side and price <= pos["sl"]) or (not long_side and price >= pos["sl"]):
             reason = "STOP LOSS (zone top-down)" if not pos.get("mtf_be_done") else "STOP SUIVEUR (top-down)"
