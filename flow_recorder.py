@@ -19,6 +19,7 @@ Aucun effet sur les decisions du bot : l appel est protege par try/except cote m
 """
 import threading
 import time
+from collections import deque
 
 BUCKET_MS = 300_000
 
@@ -32,6 +33,7 @@ class FlowRecorder:
         self.seen = {}               # coin -> (ensemble des tid, ordre) pour eviter les doublons apres une reconnexion
         self.alive = []              # debuts de tranche pour lesquels le flux etait actif
         self._alive_marked = -1      # derniere tranche globale marquee vivante
+        self.hist = {}               # v4.599 : coin -> dernieres tranches TERMINEES (dict) pour lire le flux recent sans la base (30 x 5 min = 150 min)
         self.lock = threading.Lock()
         self.stats = {"trades": 0, "dupes": 0, "bad": 0}
 
@@ -82,6 +84,7 @@ class FlowRecorder:
                 b = self.cur.get(coin)
                 if b is not None and t0 > b["t0"]:                # la tranche precedente est terminee
                     self.closed.append(self._row(b))
+                    self._keep(b)
                     b = None
                 if b is None:
                     b = self.cur[coin] = self._new(coin, t0)
@@ -119,6 +122,7 @@ class FlowRecorder:
                 b = self.cur[coin]
                 if b["t0"] + self.bucket_ms + grace_ms <= now_ms:
                     self.closed.append(self._row(b))
+                    self._keep(b)
                     del self.cur[coin]
             last_done = (now_ms - grace_ms) // self.bucket_ms * self.bucket_ms - self.bucket_ms
             if stream_alive and last_done > self._alive_marked:
@@ -132,6 +136,69 @@ class FlowRecorder:
                 self._alive_marked = last_done
             elif not stream_alive:
                 self._alive_marked = max(self._alive_marked, last_done)   # pas de marquage pendant une panne
+
+    # ───────────── v4.599 : lecture du flux RECENT en memoire (observation seule, aucun ordre) ─────────────
+    def _keep(self, b):
+        """Garde une copie de la tranche terminee (30 tranches = 150 min par actif)."""
+        d = self.hist.get(b["coin"])
+        if d is None:
+            d = self.hist[b["coin"]] = deque(maxlen=30)
+        d.append({k: b[k] for k in ("t0", "n_buy", "n_sell", "buy_usd", "sell_usd", "big_buy_usd", "big_sell_usd", "max_trade_usd")})
+
+    def window(self, coin, start_ms, end_ms):
+        """Agrege les tranches de 5 min dont le DEBUT est dans [start_ms, end_ms) : terminees (memoire) + tranche en cours.
+        Retourne None s'il n'y a aucune tranche. Cles : buy, sell (USD), nb, ns (transactions), big_buy, big_sell, maxt, nbk (tranches), shares (part d'achats par tranche)."""
+        with self.lock:
+            rows = [r for r in self.hist.get(coin, ()) if start_ms <= r["t0"] < end_ms]
+            cur = self.cur.get(coin)
+            if cur is not None and start_ms <= cur["t0"] < end_ms:
+                rows = rows + [{k: cur[k] for k in ("t0", "n_buy", "n_sell", "buy_usd", "sell_usd", "big_buy_usd", "big_sell_usd", "max_trade_usd")}]
+        if not rows:
+            return None
+        buy = sum(r["buy_usd"] for r in rows)
+        sell = sum(r["sell_usd"] for r in rows)
+        shares = [r["buy_usd"] / (r["buy_usd"] + r["sell_usd"]) for r in rows if (r["buy_usd"] + r["sell_usd"]) > 0]
+        return {"buy": buy, "sell": sell, "nb": sum(r["n_buy"] for r in rows), "ns": sum(r["n_sell"] for r in rows),
+                "big_buy": sum(r["big_buy_usd"] for r in rows), "big_sell": sum(r["big_sell_usd"] for r in rows),
+                "maxt": max(r["max_trade_usd"] for r in rows), "nbk": len(rows), "shares": shares}
+
+    def features(self, coin, end_ms, wins=(5, 15, 30)):
+        """Flux AVANT l'instant end_ms (exclu), sur 5 / 15 / 30 min (en tranches de 5 min, tranche en cours comprise) :
+        a{w} = part d'achats agressifs (0,5 = equilibre), n{w} = nombre de transactions, net{w} = achats - ventes en USD,
+        big{w} = achats - ventes des gros ordres en USD, v30 = ecart-type de la part d'achats par tranche sur 30 min (instabilite du flux),
+        m30 = plus grosse transaction. Valeurs absentes si aucune transaction."""
+        out = {}
+        end_ms = int(end_ms)
+        for w in wins:
+            r = self.window(coin, end_ms - w * 60000, end_ms)
+            if not r or (r["buy"] + r["sell"]) <= 0:
+                continue
+            tot = r["buy"] + r["sell"]
+            out["a%d" % w] = round(r["buy"] / tot, 3)
+            out["n%d" % w] = r["nb"] + r["ns"]
+            out["net%d" % w] = round(r["buy"] - r["sell"])
+            out["big%d" % w] = round(r["big_buy"] - r["big_sell"])
+            if w == 30:
+                sh = r["shares"]
+                if len(sh) >= 3:
+                    m = sum(sh) / len(sh)
+                    out["v30"] = round((sum((x - m) ** 2 for x in sh) / len(sh)) ** 0.5, 3)
+                out["m30"] = round(r["maxt"])
+        return out or None
+
+    def after(self, coin, start_ms, wins=(15, 30, 60)):
+        """Flux APRES start_ms, sur 15 / 30 / 60 min : a{w}, net{w}, big{w} (memes definitions). Absent si l'historique en memoire est trop court."""
+        out = {}
+        start_ms = int(start_ms)
+        for w in wins:
+            r = self.window(coin, start_ms, start_ms + w * 60000)
+            if not r or r["nbk"] < max(1, w // 5 - 1) or (r["buy"] + r["sell"]) <= 0:
+                continue
+            tot = r["buy"] + r["sell"]
+            out["a%d" % w] = round(r["buy"] / tot, 3)
+            out["net%d" % w] = round(r["buy"] - r["sell"])
+            out["big%d" % w] = round(r["big_buy"] - r["big_sell"])
+        return out or None
 
     def drain(self, now_ms=None, stream_alive=True):
         """Retourne (lignes de tranches terminees, tranches vivantes) a ecrire, et les vide."""

@@ -39,7 +39,7 @@ import queue
 # Incrementer a chaque modification importante
 # Visible dans le header du dashboard pour identifier
 # exactement quelle version tourne sans ambiguite
-BOT_VERSION = "4.598"
+BOT_VERSION = "4.599"
 BOT_BUILD   = "2026-10-14-a"  # incremente a chaque correctif — visible dans les logs
                                # pour confirmer sans ambiguite quelle version tourne
 # Historique :
@@ -291,6 +291,7 @@ CONFIG = {
     "SCALP_M5_COUNTER_BLOCK": 1,       # v4.593 : pas d entree Scalp contre la tendance M5 (0 = desactive)
     "SCALP_SL_CAP_PCT": 0.30,       # v4.592 : plafond du stop Scalp en % du prix (0 = desactive)
     "SCALP_ZZ_JOURNAL_ON": 1,            # v4.597 : ZigZag M5 / M15 / H1 independant des trades + journal des pivots confirmes (observation seule)
+    "SCALP_FLUX_JOURNAL_ON": 1,          # v4.599 : flux acheteur/vendeur (5/15/30 min avant, 15/30/60 min apres) joint a chaque rupture de liquidite, trade et signal refuse (observation seule)
     "SCALP_REFUS_JOURNAL_ON": 1,       # v4.590 : journal des signaux refuses + test fantome (observation seule)
     "SCALP_MIN_ATR5_PCT": 0.30, "SCALP_M15_COUNTER_BLOCK": 1,       # v4.589 : plancher d ATR 5 min (v4.585) et pas d entree contre le M15 (v4.586), reglages Scalp reellement actifs
     "SCALP_MIN_ROOM_PCT": 0.0, "SCALP_BREAK_VOL_MULT": 1.5, "SCALP_MAX_CHASE_PCT": 0.4,

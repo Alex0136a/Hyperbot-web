@@ -1728,7 +1728,8 @@ class ScalpEngine:
             except Exception:
                 h1 = None
             self.liq_ev.append({"ts": time.time(), "bar": bar, "t": t, "d": d, "code": int(code), "px": px, "lvl": f.get(key + "_lvl"), "n": f.get(key + "_n"),
-                                "dist": f.get(key + "_dist"), "atr": f.get("atr_pct"), "h1": h1, "sl": round(sl, 3), "tp": round(tp, 3)})
+                                "dist": f.get(key + "_dist"), "atr": f.get("atr_pct"), "h1": h1, "sl": round(sl, 3), "tp": round(tp, 3),
+                                "flx": self._flux_before(t, int(bar) + 300000)})        # v4.599 : flux des 5 / 15 / 30 min qui precedent la cloture de la bougie de rupture
             self._liq_dirty = True
         self._liq_save()
 
@@ -1755,6 +1756,10 @@ class ScalpEngine:
                     for k, i in (("r15", 2), ("r30", 5), ("r60", 11)):
                         r[k] = round(sg * (cs[i]["c"] - e["px"]) / e["px"] * 100, 3)
                     e["res"] = r
+                    try:
+                        e["flx_ap"] = self._flux_after(e["t"], int(t0 * 1000))     # v4.599 : flux des 15 / 30 / 60 min qui suivent la rupture (None si l historique en memoire est trop court)
+                    except Exception:
+                        pass
                     ok_pass = True
             except Exception as ex:
                 e["fail"] = e.get("fail", 0) + 1
@@ -1919,6 +1924,26 @@ class ScalpEngine:
                 "groups": {"all": agg(L), "up": agg([e for e in L if e["d"] == "up"]), "down": agg([e for e in L if e["d"] == "down"]),
                            "full": agg([e for e in L if e.get("code") == 2]), "h1_with": agg([e for e in L if al(e)]), "h1_against": agg([e for e in L if ag(e)])}}
 
+    # ───────────── v4.599 : FLUX x LIQUIDITE (observation seule, aucun ordre) ─────────────
+    def _flux_before(self, t, end_ms):
+        """Flux acheteur/vendeur des 5 / 15 / 30 min qui precedent end_ms (cf. FlowRecorder.features) ; None si indisponible."""
+        try:
+            rec = getattr(self.bot, "flow_recorder", None)
+            if rec is None or not int(float(self.cfg.get("SCALP_FLUX_JOURNAL_ON", 1) or 0)):
+                return None
+            return rec.features(t, int(end_ms))
+        except Exception:
+            return None
+
+    def _flux_after(self, t, start_ms):
+        try:
+            rec = getattr(self.bot, "flow_recorder", None)
+            if rec is None or not int(float(self.cfg.get("SCALP_FLUX_JOURNAL_ON", 1) or 0)):
+                return None
+            return rec.after(t, int(start_ms))
+        except Exception:
+            return None
+
     def liq_events(self):
         return list(self.liq_ev)
 
@@ -1995,7 +2020,7 @@ class ScalpEngine:
             sl, tp = self.shadow_plan(self.cfg, float(px), float(a5))
             self.refus_ev.append({"ts": now, "t0": int(now // 300 * 300 + 300), "t": t, "kind": sig.get("kind"), "side": sig["side"], "code": code,
                                   "px": float(px), "atr5": round(float(a5) / float(px) * 100, 3), "sl": round(sl, 3), "tp": round(tp, 3),
-                                  "reg": self._refus_regime(t, sig, c5)})
+                                  "reg": self._refus_regime(t, sig, c5), "flx": self._flux_before(t, int(now * 1000))})     # v4.599 : flux avant le signal refuse
             self._refus_dirty = True
             self._refus_save()
         except Exception as e:
@@ -4339,7 +4364,7 @@ class ScalpEngine:
                                    "regime": {"label": reg.get("label", "inconnu"), "corr": reg.get("corr"), "up": reg.get("up"), "down": reg.get("down"),
                                               "basket30": reg.get("basket30"), "rel30": (round(reg["ch30"].get(t, 0) - reg["basket30"], 3) if reg.get("ch30") and reg.get("basket30") is not None else None),
                                               "cluster": cluster_before, "peers": sig.get("peers")},
-                                   "ctx": sig.get("ctx"), "m5": (sig.get("ctx_mc") or {}).get("m5"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra, "ich": ichi, "liq": liq, "zz": zz, "zza": zza, "calm": sig.get("calm1m"), "mv1": sig.get("move1m"),
+                                   "ctx": sig.get("ctx"), "m5": (sig.get("ctx_mc") or {}).get("m5"), "retest": bool(sig.get("retest")), "tq": self._trend_quality(t, reg), "tf": tobs, "contra": contra, "ich": ichi, "liq": liq, "zz": zz, "zza": zza, "flx": self._flux_before(t, int(time.time() * 1000)), "calm": sig.get("calm1m"), "mv1": sig.get("move1m"),
                                    "base": sig.get("base"), "touches": sig.get("touches"),
                                    "flux": {"ok": bool((getattr(self, "ctx_state", {}).get(t) or {}).get("flow")), "age_s": (getattr(self, "ctx_state", {}).get(t) or {}).get("flow_age")},      # v4.574 : le flux etait-il disponible a l entree (observation seule)
                                    "conf": ({"n": conf_res.get("n_conf"), "h1": conf_res.get("h1"), "h4": conf_res.get("h4"), "rr_net": conf_res.get("rr_net"), "zone": conf_res.get("zone"), "indic": conf_res.get("indic"), "pa": conf_res.get("pa")} if conf_res else None),      # v4.493 : mesures de la zone horizontale (aucun effet sur les decisions)
